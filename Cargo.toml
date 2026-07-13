@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/api",
+  "crates/cloud_client",
   "crates/desktop_app",
   "crates/core",
   "crates/ffi",
