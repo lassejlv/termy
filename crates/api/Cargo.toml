@@ -10,11 +10,21 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
-axum = "0.8"
-better-auth = { version = "0.8", features = ["sqlx-postgres", "axum"] }
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+base64 = "0.22"
+better-auth = { version = "0.10", features = ["sqlx-postgres", "axum"] }
+chacha20poly1305 = "0.10"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 neon-serverless-sqlx = { git = "https://github.com/lassejlv/neon-serverless-sqlx", rev = "8d58d048e3ff39c155419301f5c9c511cd05f1f5" }
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "json",
+] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
+serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 sqlx = { version = "0.8", default-features = false, features = [
   "runtime-tokio",
   "tls-rustls",
@@ -22,8 +32,17 @@ sqlx = { version = "0.8", default-features = false, features = [
   "migrate",
 ] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tokio-tungstenite = { version = "0.24", default-features = false, features = [
+  "connect",
+  "rustls-tls-native-roots",
+] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http = { version = "0.6", features = ["fs"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
