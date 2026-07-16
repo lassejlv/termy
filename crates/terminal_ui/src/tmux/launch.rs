@@ -1,11 +1,15 @@
 #![cfg_attr(not(unix), allow(dead_code))]
 
-use anyhow::{Context, Result, anyhow};
+#[cfg(unix)]
+use anyhow::anyhow;
+use anyhow::{Context, Result};
 #[cfg(unix)]
 use std::fs::File;
 #[cfg(unix)]
 use std::os::fd::{FromRawFd, IntoRawFd};
-use std::process::{Command, Stdio};
+#[cfg(unix)]
+use std::process::Command;
+use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]

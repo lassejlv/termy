@@ -32,7 +32,7 @@ use gpui::{
 };
 use startup::StartupBlocker;
 use terminal_view::{TerminalView, initial_window_background_appearance};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
 use termy_terminal_ui::TmuxClient;
 
 pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -412,7 +412,6 @@ impl SettingsWindow {
         self.render_settings_group("Shell environment", rows)
     }
 
-    #[cfg(not(target_os = "windows"))]
     pub(super) fn render_terminal_tmux_group(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let binary_meta = Self::setting_metadata_or_fallback("tmux_binary");
         let command_prefix_meta = Self::setting_metadata_or_fallback("tmux_command_prefix");
