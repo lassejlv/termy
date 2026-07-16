@@ -30,6 +30,99 @@ fn bun_is_available() -> bool {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn plugin_host_environment_restores_gui_missing_path_entries() {
+    const CHILD_MARKER: &str = "TERMY_PLUGIN_PATH_TEST_CHILD";
+
+    if std::env::var_os(CHILD_MARKER).is_none() {
+        let Some(bun) = resolve_bun_binary().expect("resolve Bun") else {
+            if std::env::var_os("CI").is_some() {
+                panic!("Bun is required for plugin runtime tests in CI");
+            }
+            return;
+        };
+        let empty_path = TempDir::new().expect("empty PATH directory");
+        let output = Command::new(std::env::current_exe().expect("current test executable"))
+            .arg("--exact")
+            .arg("tests::plugin_host_environment_restores_gui_missing_path_entries")
+            .arg("--nocapture")
+            .env(CHILD_MARKER, "1")
+            .env("TERMY_BUN_PATH", bun)
+            .env("PATH", empty_path.path())
+            .output()
+            .expect("run isolated plugin PATH test");
+        assert!(
+            output.status.success(),
+            "plugin host did not restore Bun's directory to PATH\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        return;
+    }
+
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugins = temp.path().join("plugins");
+    write_plugin(
+        &plugins,
+        "path-check",
+        "PATH Check",
+        r#"
+export default definePlugin({
+  commands: [{
+    id: "run",
+    title: "PATH Check: Run",
+    run() {
+      const pathEntries = (process.env.PATH || "").split(":");
+      if (process.platform === "darwin" && !pathEntries.includes("/opt/homebrew/bin")) {
+        throw new Error("/opt/homebrew/bin is missing from PATH");
+      }
+      const result = Bun.spawnSync(["bun", "--version"], {
+        env: process.env,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(result.stderr.toString() || "bun failed");
+      }
+      return {
+        type: "toast",
+        level: "success",
+        message: result.stdout.toString().trim(),
+      };
+    },
+  }],
+});
+"#,
+    );
+
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.errors.is_empty(), "errors: {:?}", refresh.errors);
+    let revision = runtime
+        .command_with_revision("path-check", "run")
+        .expect("PATH check command")
+        .1;
+    let actions = runtime
+        .invoke(
+            "path-check",
+            "run",
+            &revision,
+            BTreeMap::new(),
+            test_plugin_context(),
+        )
+        .expect("plugin should resolve Bun by name");
+    assert!(matches!(
+        actions.as_slice(),
+        [PluginAction::Toast {
+            level: PluginToastLevel::Success,
+            message,
+        }] if !message.is_empty()
+    ));
+}
+
 #[test]
 fn tsx_views_render_and_round_trip_actions() {
     if !bun_is_available() {

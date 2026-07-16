@@ -6,6 +6,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    ffi::OsString,
     fs,
     io::{BufRead, BufReader, Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
@@ -2064,7 +2065,7 @@ impl HostConnection {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
-        copy_safe_environment(&mut command);
+        copy_safe_environment(&mut command, &bun);
         let child = command
             .spawn()
             .map_err(|error| format!("Failed to start Bun plugin runtime: {error}"))?;
@@ -2985,11 +2986,44 @@ fn is_executable_file(path: &Path) -> bool {
     }
 }
 
-fn copy_safe_environment(command: &mut Command) {
+fn plugin_path_env(bun: &Path) -> Option<OsString> {
+    let mut entries = Vec::new();
+    let mut push = |entry: PathBuf| {
+        if !entry.as_os_str().is_empty() && !entries.contains(&entry) {
+            entries.push(entry);
+        }
+    };
+
+    if let Some(path) = std::env::var_os("PATH") {
+        for entry in std::env::split_paths(&path) {
+            push(entry);
+        }
+    }
+    if let Some(parent) = bun.parent() {
+        push(parent.to_path_buf());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    for entry in [
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+        "/usr/local/sbin",
+        "/usr/bin",
+        "/bin",
+        "/usr/sbin",
+        "/sbin",
+    ] {
+        push(PathBuf::from(entry));
+    }
+
+    std::env::join_paths(entries).ok()
+}
+
+fn copy_safe_environment(command: &mut Command, bun: &Path) {
     for key in [
         "HOME",
         "USERPROFILE",
-        "PATH",
         "SHELL",
         "TMPDIR",
         "TMP",
@@ -3001,6 +3035,9 @@ fn copy_safe_environment(command: &mut Command) {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
         }
+    }
+    if let Some(path) = plugin_path_env(bun) {
+        command.env("PATH", path);
     }
     #[cfg(target_os = "windows")]
     for key in ["SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"] {
