@@ -2154,9 +2154,8 @@ impl TerminalView {
         }
     }
 
-    /// Dropdown under the tab strip's "+" button offering the tab kind.
-    /// Rendered only when browser tabs are enabled (plain "+" otherwise
-    /// creates a terminal tab directly).
+    /// Dropdown under the tab strip's "+" button offering available tab and
+    /// shell choices for the current platform.
     fn render_new_tab_menu_overlay(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (menu_x, menu_y) = self.new_tab_menu_anchor?;
         let overlay_style = self.overlay_style();
@@ -2189,6 +2188,12 @@ impl TerminalView {
                     }),
                 )
                 .child(label)
+        };
+
+        let default_terminal_label = if cfg!(target_os = "windows") {
+            "Default Shell"
+        } else {
+            "New Terminal Tab"
         };
 
         Some(
@@ -2227,10 +2232,57 @@ impl TerminalView {
                         )
                         .child(menu_row(
                             "new-tab-menu-terminal",
-                            "New Terminal Tab",
+                            default_terminal_label,
                             cx,
                             |view, cx| view.add_tab(cx),
                         ))
+                        .when(cfg!(target_os = "windows"), |panel| {
+                            panel
+                                .child(menu_row(
+                                    "new-tab-menu-command-prompt",
+                                    "Command Prompt",
+                                    cx,
+                                    |view, cx| {
+                                        view.add_tab_with_windows_shell(
+                                            RuntimeWindowsShell::Cmd,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                                .child(menu_row(
+                                    "new-tab-menu-windows-powershell",
+                                    "Windows PowerShell",
+                                    cx,
+                                    |view, cx| {
+                                        view.add_tab_with_windows_shell(
+                                            RuntimeWindowsShell::PowerShell,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                                .child(menu_row(
+                                    "new-tab-menu-powershell-core",
+                                    "PowerShell 7",
+                                    cx,
+                                    |view, cx| {
+                                        view.add_tab_with_windows_shell(
+                                            RuntimeWindowsShell::PowerShellCore,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                                .child(menu_row(
+                                    "new-tab-menu-git-bash",
+                                    "Git Bash",
+                                    cx,
+                                    |view, cx| {
+                                        view.add_tab_with_windows_shell(
+                                            RuntimeWindowsShell::GitBash,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                        })
                         .when(self.browser_tabs_available(), |panel| {
                             panel.child(menu_row(
                                 "new-tab-menu-browser",

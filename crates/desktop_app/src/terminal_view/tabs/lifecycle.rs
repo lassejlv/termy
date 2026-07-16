@@ -1,6 +1,24 @@
 use super::*;
 use std::cmp::Reverse;
 
+fn should_show_new_tab_menu(
+    browser_tabs_available: bool,
+    runtime_kind: RuntimeKind,
+    windows_shell_menu_available: bool,
+) -> bool {
+    runtime_kind == RuntimeKind::Native && (browser_tabs_available || windows_shell_menu_available)
+}
+
+fn runtime_config_for_windows_shell(
+    base: &TerminalRuntimeConfig,
+    windows_shell: RuntimeWindowsShell,
+) -> TerminalRuntimeConfig {
+    let mut runtime = base.clone();
+    runtime.shell = None;
+    runtime.windows_shell = windows_shell;
+    runtime
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ClosePaneOrTabTarget {
     ClosePane,
@@ -316,10 +334,14 @@ impl TerminalView {
         let _ = self.add_tab_with_working_dir(None, cx);
     }
 
-    /// "+" button entry point: with browser tabs enabled it opens a dropdown
-    /// to choose the tab kind; otherwise it creates a terminal tab directly.
+    /// "+" button entry point: opens a dropdown when the platform has extra
+    /// tab choices; otherwise it creates a terminal tab directly.
     pub(crate) fn handle_new_tab_button(&mut self, anchor: (f32, f32), cx: &mut Context<Self>) {
-        if self.browser_tabs_available() && self.runtime_kind() == RuntimeKind::Native {
+        if should_show_new_tab_menu(
+            self.browser_tabs_available(),
+            self.runtime_kind(),
+            cfg!(target_os = "windows"),
+        ) {
             self.toggle_new_tab_menu(anchor, cx);
         } else {
             self.add_tab(cx);
@@ -349,6 +371,23 @@ impl TerminalView {
         working_dir: Option<&str>,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.add_tab_with_working_dir_and_windows_shell(working_dir, None, cx)
+    }
+
+    pub(crate) fn add_tab_with_windows_shell(
+        &mut self,
+        windows_shell: RuntimeWindowsShell,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.add_tab_with_working_dir_and_windows_shell(None, Some(windows_shell), cx)
+    }
+
+    fn add_tab_with_working_dir_and_windows_shell(
+        &mut self,
+        working_dir: Option<&str>,
+        windows_shell: Option<RuntimeWindowsShell>,
+        cx: &mut Context<Self>,
+    ) -> bool {
         match self.runtime_kind() {
             RuntimeKind::Tmux => {
                 let added = self.tmux_add_tab(working_dir, cx);
@@ -365,12 +404,15 @@ impl TerminalView {
                     .unwrap_or_default();
                 let preferred_working_dir =
                     self.preferred_working_dir_for_new_session(working_dir, cx);
+                let terminal_runtime = windows_shell
+                    .map(|shell| runtime_config_for_windows_shell(&self.terminal_runtime, shell));
+                let terminal_runtime = terminal_runtime.as_ref().unwrap_or(&self.terminal_runtime);
                 let terminal = match Terminal::new_native(
                     size,
                     preferred_working_dir.as_deref(),
                     Some(&self.native_terminal_wakeup_router),
                     Some(&self.tab_shell_integration),
-                    Some(&self.terminal_runtime),
+                    Some(terminal_runtime),
                     None,
                 ) {
                     Ok(terminal) => terminal,
@@ -1767,6 +1809,29 @@ mod tests {
     fn adjacent_tab_index_moves_middle_tab_left_and_right() {
         assert_eq!(TerminalView::adjacent_tab_index(2, 5, false), Some(1));
         assert_eq!(TerminalView::adjacent_tab_index(2, 5, true), Some(3));
+    }
+
+    #[test]
+    fn windows_shell_choices_open_the_new_tab_menu_without_browser_tabs() {
+        assert!(should_show_new_tab_menu(false, RuntimeKind::Native, true));
+        assert!(!should_show_new_tab_menu(false, RuntimeKind::Native, false));
+        assert!(!should_show_new_tab_menu(true, RuntimeKind::Tmux, true));
+    }
+
+    #[test]
+    fn selected_windows_shell_overrides_a_custom_shell_for_the_new_tab() {
+        let base = TerminalRuntimeConfig {
+            shell: Some(r"C:\tools\custom-shell.exe".to_string()),
+            windows_shell: RuntimeWindowsShell::Cmd,
+            term: "termy-test".to_string(),
+            ..TerminalRuntimeConfig::default()
+        };
+
+        let runtime = runtime_config_for_windows_shell(&base, RuntimeWindowsShell::PowerShellCore);
+
+        assert_eq!(runtime.shell, None);
+        assert_eq!(runtime.windows_shell, RuntimeWindowsShell::PowerShellCore);
+        assert_eq!(runtime.term, "termy-test");
     }
 
     #[test]

@@ -1212,8 +1212,8 @@ pub struct TerminalView {
     pending_cursor_move_preview: Option<PendingCursorMovePreview>,
     terminal_context_menu: Option<TerminalContextMenuState>,
     tab_context_menu: Option<TabContextMenuState>,
-    /// Window-space top-left of the "+" dropdown (terminal / browser tab
-    /// choice); `None` while closed. Only used when browser tabs are enabled.
+    /// Window-space top-left of the "+" dropdown for platform-specific tab
+    /// choices; `None` while closed.
     new_tab_menu_anchor: Option<(f32, f32)>,
     hovered_link: Option<HoveredLink>,
     hovered_toast: Option<u64>,
