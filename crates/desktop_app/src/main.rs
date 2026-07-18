@@ -126,6 +126,12 @@ fn preflight_tmux_runtime(config: &config::AppConfig) -> Result<(), StartupBlock
     ))
 }
 
+fn guard_tmux_startup(config: &mut config::AppConfig) -> Option<String> {
+    let blocker = preflight_tmux_runtime(config).err()?;
+    config.tmux_enabled = false;
+    Some(blocker.tmux_fallback_message())
+}
+
 fn normalized_startup_window_size(startup_config: &config::AppConfig) -> gpui::Size<Pixels> {
     let window_width = startup_config.window_width;
     let window_height = startup_config.window_height;
@@ -311,11 +317,9 @@ pub(crate) fn open_main_window_with_runtime_config_overrides(
     if let Some(working_dir) = working_dir {
         reopen_config.working_dir = Some(working_dir);
     }
-    if let Err(blocker) = preflight_tmux_runtime(&reopen_config) {
-        let message = blocker.message();
-        log::error!("Failed to reopen main window: {message}");
-        termy_toast::error(message.clone());
-        return Err(message);
+    if let Some(message) = guard_tmux_startup(&mut reopen_config) {
+        log::warn!("{message}");
+        termy_toast::warning(message);
     }
 
     open_main_window(cx, reopen_config).inspect_err(|error| {
@@ -521,8 +525,9 @@ fn main() {
             app_config.working_dir = Some(working_dir);
         }
         app_icon::apply_from_config(&app_config);
-        if let Err(blocker) = preflight_tmux_runtime(&app_config) {
-            blocker.present_and_exit();
+        if let Some(message) = guard_tmux_startup(&mut app_config) {
+            log::warn!("{message}");
+            termy_toast::warning(message);
         }
         // Keep startup menus/keybinds aligned with the active runtime capability set.
         let tmux_runtime_active = if cfg!(target_os = "windows") {
@@ -544,7 +549,7 @@ fn main() {
 mod tests {
     use super::{
         DeepLinkArgument, DeepLinkRoute, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
-        focus_or_open_main_window, handle_open_urls_with_main_window,
+        focus_or_open_main_window, guard_tmux_startup, handle_open_urls_with_main_window,
         normalized_startup_window_size, parse_startup_arguments, reopen_if_no_windows,
     };
     #[cfg(target_os = "windows")]
@@ -594,6 +599,38 @@ mod tests {
         let parsed = parse_startup_arguments(["termy://new?dir=%2Ftmp%2Fproject"]);
         assert_eq!(parsed.working_dir, None);
         assert_eq!(parsed.deeplinks, vec!["termy://new?dir=%2Ftmp%2Fproject"]);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn tmux_startup_guard_falls_back_to_native_when_binary_is_missing() {
+        let mut config = AppConfig {
+            tmux_enabled: true,
+            tmux_binary: "/termy-test-bin/tmux-does-not-exist".to_string(),
+            ..AppConfig::default()
+        };
+
+        let warning = guard_tmux_startup(&mut config).expect("missing tmux should be guarded");
+
+        assert!(!config.tmux_enabled);
+        assert!(warning.contains("starting in native mode"));
+        assert!(warning.contains("tmux preflight failed"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn tmux_startup_guard_falls_back_in_bare_environment() {
+        let mut config = AppConfig {
+            tmux_enabled: true,
+            tmux_binary: "tmux".to_string(),
+            tmux_command_prefix: Some("env PATH=/termy-test-bin".to_string()),
+            ..AppConfig::default()
+        };
+
+        let warning = guard_tmux_startup(&mut config).expect("bare PATH should not contain tmux");
+
+        assert!(!config.tmux_enabled);
+        assert!(warning.contains("starting in native mode"));
     }
 
     #[gpui::test]

@@ -3,8 +3,6 @@ use std::time::Instant;
 use flume::Sender;
 use termy_terminal_ui::{TmuxClient, TmuxLaunchTarget, TmuxRuntimeConfig, TmuxSnapshot};
 
-use crate::startup::StartupBlocker;
-
 use super::*;
 
 mod tmux;
@@ -18,20 +16,8 @@ pub(super) enum RuntimeKind {
     Tmux,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TmuxStartupSnapshotCleanupDecision {
-    ContinueToFatalExit,
-    EmitCleanupWarningAndExit,
-}
-
-fn tmux_startup_snapshot_cleanup_decision(
-    cleanup_succeeded: bool,
-) -> TmuxStartupSnapshotCleanupDecision {
-    if cleanup_succeeded {
-        TmuxStartupSnapshotCleanupDecision::ContinueToFatalExit
-    } else {
-        TmuxStartupSnapshotCleanupDecision::EmitCleanupWarningAndExit
-    }
+fn tmux_startup_fallback_message(reason: &str, error: &anyhow::Error) -> String {
+    format!("tmux is unavailable ({reason}: {error:#}); starting in native mode")
 }
 
 impl RuntimeKind {
@@ -155,6 +141,28 @@ impl TerminalView {
         initial_cols: u16,
         initial_rows: u16,
     ) -> (RuntimeState, Option<TmuxSnapshot>, Option<Terminal>) {
+        let start_native = || {
+            let native_terminal = match Terminal::new_native(
+                TerminalSize {
+                    cols: initial_cols,
+                    rows: initial_rows,
+                    ..TerminalSize::default()
+                },
+                configured_working_dir,
+                Some(native_terminal_wakeup_router),
+                Some(tab_shell_integration),
+                Some(terminal_runtime),
+                startup_command,
+            ) {
+                Ok(terminal) => terminal,
+                Err(error) => {
+                    eprintln!("Termy startup blocked: failed to start native runtime: {error}");
+                    std::process::exit(1);
+                }
+            };
+            (RuntimeState::Native, None, Some(native_terminal))
+        };
+
         match RuntimeKind::from_app_config(config) {
             RuntimeKind::Tmux => {
                 let tmux_runtime = Self::tmux_runtime_from_app_config(config);
@@ -172,29 +180,31 @@ impl TerminalView {
                 ) {
                     Ok(client) => client,
                     Err(error) => {
-                        StartupBlocker::TmuxClientLaunch(format!("{error:#}")).present_and_exit()
+                        let message = tmux_startup_fallback_message(
+                            "failed to start tmux control runtime",
+                            &error,
+                        );
+                        log::warn!("{message}");
+                        termy_toast::warning(message);
+                        return start_native();
                     }
                 };
                 let initial_snapshot = match tmux_client.refresh_snapshot() {
                     Ok(snapshot) => snapshot,
                     Err(error) => {
-                        // `present_and_exit` terminates the process without running
-                        // destructors. Explicit shutdown avoids leaking a control
-                        // client when startup fails after tmux launch succeeds.
-                        let cleanup_result = tmux_client.shutdown_default();
-                        if matches!(
-                            tmux_startup_snapshot_cleanup_decision(cleanup_result.is_ok()),
-                            TmuxStartupSnapshotCleanupDecision::EmitCleanupWarningAndExit
-                        ) {
-                            let cleanup_error = cleanup_result.expect_err(
-                                "cleanup error must be present when startup decision emits warning",
-                            );
+                        if let Err(cleanup_error) = tmux_client.shutdown_default() {
                             eprintln!(
                                 "Termy startup warning: failed to cleanup tmux client after \
                                  snapshot startup failure: {cleanup_error}"
                             );
                         }
-                        StartupBlocker::TmuxInitialSnapshot(format!("{error:#}")).present_and_exit()
+                        let message = tmux_startup_fallback_message(
+                            "failed to fetch initial tmux snapshot",
+                            &error,
+                        );
+                        log::warn!("{message}");
+                        termy_toast::warning(message);
+                        return start_native();
                     }
                 };
                 (
@@ -209,27 +219,7 @@ impl TerminalView {
                     None,
                 )
             }
-            RuntimeKind::Native => {
-                let native_terminal = match Terminal::new_native(
-                    TerminalSize {
-                        cols: initial_cols,
-                        rows: initial_rows,
-                        ..TerminalSize::default()
-                    },
-                    configured_working_dir,
-                    Some(native_terminal_wakeup_router),
-                    Some(tab_shell_integration),
-                    Some(terminal_runtime),
-                    startup_command,
-                ) {
-                    Ok(terminal) => terminal,
-                    Err(error) => {
-                        eprintln!("Termy startup blocked: failed to start native runtime: {error}");
-                        std::process::exit(1);
-                    }
-                };
-                (RuntimeState::Native, None, Some(native_terminal))
-            }
+            RuntimeKind::Native => start_native(),
         }
     }
 }
@@ -259,14 +249,10 @@ mod tests {
     }
 
     #[test]
-    fn startup_snapshot_cleanup_decision_only_warns_when_cleanup_fails() {
-        assert_eq!(
-            tmux_startup_snapshot_cleanup_decision(true),
-            TmuxStartupSnapshotCleanupDecision::ContinueToFatalExit
-        );
-        assert_eq!(
-            tmux_startup_snapshot_cleanup_decision(false),
-            TmuxStartupSnapshotCleanupDecision::EmitCleanupWarningAndExit
-        );
+    fn tmux_startup_fallback_message_preserves_error_and_recovery() {
+        let error = anyhow::anyhow!("tmux executable was not found");
+        let message = tmux_startup_fallback_message("failed to start tmux", &error);
+        assert!(message.contains("tmux executable was not found"));
+        assert!(message.contains("starting in native mode"));
     }
 }

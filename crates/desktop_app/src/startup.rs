@@ -3,12 +3,22 @@
 pub(crate) enum StartupBlocker {
     #[cfg_attr(target_os = "windows", allow(dead_code))]
     TmuxPreflight(String),
-    TmuxClientLaunch(String),
-    TmuxInitialSnapshot(String),
     MainWindowOpen(String),
 }
 
 impl StartupBlocker {
+    fn tmux_reason_and_error(&self) -> (&'static str, &str) {
+        match self {
+            Self::TmuxPreflight(error) => ("tmux preflight failed", error),
+            Self::MainWindowOpen(_) => unreachable!("main-window failures are not tmux failures"),
+        }
+    }
+
+    pub(crate) fn tmux_fallback_message(&self) -> String {
+        let (reason, error) = self.tmux_reason_and_error();
+        format!("tmux is unavailable ({reason}: {error}); starting in native mode")
+    }
+
     pub(crate) fn message(&self) -> String {
         if let Self::MainWindowOpen(error) = self {
             return format!(
@@ -16,30 +26,11 @@ impl StartupBlocker {
             );
         }
 
-        let (reason, error) = match self {
-            Self::TmuxPreflight(error) => ("tmux preflight failed", error.as_str()),
-            Self::TmuxClientLaunch(error) => {
-                ("failed to start tmux control runtime", error.as_str())
-            }
-            Self::TmuxInitialSnapshot(error) => {
-                ("failed to fetch initial tmux snapshot", error.as_str())
-            }
-            Self::MainWindowOpen(_) => unreachable!("handled above"),
-        };
+        let (reason, error) = self.tmux_reason_and_error();
 
         format!(
             "Termy cannot continue because {reason}.\n\nError:\n{error}\n\nRecovery:\n- Open your config and set tmux_enabled = false to start in native mode.\n- Finder/DMG launches use a minimal environment; set tmux_binary to an absolute path (for example /opt/homebrew/bin/tmux) if tmux is not on the default PATH.\n- If tmux integration is desired, ensure tmux 3.3 or newer is installed.\n- Save the config and restart Termy, then use tmux Sessions… when ready."
         )
-    }
-
-    pub(crate) fn present_and_exit(self) -> ! {
-        let message = self.message();
-        // Startup blockers can fire while GPUI holds internal borrows during app/window
-        // initialization. Triggering synchronous native modal dialogs in that state can
-        // re-enter GPUI and panic; keep this path side-effect free and terminate cleanly.
-        eprintln!("Termy startup blocked:\n{message}");
-        // Hard cutover: do not continue startup after tmux preflight/startup failures.
-        std::process::exit(1);
     }
 
     pub(crate) fn present_alert_and_exit(self) -> ! {
@@ -66,18 +57,11 @@ mod tests {
     }
 
     #[test]
-    fn startup_blocker_message_for_tmux_client_launch_includes_exact_error() {
-        let message = StartupBlocker::TmuxClientLaunch("socket unavailable".to_string()).message();
-        assert!(message.contains("failed to start tmux control runtime"));
-        assert!(message.contains("socket unavailable"));
-    }
-
-    #[test]
-    fn startup_blocker_message_for_initial_snapshot_includes_exact_error() {
-        let message =
-            StartupBlocker::TmuxInitialSnapshot("list-windows failed".to_string()).message();
-        assert!(message.contains("failed to fetch initial tmux snapshot"));
-        assert!(message.contains("list-windows failed"));
+    fn tmux_fallback_message_explains_native_recovery() {
+        let message = StartupBlocker::TmuxPreflight("tmux executable was not found".to_string())
+            .tmux_fallback_message();
+        assert!(message.contains("tmux executable was not found"));
+        assert!(message.contains("starting in native mode"));
     }
 
     #[test]
