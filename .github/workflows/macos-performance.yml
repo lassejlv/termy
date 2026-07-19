@@ -38,7 +38,8 @@ jobs:
           - idle-burst
           - echo-train
           - steady-scroll
-          - alt-screen-anim
+          # Full-screen TUI rendering stays covered by the deterministic native
+          # gate; Instruments hangs while finalizing this trace on hosted runners.
     env:
       DURATION_SECS: ${{ github.event_name == 'workflow_dispatch' && inputs.duration_secs || '13' }}
     steps:
@@ -160,8 +161,7 @@ jobs:
             --candidate "native:$GITHUB_WORKSPACE/candidate/macos/.build/dmg-arm64/Termy.app" \
             --output "$GITHUB_WORKSPACE/native-benchmark-output" \
             --duration-secs "$DURATION_SECS" \
-            --scenario steady-scroll \
-            --scenario alt-screen-anim
+            --scenario steady-scroll
 
       - name: Check calibrated native comparison gates
         run: |
