@@ -86,6 +86,7 @@ fn run_compare(mut args: impl Iterator<Item = String>) -> Result<()> {
     let mut output_root = None;
     let mut duration_secs = DEFAULT_DURATION_SECS;
     let mut selected_scenarios = Vec::new();
+    let mut collect_animation = true;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -122,8 +123,11 @@ fn run_compare(mut args: impl Iterator<Item = String>) -> Result<()> {
                 let value = args.next().context("missing value for --scenario")?;
                 selected_scenarios.push(Scenario::parse(&value)?);
             }
+            "--skip-animation-trace" => {
+                collect_animation = false;
+            }
             other => bail!(
-                "unknown benchmark-compare argument `{other}`; expected --baseline, --candidate, --baseline-root, --candidate-root, --output, --duration-secs, or --scenario"
+                "unknown benchmark-compare argument `{other}`; expected --baseline, --candidate, --baseline-root, --candidate-root, --output, --duration-secs, --scenario, or --skip-animation-trace"
             ),
         }
     }
@@ -178,6 +182,7 @@ fn run_compare(mut args: impl Iterator<Item = String>) -> Result<()> {
                 *scenario,
                 duration_secs,
                 &output_root,
+                collect_animation,
             )?);
         }
     }
@@ -374,14 +379,25 @@ impl BenchmarkGateThresholds {
                     "ms",
                 );
             }
-            check_required_i64(
-                &mut failures,
-                &scenario.scenario,
-                "hitch count delta",
-                scenario.deltas.hitch_count,
-                self.max_hitch_count_delta,
-                "hitches",
-            );
+            if self.min_displayed_frames == 0 {
+                check_optional_i64(
+                    &mut failures,
+                    &scenario.scenario,
+                    "hitch count delta",
+                    scenario.deltas.hitch_count,
+                    self.max_hitch_count_delta,
+                    "hitches",
+                );
+            } else {
+                check_required_i64(
+                    &mut failures,
+                    &scenario.scenario,
+                    "hitch count delta",
+                    scenario.deltas.hitch_count,
+                    self.max_hitch_count_delta,
+                    "hitches",
+                );
+            }
             if matches!(scenario.scenario.as_str(), "idle-blink" | "idle-burst") {
                 check_required_i64(
                     &mut failures,
@@ -1132,6 +1148,7 @@ fn run_single_benchmark(
     scenario: Scenario,
     duration_secs: u64,
     output_root: &Path,
+    collect_animation: bool,
 ) -> Result<RunResult> {
     let raw_dir = output_root
         .join("raw")
@@ -1265,75 +1282,78 @@ fn run_single_benchmark(
     let energy_json_path = energy_dir.join("energy.json");
     write_json(&energy_json_path, &energy_summary)?;
 
-    let animation_trace_path = animation_dir.join("animation-hitches.trace");
-    let animation_metrics_dir = raw_dir.join("animation-app");
-    let attached_animation_pid = match build.kind {
-        BenchmarkTargetKind::Termy | BenchmarkTargetKind::Native => {
-            let command = benchmark_driver_command(driver, scenario, duration_secs);
-            run_attached_termy_trace(
-                build,
-                "Animation Hitches",
-                &animation_trace_path,
-                &config_root,
-                &animation_metrics_dir,
-                &animation_markers_path,
-                scenario,
-                &command,
-                duration_secs,
-                time_limit_secs,
-                &raw_dir.join("animation-target.log"),
-            )?
-        }
-        BenchmarkTargetKind::Ghostty => {
-            let mut animation_command = animation_hitches_ghostty_command(
-                build,
-                &animation_trace_path,
-                &animation_markers_path,
-                ghostty_launch
-                    .as_ref()
-                    .expect("ghostty launch artifacts must exist"),
-                time_limit_secs,
-            );
-            run_xctrace_record_command(
-                &mut animation_command,
-                format!(
-                    "xctrace Animation Hitches run for {} ({}) {}",
-                    build.label,
-                    build.display_name(),
-                    scenario.as_str()
-                ),
-                &animation_trace_path,
-                xctrace_timeout(time_limit_secs),
-            )?;
-            0
-        }
-    };
+    let animation_summary = if collect_animation {
+        let animation_trace_path = animation_dir.join("animation-hitches.trace");
+        let animation_metrics_dir = raw_dir.join("animation-app");
+        let attached_animation_pid = match build.kind {
+            BenchmarkTargetKind::Termy | BenchmarkTargetKind::Native => {
+                let command = benchmark_driver_command(driver, scenario, duration_secs);
+                run_attached_termy_trace(
+                    build,
+                    "Animation Hitches",
+                    &animation_trace_path,
+                    &config_root,
+                    &animation_metrics_dir,
+                    &animation_markers_path,
+                    scenario,
+                    &command,
+                    duration_secs,
+                    time_limit_secs,
+                    &raw_dir.join("animation-target.log"),
+                )?
+            }
+            BenchmarkTargetKind::Ghostty => {
+                let mut animation_command = animation_hitches_ghostty_command(
+                    build,
+                    &animation_trace_path,
+                    &animation_markers_path,
+                    ghostty_launch
+                        .as_ref()
+                        .expect("ghostty launch artifacts must exist"),
+                    time_limit_secs,
+                );
+                run_xctrace_record_command(
+                    &mut animation_command,
+                    format!(
+                        "xctrace Animation Hitches run for {} ({}) {}",
+                        build.label,
+                        build.display_name(),
+                        scenario.as_str()
+                    ),
+                    &animation_trace_path,
+                    xctrace_timeout(time_limit_secs),
+                )?;
+                0
+            }
+        };
 
-    let animation_toc_path = animation_dir.join("toc.xml");
-    export_xctrace_table(&animation_trace_path, None, &animation_toc_path)?;
-    let launched_pid = if attached_animation_pid > 0 {
-        attached_animation_pid
+        let animation_toc_path = animation_dir.join("toc.xml");
+        export_xctrace_table(&animation_trace_path, None, &animation_toc_path)?;
+        let launched_pid = if attached_animation_pid > 0 {
+            attached_animation_pid
+        } else {
+            parse_trace_launched_process_pid(&animation_toc_path)?
+        };
+        let displayed_frames_path = animation_dir.join("displayed-surfaces-interval.xml");
+        let hitches_path = animation_dir.join("hitches.xml");
+        export_xctrace_table(
+            &animation_trace_path,
+            Some(
+                "/trace-toc/run[@number=\"1\"]/data/table[@schema=\"displayed-surfaces-interval\"]",
+            ),
+            &displayed_frames_path,
+        )?;
+        export_xctrace_table(
+            &animation_trace_path,
+            Some("/trace-toc/run[@number=\"1\"]/data/table[@schema=\"hitches\"]"),
+            &hitches_path,
+        )?;
+        let summary = parse_animation_summary(&displayed_frames_path, &hitches_path, launched_pid)?;
+        write_json(&animation_dir.join("animation-summary.json"), &summary)?;
+        Some(summary)
     } else {
-        parse_trace_launched_process_pid(&animation_toc_path)?
+        None
     };
-    let displayed_frames_path = animation_dir.join("displayed-surfaces-interval.xml");
-    let hitches_path = animation_dir.join("hitches.xml");
-    export_xctrace_table(
-        &animation_trace_path,
-        Some("/trace-toc/run[@number=\"1\"]/data/table[@schema=\"displayed-surfaces-interval\"]"),
-        &displayed_frames_path,
-    )?;
-    export_xctrace_table(
-        &animation_trace_path,
-        Some("/trace-toc/run[@number=\"1\"]/data/table[@schema=\"hitches\"]"),
-        &hitches_path,
-    )?;
-    let animation_summary =
-        parse_animation_summary(&displayed_frames_path, &hitches_path, launched_pid)?;
-    write_json(
-        &animation_dir.join("animation-summary.json"),
-        &animation_summary,
-    )?;
 
     Ok(RunResult {
         build_label: build.label.to_string(),
@@ -1342,7 +1362,7 @@ fn run_single_benchmark(
         scenario: scenario.as_str().to_string(),
         app_summary,
         energy_summary,
-        animation_summary: Some(animation_summary),
+        animation_summary,
         micro_latency,
     })
 }
@@ -3828,6 +3848,25 @@ mod tests {
                 "idle-burst".to_string(),
                 baseline,
                 candidate,
+            )],
+        };
+        let mut thresholds = super::BenchmarkGateThresholds::default();
+        thresholds.min_displayed_frames = 0;
+
+        let failures = thresholds.failures(&summary);
+
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
+    }
+
+    #[test]
+    fn benchmark_gates_can_opt_out_when_animation_trace_is_not_collected() {
+        let summary = super::ComparisonSummary {
+            baseline: compared_target("baseline"),
+            candidate: compared_target("candidate"),
+            scenarios: vec![super::ScenarioComparison::new(
+                "idle-burst".to_string(),
+                run_result("baseline", 3.0, 10, 10 * 1024 * 1024),
+                run_result("candidate", 3.0, 10, 10 * 1024 * 1024),
             )],
         };
         let mut thresholds = super::BenchmarkGateThresholds::default();

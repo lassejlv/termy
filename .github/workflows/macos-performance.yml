@@ -75,7 +75,8 @@ jobs:
             --candidate-root "$GITHUB_WORKSPACE/candidate" \
             --output "$GITHUB_WORKSPACE/benchmark-output-${{ matrix.scenario }}" \
             --duration-secs "$DURATION_SECS" \
-            --scenario "${{ matrix.scenario }}"
+            --scenario "${{ matrix.scenario }}" \
+            --skip-animation-trace
 
       - name: Check performance gates
         run: |
@@ -94,8 +95,6 @@ jobs:
             benchmark-output-${{ matrix.scenario }}/raw/**/driver/*.ndjson
             benchmark-output-${{ matrix.scenario }}/raw/**/*-target.log
             benchmark-output-${{ matrix.scenario }}/raw/**/app/summary.json
-            benchmark-output-${{ matrix.scenario }}/animation/**/displayed-surfaces-interval.xml
-            benchmark-output-${{ matrix.scenario }}/animation/**/hitches.xml
           if-no-files-found: ignore
 
   native-performance:
@@ -161,17 +160,17 @@ jobs:
             --candidate "native:$GITHUB_WORKSPACE/candidate/macos/.build/dmg-arm64/Termy.app" \
             --output "$GITHUB_WORKSPACE/native-benchmark-output" \
             --duration-secs "$DURATION_SECS" \
-            --scenario steady-scroll
+            --scenario steady-scroll \
+            --skip-animation-trace
 
       - name: Check calibrated native comparison gates
         run: |
-          # Hosted macOS 26 currently exports schema-only Displayed Surfaces tables.
-          # The deterministic native gate above remains the strict frame budget.
+          # Hosted macOS exports schema-only Animation Hitches tables, so the
+          # deterministic native gate above remains the strict frame budget.
           "$GITHUB_WORKSPACE/candidate/macos/scripts/check-performance-gates.sh" \
             --summary "$GITHUB_WORKSPACE/native-benchmark-output/summary.json" \
             --max-cpu-delta-percent 20 \
             --max-memory-delta-mib 90 \
-            --max-frame-p95-delta-ms 9 \
             --max-idle-wakeup-delta 500 \
             --min-displayed-frames 0
 
@@ -188,7 +187,5 @@ jobs:
             native-benchmark-output/raw/**/driver/*.ndjson
             native-benchmark-output/raw/**/*-target.log
             native-benchmark-output/raw/**/app/summary.json
-            native-benchmark-output/animation/**/displayed-surfaces-interval.xml
-            native-benchmark-output/animation/**/hitches.xml
           if-no-files-found: ignore
           retention-days: 30
