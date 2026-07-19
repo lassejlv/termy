@@ -98,7 +98,12 @@ struct TerminalWorkspaceView: View {
         }
         didScheduleBenchmarkExit = true
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: duration * 1_000_000_000 + 750_000_000)
+            // Start-up time is not part of the driver duration. Wait for the
+            // benchmark PTY to exit, with a generous fallback for a stuck child.
+            let deadline = Date().addingTimeInterval(Double(duration) + 30)
+            while store.focusedTerminal?.isExited != true, Date() < deadline {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
             NSApp.terminate(nil)
         }
     }

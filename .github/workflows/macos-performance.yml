@@ -27,9 +27,18 @@ concurrency:
 
 jobs:
   performance:
-    name: Benchmark and gate
+    name: Benchmark and gate (${{ matrix.scenario }})
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - idle-blink
+          - idle-burst
+          - echo-train
+          - steady-scroll
+          - alt-screen-anim
     env:
       DURATION_SECS: ${{ github.event_name == 'workflow_dispatch' && inputs.duration_secs || '13' }}
     steps:
@@ -63,28 +72,32 @@ jobs:
           cargo run -p xtask -- benchmark-compare \
             --baseline-root "$GITHUB_WORKSPACE/baseline" \
             --candidate-root "$GITHUB_WORKSPACE/candidate" \
-            --output "$GITHUB_WORKSPACE/benchmark-output" \
-            --duration-secs "$DURATION_SECS"
+            --output "$GITHUB_WORKSPACE/benchmark-output-${{ matrix.scenario }}" \
+            --duration-secs "$DURATION_SECS" \
+            --scenario "${{ matrix.scenario }}"
 
       - name: Check performance gates
         run: |
           "$GITHUB_WORKSPACE/candidate/macos/scripts/check-performance-gates.sh" \
-            --summary "$GITHUB_WORKSPACE/benchmark-output/summary.json"
+            --summary "$GITHUB_WORKSPACE/benchmark-output-${{ matrix.scenario }}/summary.json"
 
       - name: Upload benchmark report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: macos-performance-report
+          name: macos-performance-report-${{ matrix.scenario }}
           path: |
-            benchmark-output/report.md
-            benchmark-output/summary.json
+            benchmark-output-${{ matrix.scenario }}/report.md
+            benchmark-output-${{ matrix.scenario }}/summary.json
+            benchmark-output-${{ matrix.scenario }}/raw/**/driver/*.ndjson
+            benchmark-output-${{ matrix.scenario }}/raw/**/*-target.log
+            benchmark-output-${{ matrix.scenario }}/raw/**/app/summary.json
           if-no-files-found: ignore
 
   native-performance:
     name: Native performance and GPUI comparison
     runs-on: macos-26
-    timeout-minutes: 75
+    timeout-minutes: 60
     env:
       DURATION_SECS: ${{ github.event_name == 'workflow_dispatch' && inputs.duration_secs || '13' }}
     steps:
@@ -143,7 +156,9 @@ jobs:
             --baseline-root "$GITHUB_WORKSPACE/baseline" \
             --candidate "native:$GITHUB_WORKSPACE/candidate/macos/.build/dmg-arm64/Termy.app" \
             --output "$GITHUB_WORKSPACE/native-benchmark-output" \
-            --duration-secs "$DURATION_SECS"
+            --duration-secs "$DURATION_SECS" \
+            --scenario steady-scroll \
+            --scenario alt-screen-anim
 
       - name: Check calibrated native comparison gates
         run: |
@@ -164,5 +179,8 @@ jobs:
             native-launch-report.json
             native-benchmark-output/report.md
             native-benchmark-output/summary.json
+            native-benchmark-output/raw/**/driver/*.ndjson
+            native-benchmark-output/raw/**/*-target.log
+            native-benchmark-output/raw/**/app/summary.json
           if-no-files-found: ignore
           retention-days: 30

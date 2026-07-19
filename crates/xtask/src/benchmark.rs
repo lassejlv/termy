@@ -19,7 +19,13 @@ const DEFAULT_DURATION_SECS: u64 = 13;
 // Give launched apps enough room to finish the benchmark command, flush metrics,
 // and quit before xctrace force-terminates them at the trace time limit.
 const TRACE_PADDING_SECS: u64 = 5;
+// xctrace occasionally ignores its own time limit while finalizing a trace.
+// Keep a hard outer deadline so one wedged recording cannot consume the job.
+const XCTRACE_FINALIZATION_GRACE_SECS: u64 = 90;
+const DRIVER_START_TIMEOUT: Duration = Duration::from_secs(15);
+const DRIVER_START_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const BENCHMARK_EVENTS_PATH_ENV: &str = "TERMY_BENCHMARK_EVENTS_PATH";
+const DRIVER_START_MARKER: &str = "driver_start";
 const IDLE_BURST_PRE_IDLE: Duration = Duration::from_millis(1500);
 const ECHO_TRAIN_PRE_IDLE: Duration = Duration::from_millis(1500);
 const ECHO_TRAIN_INTERVAL: Duration = Duration::from_millis(250);
@@ -65,6 +71,9 @@ fn run_driver(mut args: impl Iterator<Item = String>) -> Result<()> {
     }
 
     let scenario = scenario.context("missing required --scenario")?;
+    let mut marker_writer = BenchmarkMarkerWriter::new_from_env()?;
+    marker_writer.record(DRIVER_START_MARKER, None)?;
+    marker_writer.flush()?;
     scenario.run(Duration::from_secs(duration_secs))
 }
 
@@ -916,8 +925,11 @@ impl BenchmarkMarkerWriter {
             .context("benchmark events path is missing a parent directory")?;
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create {}", parent.display()))?;
-        let file = fs::File::create(&path)
-            .with_context(|| format!("failed to create {}", path.display()))?;
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .with_context(|| format!("failed to open {}", path.display()))?;
         Ok(Self {
             writer: Some(io::BufWriter::new(file)),
         })
@@ -1166,7 +1178,8 @@ fn run_single_benchmark(
     };
 
     let trace_path = energy_dir.join("activity-monitor.trace");
-    let markers_path = driver_dir.join("markers.ndjson");
+    let activity_markers_path = driver_dir.join("activity-markers.ndjson");
+    let animation_markers_path = driver_dir.join("animation-markers.ndjson");
     let time_limit_secs = duration_secs.saturating_add(TRACE_PADDING_SECS);
     let _activity_pid = match build.kind {
         BenchmarkTargetKind::Termy | BenchmarkTargetKind::Native => {
@@ -1177,7 +1190,7 @@ fn run_single_benchmark(
                 &trace_path,
                 &config_root,
                 &metrics_dir,
-                &markers_path,
+                &activity_markers_path,
                 scenario,
                 &command,
                 duration_secs,
@@ -1189,7 +1202,7 @@ fn run_single_benchmark(
             let mut activity_command = activity_monitor_ghostty_command(
                 build,
                 &trace_path,
-                &markers_path,
+                &activity_markers_path,
                 ghostty_launch
                     .as_ref()
                     .expect("ghostty launch artifacts must exist"),
@@ -1204,6 +1217,7 @@ fn run_single_benchmark(
                     scenario.as_str()
                 ),
                 &trace_path,
+                xctrace_timeout(time_limit_secs),
             )?;
             0
         }
@@ -1217,7 +1231,7 @@ fn run_single_benchmark(
     };
     let micro_latency = if build.metrics_supported() {
         let frames_path = metrics_dir.join("frames.ndjson");
-        summarize_micro_latency(scenario, &markers_path, &frames_path)?
+        summarize_micro_latency(scenario, &activity_markers_path, &frames_path)?
     } else {
         MicroLatencySummary::default()
     };
@@ -1254,7 +1268,7 @@ fn run_single_benchmark(
                 &animation_trace_path,
                 &config_root,
                 &animation_metrics_dir,
-                &markers_path,
+                &animation_markers_path,
                 scenario,
                 &command,
                 duration_secs,
@@ -1266,7 +1280,7 @@ fn run_single_benchmark(
             let mut animation_command = animation_hitches_ghostty_command(
                 build,
                 &animation_trace_path,
-                &markers_path,
+                &animation_markers_path,
                 ghostty_launch
                     .as_ref()
                     .expect("ghostty launch artifacts must exist"),
@@ -1281,6 +1295,7 @@ fn run_single_benchmark(
                     scenario.as_str()
                 ),
                 &animation_trace_path,
+                xctrace_timeout(time_limit_secs),
             )?;
             0
         }
@@ -1410,17 +1425,11 @@ fn run_attached_termy_trace(
         target_log_path,
     )?;
     let pid = child.id();
-    thread::sleep(Duration::from_millis(250));
-    if let Some(status) = child
-        .try_wait()
-        .context("failed to poll benchmark target")?
+    if let Err(error) =
+        wait_for_driver_start(&mut child, markers_path, build, scenario, target_log_path)
     {
-        bail!(
-            "{} ({}) exited with {status} before xctrace could attach; see {}",
-            build.label,
-            build.display_name(),
-            target_log_path.display()
-        );
+        stop_benchmark_target(&mut child);
+        return Err(error);
     }
 
     let mut trace_command = Command::new("xctrace");
@@ -1444,10 +1453,63 @@ fn run_attached_termy_trace(
             scenario.as_str()
         ),
         trace_path,
+        xctrace_timeout(time_limit_secs),
     );
     stop_benchmark_target(&mut child);
     trace_result?;
     Ok(pid)
+}
+
+fn wait_for_driver_start(
+    child: &mut Child,
+    markers_path: &Path,
+    build: &BenchmarkTargetSpec,
+    scenario: Scenario,
+    target_log_path: &Path,
+) -> Result<()> {
+    let deadline = Instant::now() + DRIVER_START_TIMEOUT;
+    loop {
+        if marker_file_contains(markers_path, DRIVER_START_MARKER)? {
+            return Ok(());
+        }
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to poll benchmark target")?
+        {
+            bail!(
+                "{} ({}) exited with {status} before the {} driver started; see {} and {}",
+                build.label,
+                build.display_name(),
+                scenario.as_str(),
+                target_log_path.display(),
+                markers_path.display()
+            );
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "timed out waiting for the {} ({}) {} driver to start; see {} and {}",
+                build.label,
+                build.display_name(),
+                scenario.as_str(),
+                target_log_path.display(),
+                markers_path.display()
+            );
+        }
+        thread::sleep(DRIVER_START_POLL_INTERVAL);
+    }
+}
+
+fn marker_file_contains(path: &Path, kind: &str) -> Result<bool> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error).with_context(|| format!("failed to read {}", path.display()));
+        }
+    };
+    Ok(contents.lines().any(|line| {
+        serde_json::from_str::<MarkerEvent>(line).is_ok_and(|marker| marker.kind == kind)
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2221,11 +2283,30 @@ fn run_xctrace_record_command(
     command: &mut Command,
     description: String,
     trace_path: &Path,
+    timeout: Duration,
 ) -> Result<()> {
-    let status = command
+    let mut child = command
         .stdin(Stdio::null())
-        .status()
+        .spawn()
         .with_context(|| format!("failed to start {description}"))?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child
+            .try_wait()
+            .with_context(|| format!("failed to poll {description}"))?
+        {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "{description} exceeded its {}s hard timeout",
+                timeout.as_secs()
+            );
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
     if status.success() {
         return Ok(());
     }
@@ -2239,6 +2320,10 @@ fn run_xctrace_record_command(
     }
 
     bail!("{description} failed with status {status}");
+}
+
+fn xctrace_timeout(time_limit_secs: u64) -> Duration {
+    Duration::from_secs(time_limit_secs.saturating_add(XCTRACE_FINALIZATION_GRACE_SECS))
 }
 
 fn read_ndjson<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<Vec<T>> {
@@ -3095,9 +3180,9 @@ fn format_option_f32(value: Option<f32>) -> String {
 mod tests {
     use super::{
         BenchmarkDriverSpec, FrameCaptureStatus, FrameEvent, GhosttyVersion, MarkerEvent, Scenario,
-        benchmark_config_contents, create_ghostty_launch_artifacts, parse_animation_summary,
-        parse_displayed_frame_starts, parse_ghostty_version, parse_hitch_durations,
-        parse_single_row_table, render_report, resolve_native_executable,
+        benchmark_config_contents, create_ghostty_launch_artifacts, marker_file_contains,
+        parse_animation_summary, parse_displayed_frame_starts, parse_ghostty_version,
+        parse_hitch_durations, parse_single_row_table, render_report, resolve_native_executable,
         summarize_echo_train_latency, summarize_idle_burst_latency,
     };
     use std::{fs, path::PathBuf};
@@ -3108,6 +3193,23 @@ mod tests {
         assert_eq!(Scenario::parse("idle-burst").unwrap(), Scenario::IdleBurst);
         assert_eq!(Scenario::parse("echo-train").unwrap(), Scenario::EchoTrain);
         assert!(Scenario::parse("nope").is_err());
+    }
+
+    #[test]
+    fn recognizes_driver_start_marker_in_partial_diagnostic_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("markers.ndjson");
+        fs::write(
+            &path,
+            concat!(
+                "{\"kind\":\"driver_start\",\"seq\":null,\"monotonic_ns\":1}\n",
+                "{\"kind\":\"echo_start\""
+            ),
+        )
+        .unwrap();
+
+        assert!(marker_file_contains(&path, "driver_start").unwrap());
+        assert!(!marker_file_contains(&path, "echo_start").unwrap());
     }
 
     #[test]

@@ -20,7 +20,10 @@ const DURATION_SECS_ENV: &str = "TERMY_BENCHMARK_DURATION_SECS";
 const EXIT_ON_COMPLETE_ENV: &str = "TERMY_BENCHMARK_EXIT_ON_COMPLETE";
 const BUILD_LABEL_ENV: &str = "TERMY_BENCHMARK_BUILD_LABEL";
 const GIT_SHA_ENV: &str = "TERMY_BENCHMARK_GIT_SHA";
-const COMPLETION_DEADLINE_GRACE: Duration = Duration::from_millis(750);
+// Benchmark timing starts before the PTY child has necessarily launched. Give
+// cold CI runners enough startup room; a normally exiting driver still closes
+// the benchmark immediately through the terminal-exit path.
+const COMPLETION_DEADLINE_GRACE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct BenchmarkConfig {
