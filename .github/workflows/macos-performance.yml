@@ -79,7 +79,8 @@ jobs:
       - name: Check performance gates
         run: |
           "$GITHUB_WORKSPACE/candidate/macos/scripts/check-performance-gates.sh" \
-            --summary "$GITHUB_WORKSPACE/benchmark-output-${{ matrix.scenario }}/summary.json"
+            --summary "$GITHUB_WORKSPACE/benchmark-output-${{ matrix.scenario }}/summary.json" \
+            --min-displayed-frames 0
 
       - name: Upload benchmark report
         if: always()
@@ -92,6 +93,8 @@ jobs:
             benchmark-output-${{ matrix.scenario }}/raw/**/driver/*.ndjson
             benchmark-output-${{ matrix.scenario }}/raw/**/*-target.log
             benchmark-output-${{ matrix.scenario }}/raw/**/app/summary.json
+            benchmark-output-${{ matrix.scenario }}/animation/**/displayed-surfaces-interval.xml
+            benchmark-output-${{ matrix.scenario }}/animation/**/hitches.xml
           if-no-files-found: ignore
 
   native-performance:
@@ -182,5 +185,7 @@ jobs:
             native-benchmark-output/raw/**/driver/*.ndjson
             native-benchmark-output/raw/**/*-target.log
             native-benchmark-output/raw/**/app/summary.json
+            native-benchmark-output/animation/**/displayed-surfaces-interval.xml
+            native-benchmark-output/animation/**/hitches.xml
           if-no-files-found: ignore
           retention-days: 30

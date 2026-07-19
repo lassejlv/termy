@@ -40,6 +40,7 @@ Useful gate options:
   --max-idle-wakeup-delta N
   --max-echo-p95-delta-ms N
   --max-echo-missed-delta N
+  --min-displayed-frames N
 EOF
 }
 
@@ -78,7 +79,7 @@ while [[ $# -gt 0 ]]; do
       DURATION_SECS="$2"
       shift 2
       ;;
-    --max-*)
+    --max-*|--min-*)
       [[ $# -ge 2 ]] || { echo "Error: $1 requires a value" >&2; exit 2; }
       GATE_ARGS+=("$1" "$2")
       shift 2

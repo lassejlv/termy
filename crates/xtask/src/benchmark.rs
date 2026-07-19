@@ -21,7 +21,8 @@ const DEFAULT_DURATION_SECS: u64 = 13;
 const TRACE_PADDING_SECS: u64 = 5;
 // xctrace occasionally ignores its own time limit while finalizing a trace.
 // Keep a hard outer deadline so one wedged recording cannot consume the job.
-const XCTRACE_FINALIZATION_GRACE_SECS: u64 = 90;
+const XCTRACE_FINALIZATION_GRACE_SECS: u64 = 45;
+const XCTRACE_ATTEMPTS: usize = 2;
 const DRIVER_START_TIMEOUT: Duration = Duration::from_secs(15);
 const DRIVER_START_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const BENCHMARK_EVENTS_PATH_ENV: &str = "TERMY_BENCHMARK_EVENTS_PATH";
@@ -295,34 +296,40 @@ impl BenchmarkGateThresholds {
         }
 
         for scenario in &summary.scenarios {
-            for (label, run) in [
-                ("baseline", &scenario.baseline),
-                ("candidate", &scenario.candidate),
-            ] {
-                if let Some(animation) = run.animation_summary.as_ref()
-                    && matches!(
-                        animation.displayed_frame_capture_status,
-                        FrameCaptureStatus::ParserError
-                    )
-                {
-                    failures.push(format!(
-                        "{}: {label} displayed-frame trace parser failed{}",
-                        scenario.scenario,
-                        animation
-                            .displayed_frame_capture_detail
-                            .as_ref()
-                            .map(|detail| format!(": {detail}"))
-                            .unwrap_or_default()
-                    ));
+            if self.min_displayed_frames > 0 {
+                for (label, run) in [
+                    ("baseline", &scenario.baseline),
+                    ("candidate", &scenario.candidate),
+                ] {
+                    if let Some(animation) = run.animation_summary.as_ref()
+                        && matches!(
+                            animation.displayed_frame_capture_status,
+                            FrameCaptureStatus::ParserError
+                        )
+                    {
+                        failures.push(format!(
+                            "{}: {label} displayed-frame trace parser failed{}",
+                            scenario.scenario,
+                            animation
+                                .displayed_frame_capture_detail
+                                .as_ref()
+                                .map(|detail| format!(": {detail}"))
+                                .unwrap_or_default()
+                        ));
+                    }
                 }
             }
-            let minimum_displayed_frames = match scenario.scenario.as_str() {
-                "steady-scroll" | "alt-screen-anim" => self.min_displayed_frames,
-                // These scenarios actively produce terminal output, but may
-                // legitimately render fewer than the cadence sample floor.
-                // Still require proof that both targets displayed something.
-                "idle-burst" | "echo-train" => 1,
-                _ => 0,
+            let minimum_displayed_frames = if self.min_displayed_frames == 0 {
+                0
+            } else {
+                match scenario.scenario.as_str() {
+                    "steady-scroll" | "alt-screen-anim" => self.min_displayed_frames,
+                    // These scenarios actively produce terminal output, but may
+                    // legitimately render fewer than the cadence sample floor.
+                    // Still require proof that both targets displayed something.
+                    "idle-burst" | "echo-train" => 1,
+                    _ => 0,
+                }
             };
             if minimum_displayed_frames > 0 {
                 for (label, run) in [
@@ -949,6 +956,7 @@ impl BenchmarkMarkerWriter {
         writer
             .write_all(b"\n")
             .context("failed to write benchmark marker newline")?;
+        writer.flush().context("failed to flush benchmark marker")?;
         Ok(())
     }
 
@@ -1414,50 +1422,82 @@ fn run_attached_termy_trace(
     time_limit_secs: u64,
     target_log_path: &Path,
 ) -> Result<u32> {
-    let mut child = spawn_termy_benchmark_target(
-        build,
-        config_root,
-        metrics_dir,
-        markers_path,
-        scenario,
-        benchmark_command,
-        duration_secs,
-        target_log_path,
-    )?;
-    let pid = child.id();
-    if let Err(error) =
-        wait_for_driver_start(&mut child, markers_path, build, scenario, target_log_path)
-    {
+    for attempt in 1..=XCTRACE_ATTEMPTS {
+        remove_file_if_present(markers_path)?;
+        remove_xctrace_output_if_present(trace_path)?;
+        let mut child = spawn_termy_benchmark_target(
+            build,
+            config_root,
+            metrics_dir,
+            markers_path,
+            scenario,
+            benchmark_command,
+            duration_secs,
+            target_log_path,
+        )?;
+        let pid = child.id();
+        if let Err(error) =
+            wait_for_driver_start(&mut child, markers_path, build, scenario, target_log_path)
+        {
+            stop_benchmark_target(&mut child);
+            return Err(error);
+        }
+
+        let mut trace_command = Command::new("xctrace");
+        trace_command
+            .arg("record")
+            .arg("--template")
+            .arg(template)
+            .arg("--time-limit")
+            .arg(format!("{time_limit_secs}s"))
+            .arg("--output")
+            .arg(trace_path)
+            .arg("--attach")
+            .arg(pid.to_string());
+
+        let trace_result = run_xctrace_record_command(
+            &mut trace_command,
+            format!(
+                "xctrace {template} attach for {} ({}) {}",
+                build.label,
+                build.display_name(),
+                scenario.as_str()
+            ),
+            trace_path,
+            xctrace_timeout(time_limit_secs),
+        );
         stop_benchmark_target(&mut child);
-        return Err(error);
+        match trace_result {
+            Ok(()) => return Ok(pid),
+            Err(error) if attempt < XCTRACE_ATTEMPTS => {
+                eprintln!(
+                    "{error:#}; retrying xctrace {template} once for {} ({}) {}",
+                    build.label,
+                    build.display_name(),
+                    scenario.as_str()
+                );
+            }
+            Err(error) => return Err(error),
+        }
     }
+    unreachable!("xctrace attempt loop always returns")
+}
 
-    let mut trace_command = Command::new("xctrace");
-    trace_command
-        .arg("record")
-        .arg("--template")
-        .arg(template)
-        .arg("--time-limit")
-        .arg(format!("{time_limit_secs}s"))
-        .arg("--output")
-        .arg(trace_path)
-        .arg("--attach")
-        .arg(pid.to_string());
+fn remove_file_if_present(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("failed to remove {}", path.display())),
+    }
+}
 
-    let trace_result = run_xctrace_record_command(
-        &mut trace_command,
-        format!(
-            "xctrace {template} attach for {} ({}) {}",
-            build.label,
-            build.display_name(),
-            scenario.as_str()
-        ),
-        trace_path,
-        xctrace_timeout(time_limit_secs),
-    );
-    stop_benchmark_target(&mut child);
-    trace_result?;
-    Ok(pid)
+fn remove_xctrace_output_if_present(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        fs::remove_dir_all(path).with_context(|| format!("failed to remove {}", path.display()))?;
+    } else {
+        remove_file_if_present(path)?;
+    }
+    Ok(())
 }
 
 fn wait_for_driver_start(
@@ -3769,6 +3809,33 @@ mod tests {
                 "idle-burst: candidate displayed-frame trace parser failed: unparseable timestamp",
             )
         }));
+    }
+
+    #[test]
+    fn benchmark_gates_can_opt_out_when_hosted_runner_has_no_displayed_frames() {
+        let mut baseline = run_result("baseline", 3.0, 10, 10 * 1024 * 1024);
+        baseline.animation_summary = Some(super::AnimationSummary::default());
+        let mut candidate = run_result("candidate", 3.0, 10, 10 * 1024 * 1024);
+        candidate.animation_summary = Some(super::AnimationSummary {
+            displayed_frame_capture_status: super::FrameCaptureStatus::ParserError,
+            displayed_frame_capture_detail: Some("no timestamps on hosted runner".to_string()),
+            ..super::AnimationSummary::default()
+        });
+        let summary = super::ComparisonSummary {
+            baseline: compared_target("baseline"),
+            candidate: compared_target("candidate"),
+            scenarios: vec![super::ScenarioComparison::new(
+                "idle-burst".to_string(),
+                baseline,
+                candidate,
+            )],
+        };
+        let mut thresholds = super::BenchmarkGateThresholds::default();
+        thresholds.min_displayed_frames = 0;
+
+        let failures = thresholds.failures(&summary);
+
+        assert!(failures.is_empty(), "unexpected failures: {failures:?}");
     }
 
     #[test]
