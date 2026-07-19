@@ -3393,6 +3393,10 @@ impl TerminalView {
     }
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>, config: AppConfig) -> Self {
+        let effective_font_family = crate::font_families::effective_terminal_font_family(
+            &config.font_family,
+            cx.text_system().as_ref(),
+        );
         let focus_handle = cx.focus_handle();
         let blur_focus_handle = focus_handle.clone();
         let (event_wakeup_tx, event_wakeup_rx) = bounded(1);
@@ -3655,7 +3659,7 @@ impl TerminalView {
                 (!binary.is_empty()).then_some(binary)
             },
             cached_tmux_command_prefix: config.tmux_command_prefix_argv(),
-            font_family: config.font_family.into(),
+            font_family: effective_font_family,
             ui_font_family: config.ui_font_family.into(),
             base_font_size,
             font_size: px(base_font_size),
@@ -3964,6 +3968,10 @@ impl TerminalView {
     }
 
     fn apply_runtime_config(&mut self, config: AppConfig, cx: &mut Context<Self>) -> bool {
+        let effective_font_family = crate::font_families::effective_terminal_font_family(
+            &config.font_family,
+            cx.text_system().as_ref(),
+        );
         crate::app_icon::apply_from_config(&config);
         keybindings::install_keybindings(cx, &config, self.runtime_uses_tmux());
         self.cached_tmux_binary = {
@@ -4101,7 +4109,7 @@ impl TerminalView {
             // Only update the binary path used for external tmux command invocations.
             self.tmux_runtime_mut().config.binary = config.tmux_binary.trim().to_string();
         }
-        self.font_family = config.font_family.into();
+        self.font_family = effective_font_family;
         self.ui_font_family = config.ui_font_family.into();
         self.base_font_size = config.font_size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
         self.font_size = px(self.base_font_size);

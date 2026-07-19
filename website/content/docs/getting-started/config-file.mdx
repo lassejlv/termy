@@ -18,6 +18,8 @@ shell = /opt/homebrew/bin/fish
 keybind = cmd-p=toggle_command_palette
 ```
 
+Termy does not bundle custom fonts. A `font_family` value must name a family installed on your system; if it is missing or not fixed-pitch, Termy shows a warning and falls back to the platform monospace default (Consolas on Windows, Menlo on macOS). On Windows, if an installed font is still not found, try reinstalling it for all users rather than only your account.
+
 ## Colors
 
 Only `[colors]` uses a section header:

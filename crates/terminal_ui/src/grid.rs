@@ -138,6 +138,18 @@ const QUAD_UPPER_RIGHT: u8 = 0b0010;
 const QUAD_LOWER_LEFT: u8 = 0b0100;
 const QUAD_LOWER_RIGHT: u8 = 0b1000;
 
+fn terminal_font_features() -> FontFeatures {
+    // `force_width` is applied per shaped glyph. A standard `fi`/`fl` ligature
+    // would therefore consume one cell even though its source occupies two.
+    // GPUI's helper currently disables only `calt`; DirectWrite enables `liga`
+    // and `clig` separately, so disable all three for a terminal grid.
+    FontFeatures(Arc::new(vec![
+        ("calt".to_string(), 0),
+        ("liga".to_string(), 0),
+        ("clig".to_string(), 0),
+    ]))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct BlockRectSpec {
     left: f32,
@@ -2391,7 +2403,7 @@ impl TerminalGrid {
 
         // Rebuild cached Font objects only when the style (font family) changes.
         if style_changed || cache.cached_font_normal.is_none() {
-            let terminal_font_features = FontFeatures::disable_ligatures();
+            let terminal_font_features = terminal_font_features();
             cache.cached_font_normal = Some(Font {
                 family: self.font_family.clone(),
                 features: terminal_font_features.clone(),
@@ -2522,6 +2534,22 @@ impl TerminalGrid {
 mod tests {
     use super::*;
     use gpui::{Bounds, Size, point, px};
+
+    #[test]
+    fn terminal_font_features_disable_all_spacing_affecting_ligatures() {
+        let features = terminal_font_features();
+        for tag in ["calt", "liga", "clig"] {
+            assert_eq!(
+                features
+                    .tag_value_list()
+                    .iter()
+                    .find(|(feature, _)| feature == tag)
+                    .map(|(_, value)| *value),
+                Some(0),
+                "{tag} must be disabled for fixed-cell shaping"
+            );
+        }
+    }
 
     fn assert_f32_eq(actual: f32, expected: f32) {
         assert!(

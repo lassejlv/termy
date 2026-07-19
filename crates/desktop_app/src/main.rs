@@ -10,6 +10,7 @@ mod commands;
 mod config;
 mod crash_log;
 mod deeplink;
+mod font_families;
 mod keybindings;
 #[cfg(target_os = "macos")]
 mod macos_titlebar_drag;

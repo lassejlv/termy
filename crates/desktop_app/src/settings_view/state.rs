@@ -1203,15 +1203,7 @@ impl SettingsWindow {
     }
 
     pub(super) fn ordered_font_families_for_settings(&self) -> Vec<String> {
-        let mut fonts = self.available_font_families.clone();
-        for current in [&self.config.font_family, &self.config.ui_font_family] {
-            if !fonts.iter().any(|font| font.eq_ignore_ascii_case(current)) {
-                fonts.push(current.clone());
-            }
-        }
-        fonts.sort_unstable_by_key(|font| font.to_ascii_lowercase());
-        fonts.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
-        fonts
+        self.available_font_families.clone()
     }
 
     pub(super) fn filtered_theme_suggestions(&self, query: &str) -> Vec<String> {

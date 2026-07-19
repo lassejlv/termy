@@ -186,9 +186,8 @@ impl SettingsWindow {
         let _ = &config_change_rx;
         #[cfg(test)]
         let _ = &background_opacity_preview_rx;
-        let mut available_font_families = window.text_system().all_font_names();
-        available_font_families.sort_unstable_by_key(|font| font.to_ascii_lowercase());
-        available_font_families.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+        let available_font_families =
+            crate::font_families::available_font_families(window.text_system().all_font_names());
         let system_appearance = system_appearance_from_window(window.appearance());
         let colors = TerminalColors::from_config(&config, system_appearance);
         let searchable_settings = Self::build_searchable_settings();

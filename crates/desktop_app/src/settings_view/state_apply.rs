@@ -122,19 +122,29 @@ impl SettingsWindow {
                 Ok(())
             }
             EditableField::FontFamily => {
-                if value.is_empty() {
+                if value.trim().is_empty() {
                     return Err("Font family cannot be empty".to_string());
                 }
-                config::set_root_setting(termy_config_core::RootSettingId::FontFamily, value)?;
-                self.config.font_family = value.to_string();
+                let value = crate::font_families::canonical_available_font_family(
+                    value,
+                    &self.available_font_families,
+                )
+                .ok_or_else(|| "Font family is not installed".to_string())?;
+                config::set_root_setting(termy_config_core::RootSettingId::FontFamily, &value)?;
+                self.config.font_family = value;
                 Ok(())
             }
             EditableField::UiFontFamily => {
-                if value.is_empty() {
+                if value.trim().is_empty() {
                     return Err("UI font family cannot be empty".to_string());
                 }
-                config::set_root_setting(termy_config_core::RootSettingId::UiFontFamily, value)?;
-                self.config.ui_font_family = value.to_string();
+                let value = crate::font_families::canonical_available_font_family(
+                    value,
+                    &self.available_font_families,
+                )
+                .ok_or_else(|| "UI font family is not installed".to_string())?;
+                config::set_root_setting(termy_config_core::RootSettingId::UiFontFamily, &value)?;
+                self.config.ui_font_family = value;
                 Ok(())
             }
             EditableField::FontSize => {
