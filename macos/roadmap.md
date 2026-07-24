@@ -2,7 +2,7 @@
 
 Status date: 2026-07-10
 
-The native SwiftUI/AppKit host is a **developer preview**. This document records
+The native SwiftUI/AppKit host is in **public beta**. This document records
 the implementation milestones that are already complete. It is not the active
 release checklist.
 

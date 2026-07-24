@@ -1,9 +1,12 @@
 # Termy
 
-Developer preview. The native host is feature-rich, but it is not yet the
-default production macOS build.
+Public beta. The native host is feature-rich and open to everyone, but it is not
+yet the default production macOS build.
 
 Native macOS 14+ SwiftUI terminal host backed by the repo-local `libtermy`.
+
+Beta builds are unsigned and ship from their own `macos-native-v*` tag, separate
+from the GPUI desktop app — see [Release](#release).
 
 See the [native production roadmap](road.md) for current blockers, exit gates,
 and release order.
@@ -70,4 +73,20 @@ Performance benchmark summaries from `cargo run -p xtask -- benchmark-compare` c
 
 ```sh
 ./scripts/check-performance-gates.sh --summary target/macos-performance-gate/summary.json
+```
+
+## Release
+
+Push a `macos-native-v<version>` tag (or dispatch the `macOS Native Release`
+workflow) to build arm64 and Intel DMGs, run the release gates, and publish them
+as their own public-beta prerelease — separate from the GPUI desktop app's
+`Release` workflow. See [native release](docs/native-release.md) for versioning
+rules, gates, and local reproduction, and [native candidate
+release](docs/native-candidate-release.md) for unpublished candidate builds.
+
+Beta DMGs carry no Developer ID signature or notarization, so first launch needs
+the quarantine flag cleared:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Termy.app
 ```

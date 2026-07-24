@@ -36,4 +36,7 @@ shasum -a 256 "macos/dist/Termy-${version}-macos-${arch}.dmg"
 ```
 
 The workflow is intentionally unsigned. Developer ID signing, notarization,
-stapling, Gatekeeper validation, and publication remain the final release task.
+stapling, and Gatekeeper validation remain the final release task.
+
+To publish a candidate, tag it and let the `macOS Native Release` workflow build
+and attach both architectures — see [native release](native-release.md).

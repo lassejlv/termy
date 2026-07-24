@@ -1,0 +1,303 @@
+name: macOS Native Release
+
+# Builds and publishes the native macOS SwiftUI host from `macos/` for Apple
+# silicon and Intel. Deliberately separate from `release.yml`: the native host
+# is a public beta with its own tag, its own GitHub release, and its own gates,
+# so a native failure can never block or alter the product release.
+
+on:
+  push:
+    tags:
+      - "macos-native-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, e.g. 0.2.29 (a -preview.N suffix republishes the same app version)
+        required: true
+        type: string
+      publish:
+        description: Publish the GitHub release (uncheck to build and gate only)
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-native-release-${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve release version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      release_version: ${{ steps.resolve.outputs.release_version }}
+      app_version: ${{ steps.resolve.outputs.app_version }}
+      publish: ${{ steps.resolve.outputs.publish }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Resolve and validate version
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          TAG_REF: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+        run: |
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            tag="$TAG_REF"
+            release_version="${tag#macos-native-v}"
+            publish=true
+          else
+            release_version="${INPUT_VERSION#v}"
+            tag="macos-native-v${release_version}"
+            publish="${INPUT_PUBLISH:-true}"
+          fi
+
+          [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || {
+            echo "Release version must be semver with an optional prerelease suffix: $release_version" >&2
+            exit 1
+          }
+
+          # The bundled app version stays numeric and authoritative. A tag may
+          # carry a -preview.N suffix to republish the same app version.
+          app_version="${release_version%%-*}"
+          source_version="$(awk '/^version = / { gsub(/"/, "", $3); print $3; exit }' crates/desktop_app/Cargo.toml)"
+          [[ "$app_version" == "$source_version" ]] || {
+            echo "App version $app_version does not match source version $source_version" >&2
+            exit 1
+          }
+
+          {
+            echo "tag=$tag"
+            echo "release_version=$release_version"
+            echo "app_version=$app_version"
+            echo "publish=$publish"
+          } >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Swift verification
+    needs: resolve
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      # The Swift host uses Swift 6.2 features (isolated conformances), but the
+      # runner image defaults to Xcode 16.x / Swift 6.1. Select the newest
+      # Xcode 26.x available on the image instead.
+      - name: Select Xcode with Swift 6.2
+        run: |
+          xcode_app="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)"
+          echo "Selecting ${xcode_app}"
+          sudo xcode-select -s "${xcode_app}/Contents/Developer"
+          swift --version
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Build libtermy FFI
+        run: cargo build -p termy_ffi
+
+      - name: Build Swift app
+        run: TERMY_FFI_LIBRARY_PATH="$PWD/target/debug" swift build --package-path macos -Xswiftc -warnings-as-errors
+
+      - name: Swift test suite
+        run: TERMY_FFI_LIBRARY_PATH="$PWD/target/debug" swift test --package-path macos
+
+      - name: Static release readiness checks
+        run: ./macos/scripts/check-release-readiness.sh
+
+  build:
+    name: Build ${{ matrix.arch }} DMG
+    needs: [resolve, verify]
+    runs-on: macos-26
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            target: aarch64-apple-darwin
+          - arch: x86_64
+            target: x86_64-apple-darwin
+    env:
+      APP_VERSION: ${{ needs.resolve.outputs.app_version }}
+      RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
+      ARCH: ${{ matrix.arch }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Select Xcode with Swift 6.2
+        run: |
+          xcode_app="$(ls -d /Applications/Xcode_26*.app | sort -V | tail -n 1)"
+          echo "Selecting ${xcode_app}"
+          sudo xcode-select -s "${xcode_app}/Contents/Developer"
+          swift --version
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # Also runs check-release-readiness.sh against the finished DMG: Mach-O
+      # architecture, bundle manifest, read-only mount, and a usable-window
+      # launch of the mounted app.
+      - name: Build unsigned DMG
+        run: >-
+          ./macos/scripts/build-dmg.sh
+          --version "$APP_VERSION"
+          --arch "$ARCH"
+          --target "$TARGET"
+          --no-layout
+
+      - name: Verify isolated CLI install
+        run: ./macos/scripts/check-cli-install-smoke.sh --app "macos/.build/dmg-${ARCH}/Termy.app"
+
+      - name: Launch performance gate
+        run: >-
+          ./macos/scripts/check-launch-gate.sh
+          --app "macos/.build/dmg-${ARCH}/Termy.app"
+          --output "macos/dist/native-launch-${ARCH}.json"
+
+      - name: Soak gate
+        run: >-
+          ./macos/scripts/check-native-soak.sh
+          --app "macos/.build/dmg-${ARCH}/Termy.app"
+          --duration-seconds 30
+          --minimum-cycles 30
+          --output "macos/dist/native-soak-${ARCH}.json"
+
+      - name: Prove corruption gates
+        run: >-
+          ./macos/scripts/check-release-readiness-regressions.sh
+          --app "macos/.build/dmg-${ARCH}/Termy.app"
+          --arch "$ARCH"
+          --version "$APP_VERSION"
+
+      # Published under a `native` name so a downloaded preview DMG is never
+      # mistaken for the GPUI desktop artifact, which uses the same
+      # Termy-<version>-macos-<arch>.dmg pattern.
+      - name: Stage publishable assets
+        run: |
+          mkdir -p macos/dist/publish
+          built="macos/dist/Termy-${APP_VERSION}-macos-${ARCH}.dmg"
+          asset="Termy-native-${RELEASE_VERSION}-macos-${ARCH}.dmg"
+          cp "$built" "macos/dist/publish/${asset}"
+          (cd macos/dist/publish && shasum -a 256 "$asset" > "${asset}.sha256")
+          {
+            echo "source_commit=$GITHUB_SHA"
+            echo "release_version=$RELEASE_VERSION"
+            echo "app_version=$APP_VERSION"
+            echo "architecture=$ARCH"
+            echo "target=$TARGET"
+            echo "signed=false"
+            echo "rustc=$(rustc --version)"
+            echo "swift=$(swift --version | head -n 1)"
+            echo "xcode=$(xcodebuild -version | tr '\n' ' ')"
+          } > "macos/dist/publish/native-release-${ARCH}.metadata"
+          cat "macos/dist/publish/${asset}.sha256"
+
+      - name: Upload native release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: termy-native-release-${{ matrix.arch }}
+          path: |
+            macos/dist/publish/Termy-native-*-macos-${{ matrix.arch }}.dmg
+            macos/dist/publish/Termy-native-*-macos-${{ matrix.arch }}.dmg.sha256
+            macos/dist/publish/native-release-${{ matrix.arch }}.metadata
+            macos/dist/native-launch-${{ matrix.arch }}.json
+            macos/dist/native-soak-${{ matrix.arch }}.json
+            macos/dist/native-soak-${{ matrix.arch }}.log
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish native release
+    needs: [resolve, build]
+    if: needs.resolve.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist
+          find . -maxdepth 1 -type f -name '*.dmg' -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > checksums.txt
+          cat checksums.txt
+
+      - name: Write release notes
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.release_version }}
+          APP_VERSION: ${{ needs.resolve.outputs.app_version }}
+        run: |
+          cat > release-notes.md <<EOF
+          Native macOS SwiftUI host built from \`macos/\`, backed by repo-local \`libtermy\`.
+          This is the public beta, published separately from the GPUI desktop app, which
+          ships from the \`Release\` workflow.
+
+          | Download | Macs |
+          | --- | --- |
+          | \`Termy-native-${RELEASE_VERSION}-macos-arm64.dmg\` | Apple silicon |
+          | \`Termy-native-${RELEASE_VERSION}-macos-x86_64.dmg\` | Intel |
+
+          App version \`${APP_VERSION}\`, built from \`${GITHUB_SHA}\`. Requires macOS 14 or newer.
+
+          **These builds are unsigned** — no Developer ID signature, no notarization.
+          After dragging Termy to Applications, clear the quarantine flag:
+
+          \`\`\`sh
+          xattr -dr com.apple.quarantine /Applications/Termy.app
+          \`\`\`
+
+          Both architectures passed, per architecture: unsigned release readiness
+          (Mach-O architecture, bundle manifest, read-only DMG mount, usable-window
+          launch), isolated CLI install smoke, launch performance budget, a 30-second
+          soak, and bundle/DMG corruption rejection. Per-file checksums are in
+          \`checksums.txt\` and alongside each DMG; build provenance is in the
+          \`.metadata\` files.
+          EOF
+          cat release-notes.md
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ needs.resolve.outputs.tag }}
+          name: Termy Native macOS ${{ needs.resolve.outputs.release_version }}
+          body_path: release-notes.md
+          prerelease: true
+          make_latest: false
+          files: |
+            dist/*.dmg
+            dist/*.dmg.sha256
+            dist/*.metadata
+            dist/checksums.txt
+          fail_on_unmatched_files: true
+          overwrite_files: true

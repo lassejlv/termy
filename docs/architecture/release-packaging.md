@@ -49,6 +49,12 @@ Browser tabs use Wry native webviews:
 - Keep platform-specific installer definitions under `scripts/installer/` unless a platform needs a larger packaging tree.
 - Do not restore obsolete `macos/` packaging paths without moving the scripts, docs, `justfile`, and release workflow together.
 
+## Native macOS Host (Public Beta)
+
+The Swift host in `macos/` is packaged on its own: `macos/scripts/build-dmg.sh` produces `macos/dist/Termy-<version>-macos-<arch>.dmg`, and `.github/workflows/macos-native-release.yml` publishes it as `Termy-native-<version>-macos-<arch>.dmg` on a `macos-native-v*` tag, in a prerelease of its own. See `macos/docs/native-release.md`.
+
+That tree is not product packaging. `scripts/` remains the only source of truth for the GPUI desktop app, and `.github/workflows/release.yml` must never reference `macos/scripts` or `macos/dist` — `scripts/check-boundaries.sh` enforces it.
+
 ## Validation
 
 Run these checks after packaging or release workflow changes:

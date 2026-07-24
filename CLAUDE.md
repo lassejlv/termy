@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Termy is a terminal emulator built with GPUI (Zed's UI framework) and `alacritty_terminal`. It is a Rust workspace plus an experimental native macOS SwiftUI host (`macos/`) and a website (`website/`).
+Termy is a terminal emulator built with GPUI (Zed's UI framework) and `alacritty_terminal`. It is a Rust workspace plus a public-beta native macOS SwiftUI host (`macos/`) and a website (`website/`).
 
 ## Commands
 
@@ -43,7 +43,7 @@ Product surfaces:
 - `crates/desktop_app/` (`termy`): the GPUI desktop app — windows, chrome, settings, menus, command execution. The only crate that owns complete user-facing desktop workflows. `src/terminal_view/` owns the GPUI terminal experience (rendering, tabs, panes, command palette, search UI, input handling).
 - `crates/cli/` (`termy_cli`): `termy-cli` companion.
 - `crates/ffi/` (`termy_ffi`): C-compatible libtermy surface; must wrap `termy_core`, not copy desktop app behavior. Header at `crates/ffi/include/termy.h`.
-- `macos/`: experimental native SwiftUI host consuming libtermy via FFI. Swift tests live in `macos/Tests/TermySwiftTests/`; config schema parity between Rust and Swift is tested (`SettingsSchemaParityTests`).
+- `macos/`: public-beta native SwiftUI host consuming libtermy via FFI. Swift tests live in `macos/Tests/TermySwiftTests/`; config schema parity between Rust and Swift is tested (`SettingsSchemaParityTests`).
 
 Runtime and UI:
 - `crates/core/` (`termy_core`): headless terminal runtime/API for embedders. **Must stay free of GPUI and app UI code.**
