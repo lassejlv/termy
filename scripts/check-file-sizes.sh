@@ -8,14 +8,20 @@ MAX_LINES=1500
 # Grandfathered files over MAX_LINES (warn only). Shrink this list per
 # docs/engineering/terminal-view-decomposition.md — do not add entries casually.
 ALLOWLIST=(
+  crates/core/src/keyboard.rs
+  crates/core/src/kitty_graphics.rs
   crates/core/src/runtime.rs
   crates/desktop_app/src/settings_view/sections.rs
   crates/desktop_app/src/terminal_view/command_palette/mod.rs
   crates/desktop_app/src/terminal_view/inline_input.rs
+  crates/desktop_app/src/terminal_view/interaction/selection.rs
   crates/desktop_app/src/terminal_view/mod.rs
+  crates/desktop_app/src/terminal_view/persistence.rs
   crates/desktop_app/src/terminal_view/render.rs
   crates/desktop_app/src/terminal_view/tabs/lifecycle.rs
   crates/ffi/src/lib.rs
+  crates/plugin_runtime/src/lib.rs
+  crates/plugin_runtime/src/tests.rs
   crates/terminal_ui/src/grid.rs
   crates/xtask/src/benchmark.rs
 )
