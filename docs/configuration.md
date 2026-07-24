@@ -21,7 +21,7 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Group: `THEME`
 
 `theme_light`
-- Default: `termy`
+- Default: `termy-light`
 - Theme applied when system appearance is light
 - Group: `THEME`
 
