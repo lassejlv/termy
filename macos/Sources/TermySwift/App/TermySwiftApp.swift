@@ -59,6 +59,27 @@ enum TermyNativeAppActions {
         NSApp.orderFrontStandardAboutPanel(nil)
     }
 
+    /// Opens settings — or the raw config file in simple mode.
+    ///
+    /// SwiftUI's `openSettings` is only reachable from inside a view, so the
+    /// menu item passes it in and the AppKit paths (deeplink, notification)
+    /// fall back to the responder-chain action AppKit sends for the standard
+    /// Settings… item.
+    static func presentSettings(using openSettings: (() -> Void)? = nil) {
+        if TermyConfigurationStore.shared.configuration.native.simpleMode,
+           openConfigFileInEditor() {
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
+        if let openSettings {
+            openSettings()
+        } else if !NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
+            _ = NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     static func installCLI() {
         do {
             let message = try SettingsBridge.installCLI()
@@ -88,6 +109,7 @@ struct TermySwiftApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @FocusedValue(\.terminalCommands) private var terminalCommands
     @StateObject private var configurationStore = TermyConfigurationStore.shared
+    @StateObject private var commandRouter = TerminalCommandRouter.shared
 
     init() {
         // Runs the headless render benchmark and exits when `--benchmark` is
@@ -96,20 +118,26 @@ struct TermySwiftApp: App {
     }
 
     private var effectiveTerminalCommands: TerminalCommandSet? {
-        terminalCommands ?? TerminalCommandRouter.shared.focusedCommandSet()
+        guard terminalCommands != nil || commandRouter.hasTerminalStore else {
+            return nil
+        }
+        return terminalCommands ?? commandRouter.focusedCommandSet()
     }
 
     var body: some Scene {
-        WindowGroup(AppMetadata.displayName) {
-            TerminalWorkspaceView(initialTask: NativeBenchmarkLaunch.task)
-                .termyUIFont()
-                .frame(minWidth: 760, minHeight: 480)
-                .background(WindowConfigurator())
-                .handlesSettingsOpenRequests()
-                .onOpenURL { url in
-                    TermyDeeplinkRouter.handle(url)
-                }
+        // Terminal windows are never SwiftUI-owned: every tab, the first one
+        // included, is built by `NativeTabWindowManager` so they all share one
+        // window class and one content wrapper. A `WindowGroup` here would add
+        // a plain `NSWindow` as tab 1, which cannot take the titlebar-tabs
+        // treatment and so lays its tab strip out as an extra row below the
+        // titlebar — pushing that tab's content down. `Settings` is the one
+        // scene kind AppKit does not present at launch.
+        Settings {
+            SettingsRootView()
+                .termySettingsUIFont()
         }
+        .defaultSize(width: 860, height: 600)
+        .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(after: .appInfo) {
                 Button("Check for Updates…") {
@@ -345,62 +373,19 @@ struct TermySwiftApp: App {
                 .disabled(effectiveTerminalCommands == nil)
             }
         }
-
-        Window("\(AppMetadata.displayName) Settings", id: Self.settingsWindowID) {
-            SettingsRootView()
-                .termySettingsUIFont()
-        }
-        .defaultSize(width: 860, height: 600)
-        .windowResizability(.contentMinSize)
     }
-
-    static let settingsWindowID = "termy-settings"
 }
 
-/// Opens settings in a dedicated window while preserving the standard shortcut.
+/// Opens settings while preserving the standard shortcut.
 private struct OpenSettingsButton: View {
-    @Environment(\.openWindow) private var openWindow
-    @ObservedObject private var configurationStore = TermyConfigurationStore.shared
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         Button("Settings…") {
-            if configurationStore.configuration.native.simpleMode,
-               TermyNativeAppActions.openConfigFileInEditor() {
-                NSApp.activate(ignoringOtherApps: true)
-            } else {
-                openWindow(id: TermySwiftApp.settingsWindowID)
-                NSApp.activate(ignoringOtherApps: true)
-            }
+            TermyNativeAppActions.presentSettings { openSettings() }
         }
         .termyUIFont()
         .keyboardShortcut(",", modifiers: .command)
-    }
-}
-
-private struct SettingsOpenRequestHandler: ViewModifier {
-    @Environment(\.openWindow) private var openWindow
-    @ObservedObject private var configurationStore = TermyConfigurationStore.shared
-
-    func body(content: Content) -> some View {
-        content.onReceive(NotificationCenter.default.publisher(for: .termyOpenSettingsRequested)) { _ in
-            openSettings()
-        }
-    }
-
-    private func openSettings() {
-        if configurationStore.configuration.native.simpleMode,
-           TermyNativeAppActions.openConfigFileInEditor() {
-            NSApp.activate(ignoringOtherApps: true)
-        } else {
-            openWindow(id: TermySwiftApp.settingsWindowID)
-            NSApp.activate(ignoringOtherApps: true)
-        }
-    }
-}
-
-private extension View {
-    func handlesSettingsOpenRequests() -> some View {
-        modifier(SettingsOpenRequestHandler())
     }
 }
 
@@ -408,6 +393,7 @@ private extension View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var closePaneEventMonitor: LocalEventMonitor?
     private var settingsObserver: NSObjectProtocol?
+    private var openSettingsObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         TermyNativeLog.lifecycle.notice("Application finished launching")
@@ -424,6 +410,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { _ in
             Task { @MainActor in
                 AppLogoManager.shared.reloadFromConfig()
+            }
+        }
+        openSettingsObserver = NotificationCenter.default.addObserver(
+            forName: .termyOpenSettingsRequested,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                TermyNativeAppActions.presentSettings()
             }
         }
         if let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { event in
@@ -451,23 +446,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             closePaneEventMonitor = LocalEventMonitor(monitor)
         }
         NSApp.activate(ignoringOtherApps: true)
-        Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            guard !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain }) else {
-                return
-            }
-            NativeTabWindowManager.shared.openNativeTab(startupTask: NativeBenchmarkLaunch.task)
-        }
+        NativeTabWindowManager.shared.openNativeTab(startupTask: NativeBenchmarkLaunch.task)
         NativeSoakRunner.shared.startIfRequested()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         TermyNativeLog.lifecycle.notice("Application will terminate")
         closePaneEventMonitor?.invalidate()
-        if let settingsObserver {
-            NotificationCenter.default.removeObserver(settingsObserver)
-            self.settingsObserver = nil
+        for observer in [settingsObserver, openSettingsObserver].compactMap(\.self) {
+            NotificationCenter.default.removeObserver(observer)
         }
+        settingsObserver = nil
+        openSettingsObserver = nil
+    }
+
+    /// Deeplinks are delivered here rather than through a SwiftUI `onOpenURL`:
+    /// no scene hosts a terminal, so there is no view to receive them.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            TermyDeeplinkRouter.handle(url)
+        }
+    }
+
+    /// Clicking the Dock icon with every terminal closed reopens one, the way
+    /// the SwiftUI window group used to.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        if !NativeTabWindowManager.shared.hasVisibleTerminalWindow {
+            NativeTabWindowManager.shared.openNativeTab()
+        }
+        return true
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -872,26 +879,6 @@ private final class LocalEventMonitor {
     }
 }
 
-struct WindowConfigurator: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        DispatchQueue.main.async {
-            if let window = view.window {
-                NativeTabWindowManager.shared.configure(window)
-            }
-        }
-        return view
-    }
-
-    func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async {
-            if let window = view.window {
-                NativeTabWindowManager.shared.configure(window)
-            }
-        }
-    }
-}
-
 @MainActor
 struct NativeTabDescriptor: Identifiable {
     var id: ObjectIdentifier
@@ -1233,6 +1220,10 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
         }
     }
 
+    /// The one place a terminal window is built. Every tab goes through here,
+    /// so they all share a window class, chrome, content wrapper, and minimum
+    /// size — a tab whose window came from anywhere else would lay its titlebar
+    /// out differently and shift its content vertically.
     private func makeWindow(startupTask: TermyTaskConfiguration? = nil) -> NSWindow {
         let windowSize = TermyConfigurationStore.shared.configuration.windowSize
         let window = TitlebarTabsWindow(
@@ -1242,10 +1233,19 @@ final class NativeTabWindowManager: NSObject, NSWindowDelegate {
             defer: false
         )
         window.center()
-        window.contentViewController = NSHostingController(rootView: TerminalWorkspaceView(initialTask: startupTask))
+        window.contentViewController = NSHostingController(
+            rootView: TerminalWorkspaceView(initialTask: startupTask).termyUIFont()
+        )
+        window.contentMinSize = Self.minimumContentSize
         window.isReleasedWhenClosed = false
         configure(window)
         return window
+    }
+
+    private static let minimumContentSize = NSSize(width: 760, height: 480)
+
+    var hasVisibleTerminalWindow: Bool {
+        NSApp.windows.contains { $0.isVisible && isNativeTerminalTabWindow($0) }
     }
 
     private func nativeTabSourceWindow() -> NSWindow? {

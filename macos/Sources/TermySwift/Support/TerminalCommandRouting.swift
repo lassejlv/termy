@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 enum TerminalHostCommand {
     case newTab
@@ -184,14 +185,21 @@ enum TerminalKeybindAction: Equatable {
 }
 
 @MainActor
-final class TerminalCommandRouter {
+final class TerminalCommandRouter: ObservableObject {
     static let shared = TerminalCommandRouter()
+
+    /// Whether any terminal store is reachable. Published so the app's menu
+    /// commands re-evaluate when the first terminal window opens or the last
+    /// one closes: terminal windows are AppKit-hosted, so SwiftUI sees neither
+    /// them nor the `NSApp.keyWindow` lookup `focusedCommandSet()` performs.
+    @Published private(set) var hasTerminalStore = false
 
     weak var activeStore: TerminalWorkspaceStore?
     private var storesByWindow: [ObjectIdentifier: WeakTerminalWorkspaceStore] = [:]
 
     func activate(_ store: TerminalWorkspaceStore) {
         activeStore = store
+        refreshTerminalStoreAvailability()
     }
 
     func register(_ store: TerminalWorkspaceStore, for window: NSWindow) {
@@ -201,6 +209,27 @@ final class TerminalCommandRouter {
 
     func unregister(window: NSWindow) {
         storesByWindow.removeValue(forKey: ObjectIdentifier(window))
+        refreshTerminalStoreAvailability()
+    }
+
+    private var isTerminalStoreAvailable: Bool {
+        activeStore != nil || storesByWindow.values.contains { $0.store != nil }
+    }
+
+    /// Deferred to the next main-actor turn: registration re-runs inside a
+    /// SwiftUI update pass, where publishing a change is not allowed. The guard
+    /// keeps the steady state (a re-register per view update) allocation-free.
+    private func refreshTerminalStoreAvailability() {
+        guard hasTerminalStore != isTerminalStoreAvailable else {
+            return
+        }
+        Task { @MainActor in
+            let available = self.isTerminalStoreAvailable
+            guard self.hasTerminalStore != available else {
+                return
+            }
+            self.hasTerminalStore = available
+        }
     }
 
     /// The store hosted by a specific window, with no active-store fallback.

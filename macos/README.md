@@ -24,6 +24,15 @@ The shell compatibility entrypoint is:
 
 At startup the app reads Termy's local config, including `working_dir`, `window_width`, and `window_height`.
 
+## Windows
+
+Every terminal window — the one opened at launch included — is created by
+`NativeTabWindowManager` as a `TitlebarTabsWindow`, and native tabs are those
+windows grouped by AppKit. The SwiftUI `App` declares only the settings scene;
+adding a `WindowGroup` for terminals would make the first tab a plain
+`NSWindow` that cannot take the titlebar-tabs treatment, so it would render its
+tab strip as an extra row below the titlebar and shift that tab's content down.
+
 ## Shortcuts
 
 - `Cmd+T`: new native macOS window tab
