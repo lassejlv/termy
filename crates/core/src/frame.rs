@@ -33,6 +33,12 @@ pub struct TermyCell {
     pub bg: TermyColor,
     pub uses_terminal_default_bg: bool,
     pub bold: bool,
+    pub italic: bool,
+    /// Set for any underline style. The distinction between single, double,
+    /// curly, dotted and dashed is not carried: renderers that only draw a
+    /// single rule would have to collapse it anyway.
+    pub underline: bool,
+    pub strikethrough: bool,
     pub render_text: bool,
     pub wide_character_spacer: bool,
     pub line_wrapped: bool,
@@ -134,6 +140,9 @@ fn cell_from_renderable_cell(
         bg: color_to_rgba(bg, live_colors, query_colors),
         uses_terminal_default_bg,
         bold: cell.flags.contains(Flags::BOLD),
+        italic: cell.flags.contains(Flags::ITALIC),
+        underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
+        strikethrough: cell.flags.contains(Flags::STRIKEOUT),
         render_text: !wide_character_spacer
             && !cell.flags.contains(Flags::HIDDEN)
             && cell.c != '\0'
@@ -282,6 +291,52 @@ mod tests {
 
         assert!(frame.cells[3].line_wrapped);
         assert!(!frame.cells[4].line_wrapped);
+    }
+
+    #[test]
+    fn snapshot_carries_text_attributes() {
+        let size = TerminalSize {
+            cols: 4,
+            rows: 1,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut term = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        // Italic, then underline, then strikethrough, then a plain cell.
+        parser.advance(&mut term, b"\x1b[3mi\x1b[0m\x1b[4mu\x1b[0m\x1b[9ms\x1b[0mp");
+
+        let frame = snapshot_from_term(&term, size, TerminalQueryColors::default());
+
+        assert!(frame.cells[0].italic);
+        assert!(frame.cells[1].underline);
+        assert!(frame.cells[2].strikethrough);
+
+        let plain = frame.cells[3];
+        assert!(!plain.italic);
+        assert!(!plain.underline);
+        assert!(!plain.strikethrough);
+    }
+
+    #[test]
+    fn snapshot_reports_every_underline_style_as_underlined() {
+        let size = TerminalSize {
+            cols: 2,
+            rows: 1,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut term = Term::new(TermConfig::default(), &size, VoidListener);
+        let mut parser: ansi::Processor = ansi::Processor::new();
+        // Double and curly underline both collapse to `underline`. Written as
+        // SGR 4 subparameters: bare `21` is read as bold-off by this parser,
+        // not as a double underline.
+        parser.advance(&mut term, b"\x1b[4:2md\x1b[0m\x1b[4:3mc");
+
+        let frame = snapshot_from_term(&term, size, TerminalQueryColors::default());
+
+        assert!(frame.cells[0].underline);
+        assert!(frame.cells[1].underline);
     }
 
     #[test]
