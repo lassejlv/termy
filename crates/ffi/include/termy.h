@@ -532,6 +532,13 @@ TermyFfiStatus termy_terminal_set_scrollback_history(
 TermyFfiStatus termy_terminal_bracketed_paste_mode(
     TermyFfiTerminal *terminal,
     bool *out_enabled);
+/* The buffer as plain UTF-8 text, scrollback included. With scrollback_only,
+ * just the rows above the viewport — empty for both an unscrolled primary
+ * screen and an alternate screen. Free with termy_buffer_free. */
+TermyFfiStatus termy_terminal_buffer_text(
+    TermyFfiTerminal *terminal,
+    bool scrollback_only,
+    TermyFfiBytes *out_bytes);
 TermyFfiStatus termy_terminal_snapshot(
     TermyFfiTerminal *terminal,
     TermyFfiFrame *out_frame);

@@ -18,7 +18,7 @@ use crate::shell_integration::ProgressState;
 use alacritty_terminal::{
     event::{Event as AlacEvent, EventListener, OnResize, WindowSize},
     grid::{Dimensions, Scroll},
-    index::{Column, Line},
+    index::{Column, Line, Point},
     sync::FairMutex,
     term::{Config as TermConfig, LineDamageBounds, Term, TermDamage, TermMode, cell::Flags},
     thread,
@@ -2478,6 +2478,34 @@ impl Terminal {
     /// Capture a renderer-neutral snapshot of the visible terminal frame.
     pub fn snapshot(&self) -> TermyFrame {
         self.with_term(|term| snapshot_from_term(term, self.size, self.query_colors))
+    }
+
+    /// The buffer as plain text, scrollback included.
+    ///
+    /// Frames only ever describe the viewport, so an embedder that wants the
+    /// whole buffer — to persist a session, or to render a thumbnail of a pane
+    /// it is not currently showing — cannot reach the scrollback through
+    /// [`Self::snapshot`] at any scroll position.
+    ///
+    /// With `scrollback_only`, returns just the rows above the viewport. That
+    /// is empty both for an unscrolled primary screen and for an alternate
+    /// screen, which together let a caller tell a shell at its prompt from a
+    /// full-screen TUI.
+    pub fn buffer_text(&self, scrollback_only: bool) -> String {
+        self.with_term(|term| {
+            let topmost = term.topmost_line();
+            let last_line = if scrollback_only {
+                Line(-1)
+            } else {
+                term.bottommost_line()
+            };
+            if last_line < topmost {
+                return String::new();
+            }
+            let start = Point::new(topmost, Column(0));
+            let end = Point::new(last_line, term.last_column());
+            term.bounds_to_string(start, end)
+        })
     }
 
     /// Capture a damage-scoped visible-frame update for incremental renderers.

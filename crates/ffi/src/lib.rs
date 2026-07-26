@@ -2973,6 +2973,30 @@ pub unsafe extern "C" fn termy_terminal_bracketed_paste_mode(
     })
 }
 
+/// The buffer as plain UTF-8 text, scrollback included. With
+/// `scrollback_only`, just the rows above the viewport — empty for both an
+/// unscrolled primary screen and an alternate screen.
+///
+/// Free the result with `termy_buffer_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_buffer_text(
+    terminal: *mut TermyFfiTerminal,
+    scrollback_only: bool,
+    out_bytes: *mut TermyFfiBytes,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_bytes.is_null() {
+            return TermyFfiStatus::Null;
+        }
+
+        unsafe {
+            let text = (*terminal).terminal.buffer_text(scrollback_only);
+            *out_bytes = ffi_bytes_from_string(text);
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_snapshot(
     terminal: *mut TermyFfiTerminal,
