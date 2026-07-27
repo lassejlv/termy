@@ -79,6 +79,8 @@ Saving a manifest or source file replaces the changed Worker and refreshes its
 commands without restarting Termy. Disabling a plugin keeps its managed files and
 storage but removes its commands on the next refresh. Uninstalling removes the
 managed copy, storage, and cache while leaving the original source folder untouched.
+Actions and native-view updates from requests already running when a plugin
+changes, is disabled, or is removed are rejected.
 
 Termy resolves Bun from `TERMY_BUN_PATH`, beside the Termy executable, `PATH`,
 Bun's default user install, Homebrew, and `/usr/local/bin`. Set `TERMY_BUN_PATH` to

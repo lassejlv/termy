@@ -1,13 +1,18 @@
 use super::*;
 use crate::theme_store;
+use gpui::Modifiers;
 use gpui::point;
 use state::{
     CommandPaletteCommandIntent, CommandPaletteItem, CommandPaletteItemKind,
-    command_palette_next_scroll_y, command_palette_target_scroll_y, ordered_theme_ids_for_palette,
+    CommandPaletteScrollDirection, command_palette_next_scroll_y, command_palette_target_scroll_y,
+    ordered_theme_ids_for_palette,
 };
 use termy_command_core::{CommandAvailability, CommandCapabilities, CommandUnavailableReason};
 
+mod fuzzy;
 mod plugins;
+mod presentation;
+mod recents;
 mod render;
 mod state;
 mod state_layouts;
@@ -19,90 +24,6 @@ pub(super) use plugins::PluginLifecycleState;
 pub(super) use state::{CommandPaletteMode, CommandPaletteState, TaskIntent};
 pub(super) use state_layouts::SavedLayoutIntent;
 pub(super) use state_tmux::TmuxSessionIntent;
-
-fn command_icon_path(id: termy_command_core::CommandId) -> &'static str {
-    use termy_command_core::CommandId::*;
-    match id {
-        NewTab => "icons/command_palette/new-tab.svg",
-        NewBrowserTab => "icons/command_palette/new-tab.svg",
-        CloseTab | ClosePane | ClosePaneOrTab => "icons/command_palette/close-tab.svg",
-        MoveTabLeft | SwitchTabLeft => "icons/command_palette/tab-left.svg",
-        MoveTabRight | SwitchTabRight | CycleTabs => "icons/command_palette/tab-right.svg",
-        SwitchToTab1 | SwitchToTab2 | SwitchToTab3 | SwitchToTab4 | SwitchToTab5 | SwitchToTab6
-        | SwitchToTab7 | SwitchToTab8 | SwitchToTab9 => "icons/command_palette/tab-right.svg",
-        RenameTab => "icons/command_palette/rename.svg",
-        SplitPaneVertical => "icons/command_palette/split-right.svg",
-        SplitPaneHorizontal => "icons/command_palette/split-down.svg",
-        FocusPaneLeft | FocusPaneRight | FocusPaneUp | FocusPaneDown | FocusPaneNext
-        | FocusPanePrevious => "icons/command_palette/focus-pane.svg",
-        ResizePaneLeft | ResizePaneRight | ResizePaneUp | ResizePaneDown => {
-            "icons/command_palette/resize-pane.svg"
-        }
-        TogglePaneZoom => "icons/command_palette/zoom-pane.svg",
-        MinimizeWindow => "icons/command_palette/minimize.svg",
-        ManageTmuxSessions => "icons/settings/terminal.svg",
-        ManageSavedLayouts => "icons/command_palette/layout.svg",
-        RunTask => "icons/command_palette/play.svg",
-        AppInfo => "icons/command_palette/info.svg",
-        RestartApp => "icons/command_palette/restart.svg",
-        OpenConfig | PrettifyConfig | OpenSettings => "icons/settings/advanced.svg",
-        ImportColors => "icons/settings/colors.svg",
-        SwitchTheme => "icons/settings/themes.svg",
-        ZoomIn => "icons/command_palette/zoom-in.svg",
-        ZoomOut => "icons/command_palette/zoom-out.svg",
-        ZoomReset => "icons/command_palette/zoom-reset.svg",
-        OpenSearch
-        | CloseSearch
-        | SearchNext
-        | SearchPrevious
-        | ToggleSearchCaseSensitive
-        | ToggleSearchRegex => "icons/settings/search.svg",
-        CheckForUpdates => "icons/command_palette/check-update.svg",
-        Quit => "icons/command_palette/power.svg",
-        ToggleCommandPalette => "icons/command_palette/command.svg",
-        Copy | Paste | SelectAll => "icons/command_palette/clipboard.svg",
-        InstallCli => "icons/command_palette/cli.svg",
-        ToggleTabBarVisibility | ToggleWorkspaceSidebar => "icons/command_palette/sidebar.svg",
-        ToggleInspector => "icons/command_palette/info.svg",
-    }
-}
-
-fn palette_item_icon_path(item: &CommandPaletteItem) -> &'static str {
-    match &item.kind {
-        CommandPaletteItemKind::Command(action) => command_icon_path(action.to_command_id()),
-        CommandPaletteItemKind::PluginCommand { icon, .. }
-        | CommandPaletteItemKind::PluginInputSubmit { icon }
-        | CommandPaletteItemKind::PluginInputOption { icon, .. } => {
-            plugins::plugin_icon_path(*icon)
-        }
-        CommandPaletteItemKind::Theme(_) => "icons/settings/themes.svg",
-        CommandPaletteItemKind::TmuxSessionAttachOrSwitch { .. }
-        | CommandPaletteItemKind::TmuxSessionCreateAndAttach { .. }
-        | CommandPaletteItemKind::TmuxSessionDetachCurrent
-        | CommandPaletteItemKind::TmuxSessionOpenRenameMode
-        | CommandPaletteItemKind::TmuxSessionOpenKillMode
-        | CommandPaletteItemKind::TmuxSessionRenameSelect { .. }
-        | CommandPaletteItemKind::TmuxSessionRenameApply { .. }
-        | CommandPaletteItemKind::TmuxSessionKill { .. } => "icons/settings/terminal.svg",
-        CommandPaletteItemKind::SavedLayoutOpen { .. }
-        | CommandPaletteItemKind::SavedLayoutOpenTasksMode { .. }
-        | CommandPaletteItemKind::SavedLayoutOpenSaveMode
-        | CommandPaletteItemKind::SavedLayoutSaveAs { .. }
-        | CommandPaletteItemKind::SavedLayoutOpenRenameMode
-        | CommandPaletteItemKind::SavedLayoutRenameSelect { .. }
-        | CommandPaletteItemKind::SavedLayoutRenameApply { .. }
-        | CommandPaletteItemKind::SavedLayoutOpenDeleteMode
-        | CommandPaletteItemKind::SavedLayoutDelete { .. } => "icons/command_palette/layout.svg",
-        CommandPaletteItemKind::TaskOpenCreateGlobalMode
-        | CommandPaletteItemKind::TaskOpenCreateLayoutMode { .. }
-        | CommandPaletteItemKind::TaskOpenSaveCurrentCommandGlobalMode
-        | CommandPaletteItemKind::TaskOpenSaveCurrentCommandLayoutMode { .. }
-        | CommandPaletteItemKind::TaskCreate { .. }
-        | CommandPaletteItemKind::Task { .. } => "icons/command_palette/play.svg",
-        CommandPaletteItemKind::AppInfoEntry { .. } => "icons/command_palette/info.svg",
-        CommandPaletteItemKind::AppInfoCopyAll { .. } => "icons/command_palette/clipboard.svg",
-    }
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CommandPaletteEscapeAction {
@@ -120,6 +41,10 @@ enum CommandPaletteNavKey {
     Enter,
     Up,
     Down,
+    PageUp,
+    PageDown,
+    First,
+    Last,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,12 +60,40 @@ enum CommandPaletteNotifyEvent {
 }
 
 impl CommandPaletteNavKey {
-    fn parse(key: &str) -> Option<Self> {
+    /// `home`/`end` are deliberately absent: they belong to the query field,
+    /// which binds them to move-to-start/move-to-end. The platform modifier
+    /// pairs cover jumping to the ends of the list instead.
+    fn parse(key: &str, modifiers: Modifiers) -> Option<Self> {
+        let control_only =
+            modifiers.control && !modifiers.platform && !modifiers.alt && !modifiers.shift;
+        let platform_only =
+            modifiers.platform && !modifiers.control && !modifiers.alt && !modifiers.shift;
+
+        if control_only {
+            match key {
+                "n" | "j" => return Some(Self::Down),
+                "p" | "k" => return Some(Self::Up),
+                _ => {}
+            }
+        }
+
+        if platform_only {
+            match key {
+                "up" => return Some(Self::First),
+                "down" => return Some(Self::Last),
+                _ => {}
+            }
+        }
+
         match key {
             "escape" => Some(Self::Escape),
             "enter" => Some(Self::Enter),
             "up" => Some(Self::Up),
             "down" => Some(Self::Down),
+            "pageup" => Some(Self::PageUp),
+            "pagedown" => Some(Self::PageDown),
+            "home" if control_only => Some(Self::First),
+            "end" if control_only => Some(Self::Last),
             _ => None,
         }
     }
@@ -704,6 +657,9 @@ impl TerminalView {
 
         let _ = self.close_terminal_context_menu(cx);
         let was_open = self.command_palette.is_open();
+        if !was_open {
+            self.command_palette.reload_recents();
+        }
         self.command_palette.open(mode);
         let notify_event = if was_open {
             CommandPaletteNotifyEvent::InteractionOnly
@@ -738,6 +694,7 @@ impl TerminalView {
             return;
         }
 
+        self.dismiss_command_palette_plugin_ui(cx);
         self.command_palette.close();
         self.inline_input_selecting = false;
         self.reset_cursor_blink_phase();
@@ -820,8 +777,12 @@ impl TerminalView {
         let offset = scroll_handle.offset();
         let current_y = -Into::<f32>::into(offset.y);
         let selected_index = self.command_palette.selected_filtered_index().unwrap_or(0);
-        let Some(target_y) = command_palette_target_scroll_y(current_y, selected_index, item_count)
-        else {
+        let Some(target_y) = command_palette_target_scroll_y(
+            current_y,
+            selected_index,
+            item_count,
+            self.command_palette.visible_rows(),
+        ) else {
             self.command_palette.reset_scroll_animation_state();
             return;
         };
@@ -904,61 +865,39 @@ impl TerminalView {
     pub(super) fn handle_command_palette_key_down(
         &mut self,
         key: &str,
+        modifiers: Modifiers,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(nav_key) = CommandPaletteNavKey::parse(key) else {
+        if self.command_palette_plugin_ui(cx).is_some() {
+            let nav_key = CommandPaletteNavKey::parse(key, modifiers);
+            if nav_key == Some(CommandPaletteNavKey::Escape) {
+                self.dismiss_command_palette_plugin_ui(cx);
+            }
+            return nav_key.is_some();
+        }
+
+        if key == "backspace"
+            && modifiers == Modifiers::default()
+            && self.pop_command_palette_mode_from_empty_query(cx)
+        {
+            return true;
+        }
+
+        let Some(nav_key) = CommandPaletteNavKey::parse(key, modifiers) else {
             return false;
         };
 
         match nav_key {
             CommandPaletteNavKey::Escape => {
-                match Self::command_palette_escape_action(
+                let escape_action = Self::command_palette_escape_action(
                     self.command_palette.mode(),
                     self.command_palette.tmux_session_intent(),
                     self.command_palette.command_intent(),
                     self.command_palette.saved_layout_intent(),
                     self.command_palette.task_intent(),
-                ) {
-                    CommandPaletteEscapeAction::ClosePalette => self.close_command_palette(cx),
-                    CommandPaletteEscapeAction::BackToCommands => {
-                        self.set_command_palette_mode(CommandPaletteMode::Commands, false, cx);
-                    }
-                    CommandPaletteEscapeAction::BackToTmuxRenameSelect => {
-                        if self.command_palette.back_from_tmux_rename_input() {
-                            self.apply_command_palette_mode_setup(
-                                CommandPaletteMode::TmuxSessions,
-                                false,
-                                CommandPaletteNotifyEvent::InteractionOnly,
-                                cx,
-                            );
-                        }
-                    }
-                    CommandPaletteEscapeAction::BackToSavedLayoutRenameSelect => {
-                        if self.command_palette.back_from_saved_layout_rename_input() {
-                            self.apply_command_palette_mode_setup(
-                                CommandPaletteMode::Layouts,
-                                false,
-                                CommandPaletteNotifyEvent::InteractionOnly,
-                                cx,
-                            );
-                        }
-                    }
-                    CommandPaletteEscapeAction::BackToTaskBrowse => {
-                        self.command_palette.set_task_intent(TaskIntent::Browse);
-                        self.apply_command_palette_mode_setup(
-                            CommandPaletteMode::Tasks,
-                            false,
-                            CommandPaletteNotifyEvent::InteractionOnly,
-                            cx,
-                        );
-                    }
-                    CommandPaletteEscapeAction::BackFromPluginInput => {
-                        if !self.back_from_plugin_input(cx) {
-                            self.set_command_palette_mode(CommandPaletteMode::Commands, false, cx);
-                        }
-                    }
-                }
+                );
+                self.apply_command_palette_escape_action(escape_action, cx);
             }
             CommandPaletteNavKey::Enter => {
                 self.execute_command_palette_selection(window, cx);
@@ -983,8 +922,114 @@ impl TerminalView {
                     );
                 }
             }
+            CommandPaletteNavKey::PageUp => {
+                self.move_command_palette_selection(
+                    |palette| palette.move_selection_page(CommandPaletteScrollDirection::Up),
+                    cx,
+                );
+            }
+            CommandPaletteNavKey::PageDown => {
+                self.move_command_palette_selection(
+                    |palette| palette.move_selection_page(CommandPaletteScrollDirection::Down),
+                    cx,
+                );
+            }
+            CommandPaletteNavKey::First => {
+                self.move_command_palette_selection(
+                    |palette| palette.move_selection_to_edge(CommandPaletteScrollDirection::Up),
+                    cx,
+                );
+            }
+            CommandPaletteNavKey::Last => {
+                self.move_command_palette_selection(
+                    |palette| palette.move_selection_to_edge(CommandPaletteScrollDirection::Down),
+                    cx,
+                );
+            }
         }
 
+        true
+    }
+
+    fn apply_command_palette_escape_action(
+        &mut self,
+        escape_action: CommandPaletteEscapeAction,
+        cx: &mut Context<Self>,
+    ) {
+        match escape_action {
+            CommandPaletteEscapeAction::ClosePalette => self.close_command_palette(cx),
+            CommandPaletteEscapeAction::BackToCommands => {
+                self.set_command_palette_mode(CommandPaletteMode::Commands, false, cx);
+            }
+            CommandPaletteEscapeAction::BackToTmuxRenameSelect => {
+                if self.command_palette.back_from_tmux_rename_input() {
+                    self.apply_command_palette_mode_setup(
+                        CommandPaletteMode::TmuxSessions,
+                        false,
+                        CommandPaletteNotifyEvent::InteractionOnly,
+                        cx,
+                    );
+                }
+            }
+            CommandPaletteEscapeAction::BackToSavedLayoutRenameSelect => {
+                if self.command_palette.back_from_saved_layout_rename_input() {
+                    self.apply_command_palette_mode_setup(
+                        CommandPaletteMode::Layouts,
+                        false,
+                        CommandPaletteNotifyEvent::InteractionOnly,
+                        cx,
+                    );
+                }
+            }
+            CommandPaletteEscapeAction::BackToTaskBrowse => {
+                self.command_palette.set_task_intent(TaskIntent::Browse);
+                self.apply_command_palette_mode_setup(
+                    CommandPaletteMode::Tasks,
+                    false,
+                    CommandPaletteNotifyEvent::InteractionOnly,
+                    cx,
+                );
+            }
+            CommandPaletteEscapeAction::BackFromPluginInput => {
+                if !self.back_from_plugin_input(cx) {
+                    self.set_command_palette_mode(CommandPaletteMode::Commands, false, cx);
+                }
+            }
+        }
+    }
+
+    fn move_command_palette_selection(
+        &mut self,
+        move_selection: impl FnOnce(&mut CommandPaletteState) -> bool,
+        cx: &mut Context<Self>,
+    ) {
+        let len = self.command_palette.filtered_len();
+        if move_selection(&mut self.command_palette) {
+            self.animate_command_palette_to_selected(len, cx);
+            self.notify_for_command_palette_event(CommandPaletteNotifyEvent::InteractionOnly, cx);
+        }
+    }
+
+    /// Backspace on an empty query steps back one palette level, the same way
+    /// Escape does — except in Commands, where it would close the palette out
+    /// from under someone clearing their query.
+    fn pop_command_palette_mode_from_empty_query(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.command_palette.input().text().is_empty() {
+            return false;
+        }
+
+        let escape_action = Self::command_palette_escape_action(
+            self.command_palette.mode(),
+            self.command_palette.tmux_session_intent(),
+            self.command_palette.command_intent(),
+            self.command_palette.saved_layout_intent(),
+            self.command_palette.task_intent(),
+        );
+        if escape_action == CommandPaletteEscapeAction::ClosePalette {
+            return false;
+        }
+
+        self.apply_command_palette_escape_action(escape_action, cx);
         true
     }
 
@@ -1053,6 +1098,10 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if item.enabled {
+            self.command_palette.record_recent_item(&item);
+        }
+
         match item.kind {
             CommandPaletteItemKind::Command(action) => {
                 if !item.enabled {
@@ -1749,23 +1798,93 @@ mod tests {
 
     #[test]
     fn nav_key_parser_maps_expected_keys() {
+        let plain = Modifiers::default();
         assert_eq!(
-            CommandPaletteNavKey::parse("escape"),
+            CommandPaletteNavKey::parse("escape", plain),
             Some(CommandPaletteNavKey::Escape)
         );
         assert_eq!(
-            CommandPaletteNavKey::parse("enter"),
+            CommandPaletteNavKey::parse("enter", plain),
             Some(CommandPaletteNavKey::Enter)
         );
         assert_eq!(
-            CommandPaletteNavKey::parse("up"),
+            CommandPaletteNavKey::parse("up", plain),
             Some(CommandPaletteNavKey::Up)
         );
         assert_eq!(
-            CommandPaletteNavKey::parse("down"),
+            CommandPaletteNavKey::parse("down", plain),
             Some(CommandPaletteNavKey::Down)
         );
-        assert_eq!(CommandPaletteNavKey::parse("left"), None);
+        assert_eq!(
+            CommandPaletteNavKey::parse("pageup", plain),
+            Some(CommandPaletteNavKey::PageUp)
+        );
+        assert_eq!(
+            CommandPaletteNavKey::parse("pagedown", plain),
+            Some(CommandPaletteNavKey::PageDown)
+        );
+        assert_eq!(CommandPaletteNavKey::parse("left", plain), None);
+    }
+
+    #[test]
+    fn nav_key_parser_maps_control_pairs_and_edge_jumps() {
+        let control = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        let platform = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+
+        for key in ["n", "j"] {
+            assert_eq!(
+                CommandPaletteNavKey::parse(key, control),
+                Some(CommandPaletteNavKey::Down),
+                "ctrl-{key} should move down"
+            );
+        }
+        for key in ["p", "k"] {
+            assert_eq!(
+                CommandPaletteNavKey::parse(key, control),
+                Some(CommandPaletteNavKey::Up),
+                "ctrl-{key} should move up"
+            );
+        }
+
+        assert_eq!(
+            CommandPaletteNavKey::parse("home", control),
+            Some(CommandPaletteNavKey::First)
+        );
+        assert_eq!(
+            CommandPaletteNavKey::parse("end", control),
+            Some(CommandPaletteNavKey::Last)
+        );
+        assert_eq!(
+            CommandPaletteNavKey::parse("up", platform),
+            Some(CommandPaletteNavKey::First)
+        );
+        assert_eq!(
+            CommandPaletteNavKey::parse("down", platform),
+            Some(CommandPaletteNavKey::Last)
+        );
+    }
+
+    #[test]
+    fn nav_key_parser_leaves_plain_home_and_end_to_the_query_field() {
+        let plain = Modifiers::default();
+        assert_eq!(CommandPaletteNavKey::parse("home", plain), None);
+        assert_eq!(CommandPaletteNavKey::parse("end", plain), None);
+    }
+
+    #[test]
+    fn nav_key_parser_ignores_unrelated_modifier_combinations() {
+        let control_shift = Modifiers {
+            control: true,
+            shift: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(CommandPaletteNavKey::parse("n", control_shift), None);
     }
 
     #[test]
@@ -1851,11 +1970,15 @@ mod tests {
     fn tmux_query_surfaces_only_tmux_sessions_entry() {
         let items =
             TerminalView::command_palette_core_command_items_for_state(test_caps(true, true));
-        let filtered_indices =
-            super::state::filter_command_palette_item_indices_by_query(&items, "tmux");
-        let filtered_actions = filtered_indices
+        let matches = super::state::rank_command_palette_items(
+            &items,
+            "tmux",
+            &super::recents::CommandPaletteRecents::default(),
+            super::state::CommandPaletteRanking::ByScore,
+        );
+        let filtered_actions = matches
             .into_iter()
-            .filter_map(|index| match items[index].kind {
+            .filter_map(|matched| match items[matched.item_index].kind {
                 CommandPaletteItemKind::Command(action) => Some(action),
                 _ => None,
             })

@@ -73,6 +73,7 @@ struct PluginRuntimeInner {
     plugins_dir: Option<PathBuf>,
     refresh: Mutex<()>,
     settings: Mutex<()>,
+    lifecycle_generations: Mutex<BTreeMap<String, u64>>,
     catalog: RwLock<PluginCatalog>,
     host: Mutex<PluginHostState>,
 }
@@ -246,6 +247,8 @@ pub struct PluginCommand {
     pub plugin_name: String,
     pub id: String,
     pub title: String,
+    #[serde(default = "default_command_placements")]
+    pub placements: Vec<PluginCommandPlacement>,
     #[serde(default)]
     pub keywords: Vec<String>,
     #[serde(default)]
@@ -264,6 +267,18 @@ impl PluginCommand {
     pub fn qualified_id(&self) -> String {
         format!("{}.{}", self.plugin_id, self.id)
     }
+}
+
+fn default_command_placements() -> Vec<PluginCommandPlacement> {
+    vec![PluginCommandPlacement::CommandPalette]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PluginCommandPlacement {
+    CommandPalette,
+    TerminalContextMenu,
+    TabContextMenu,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -373,11 +388,21 @@ pub enum PluginAction {
     #[serde(rename = "view.open")]
     ViewOpen {
         view: String,
+        #[serde(default)]
+        target: PluginViewTarget,
         #[serde(skip)]
         plugin_id: String,
         #[serde(skip)]
         revision: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PluginViewTarget {
+    #[default]
+    Modal,
+    CommandPalette,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -696,6 +721,7 @@ impl PluginRuntime {
                 plugins_dir,
                 refresh: Mutex::new(()),
                 settings: Mutex::new(()),
+                lifecycle_generations: Mutex::new(BTreeMap::new()),
                 catalog: RwLock::new(PluginCatalog::default()),
                 host: Mutex::new(PluginHostState::default()),
             }),
@@ -789,7 +815,7 @@ impl PluginRuntime {
             let _ = fs::remove_dir_all(&temporary);
             return Err(error);
         }
-        self.invalidate_after_management();
+        self.invalidate_after_management(&manifest.id);
         Ok(installed_plugin_from_manifest(
             manifest,
             destination,
@@ -897,7 +923,7 @@ impl PluginRuntime {
         }
         let _ = fs::remove_dir_all(&backup);
         self.clear_plugin_bundle_cache(id);
-        self.invalidate_after_management();
+        self.invalidate_after_management(id);
         Ok(installed_plugin_from_manifest(
             manifest,
             destination,
@@ -938,7 +964,7 @@ impl PluginRuntime {
                 Err(error) => return Err(format!("Failed to disable plugin `{id}`: {error}")),
             }
         }
-        self.invalidate_after_management();
+        self.invalidate_after_management(id);
         Ok(())
     }
 
@@ -959,7 +985,7 @@ impl PluginRuntime {
             .map_err(|error| format!("Failed to uninstall plugin `{id}`: {error}"))?;
         self.clear_plugin_bundle_cache(id);
         self.clear_plugin_storage(id);
-        self.invalidate_after_management();
+        self.invalidate_after_management(id);
         Ok(())
     }
 
@@ -997,7 +1023,8 @@ impl PluginRuntime {
         Ok(root)
     }
 
-    fn invalidate_after_management(&self) {
+    fn invalidate_after_management(&self, plugin_id: &str) {
+        self.bump_plugin_lifecycle(plugin_id);
         self.inner
             .host
             .lock()
@@ -1009,6 +1036,65 @@ impl PluginRuntime {
             .write()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .fingerprint = None;
+    }
+
+    fn plugin_lifecycle_generation(&self, plugin_id: &str) -> u64 {
+        self.inner
+            .lifecycle_generations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(plugin_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn bump_plugin_lifecycle(&self, plugin_id: &str) {
+        let mut generations = self
+            .inner
+            .lifecycle_generations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let generation = generations.entry(plugin_id.to_string()).or_default();
+        *generation = generation.wrapping_add(1);
+    }
+
+    fn revoke_changed_plugin_lifecycles(
+        &self,
+        previous: &BTreeMap<String, String>,
+        current: &BTreeMap<String, String>,
+    ) {
+        let changed = previous
+            .keys()
+            .chain(current.keys())
+            .filter(|plugin_id| previous.get(*plugin_id) != current.get(*plugin_id))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if changed.is_empty() {
+            return;
+        }
+        let mut generations = self
+            .inner
+            .lifecycle_generations
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for plugin_id in changed {
+            let generation = generations.entry(plugin_id).or_default();
+            *generation = generation.wrapping_add(1);
+        }
+    }
+
+    fn ensure_plugin_lifecycle(
+        &self,
+        plugin_id: &str,
+        expected_generation: u64,
+    ) -> Result<(), String> {
+        if self.plugin_lifecycle_generation(plugin_id) == expected_generation {
+            Ok(())
+        } else {
+            Err(format!(
+                "Plugin `{plugin_id}` changed, was disabled, or was removed while its request was running; try again"
+            ))
+        }
     }
 
     pub fn commands(&self) -> Vec<PluginCommand> {
@@ -1340,13 +1426,17 @@ impl PluginRuntime {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let discovered = discover_plugins(plugins_dir)?;
-        let (previous_fingerprint, had_commands) = {
+        let (previous_fingerprint, had_commands, previous_revisions) = {
             let catalog = self
                 .inner
                 .catalog
                 .read()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            (catalog.fingerprint, !catalog.commands.is_empty())
+            (
+                catalog.fingerprint,
+                !catalog.commands.is_empty(),
+                catalog.revisions.clone(),
+            )
         };
         let host_needs_restart = if discovered.sources.is_empty() {
             false
@@ -1367,6 +1457,14 @@ impl PluginRuntime {
         };
         if previous_fingerprint == Some(discovered.fingerprint) && !host_needs_restart {
             return Ok(PluginRefresh::default());
+        }
+        if previous_fingerprint != Some(discovered.fingerprint) {
+            let discovered_revisions = discovered
+                .sources
+                .iter()
+                .map(|source| (source.id.clone(), source.cache_key.clone()))
+                .collect::<BTreeMap<_, _>>();
+            self.revoke_changed_plugin_lifecycles(&previous_revisions, &discovered_revisions);
         }
 
         ensure_managed_files(plugins_dir)?;
@@ -1615,6 +1713,7 @@ impl PluginRuntime {
         validate_inputs(&command, &inputs)?;
         context.settings = self.resolved_plugin_settings(plugin_id)?;
         let timeout_ms = command.timeout_ms.clamp(100, MAX_INVOKE_TIMEOUT_MS);
+        let lifecycle_generation = self.plugin_lifecycle_generation(plugin_id);
         let (request_id, connection) = self.next_host_request()?;
         let request = HostRequest::Invoke {
             id: request_id,
@@ -1630,6 +1729,7 @@ impl PluginRuntime {
             timeout_ms,
             plugin_id,
             expected_revision,
+            lifecycle_generation,
         )
     }
 
@@ -1648,6 +1748,7 @@ impl PluginRuntime {
         }
         context.settings = self.resolved_plugin_settings(plugin_id)?;
         let timeout_ms = view.timeout_ms.clamp(100, MAX_INVOKE_TIMEOUT_MS);
+        let lifecycle_generation = self.plugin_lifecycle_generation(plugin_id);
         let (request_id, connection) = self.next_host_request()?;
         let request = HostRequest::ViewRender {
             id: request_id,
@@ -1658,6 +1759,7 @@ impl PluginRuntime {
         };
         let result =
             self.request_host::<HostViewRenderResult>(&connection, &request, timeout_ms)?;
+        self.ensure_plugin_lifecycle(plugin_id, lifecycle_generation)?;
         self.ensure_view_revision(plugin_id, view_id, expected_revision)?;
         self.prepare_view_render(result, plugin_id, expected_revision)
     }
@@ -1680,6 +1782,7 @@ impl PluginRuntime {
         validate_view_action(&action, &values)?;
         context.settings = self.resolved_plugin_settings(plugin_id)?;
         let timeout_ms = view.timeout_ms.clamp(100, MAX_INVOKE_TIMEOUT_MS);
+        let lifecycle_generation = self.plugin_lifecycle_generation(plugin_id);
         let (request_id, connection) = self.next_host_request()?;
         let request = HostRequest::ViewAction {
             id: request_id,
@@ -1692,6 +1795,7 @@ impl PluginRuntime {
         };
         let result =
             self.request_host::<HostViewRenderResult>(&connection, &request, timeout_ms)?;
+        self.ensure_plugin_lifecycle(plugin_id, lifecycle_generation)?;
         self.ensure_view_revision(plugin_id, view_id, expected_revision)?;
         self.prepare_view_render(result, plugin_id, expected_revision)
     }
@@ -1762,6 +1866,7 @@ impl PluginRuntime {
         mut context: PluginContext,
     ) -> Result<Vec<PluginAction>, String> {
         context.settings = self.resolved_plugin_settings(&subscription.plugin_id)?;
+        let lifecycle_generation = self.plugin_lifecycle_generation(&subscription.plugin_id);
         let (request_id, connection) = self.next_host_request()?;
         let request = HostRequest::Event {
             id: request_id,
@@ -1776,6 +1881,7 @@ impl PluginRuntime {
             subscription.timeout_ms,
             &subscription.plugin_id,
             &subscription.revision,
+            lifecycle_generation,
         )
     }
 
@@ -1799,9 +1905,11 @@ impl PluginRuntime {
         timeout_ms: u64,
         plugin_id: &str,
         revision: &str,
+        lifecycle_generation: u64,
     ) -> Result<Vec<PluginAction>, String> {
         let invoke_result =
             self.request_host::<HostInvokeResult>(connection, request, timeout_ms)?;
+        self.ensure_plugin_lifecycle(plugin_id, lifecycle_generation)?;
         self.prepare_actions(invoke_result.actions, plugin_id, revision)
     }
 
@@ -1891,6 +1999,7 @@ impl PluginRuntime {
                 view,
                 plugin_id: origin_plugin_id,
                 revision: origin_revision,
+                ..
             } = action
             else {
                 continue;
@@ -3071,6 +3180,17 @@ fn validate_commands(commands: &[PluginCommand]) -> Result<(), String> {
         }
         validate_text(&command.plugin_name, 200, "plugin name")?;
         validate_text(&command.title, 300, "command title")?;
+        let mut placements = HashSet::new();
+        if command
+            .placements
+            .iter()
+            .any(|placement| !placements.insert(*placement))
+        {
+            return Err(format!(
+                "Plugin command `{}` has duplicate placements",
+                command.qualified_id()
+            ));
+        }
         if command.inputs.len() > MAX_INPUTS_PER_COMMAND {
             return Err(format!(
                 "Plugin command `{}` has too many inputs",
@@ -3304,17 +3424,63 @@ fn validate_setting_value(setting: &PluginSetting, value: &Value) -> Result<(), 
     }
 }
 
+fn plugin_secret_account(plugin_id: &str, key: &str) -> String {
+    format!("v2:{}:{plugin_id}{key}", plugin_id.len())
+}
+
+fn legacy_plugin_secret_account(plugin_id: &str, key: &str) -> String {
+    format!("{plugin_id}.{key}")
+}
+
+fn can_migrate_legacy_plugin_secret(plugin_id: &str, key: &str) -> bool {
+    !plugin_id.contains('.') && !key.contains('.')
+}
+
 #[cfg(not(test))]
 fn plugin_secret_entry(plugin_id: &str, key: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYRING_SERVICE, &format!("{plugin_id}.{key}"))
+    keyring::Entry::new(KEYRING_SERVICE, &plugin_secret_account(plugin_id, key))
         .map_err(|error| format!("Failed to access the credential store: {error}"))
+}
+
+#[cfg(not(test))]
+fn legacy_plugin_secret_entry(plugin_id: &str, key: &str) -> Result<keyring::Entry, String> {
+    keyring::Entry::new(
+        KEYRING_SERVICE,
+        &legacy_plugin_secret_account(plugin_id, key),
+    )
+    .map_err(|error| format!("Failed to access the credential store: {error}"))
 }
 
 #[cfg(not(test))]
 fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
     match plugin_secret_entry(plugin_id, key)?.get_password() {
         Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(keyring::Error::NoEntry) if !can_migrate_legacy_plugin_secret(plugin_id, key) => {
+            Ok(None)
+        }
+        Err(keyring::Error::NoEntry) => {
+            let legacy = legacy_plugin_secret_entry(plugin_id, key)?;
+            let secret = match legacy.get_password() {
+                Ok(secret) => secret,
+                Err(keyring::Error::NoEntry) => return Ok(None),
+                Err(error) => {
+                    return Err(format!(
+                        "Failed to read legacy secret setting `{plugin_id}.{key}`: {error}"
+                    ));
+                }
+            };
+            plugin_secret_entry(plugin_id, key)?
+                .set_password(&secret)
+                .map_err(|error| {
+                    format!("Failed to migrate secret setting `{plugin_id}.{key}`: {error}")
+                })?;
+            match legacy.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(Some(secret)),
+                Err(error) => Err(format!(
+                    "Failed to clear legacy secret setting `{plugin_id}.{key}` after migration: {error}"
+                )),
+            }
+        }
         Err(error) => Err(format!(
             "Failed to read secret setting `{plugin_id}.{key}`: {error}"
         )),
@@ -3325,17 +3491,41 @@ fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, Stri
 fn write_plugin_secret(plugin_id: &str, key: &str, secret: &str) -> Result<(), String> {
     plugin_secret_entry(plugin_id, key)?
         .set_password(secret)
-        .map_err(|error| format!("Failed to save secret setting `{plugin_id}.{key}`: {error}"))
+        .map_err(|error| format!("Failed to save secret setting `{plugin_id}.{key}`: {error}"))?;
+    if can_migrate_legacy_plugin_secret(plugin_id, key) {
+        match legacy_plugin_secret_entry(plugin_id, key)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(error) => {
+                return Err(format!(
+                    "Failed to clear legacy secret setting `{plugin_id}.{key}`: {error}"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(test))]
 fn delete_plugin_secret(plugin_id: &str, key: &str) -> Result<(), String> {
     match plugin_secret_entry(plugin_id, key)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(error) => Err(format!(
-            "Failed to clear secret setting `{plugin_id}.{key}`: {error}"
-        )),
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(error) => {
+            return Err(format!(
+                "Failed to clear secret setting `{plugin_id}.{key}`: {error}"
+            ));
+        }
     }
+    if can_migrate_legacy_plugin_secret(plugin_id, key) {
+        match legacy_plugin_secret_entry(plugin_id, key)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(error) => {
+                return Err(format!(
+                    "Failed to clear legacy secret setting `{plugin_id}.{key}`: {error}"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3345,30 +3535,46 @@ static TEST_PLUGIN_SECRETS: std::sync::LazyLock<Mutex<BTreeMap<String, String>>>
 #[cfg(test)]
 #[allow(clippy::unnecessary_wraps)]
 fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
-    Ok(TEST_PLUGIN_SECRETS
+    let mut secrets = TEST_PLUGIN_SECRETS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(&format!("{plugin_id}.{key}"))
-        .cloned())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let account = plugin_secret_account(plugin_id, key);
+    if let Some(secret) = secrets.get(&account) {
+        return Ok(Some(secret.clone()));
+    }
+    if !can_migrate_legacy_plugin_secret(plugin_id, key) {
+        return Ok(None);
+    }
+    let Some(secret) = secrets.remove(&legacy_plugin_secret_account(plugin_id, key)) else {
+        return Ok(None);
+    };
+    secrets.insert(account, secret.clone());
+    Ok(Some(secret))
 }
 
 #[cfg(test)]
 #[allow(clippy::unnecessary_wraps)]
 fn write_plugin_secret(plugin_id: &str, key: &str, secret: &str) -> Result<(), String> {
-    TEST_PLUGIN_SECRETS
+    let mut secrets = TEST_PLUGIN_SECRETS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(format!("{plugin_id}.{key}"), secret.to_string());
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    secrets.insert(plugin_secret_account(plugin_id, key), secret.to_string());
+    if can_migrate_legacy_plugin_secret(plugin_id, key) {
+        secrets.remove(&legacy_plugin_secret_account(plugin_id, key));
+    }
     Ok(())
 }
 
 #[cfg(test)]
 #[allow(clippy::unnecessary_wraps)]
 fn delete_plugin_secret(plugin_id: &str, key: &str) -> Result<(), String> {
-    TEST_PLUGIN_SECRETS
+    let mut secrets = TEST_PLUGIN_SECRETS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&format!("{plugin_id}.{key}"));
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    secrets.remove(&plugin_secret_account(plugin_id, key));
+    if can_migrate_legacy_plugin_secret(plugin_id, key) {
+        secrets.remove(&legacy_plugin_secret_account(plugin_id, key));
+    }
     Ok(())
 }
 

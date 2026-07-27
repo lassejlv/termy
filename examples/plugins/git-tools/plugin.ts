@@ -9,6 +9,11 @@ export default definePlugin({
     {
       id: "inspect",
       title: "Git: Inspect repository",
+      placements: [
+        "commandPalette",
+        "terminalContextMenu",
+        "tabContextMenu",
+      ],
       keywords: ["git", "status", "branches", "commits"],
       status: "Plugin",
       icon: "terminal",

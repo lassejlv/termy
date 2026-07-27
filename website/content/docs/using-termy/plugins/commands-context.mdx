@@ -24,6 +24,7 @@ export default definePlugin({
     {
       id: "greet",
       title: "Hello: Greet me",
+      placements: ["commandPalette", "terminalContextMenu"],
       keywords: ["hello", "example"],
       icon: "info",
       inputs: [
@@ -63,6 +64,12 @@ export default definePlugin({
 Commands require `id`, `title`, and `run`. They may also declare search `keywords`,
 `status`, `enabled`, `disabledReason`, `timeoutMs`, and one of Termy's built-in
 `icon` names.
+
+`placements` controls where a command is listed. It accepts `commandPalette`,
+`terminalContextMenu`, and `tabContextMenu`, and defaults to
+`["commandPalette"]`. Context-menu placements are currently available on Linux
+and Windows. Commands with inputs use the same palette input flow from every
+surface. Use `placements: []` for a keybinding-only command.
 
 Inputs appear sequentially before the handler runs:
 
@@ -118,7 +125,7 @@ an action array, `{ actions: [...] }`, or nothing. Handlers may be async.
 | `termy.command` | Invoke a built-in Termy command. |
 | `clipboard.write` | Copy text to the system clipboard. |
 | `url.open` | Open an `http` or `https` URL. |
-| `view.open` | Open a native view declared by the same plugin. Requires `native-ui` in `plugin.json`. |
+| `view.open` | Open a native view declared by the same plugin. Add `target: "commandPalette"` to use the palette surface; the default is a modal. Requires `native-ui` in `plugin.json`. |
 | `toast` | Show an info, success, warning, or error notification. |
 
 Never interpolate free-form text directly into `terminal.run`. Map select values to

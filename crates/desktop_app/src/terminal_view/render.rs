@@ -650,6 +650,17 @@ fn terminal_scrollbar_track_width(frame_width: f32) -> f32 {
     TERMINAL_SCROLLBAR_TRACK_WIDTH.min(frame_width.max(0.0))
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
+fn context_menu_visible_height(
+    content_height: f32,
+    viewport_height: Option<f32>,
+    row_height: f32,
+) -> f32 {
+    viewport_height
+        .map(|height| content_height.min((height - 16.0).max(row_height + 8.0)))
+        .unwrap_or(content_height)
+}
+
 impl Focusable for TerminalView {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
         self.focus_handle.clone()
@@ -1994,16 +2005,30 @@ impl TerminalView {
         #[cfg(not(target_os = "macos"))]
         {
             let state = self.terminal_context_menu.clone()?;
+            let plugin_commands = self.plugin_commands_for_placement(
+                termy_plugin_runtime::PluginCommandPlacement::TerminalContextMenu,
+            );
             let overlay_style = self.overlay_style();
-            let menu_width = 220.0;
+            let menu_width = if plugin_commands.is_empty() {
+                220.0
+            } else {
+                260.0
+            };
             let row_height = 30.0;
             let row_count =
                 3.0 + if state.buffer_position.is_some() {
                     1.0
                 } else {
                     0.0
-                } + if state.image.is_some() { 1.0 } else { 0.0 };
-            let menu_height = row_height * row_count + 8.0;
+                } + if state.image.is_some() { 1.0 } else { 0.0 }
+                    + plugin_commands.len() as f32;
+            let content_height =
+                row_height * row_count + 8.0 + if plugin_commands.is_empty() { 0.0 } else { 7.0 };
+            let menu_height = context_menu_visible_height(
+                content_height,
+                self.last_viewport_size_px.map(|(_, height)| height as f32),
+                row_height,
+            );
             let (menu_x, menu_y) =
                 self.clamped_context_menu_origin(state.anchor_position, menu_width, menu_height);
             let panel_bg = overlay_style.chrome_panel_background(0.98);
@@ -2056,6 +2081,9 @@ impl TerminalView {
                     .px(px(10.0))
                     .flex()
                     .items_center()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
                     .text_size(px(13.0))
                     .text_color(text_active)
                     .cursor_pointer()
@@ -2078,6 +2106,9 @@ impl TerminalView {
                     .px(px(10.0))
                     .flex()
                     .items_center()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
                     .text_size(px(13.0))
                     .text_color(text_active)
                     .cursor_pointer()
@@ -2090,6 +2121,39 @@ impl TerminalView {
                         }),
                     )
                     .child("Copy Image")
+                    .into_any_element()
+            };
+            let plugin_command_item = |command: termy_plugin_runtime::PluginCommand| {
+                let enabled = command.disabled_reason.is_none();
+                let text_color = if enabled { text_active } else { text_disabled };
+                let plugin_id = command.plugin_id.clone();
+                let command_id = command.id.clone();
+                div()
+                    .id(SharedString::from(format!(
+                        "terminal-context-menu-plugin-{plugin_id}-{command_id}"
+                    )))
+                    .h(px(row_height))
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(13.0))
+                    .text_color(text_color)
+                    .when(enabled, |style| style.cursor_pointer())
+                    .when(enabled, |style| style.hover(|style| style.bg(hover_bg)))
+                    .when(enabled, |style| {
+                        style.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _event: &MouseDownEvent, window, cx| {
+                                let _ = view.close_terminal_context_menu(cx);
+                                view.start_plugin_command(&plugin_id, &command_id, window, cx);
+                                cx.stop_propagation();
+                            }),
+                        )
+                    })
+                    .child(command.title)
                     .into_any_element()
             };
 
@@ -2129,6 +2193,8 @@ impl TerminalView {
                             .left(px(menu_x))
                             .top(px(menu_y))
                             .w(px(menu_width))
+                            .max_h(px(menu_height))
+                            .overflow_y_scroll()
                             .py(px(4.0))
                             .bg(panel_bg)
                             .border_1()
@@ -2171,7 +2237,13 @@ impl TerminalView {
                                 state.can_paste,
                                 CommandAction::Paste,
                             ))
-                            .child(open_search_item()),
+                            .child(open_search_item())
+                            .when(!plugin_commands.is_empty(), |panel| {
+                                panel.child(
+                                    div().h(px(1.0)).my(px(3.0)).mx(px(8.0)).bg(panel_border),
+                                )
+                            })
+                            .children(plugin_commands.into_iter().map(plugin_command_item)),
                     )
                     .into_any_element(),
             )
@@ -2362,15 +2434,30 @@ impl TerminalView {
         #[cfg(not(target_os = "macos"))]
         {
             let state = self.tab_context_menu.clone()?;
+            let plugin_commands = self.plugin_commands_for_placement(
+                termy_plugin_runtime::PluginCommandPlacement::TabContextMenu,
+            );
             let overlay_style = self.overlay_style();
-            let menu_width = 180.0;
+            let menu_width = if plugin_commands.is_empty() {
+                180.0
+            } else {
+                260.0
+            };
             let row_height = 30.0;
-            let menu_height = (row_height * 3.0) + 8.0; // 3 items + padding
+            let content_height = (row_height * (3 + plugin_commands.len()) as f32)
+                + 8.0
+                + if plugin_commands.is_empty() { 0.0 } else { 7.0 };
+            let menu_height = context_menu_visible_height(
+                content_height,
+                self.last_viewport_size_px.map(|(_, height)| height as f32),
+                row_height,
+            );
             let (menu_x, menu_y) =
                 self.clamped_context_menu_origin(state.anchor_position, menu_width, menu_height);
             let panel_bg = overlay_style.chrome_panel_background(0.98);
             let panel_border = overlay_style.chrome_panel_neutral(0.22);
             let text_active = overlay_style.panel_foreground(0.95);
+            let text_disabled = overlay_style.panel_foreground(0.42);
             let text_danger = gpui::Rgba {
                 r: 0.95,
                 g: 0.4,
@@ -2379,6 +2466,43 @@ impl TerminalView {
             };
             let hover_bg = overlay_style.chrome_panel_cursor(0.22);
             let pin_label = if state.pinned { "Unpin Tab" } else { "Pin Tab" };
+            let plugin_command_item = |command: termy_plugin_runtime::PluginCommand| {
+                let enabled = command.disabled_reason.is_none();
+                let text_color = if enabled { text_active } else { text_disabled };
+                let plugin_id = command.plugin_id.clone();
+                let command_id = command.id.clone();
+                let tab_id = state.tab_id;
+                div()
+                    .id(SharedString::from(format!(
+                        "tab-context-menu-plugin-{plugin_id}-{command_id}"
+                    )))
+                    .h(px(row_height))
+                    .px(px(10.0))
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .text_size(px(13.0))
+                    .text_color(text_color)
+                    .when(enabled, |style| style.cursor_pointer())
+                    .when(enabled, |style| style.hover(|style| style.bg(hover_bg)))
+                    .when(enabled, |style| {
+                        style.on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _event: &MouseDownEvent, window, cx| {
+                                if let Some(index) = view.tab_index_by_id(tab_id) {
+                                    view.switch_tab(index, cx);
+                                }
+                                let _ = view.close_tab_context_menu(cx);
+                                view.start_plugin_command(&plugin_id, &command_id, window, cx);
+                                cx.stop_propagation();
+                            }),
+                        )
+                    })
+                    .child(command.title)
+                    .into_any_element()
+            };
 
             Some(
                 div()
@@ -2416,6 +2540,8 @@ impl TerminalView {
                             .left(px(menu_x))
                             .top(px(menu_y))
                             .w(px(menu_width))
+                            .max_h(px(menu_height))
+                            .overflow_y_scroll()
                             .py(px(4.0))
                             .bg(panel_bg)
                             .border_1()
@@ -2440,6 +2566,12 @@ impl TerminalView {
                                     cx.stop_propagation();
                                 }),
                             )
+                            .children(plugin_commands.iter().cloned().map(plugin_command_item))
+                            .when(!plugin_commands.is_empty(), |panel| {
+                                panel.child(
+                                    div().h(px(1.0)).my(px(3.0)).mx(px(8.0)).bg(panel_border),
+                                )
+                            })
                             // Rename Tab
                             .child({
                                 let tab_id = state.tab_id;
@@ -2530,7 +2662,7 @@ impl TerminalView {
 
     pub(super) fn render_overlay_layer(
         &mut self,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let now = Instant::now();
@@ -2581,11 +2713,11 @@ impl TerminalView {
         }
         let colors = self.colors.clone();
         let command_palette_overlay = if self.is_command_palette_open() {
-            Some(self.render_command_palette_modal(cx))
+            Some(self.render_command_palette_modal(window, cx))
         } else {
             None
         };
-        let plugin_ui_overlay = self.plugin_ui.clone();
+        let plugin_ui_overlay = self.modal_plugin_ui(cx);
         let search_overlay = if self.search_open {
             Some(self.render_search_bar(cx))
         } else {
@@ -3840,6 +3972,18 @@ mod tests {
     #[test]
     fn terminal_progress_loader_fill_hides_clear_state() {
         assert_eq!(terminal_progress_loader_fill(ProgressState::Clear, 0), None);
+    }
+
+    #[test]
+    fn context_menu_height_scrolls_long_plugin_lists_inside_the_viewport() {
+        assert_eq!(context_menu_visible_height(900.0, Some(600.0), 30.0), 584.0);
+        assert_eq!(context_menu_visible_height(300.0, Some(600.0), 30.0), 300.0);
+        assert_eq!(context_menu_visible_height(900.0, None, 30.0), 900.0);
+    }
+
+    #[test]
+    fn context_menu_height_keeps_one_row_visible_in_tiny_viewports() {
+        assert_eq!(context_menu_visible_height(900.0, Some(20.0), 30.0), 38.0);
     }
 
     fn assert_close(left: f32, right: f32) {

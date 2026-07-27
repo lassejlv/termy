@@ -1094,6 +1094,7 @@ impl TerminalView {
     }
 
     pub(super) fn command_palette_query_changed(&mut self, cx: &mut Context<Self>) {
+        self.dismiss_command_palette_plugin_ui(cx);
         self.refresh_command_palette_matches(true, cx);
         self.notify_for_inline_input_target(InlineInputTarget::CommandPalette, cx);
     }

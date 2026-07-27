@@ -1,4 +1,7 @@
-use super::{TerminalView, command_palette::style::CommandPaletteStyle};
+use super::{
+    TerminalView,
+    command_palette::{CommandPaletteMode, style::CommandPaletteStyle},
+};
 use crate::commands;
 use crate::text_input::{TextInputAlignment, TextInputElement, TextInputProvider, TextInputState};
 use gpui::prelude::FluentBuilder;
@@ -12,7 +15,7 @@ use std::{borrow::Cow, collections::BTreeMap};
 use termy_plugin_runtime::{
     PluginContext, PluginRuntime, PluginUiAlignment, PluginUiButtonVariant, PluginUiGap,
     PluginUiNode, PluginUiTextVariant, PluginUiTone, PluginViewAction, PluginViewDescriptor,
-    PluginViewRender, PluginViewValue,
+    PluginViewRender, PluginViewTarget, PluginViewValue,
 };
 
 const PANEL_WIDTH: f32 = 620.0;
@@ -52,6 +55,7 @@ pub(super) struct PluginUiView {
     runtime: PluginRuntime,
     descriptor: PluginViewDescriptor,
     revision: String,
+    target: PluginViewTarget,
     nodes: Vec<PluginUiNode>,
     values: BTreeMap<String, PluginViewValue>,
     active_input: Option<ActiveInput>,
@@ -69,6 +73,7 @@ impl PluginUiView {
         runtime: PluginRuntime,
         descriptor: PluginViewDescriptor,
         revision: String,
+        target: PluginViewTarget,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
@@ -77,6 +82,7 @@ impl PluginUiView {
             runtime,
             descriptor,
             revision,
+            target,
             nodes: Vec::new(),
             values: BTreeMap::new(),
             active_input: None,
@@ -90,6 +96,14 @@ impl PluginUiView {
 
     fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
+    }
+
+    pub(in crate::terminal_view) fn target(&self) -> PluginViewTarget {
+        self.target
+    }
+
+    pub(in crate::terminal_view) fn title(&self) -> &str {
+        &self.descriptor.title
     }
 
     fn current_context(
@@ -1229,8 +1243,9 @@ impl Render for PluginUiView {
         let viewport = window.viewport_size();
         let viewport_width: f32 = viewport.width.into();
         let viewport_height: f32 = viewport.height.into();
+        let available_height = (viewport_height - chrome_height).max(1.0);
         let (panel_width, panel_max_height) =
-            Self::panel_dimensions(viewport_width, (viewport_height - chrome_height).max(1.0));
+            Self::panel_dimensions(viewport_width, available_height);
         let rendered_nodes = self
             .nodes
             .iter()
@@ -1264,6 +1279,51 @@ impl Render for PluginUiView {
                 .children(rendered_nodes)
                 .into_any_element()
         };
+        if self.target == PluginViewTarget::CommandPalette {
+            return div()
+                .id("plugin-ui-command-palette-content")
+                .size_full()
+                .min_h(px(0.0))
+                .overflow_hidden()
+                .track_focus(&self.focus_handle)
+                .key_context("PluginUI")
+                .on_action(cx.listener(Self::handle_copy_action))
+                .on_action(cx.listener(Self::handle_paste_action))
+                .on_action(cx.listener(Self::handle_select_all_action))
+                .on_key_down(cx.listener(Self::handle_key_down))
+                .child(
+                    div()
+                        .id("plugin-ui-content")
+                        .size_full()
+                        .min_h(px(0.0))
+                        .overflow_y_scroll()
+                        .track_scroll(&self.scroll_handle)
+                        .px(px(14.0))
+                        .py(px(12.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.0))
+                        .children(self.error.as_ref().map(|error| {
+                            div()
+                                .w_full()
+                                .px(px(10.0))
+                                .py(px(8.0))
+                                .rounded(px(CONTROL_RADIUS))
+                                .bg(style.control_bg)
+                                .text_size(px(12.0))
+                                .text_color(style.danger)
+                                .child(error.clone())
+                        }))
+                        .child(content)
+                        .children(self.busy.then(|| {
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(style.muted_text)
+                                .child("Working…")
+                        })),
+                )
+                .into_any_element();
+        }
         let title = self.descriptor.title.clone();
         let close_button = div()
             .id("plugin-ui-close")
@@ -1407,6 +1467,7 @@ impl TerminalView {
         plugin_id: &str,
         view_id: &str,
         revision: &str,
+        target: PluginViewTarget,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
@@ -1418,7 +1479,13 @@ impl TerminalView {
             return Err("Plugin changed before its view could open; try again".to_string());
         }
         let context = self.plugin_context(cx);
-        self.close_command_palette(cx);
+        match target {
+            PluginViewTarget::Modal => self.close_command_palette(cx),
+            PluginViewTarget::CommandPalette => {
+                self.open_command_palette_in_mode(CommandPaletteMode::Commands, cx);
+                self.command_palette_input_mut().clear();
+            }
+        }
         self.close_search(cx);
         self.cancel_rename_tab(cx);
         self.cancel_rename_workspace(cx);
@@ -1430,16 +1497,63 @@ impl TerminalView {
         let window_handle = window.window_handle();
         let runtime = self.plugin_runtime.clone();
         let revision = revision.to_string();
-        let plugin_ui = cx
-            .new(|cx| PluginUiView::new(parent, window_handle, runtime, descriptor, revision, cx));
+        let plugin_ui = cx.new(|cx| {
+            PluginUiView::new(
+                parent,
+                window_handle,
+                runtime,
+                descriptor,
+                revision,
+                target,
+                cx,
+            )
+        });
         self.plugin_ui = Some(plugin_ui.clone());
         plugin_ui.update(cx, |view, cx| {
-            view.focus(window, cx);
+            if target == PluginViewTarget::Modal {
+                view.focus(window, cx);
+            }
             view.load(context, cx);
         });
+        if target == PluginViewTarget::CommandPalette {
+            self.focus_handle.focus(window, cx);
+        }
         cx.notify();
         self.notify_overlay(cx);
         Ok(())
+    }
+
+    pub(in crate::terminal_view) fn command_palette_plugin_ui(
+        &self,
+        cx: &App,
+    ) -> Option<gpui::Entity<PluginUiView>> {
+        self.plugin_ui
+            .as_ref()
+            .filter(|view| view.read(cx).target() == PluginViewTarget::CommandPalette)
+            .cloned()
+    }
+
+    pub(in crate::terminal_view) fn modal_plugin_ui(
+        &self,
+        cx: &App,
+    ) -> Option<gpui::Entity<PluginUiView>> {
+        self.plugin_ui
+            .as_ref()
+            .filter(|view| view.read(cx).target() == PluginViewTarget::Modal)
+            .cloned()
+    }
+
+    pub(in crate::terminal_view) fn dismiss_command_palette_plugin_ui(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.command_palette_plugin_ui(cx).is_none() {
+            return false;
+        }
+        self.plugin_ui = None;
+        cx.notify();
+        self.notify_overlay(cx);
+        true
     }
 
     fn close_plugin_ui(&mut self, window: &mut Window, cx: &mut Context<Self>) {

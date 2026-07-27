@@ -1,4 +1,6 @@
 use super::super::*;
+use super::presentation::{palette_item_category, palette_item_icon_path, shortcut_keycaps};
+use super::state::{command_palette_layout_for_viewport, command_palette_viewport_height};
 use super::style::{
     COMMAND_PALETTE_PANEL_RADIUS, COMMAND_PALETTE_ROW_RADIUS, COMMAND_PALETTE_SHORTCUT_RADIUS,
     CommandPaletteStyle,
@@ -8,6 +10,84 @@ use crate::ui::scrollbar::{self, ScrollbarPaintStyle, ScrollbarRange};
 use gpui::prelude::FluentBuilder;
 use gpui::uniform_list;
 use std::ops::Range;
+
+/// Renders a row title with the query's matched characters accented. Disabled
+/// rows and rows without a query keep flat text.
+fn highlighted_title(
+    title: String,
+    highlights: &[Range<usize>],
+    is_enabled: bool,
+    style: &CommandPaletteStyle,
+) -> AnyElement {
+    if highlights.is_empty() || !is_enabled {
+        return title.into_any_element();
+    }
+
+    let highlight = gpui::HighlightStyle {
+        color: Some(style.match_text.into()),
+        font_weight: Some(gpui::FontWeight::BOLD),
+        ..Default::default()
+    };
+    let runs: Vec<(Range<usize>, gpui::HighlightStyle)> = highlights
+        .iter()
+        .filter(|range| {
+            range.end <= title.len()
+                && title.is_char_boundary(range.start)
+                && title.is_char_boundary(range.end)
+        })
+        .map(|range| (range.clone(), highlight))
+        .collect();
+
+    if runs.is_empty() {
+        return title.into_any_element();
+    }
+
+    gpui::StyledText::new(title)
+        .with_highlights(runs)
+        .into_any_element()
+}
+
+/// Draws a keybinding as one chip per key: `⇧⌘K` reads as three caps, and a
+/// multi-keystroke binding puts extra space between its keystrokes.
+fn shortcut_keycap_row(
+    label: &str,
+    text_color: gpui::Rgba,
+    style: &CommandPaletteStyle,
+) -> AnyElement {
+    let keystrokes = shortcut_keycaps(label);
+    if keystrokes.is_empty() {
+        return div().into_any_element();
+    }
+
+    div()
+        .flex_none()
+        .flex()
+        .items_center()
+        .gap(px(COMMAND_PALETTE_KEYSTROKE_GAP))
+        .children(keystrokes.into_iter().map(|keycaps| {
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(COMMAND_PALETTE_KEYCAP_GAP))
+                .children(keycaps.into_iter().map(|keycap| {
+                    div()
+                        .flex_none()
+                        .h(px(20.0))
+                        .min_w(px(20.0))
+                        .px(px(5.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(COMMAND_PALETTE_SHORTCUT_RADIUS))
+                        .bg(style.shortcut_bg)
+                        .text_size(px(10.0))
+                        .text_color(text_color)
+                        .child(keycap)
+                }))
+        }))
+        .into_any_element()
+}
 
 impl TerminalView {
     pub(super) fn command_palette_scrollbar_range(
@@ -133,6 +213,9 @@ impl TerminalView {
         let selected = self.command_palette.selected_filtered_index().unwrap_or(0);
         let style = CommandPaletteStyle::resolve(self);
         let transparent = self.overlay_style().transparent_background();
+        // Only the Commands list mixes sources; every other mode would repeat
+        // the same category on every row.
+        let show_categories = self.command_palette.mode() == CommandPaletteMode::Commands;
 
         let mut rows = Vec::with_capacity(range.len());
         for index in range {
@@ -181,7 +264,13 @@ impl TerminalView {
                 | CommandPaletteItemKind::AppInfoCopyAll { .. } => None,
             };
             let title = item.title.clone();
-            let status_hint = item.status_hint.clone();
+            let title_highlights = self.command_palette.filtered_title_highlights(index);
+            // An unavailable row always says why on the row itself, instead of
+            // only explaining after someone tries to run it.
+            let status_hint = item
+                .status_hint
+                .clone()
+                .or_else(|| (!is_enabled).then(|| COMMAND_PALETTE_UNAVAILABLE_HINT.to_string()));
             let text_color = if is_enabled {
                 style.primary_text
             } else {
@@ -193,11 +282,16 @@ impl TerminalView {
                 style.muted_text
             };
             let icon_path = palette_item_icon_path(&item);
-            let icon_tint = if is_selected {
-                style.primary_text
+            // Selection is carried by the row background and accent bar alone;
+            // a tint flip here would make every unselected row read as dimmed.
+            let icon_tint = if is_enabled {
+                style.icon_text
             } else {
                 style.muted_text
             };
+            let category = show_categories
+                .then(|| palette_item_category(&item))
+                .flatten();
 
             let selection_accent = is_selected.then(|| {
                 div()
@@ -227,11 +321,16 @@ impl TerminalView {
                     })
                     .children(selection_accent)
                     .when(is_enabled, |row| row.cursor_pointer())
-                    .on_mouse_move(cx.listener(move |this, _event, _window, cx| {
-                        if this.command_palette.set_selected_filtered_index(index) {
-                            this.notify_overlay(cx);
-                        }
-                    }))
+                    .on_mouse_move(
+                        cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
+                            if !this.command_palette.accept_hover_at(event.position) {
+                                return;
+                            }
+                            if this.command_palette.set_selected_filtered_index(index) {
+                                this.notify_overlay(cx);
+                            }
+                        }),
+                    )
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _event, window, cx| {
@@ -261,13 +360,31 @@ impl TerminalView {
                                             .size(px(COMMAND_PALETTE_ROW_ICON_SIZE))
                                             .text_color(icon_tint),
                                     )
-                                    .child(div().flex_1().truncate().child(title)),
+                                    .child(div().flex_1().truncate().child(highlighted_title(
+                                        title,
+                                        &title_highlights,
+                                        is_enabled,
+                                        &style,
+                                    ))),
                             )
                             .child(
                                 div()
                                     .flex()
                                     .items_center()
                                     .gap(px(6.0))
+                                    .children(category.map(|label| {
+                                        div()
+                                            .flex_none()
+                                            .max_w(px(COMMAND_PALETTE_ROW_CATEGORY_MAX_WIDTH))
+                                            // Sits a touch further from the key
+                                            // chips than they sit from each other.
+                                            .mr(px(4.0))
+                                            .overflow_hidden()
+                                            .truncate()
+                                            .text_size(px(11.0))
+                                            .text_color(style.muted_text)
+                                            .child(label)
+                                    }))
                                     .children(status_hint.map(|label| {
                                         div()
                                             .flex_none()
@@ -283,18 +400,7 @@ impl TerminalView {
                                             .child(label)
                                     }))
                                     .children(shortcut.map(|label| {
-                                        div()
-                                            .flex_none()
-                                            .h(px(20.0))
-                                            .px(px(6.0))
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .rounded(px(COMMAND_PALETTE_SHORTCUT_RADIUS))
-                                            .bg(style.shortcut_bg)
-                                            .text_size(px(10.0))
-                                            .text_color(shortcut_text)
-                                            .child(label)
+                                        shortcut_keycap_row(&label, shortcut_text, &style)
                                     })),
                             ),
                     )
@@ -306,108 +412,142 @@ impl TerminalView {
 
     pub(in super::super) fn render_command_palette_modal(
         &mut self,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let plugin_ui = self.command_palette_plugin_ui(cx);
+        let plugin_ui_title = plugin_ui
+            .as_ref()
+            .map(|view| view.read(cx).title().to_string());
         let item_count = self.command_palette.filtered_len();
-        let list_height = COMMAND_PALETTE_MAX_ITEMS as f32 * COMMAND_PALETTE_ROW_HEIGHT;
-        let mode_title = match self.command_palette.mode() {
-            CommandPaletteMode::Commands => "Commands".to_string(),
-            CommandPaletteMode::Themes => format!("Theme: {}", self.theme_id),
-            CommandPaletteMode::TmuxSessions => match self.command_palette.tmux_session_intent() {
-                TmuxSessionIntent::AttachOrSwitch => "tmux Sessions".to_string(),
-                TmuxSessionIntent::RenameSelect => "tmux Sessions: Rename".to_string(),
-                TmuxSessionIntent::RenameInput => "tmux Sessions: Rename".to_string(),
-                TmuxSessionIntent::Kill => "tmux Sessions: Kill".to_string(),
-            },
-            CommandPaletteMode::Layouts => match self.command_palette.saved_layout_intent() {
-                SavedLayoutIntent::Browse => "Saved Layouts".to_string(),
-                SavedLayoutIntent::SaveInput => "Saved Layouts: Save".to_string(),
-                SavedLayoutIntent::RenameSelect => "Saved Layouts: Rename".to_string(),
-                SavedLayoutIntent::RenameInput => "Saved Layouts: Rename".to_string(),
-                SavedLayoutIntent::Delete => "Saved Layouts: Delete".to_string(),
-            },
-            CommandPaletteMode::Tasks => match self.current_named_layout.as_deref() {
-                Some(layout_name) if self.command_palette.task_intent() == TaskIntent::Browse => {
-                    format!("Tasks: {layout_name}")
+        let viewport = window.viewport_size();
+        let layout = command_palette_layout_for_viewport(viewport.width.into(), {
+            // The palette lives inside the terminal-scoped overlay, so the
+            // chrome above it is not usable height.
+            let height: f32 = viewport.height.into();
+            (height - self.terminal_content_top_inset()).max(0.0)
+        });
+        self.command_palette.set_visible_rows(layout.visible_rows);
+        let list_height = command_palette_viewport_height(layout.visible_rows);
+        let mode_title = if let Some(title) = plugin_ui_title.as_ref() {
+            title.clone()
+        } else {
+            match self.command_palette.mode() {
+                CommandPaletteMode::Commands => "Commands".to_string(),
+                CommandPaletteMode::Themes => format!("Theme: {}", self.theme_id),
+                CommandPaletteMode::TmuxSessions => {
+                    match self.command_palette.tmux_session_intent() {
+                        TmuxSessionIntent::AttachOrSwitch => "tmux Sessions".to_string(),
+                        TmuxSessionIntent::RenameSelect => "tmux Sessions: Rename".to_string(),
+                        TmuxSessionIntent::RenameInput => "tmux Sessions: Rename".to_string(),
+                        TmuxSessionIntent::Kill => "tmux Sessions: Kill".to_string(),
+                    }
                 }
-                _ => match self.command_palette.task_intent() {
-                    TaskIntent::Browse => "Tasks".to_string(),
-                    TaskIntent::CreateGlobalInput => "Tasks: New".to_string(),
-                    TaskIntent::CreateLayoutInput => match self.current_named_layout.as_deref() {
-                        Some(layout_name) => format!("Tasks: New for {layout_name}"),
-                        None => "Tasks: New".to_string(),
+                CommandPaletteMode::Layouts => match self.command_palette.saved_layout_intent() {
+                    SavedLayoutIntent::Browse => "Saved Layouts".to_string(),
+                    SavedLayoutIntent::SaveInput => "Saved Layouts: Save".to_string(),
+                    SavedLayoutIntent::RenameSelect => "Saved Layouts: Rename".to_string(),
+                    SavedLayoutIntent::RenameInput => "Saved Layouts: Rename".to_string(),
+                    SavedLayoutIntent::Delete => "Saved Layouts: Delete".to_string(),
+                },
+                CommandPaletteMode::Tasks => match self.current_named_layout.as_deref() {
+                    Some(layout_name)
+                        if self.command_palette.task_intent() == TaskIntent::Browse =>
+                    {
+                        format!("Tasks: {layout_name}")
+                    }
+                    _ => match self.command_palette.task_intent() {
+                        TaskIntent::Browse => "Tasks".to_string(),
+                        TaskIntent::CreateGlobalInput => "Tasks: New".to_string(),
+                        TaskIntent::CreateLayoutInput => match self.current_named_layout.as_deref()
+                        {
+                            Some(layout_name) => format!("Tasks: New for {layout_name}"),
+                            None => "Tasks: New".to_string(),
+                        },
                     },
                 },
-            },
-            CommandPaletteMode::PluginInputs => {
-                let progress = self.plugin_input_progress_label();
-                if progress.is_empty() {
-                    self.plugin_input_mode_title()
-                } else {
-                    format!("{} · {progress}", self.plugin_input_mode_title())
+                CommandPaletteMode::PluginInputs => {
+                    let progress = self.plugin_input_progress_label();
+                    if progress.is_empty() {
+                        self.plugin_input_mode_title()
+                    } else {
+                        format!("{} · {progress}", self.plugin_input_mode_title())
+                    }
                 }
+                CommandPaletteMode::AppInfo => "App Info".to_string(),
             }
-            CommandPaletteMode::AppInfo => "App Info".to_string(),
         };
         // (keycap, action) pairs for the footer bar. An empty keycap renders the
         // action as a plain note instead of a key hint.
-        let footer_hints: &[(&str, &str)] = match self.command_palette.mode() {
-            CommandPaletteMode::Commands => &[("↵", "Run"), ("esc", "Close"), ("↑↓", "Navigate")],
-            CommandPaletteMode::Themes => {
-                &[("↵", "Apply Theme"), ("esc", "Back"), ("↑↓", "Navigate")]
+        let footer_hints: &[(&str, &str)] = if plugin_ui.is_some() {
+            &[("esc", "Back"), ("", "Type to search commands")]
+        } else {
+            match self.command_palette.mode() {
+                CommandPaletteMode::Commands => {
+                    &[("↵", "Run"), ("esc", "Close"), ("↑↓", "Navigate")]
+                }
+                CommandPaletteMode::Themes => {
+                    &[("↵", "Apply Theme"), ("esc", "Back"), ("↑↓", "Navigate")]
+                }
+                CommandPaletteMode::TmuxSessions => {
+                    match self.command_palette.tmux_session_intent() {
+                        TmuxSessionIntent::AttachOrSwitch => &[
+                            ("↵", "Open/Create/Manage Session"),
+                            ("esc", "Back"),
+                            ("↑↓", "Navigate"),
+                        ],
+                        TmuxSessionIntent::RenameSelect => {
+                            &[("↵", "Select Session"), ("esc", "Back"), ("↑↓", "Navigate")]
+                        }
+                        TmuxSessionIntent::RenameInput => {
+                            &[("↵", "Rename Session"), ("esc", "Back"), ("↑↓", "Navigate")]
+                        }
+                        TmuxSessionIntent::Kill => {
+                            &[("↵", "Kill Session"), ("esc", "Back"), ("↑↓", "Navigate")]
+                        }
+                    }
+                }
+                CommandPaletteMode::Layouts => match self.command_palette.saved_layout_intent() {
+                    SavedLayoutIntent::Browse => &[
+                        ("↵", "Load/Save/Manage Layout"),
+                        ("esc", "Back"),
+                        ("↑↓", "Navigate"),
+                    ],
+                    SavedLayoutIntent::SaveInput => {
+                        &[("↵", "Save Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
+                    }
+                    SavedLayoutIntent::RenameSelect => {
+                        &[("↵", "Select Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
+                    }
+                    SavedLayoutIntent::RenameInput => {
+                        &[("↵", "Rename Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
+                    }
+                    SavedLayoutIntent::Delete => {
+                        &[("↵", "Delete Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
+                    }
+                },
+                CommandPaletteMode::Tasks => match self.command_palette.task_intent() {
+                    TaskIntent::Browse => &[("↵", "Run Task"), ("esc", "Back"), ("↑↓", "Navigate")],
+                    TaskIntent::CreateGlobalInput | TaskIntent::CreateLayoutInput => &[
+                        ("", "Format: name: command"),
+                        ("↵", "Save Task"),
+                        ("esc", "Back"),
+                    ],
+                },
+                CommandPaletteMode::PluginInputs => {
+                    match (self.plugin_input_is_last(), self.plugin_input_can_go_back()) {
+                        (true, true) => &[("↵", "Run"), ("esc", "Previous"), ("↑↓", "Navigate")],
+                        (true, false) => &[("↵", "Run"), ("esc", "Back"), ("↑↓", "Navigate")],
+                        (false, true) => {
+                            &[("↵", "Continue"), ("esc", "Previous"), ("↑↓", "Navigate")]
+                        }
+                        (false, false) => &[("↵", "Continue"), ("esc", "Back"), ("↑↓", "Navigate")],
+                    }
+                }
+                CommandPaletteMode::AppInfo => {
+                    &[("↵", "Copy"), ("esc", "Back"), ("↑↓", "Navigate")]
+                }
             }
-            CommandPaletteMode::TmuxSessions => match self.command_palette.tmux_session_intent() {
-                TmuxSessionIntent::AttachOrSwitch => &[
-                    ("↵", "Open/Create/Manage Session"),
-                    ("esc", "Back"),
-                    ("↑↓", "Navigate"),
-                ],
-                TmuxSessionIntent::RenameSelect => {
-                    &[("↵", "Select Session"), ("esc", "Back"), ("↑↓", "Navigate")]
-                }
-                TmuxSessionIntent::RenameInput => {
-                    &[("↵", "Rename Session"), ("esc", "Back"), ("↑↓", "Navigate")]
-                }
-                TmuxSessionIntent::Kill => {
-                    &[("↵", "Kill Session"), ("esc", "Back"), ("↑↓", "Navigate")]
-                }
-            },
-            CommandPaletteMode::Layouts => match self.command_palette.saved_layout_intent() {
-                SavedLayoutIntent::Browse => &[
-                    ("↵", "Load/Save/Manage Layout"),
-                    ("esc", "Back"),
-                    ("↑↓", "Navigate"),
-                ],
-                SavedLayoutIntent::SaveInput => {
-                    &[("↵", "Save Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
-                }
-                SavedLayoutIntent::RenameSelect => {
-                    &[("↵", "Select Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
-                }
-                SavedLayoutIntent::RenameInput => {
-                    &[("↵", "Rename Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
-                }
-                SavedLayoutIntent::Delete => {
-                    &[("↵", "Delete Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
-                }
-            },
-            CommandPaletteMode::Tasks => match self.command_palette.task_intent() {
-                TaskIntent::Browse => &[("↵", "Run Task"), ("esc", "Back"), ("↑↓", "Navigate")],
-                TaskIntent::CreateGlobalInput | TaskIntent::CreateLayoutInput => &[
-                    ("", "Format: name: command"),
-                    ("↵", "Save Task"),
-                    ("esc", "Back"),
-                ],
-            },
-            CommandPaletteMode::PluginInputs => {
-                match (self.plugin_input_is_last(), self.plugin_input_can_go_back()) {
-                    (true, true) => &[("↵", "Run"), ("esc", "Previous"), ("↑↓", "Navigate")],
-                    (true, false) => &[("↵", "Run"), ("esc", "Back"), ("↑↓", "Navigate")],
-                    (false, true) => &[("↵", "Continue"), ("esc", "Previous"), ("↑↓", "Navigate")],
-                    (false, false) => &[("↵", "Continue"), ("esc", "Back"), ("↑↓", "Navigate")],
-                }
-            }
-            CommandPaletteMode::AppInfo => &[("↵", "Copy"), ("esc", "Back"), ("↑↓", "Navigate")],
         };
         let style = CommandPaletteStyle::resolve(self);
         let input_font = Font {
@@ -441,7 +581,16 @@ impl TerminalView {
             _ => "No matching items",
         };
 
-        let list = if item_count == 0 {
+        let list = if let Some(plugin_ui) = plugin_ui.clone() {
+            div()
+                .id("command-palette-plugin-ui")
+                .w_full()
+                .h(px(list_height))
+                .min_h(px(0.0))
+                .overflow_hidden()
+                .child(plugin_ui)
+                .into_any_element()
+        } else if item_count == 0 {
             div()
                 .w_full()
                 .py(px(28.0))
@@ -554,32 +703,40 @@ impl TerminalView {
         let mut divider = style.muted_text;
         divider.a = COMMAND_PALETTE_DIVIDER_ALPHA;
 
-        let mode_chip: Option<AnyElement> =
-            if matches!(self.command_palette.mode(), CommandPaletteMode::Commands) {
-                None
-            } else {
-                Some(
-                    div()
-                        .flex_none()
-                        .max_w(px(260.0))
-                        .h(px(22.0))
-                        .px(px(8.0))
-                        .rounded(px(COMMAND_PALETTE_SHORTCUT_RADIUS))
-                        .bg(style.shortcut_bg)
-                        .overflow_hidden()
-                        .text_size(px(10.0))
-                        .text_color(style.muted_text)
-                        .flex()
-                        .items_center()
-                        .child(div().min_w(px(0.0)).truncate().child(mode_title))
-                        .into_any_element(),
-                )
-            };
+        // Breadcrumb, not a trailing tag: which sub-mode you are in decides what
+        // Enter does, so it reads before the query instead of after it.
+        let mode_breadcrumb: Option<AnyElement> = if plugin_ui.is_none()
+            && matches!(self.command_palette.mode(), CommandPaletteMode::Commands)
+        {
+            None
+        } else {
+            Some(
+                div()
+                    .flex_none()
+                    .max_w(px(COMMAND_PALETTE_BREADCRUMB_MAX_WIDTH))
+                    .h(px(22.0))
+                    .px(px(8.0))
+                    .rounded(px(COMMAND_PALETTE_SHORTCUT_RADIUS))
+                    .bg(style.shortcut_bg)
+                    .overflow_hidden()
+                    .text_size(px(11.0))
+                    .text_color(style.primary_text)
+                    .flex()
+                    .items_center()
+                    .child(div().min_w(px(0.0)).truncate().child(mode_title))
+                    .into_any_element(),
+            )
+        };
 
-        let input_placeholder = (self.command_palette.mode() == CommandPaletteMode::PluginInputs
-            && self.command_palette.input().text().is_empty())
-        .then(|| self.plugin_input_placeholder())
-        .filter(|placeholder| !placeholder.is_empty());
+        let input_placeholder =
+            if plugin_ui.is_some() && self.command_palette.input().text().is_empty() {
+                Some("Search commands…".to_string())
+            } else {
+                (self.command_palette.mode() == CommandPaletteMode::PluginInputs
+                    && self.command_palette.input().text().is_empty())
+                .then(|| self.plugin_input_placeholder())
+                .filter(|placeholder| !placeholder.is_empty())
+            };
         let input_head = div()
             .id("command-palette-input")
             .w_full()
@@ -594,6 +751,7 @@ impl TerminalView {
                     .size(px(18.0))
                     .text_color(style.muted_text),
             )
+            .children(mode_breadcrumb)
             .child(
                 div()
                     .flex_1()
@@ -620,13 +778,16 @@ impl TerminalView {
                         InlineInputAlignment::Left,
                         cx,
                     )),
-            )
-            .children(mode_chip);
+            );
 
-        let result_counter = format!(
-            "{item_count} {}",
-            if item_count == 1 { "item" } else { "items" }
-        );
+        let result_counter = if plugin_ui.is_some() {
+            "Plugin UI".to_string()
+        } else {
+            format!(
+                "{item_count} {}",
+                if item_count == 1 { "item" } else { "items" }
+            )
+        };
         let footer = div()
             .w_full()
             .h(px(COMMAND_PALETTE_FOOTER_HEIGHT))
@@ -681,7 +842,7 @@ impl TerminalView {
 
         let panel = div()
             .id("command-palette-panel")
-            .w(px(COMMAND_PALETTE_WIDTH))
+            .w(px(layout.width))
             .rounded(px(COMMAND_PALETTE_PANEL_RADIUS))
             .bg(style.panel_bg)
             .border_1()
@@ -702,7 +863,8 @@ impl TerminalView {
             .child(div().h(px(1.0)).w_full().bg(divider))
             .child(footer);
 
-        let scrollbar_drag_active = self.command_palette_scrollbar_drag.is_some();
+        let scrollbar_drag_active =
+            plugin_ui.is_none() && self.command_palette_scrollbar_drag.is_some();
         div()
             .id("command-palette-modal")
             .size_full()
@@ -754,7 +916,7 @@ impl TerminalView {
                     .flex()
                     .flex_col()
                     .items_center()
-                    .pt(px(COMMAND_PALETTE_TOP_OFFSET))
+                    .pt(px(layout.top_offset))
                     .child(panel),
             )
             .into_any()

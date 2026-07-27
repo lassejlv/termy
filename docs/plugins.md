@@ -146,6 +146,7 @@ Each command accepts these fields:
 | --- | --- | --- |
 | `id` | yes | Stable command ID, unique within the plugin. |
 | `title` | yes | Label shown in the command palette. |
+| `placements` | no | Surfaces that list the command: `commandPalette`, `terminalContextMenu`, and `tabContextMenu`. Defaults to `["commandPalette"]`. |
 | `keywords` | no | Extra strings matched by palette search. |
 | `status` | no | Compact status text shown on the palette row. |
 | `enabled` | no | Set to `false` to keep the command visible but unavailable. |
@@ -155,6 +156,11 @@ Each command accepts these fields:
 | `run` | yes | Async or synchronous command handler. |
 
 Termy namespaces runtime commands as `<plugin-id>.<command-id>`, so command IDs only need to be unique inside their plugin.
+
+Context-menu placements are currently rendered on Linux and Windows. Commands
+with inputs open the same palette input flow from any surface. A command with an
+empty `placements` array stays available to keybindings without appearing in a
+menu.
 
 ## Imports and build cache
 
@@ -438,6 +444,14 @@ export default definePlugin({
 } satisfies TermyPlugin);
 ```
 
+`view.open` uses a centered modal by default. To render the same bounded native
+view inside the command palette's results area, while keeping its search and
+footer, set `target: "commandPalette"`:
+
+```ts
+return { type: "view.open", view: "todos", target: "commandPalette" };
+```
+
 The v1 component set is `TermyUI.Column`, `Row`, `Text`, `TextInput`, `Button`, `Checkbox`, `Divider`, `Spacer`, and fragments. Layout uses fixed gap and alignment enums; text uses fixed variant and tone enums; buttons use `secondary`, `primary`, or `danger`. Every input and interactive control needs a unique lowercase stable `id`. Controls send a named `action`, optional string `payload`, their current value, and the current text/checkbox `values` map to `onAction`. No JavaScript callback crosses into the native renderer.
 
 Views are limited to 32 per plugin, 256 nodes, 16 levels of nesting, 64 children per node, 64 value-bearing controls, and 4,096 characters per text value. Termy serializes interactions per plugin, disables controls while one is running, rejects stale plugin revisions, and rerenders after successful actions. Escape, the close button, or clicking outside the panel closes a view.
@@ -508,6 +522,9 @@ keybind = secondary-g=plugin:git-tools/status
 Commands without inputs run immediately. Commands with inputs open their input form. Termy refreshes the plugin catalog before invoking the shortcut, so saved plugin changes are picked up. Normal keybinding ordering applies: later lines win, `unbind` removes the shortcut, and a task keybinding takes priority on conflicts.
 
 Disabling a plugin in Settings keeps its files and storage installed but removes its commands the next time the command palette refreshes. Enabling it makes the commands available again. Uninstalling removes Termy's managed copy, storage, and cache, but not the source folder you originally selected.
+
+Termy rejects actions and native-view updates returned by a request that was
+already running when its plugin changed, was disabled, or was removed.
 
 Plugin loading and command execution have timeouts. A thrown error or timeout is contained to that plugin Worker and reported in Termy, while other plugins and the terminal keep running. A subprocess started by plugin code can outlive its Worker, so plugins that spawn processes must stop them themselves when cancellation matters. Plugins share the persistent host transport; if that transport exits, Termy discards it and rebuilds the host and Workers on the next plugin refresh instead of taking down the app. Fix a failed plugin and reopen the palette to load it again.
 

@@ -257,7 +257,11 @@ type TermyPluginAction =
   | { type: "clipboard.write"; text: string }
   | { type: "url.open"; url: string }
   /** Requires `"native-ui"` in plugin.json capabilities. */
-  | { type: "view.open"; view: string }
+  | {
+      type: "view.open";
+      view: string;
+      target?: "modal" | "commandPalette";
+    }
   | {
       type: "toast";
       level: "info" | "success" | "warning" | "error";
@@ -299,6 +303,15 @@ type TermyPluginCommand<
 > = {
   id: string;
   title: string;
+  /**
+   * Surfaces that list this command. Defaults to `["commandPalette"]`.
+   * Context menus are currently available on Linux and Windows.
+   */
+  placements?: (
+    | "commandPalette"
+    | "terminalContextMenu"
+    | "tabContextMenu"
+  )[];
   keywords?: string[];
   status?: string;
   enabled?: boolean;

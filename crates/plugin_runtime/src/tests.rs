@@ -150,13 +150,22 @@ fn tsx_views_render_and_round_trip_actions() {
 type Todo = { id: string; title: string; done: boolean };
 
 export default definePlugin({
-  commands: [{
-    id: "open",
-    title: "Todos: Open",
-    run() {
-      return { type: "view.open", view: "todos" };
+  commands: [
+    {
+      id: "open",
+      title: "Todos: Open",
+      run() {
+        return { type: "view.open", view: "todos", target: "commandPalette" };
+      },
     },
-  }],
+    {
+      id: "open-modal",
+      title: "Todos: Open Modal",
+      run() {
+        return { type: "view.open", view: "todos" };
+      },
+    },
+  ],
   views: {
     todos: {
       title: "Todos",
@@ -253,10 +262,31 @@ export default definePlugin({
         actions,
         vec![PluginAction::ViewOpen {
             view: "todos".to_string(),
+            target: PluginViewTarget::CommandPalette,
             plugin_id: "todos".to_string(),
             revision: revision.clone(),
         }]
     );
+    let modal_revision = runtime
+        .command_with_revision("todos", "open-modal")
+        .expect("modal command revision")
+        .1;
+    let modal_actions = runtime
+        .invoke(
+            "todos",
+            "open-modal",
+            &modal_revision,
+            BTreeMap::new(),
+            test_plugin_context(),
+        )
+        .expect("open modal view action");
+    assert!(matches!(
+        modal_actions.as_slice(),
+        [PluginAction::ViewOpen {
+            target: PluginViewTarget::Modal,
+            ..
+        }]
+    ));
 
     let first = runtime
         .render_view("todos", "todos", &revision, test_plugin_context())
@@ -820,6 +850,111 @@ fn github_plugin_management_tracks_source_and_updates_atomically() {
             .expect("managed source tree")
             .iter()
             .all(|(path, _)| path != SOURCE_METADATA_FILE)
+    );
+}
+
+#[test]
+fn plugin_secret_accounts_are_injective_and_legacy_migration_is_unambiguous() {
+    assert_ne!(
+        plugin_secret_account("a.b", "c"),
+        plugin_secret_account("a", "b.c"),
+        "plugin and setting boundaries must be preserved in credential identities"
+    );
+    assert!(can_migrate_legacy_plugin_secret("github", "token"));
+    assert!(!can_migrate_legacy_plugin_secret("github.tools", "token"));
+    assert!(!can_migrate_legacy_plugin_secret("github", "auth.token"));
+
+    let mut secrets = TEST_PLUGIN_SECRETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    secrets.insert(
+        legacy_plugin_secret_account("migration-proof", "token"),
+        "legacy-secret".to_string(),
+    );
+    secrets.insert(
+        legacy_plugin_secret_account("ambiguous.plugin", "token"),
+        "must-not-leak".to_string(),
+    );
+    drop(secrets);
+
+    assert_eq!(
+        read_plugin_secret("migration-proof", "token").expect("migrate legacy secret"),
+        Some("legacy-secret".to_string())
+    );
+    assert_eq!(
+        read_plugin_secret("ambiguous.plugin", "token").expect("skip ambiguous legacy secret"),
+        None
+    );
+    let secrets = TEST_PLUGIN_SECRETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert!(!secrets.contains_key(&legacy_plugin_secret_account("migration-proof", "token")));
+    assert_eq!(
+        secrets.get(&plugin_secret_account("migration-proof", "token")),
+        Some(&"legacy-secret".to_string())
+    );
+}
+
+#[test]
+fn plugin_command_placements_default_and_validate() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugins = temp.path().join("plugins");
+    write_plugin(
+        &plugins,
+        "placements",
+        "Placements",
+        r#"
+export default definePlugin({
+  commands: [
+    { id: "default", title: "Default", run() {} },
+    {
+      id: "everywhere",
+      title: "Everywhere",
+      placements: ["commandPalette", "terminalContextMenu", "tabContextMenu"],
+      run() {},
+    },
+    { id: "shortcut-only", title: "Shortcut only", placements: [], run() {} },
+  ],
+});
+"#,
+    );
+
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.errors.is_empty(), "errors: {:?}", refresh.errors);
+    let commands = runtime.commands();
+    assert_eq!(
+        commands
+            .iter()
+            .find(|command| command.id == "default")
+            .expect("default command")
+            .placements,
+        vec![PluginCommandPlacement::CommandPalette]
+    );
+    assert_eq!(
+        commands
+            .iter()
+            .find(|command| command.id == "everywhere")
+            .expect("everywhere command")
+            .placements,
+        vec![
+            PluginCommandPlacement::CommandPalette,
+            PluginCommandPlacement::TerminalContextMenu,
+            PluginCommandPlacement::TabContextMenu,
+        ]
+    );
+    assert!(
+        commands
+            .iter()
+            .find(|command| command.id == "shortcut-only")
+            .expect("shortcut-only command")
+            .placements
+            .is_empty()
     );
 }
 
@@ -1774,6 +1909,75 @@ export default definePlugin({
     slow.join()
         .expect("join slow invocation")
         .expect("slow invocation succeeds");
+}
+
+#[test]
+fn disabling_plugin_revokes_in_flight_actions() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugins = temp.path().join("plugins");
+    let marker = temp.path().join("revocation-started");
+    let marker_json =
+        serde_json::to_string(marker.to_string_lossy().as_ref()).expect("encode marker path");
+    let source = r#"
+const markerPath = __MARKER__;
+export default definePlugin({
+  commands: [{
+    id: "run",
+    title: "Revocation: Run",
+    timeoutMs: 2000,
+    async run() {
+      await Bun.write(markerPath, "started");
+      await Bun.sleep(300);
+      return { type: "toast", level: "info", message: "must be revoked" };
+    },
+  }],
+});
+"#
+    .replace("__MARKER__", &marker_json);
+    write_plugin(&plugins, "revocation", "Revocation", &source);
+
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.errors.is_empty(), "errors: {:?}", refresh.errors);
+    let revision = runtime
+        .command_with_revision("revocation", "run")
+        .expect("revocation command")
+        .1;
+    let invoke_runtime = runtime.clone();
+    let invocation = thread::spawn(move || {
+        invoke_runtime.invoke(
+            "revocation",
+            "run",
+            &revision,
+            BTreeMap::new(),
+            test_plugin_context(),
+        )
+    });
+    let marker_deadline = Instant::now() + Duration::from_secs(2);
+    while !marker.exists() {
+        assert!(
+            Instant::now() < marker_deadline,
+            "revocation plugin did not start in time"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    runtime
+        .set_plugin_enabled("revocation", false)
+        .expect("disable plugin while invocation is running");
+    let error = invocation
+        .join()
+        .expect("join revocation invocation")
+        .expect_err("disabled plugin actions must be revoked");
+    assert!(
+        error.contains("disabled") || error.contains("changed") || error.contains("removed"),
+        "unexpected revocation error: {error}"
+    );
 }
 
 #[test]

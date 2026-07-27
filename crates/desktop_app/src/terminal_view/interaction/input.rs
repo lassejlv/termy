@@ -778,7 +778,8 @@ impl TerminalView {
 
         if self.overlay_owns_terminal_input() {
             if self.is_command_palette_open() {
-                if self.handle_command_palette_key_down(key, window, cx) {
+                if self.handle_command_palette_key_down(key, event.keystroke.modifiers, window, cx)
+                {
                     self.remember_consumed_key_release(key);
                 }
                 return;

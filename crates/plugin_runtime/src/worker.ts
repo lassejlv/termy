@@ -74,6 +74,7 @@ type PluginContext = Record<string, unknown> &
 type PluginCommand = {
   id: string;
   title: string;
+  placements?: string[];
   keywords?: string[];
   status?: string;
   enabled?: boolean;
@@ -965,6 +966,23 @@ function normalizePlugin(
     if (command.icon !== undefined && !icons.includes(command.icon)) {
       throw new Error(`Command ${command.id} has an unsupported icon`);
     }
+    const supportedPlacements = [
+      "commandPalette",
+      "terminalContextMenu",
+      "tabContextMenu",
+    ];
+    const placements = command.placements ?? ["commandPalette"];
+    if (
+      !Array.isArray(placements) ||
+      placements.length > supportedPlacements.length ||
+      placements.some(
+        (placement) =>
+          typeof placement !== "string" || !supportedPlacements.includes(placement),
+      ) ||
+      new Set(placements).size !== placements.length
+    ) {
+      throw new Error(`Command ${command.id} has invalid or duplicate placements`);
+    }
     const disabledReason =
       command.enabled === false
         ? optionalText(
@@ -978,6 +996,7 @@ function normalizePlugin(
       pluginName: source.name,
       id: command.id,
       title: command.title,
+      placements,
       keywords: normalizeKeywords(command.keywords, `Keywords for ${command.id}`),
       status: optionalText(command.status, `Status for ${command.id}`, 200),
       disabledReason,

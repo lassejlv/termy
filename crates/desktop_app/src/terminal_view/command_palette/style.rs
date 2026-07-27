@@ -1,5 +1,6 @@
 use super::super::{
-    COMMAND_PALETTE_INPUT_SELECTION_ALPHA, COMMAND_PALETTE_PANEL_BG_ALPHA,
+    COMMAND_PALETTE_ICON_TEXT_ALPHA, COMMAND_PALETTE_INPUT_SELECTION_ALPHA,
+    COMMAND_PALETTE_MATCH_TEXT_ALPHA, COMMAND_PALETTE_PANEL_BG_ALPHA,
     COMMAND_PALETTE_PANEL_SOLID_ALPHA, COMMAND_PALETTE_ROW_SELECTED_BG_ALPHA,
     COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA, COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA,
     COMMAND_PALETTE_SELECTED_ACCENT_ALPHA, COMMAND_PALETTE_SHORTCUT_BG_ALPHA,
@@ -22,6 +23,10 @@ pub(in super::super) struct CommandPaletteStyle {
     // Accent bar marking the selected row; mirrors the active-tab indicator so
     // the chrome speaks one visual language.
     pub(super) selected_accent: gpui::Rgba,
+    // Accent applied to the characters a query matched in a row title.
+    pub(super) match_text: gpui::Rgba,
+    // Row icon tone, held constant across selection.
+    pub(super) icon_text: gpui::Rgba,
     pub(super) shortcut_bg: gpui::Rgba,
     pub(super) shortcut_text: gpui::Rgba,
     pub(super) scrollbar_track: gpui::Rgba,
@@ -59,6 +64,8 @@ impl CommandPaletteStyle {
         let muted_text = overlay_style.panel_foreground(OVERLAY_MUTED_TEXT_ALPHA);
         let input_selection =
             overlay_style.chrome_panel_cursor(COMMAND_PALETTE_INPUT_SELECTION_ALPHA);
+        let match_text = overlay_style.chrome_panel_cursor(COMMAND_PALETTE_MATCH_TEXT_ALPHA);
+        let icon_text = overlay_style.panel_foreground(COMMAND_PALETTE_ICON_TEXT_ALPHA);
         let shortcut_bg = overlay_style.chrome_panel_cursor(COMMAND_PALETTE_SHORTCUT_BG_ALPHA);
         let shortcut_text = overlay_style.panel_foreground(COMMAND_PALETTE_SHORTCUT_TEXT_ALPHA);
         let scrollbar_track =
@@ -74,6 +81,8 @@ impl CommandPaletteStyle {
             input_selection,
             selected_bg,
             selected_accent,
+            match_text,
+            icon_text,
             shortcut_bg,
             shortcut_text,
             scrollbar_track,

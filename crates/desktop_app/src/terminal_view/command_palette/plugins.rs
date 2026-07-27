@@ -2,9 +2,9 @@ use super::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};
 use termy_plugin_runtime::{
-    PluginAction, PluginCommand, PluginContext, PluginEvent, PluginEventDispatch, PluginIcon,
-    PluginInput, PluginPaneContext, PluginPaneKind, PluginRuntimeKind, PluginTabContext,
-    PluginToastLevel,
+    PluginAction, PluginCommand, PluginCommandPlacement, PluginContext, PluginEvent,
+    PluginEventDispatch, PluginIcon, PluginInput, PluginPaneContext, PluginPaneKind,
+    PluginRuntimeKind, PluginTabContext, PluginToastLevel,
 };
 
 const PLUGIN_SELECTED_TEXT_MAX_BYTES: usize = 64 * 1024;
@@ -205,6 +205,21 @@ fn plugin_selected_text(mut text: Option<String>) -> (Option<String>, bool) {
 
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn placed_plugin_commands(
+    mut commands: Vec<PluginCommand>,
+    placement: PluginCommandPlacement,
+) -> Vec<PluginCommand> {
+    commands.retain(|command| command.placements.contains(&placement));
+    commands.sort_by(|left, right| {
+        left.plugin_name
+            .to_lowercase()
+            .cmp(&right.plugin_name.to_lowercase())
+            .then_with(|| left.title.to_lowercase().cmp(&right.title.to_lowercase()))
+            .then_with(|| left.qualified_id().cmp(&right.qualified_id()))
+    });
+    commands
 }
 
 impl TerminalView {
@@ -416,6 +431,11 @@ impl TerminalView {
                             cx,
                         );
                     }
+                    if refresh.changed
+                        && (view.terminal_context_menu.is_some() || view.tab_context_menu.is_some())
+                    {
+                        view.notify_overlay(cx);
+                    }
                 })
             });
         })
@@ -423,8 +443,7 @@ impl TerminalView {
     }
 
     pub(super) fn command_palette_plugin_items(&self) -> Vec<CommandPaletteItem> {
-        self.plugin_runtime
-            .commands()
+        self.plugin_commands_for_placement(PluginCommandPlacement::CommandPalette)
             .into_iter()
             .map(|command| {
                 let enabled = command.disabled_reason.is_none();
@@ -449,6 +468,13 @@ impl TerminalView {
                 }
             })
             .collect()
+    }
+
+    pub(in crate::terminal_view) fn plugin_commands_for_placement(
+        &self,
+        placement: PluginCommandPlacement,
+    ) -> Vec<PluginCommand> {
+        placed_plugin_commands(self.plugin_runtime.commands(), placement)
     }
 
     pub(super) fn plugin_input_uses_free_text(&self) -> bool {
@@ -610,7 +636,7 @@ impl TerminalView {
             .is_some_and(PluginInputSession::is_last_input)
     }
 
-    pub(super) fn start_plugin_command(
+    pub(in crate::terminal_view) fn start_plugin_command(
         &mut self,
         plugin_id: &str,
         command_id: &str,
@@ -884,10 +910,11 @@ impl TerminalView {
                 },
                 PluginAction::ViewOpen {
                     view,
+                    target,
                     plugin_id,
                     revision,
                 } => {
-                    self.open_plugin_ui(&plugin_id, &view, &revision, window, cx)?;
+                    self.open_plugin_ui(&plugin_id, &view, &revision, target, window, cx)?;
                 }
             }
         }
@@ -933,6 +960,7 @@ mod tests {
             plugin_name: "Test".to_string(),
             id: "run".to_string(),
             title: "Test: Run".to_string(),
+            placements: vec![PluginCommandPlacement::CommandPalette],
             keywords: Vec::new(),
             status: None,
             disabled_reason: None,
@@ -940,6 +968,63 @@ mod tests {
             inputs,
             timeout_ms: 10_000,
         }
+    }
+
+    #[test]
+    fn plugin_placements_filter_and_sort_context_menu_commands() {
+        let placed = |plugin_name: &str,
+                      id: &str,
+                      title: &str,
+                      placements: Vec<PluginCommandPlacement>,
+                      disabled_reason: Option<&str>| {
+            let mut command = command(Vec::new());
+            command.plugin_id = plugin_name.to_lowercase();
+            command.plugin_name = plugin_name.to_string();
+            command.id = id.to_string();
+            command.title = title.to_string();
+            command.placements = placements;
+            command.disabled_reason = disabled_reason.map(str::to_string);
+            command
+        };
+        let commands = vec![
+            placed(
+                "Zulu",
+                "palette",
+                "Palette only",
+                vec![PluginCommandPlacement::CommandPalette],
+                None,
+            ),
+            placed(
+                "Beta",
+                "later",
+                "Later",
+                vec![PluginCommandPlacement::TerminalContextMenu],
+                None,
+            ),
+            placed(
+                "alpha",
+                "disabled",
+                "Disabled but visible",
+                vec![PluginCommandPlacement::TerminalContextMenu],
+                Some("Unavailable"),
+            ),
+            placed("Hidden", "hidden", "Hidden", Vec::new(), None),
+        ];
+
+        let visible = placed_plugin_commands(commands, PluginCommandPlacement::TerminalContextMenu);
+
+        assert_eq!(
+            visible
+                .iter()
+                .map(|command| command.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["disabled", "later"]
+        );
+        assert_eq!(
+            visible[0].disabled_reason.as_deref(),
+            Some("Unavailable"),
+            "disabled commands remain visible so the menu can explain their state"
+        );
     }
 
     #[test]

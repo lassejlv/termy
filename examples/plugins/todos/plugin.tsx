@@ -27,6 +27,19 @@ export default definePlugin({
         return { type: "view.open", view: "todos" };
       },
     },
+    {
+      id: "open-palette",
+      title: "Todos: Open in Command Palette",
+      keywords: ["tasks", "checklist", "palette"],
+      icon: "command",
+      run() {
+        return {
+          type: "view.open",
+          view: "todos",
+          target: "commandPalette",
+        };
+      },
+    },
   ],
 
   views: {

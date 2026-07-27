@@ -82,6 +82,14 @@ export default definePlugin({
 The view key (`todos`) must match the `view` in the `view.open` action. The managed
 `termy.d.ts` file supplies `TermyUI`, JSX, view, and action types globally.
 
+Views use a centered modal by default. Add `target: "commandPalette"` to render
+the same bounded native document inside the palette results area while keeping
+the palette search and footer:
+
+```ts
+return { type: "view.open", view: "todos", target: "commandPalette" };
+```
+
 ## Handle interactions
 
 Interactive controls use named actions instead of JavaScript callbacks. Any view

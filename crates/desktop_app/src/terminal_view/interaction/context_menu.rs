@@ -318,6 +318,8 @@ impl TerminalView {
         native_anchor: Option<termy_native_sdk::NativeContextMenuAnchor>,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(not(target_os = "macos"))]
+        self.schedule_plugin_refresh(cx);
         let _ = self.close_tab_context_menu(cx);
         let (selected_text, can_paste) = self.terminal_context_menu_capabilities(cx);
         let can_copy = selected_text.is_some();
@@ -385,6 +387,8 @@ impl TerminalView {
         native_anchor: Option<termy_native_sdk::NativeContextMenuAnchor>,
         cx: &mut Context<Self>,
     ) {
+        #[cfg(not(target_os = "macos"))]
+        self.schedule_plugin_refresh(cx);
         let Some((tab_id, pinned)) = self.tabs.get(tab_index).map(|tab| (tab.id, tab.pinned))
         else {
             return;
