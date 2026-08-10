@@ -280,9 +280,7 @@ impl TerminalView {
                         "{reason}; restarting tmux control mode (tmux_exclusive)"
                     ));
                 } else {
-                    termy_toast::warning(
-                        "tmux control mode exited; restarting (tmux_exclusive)",
-                    );
+                    termy_toast::warning("tmux control mode exited; restarting (tmux_exclusive)");
                 }
                 self.restart_tmux_runtime_after_exit(cx)
             }
