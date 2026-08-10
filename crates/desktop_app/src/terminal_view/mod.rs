@@ -1618,6 +1618,7 @@ pub struct TerminalView {
     /// (logged), so persistence degrades to a no-op instead of retry spam.
     workspace_store: std::cell::OnceCell<Option<Arc<crate::workspace_store::WorkspaceStore>>>,
     tmux_show_active_pane_border: bool,
+    tmux_exclusive: bool,
     config_path: Option<PathBuf>,
     config_fingerprint: Option<u64>,
     last_config_error_message: Option<String>,
@@ -4131,6 +4132,7 @@ impl TerminalView {
             native_persist_write_gate: Arc::new(Mutex::new(())),
             workspace_store: std::cell::OnceCell::new(),
             tmux_show_active_pane_border: config.tmux_show_active_pane_border,
+            tmux_exclusive: config.tmux_exclusive,
             config_path,
             config_fingerprint,
             last_config_error_message,
@@ -4572,6 +4574,7 @@ impl TerminalView {
         self.native_layout_autosave = config.native_layout_autosave;
         self.native_buffer_persistence = config.native_buffer_persistence;
         self.tmux_show_active_pane_border = config.tmux_show_active_pane_border;
+        self.tmux_exclusive = config.tmux_exclusive;
         self.configured_working_dir = config.working_dir.clone();
         self.terminal_runtime = Self::runtime_config_from_app_config(&config, &self.colors);
         if workspace_sidebar_enabled_changed

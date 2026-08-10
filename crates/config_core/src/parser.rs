@@ -286,6 +286,13 @@ impl AppConfig {
                         config.tmux_persistence = parsed;
                     }
                 }
+                RootSettingId::TmuxExclusive => {
+                    if let Some(parsed) =
+                        parse_bool_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.tmux_exclusive = parsed;
+                    }
+                }
                 RootSettingId::NativeTabPersistence => {
                     if let Some(parsed) =
                         parse_bool_field(&mut diagnostics, line_number, key, value)

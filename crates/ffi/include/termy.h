@@ -276,6 +276,7 @@ typedef struct {
   bool auto_update;
   bool tmux_enabled;
   bool tmux_persistence;
+  bool tmux_exclusive;
   bool tmux_show_active_pane_border;
   bool simple_mode;
   bool native_tab_persistence;

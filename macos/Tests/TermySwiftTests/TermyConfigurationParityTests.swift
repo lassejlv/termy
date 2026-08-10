@@ -28,6 +28,7 @@ final class TermyConfigurationParityTests: XCTestCase {
         auto_update = false
         tmux_enabled = true
         tmux_persistence = false
+        tmux_exclusive = true
         tmux_binary = /opt/homebrew/bin/tmux
         tmux_show_active_pane_border = false
         simple_mode = true
@@ -67,6 +68,7 @@ final class TermyConfigurationParityTests: XCTestCase {
         XCTAssertEqual(configuration.safety.warnOnQuitWithRunningProcess, false)
         XCTAssertEqual(configuration.tmux.enabled, true)
         XCTAssertEqual(configuration.tmux.persistence, false)
+        XCTAssertEqual(configuration.tmux.exclusive, true)
         XCTAssertEqual(configuration.tmux.binary, "/opt/homebrew/bin/tmux")
         XCTAssertEqual(configuration.tmux.showActivePaneBorder, false)
 

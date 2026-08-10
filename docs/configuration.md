@@ -97,6 +97,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Reuse tmux tabs and panes across app restarts
 - Group: `TMUX`
 
+`tmux_exclusive`
+- Default: `false`
+- Stay in tmux control mode; restart it instead of falling back to a classic terminal when control mode exits
+- Group: `TMUX`
+
 `tmux_binary`
 - Default: `tmux`
 - tmux executable path or binary name

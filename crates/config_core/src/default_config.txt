@@ -17,6 +17,8 @@ auto_update = true
 tmux_enabled = false
 # Reuse tmux tabs and panes across app restarts
 tmux_persistence = true
+# Stay in tmux control mode; restart it instead of falling back to a classic terminal when control mode exits
+tmux_exclusive = false
 # Restore native tabs and pane splits across app restarts
 native_tab_persistence = false
 # Auto-save changes back into the currently loaded named layout

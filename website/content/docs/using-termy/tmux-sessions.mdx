@@ -8,6 +8,7 @@ Requires `tmux` ≥ 3.3 on `PATH` (macOS / Linux), or reachable through a comman
 ```txt
 tmux_enabled                 = true
 tmux_persistence             = true
+tmux_exclusive               = false
 tmux_binary                  = tmux
 tmux_command_prefix          = none
 tmux_show_active_pane_border = false
@@ -17,6 +18,7 @@ tmux_show_active_pane_border = false
 | --- | ------ |
 | `tmux_enabled` | New tabs use tmux instead of a raw PTY |
 | `tmux_persistence` | Sessions survive app restarts |
+| `tmux_exclusive` | Stay in tmux control mode; restart it instead of falling back to a classic terminal when control mode exits (for example after Ctrl+D closes the last pane) |
 | `tmux_binary` | Path or name of the tmux binary |
 | `tmux_command_prefix` | Command that tmux runs through, e.g. `wsl.exe -e` or `ssh myhost` |
 
@@ -52,6 +54,7 @@ remote shell — the host working directory is not forwarded.
 | Blank tabs | Set `tmux_binary` to an absolute path |
 | `protocol version mismatch` | Point `tmux_binary` at the tmux version you intend to use |
 | Sessions lost on quit | Set `tmux_persistence = true` |
+| Control mode exits to a classic terminal | Set `tmux_exclusive = true` to restart control mode instead |
 | Double active-pane border | Set `tmux_show_active_pane_border = false` |
 | tmux mode ignored on Windows | Set `tmux_command_prefix` (e.g. `wsl.exe -e`) |
 | `ssh` prefix hangs at startup | Use key-based auth; the control channel cannot answer password prompts |

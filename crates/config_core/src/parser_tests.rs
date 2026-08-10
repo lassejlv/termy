@@ -368,6 +368,7 @@ fn bool_root_setting_value(config: &AppConfig, setting: RootSettingId) -> Option
         RootSettingId::AutoUpdate => Some(config.auto_update),
         RootSettingId::TmuxEnabled => Some(config.tmux_enabled),
         RootSettingId::TmuxPersistence => Some(config.tmux_persistence),
+        RootSettingId::TmuxExclusive => Some(config.tmux_exclusive),
         RootSettingId::NativeTabPersistence => Some(config.native_tab_persistence),
         RootSettingId::NativeLayoutAutosave => Some(config.native_layout_autosave),
         RootSettingId::NativeBufferPersistence => Some(config.native_buffer_persistence),
@@ -606,6 +607,7 @@ fn tmux_runtime_options_parse() {
     let config = parse(
         "tmux_enabled = true\n\
          tmux_persistence = true\n\
+         tmux_exclusive = true\n\
          tmux_show_active_pane_border = true\n\
          tmux_binary = /opt/homebrew/bin/tmux\n\
          working_dir_fallback = process\n",
@@ -613,6 +615,7 @@ fn tmux_runtime_options_parse() {
 
     assert!(config.tmux_enabled);
     assert!(config.tmux_persistence);
+    assert!(config.tmux_exclusive);
     assert!(config.tmux_show_active_pane_border);
     assert_eq!(config.tmux_binary, "/opt/homebrew/bin/tmux");
     assert_eq!(config.working_dir_fallback, WorkingDirFallback::Process);

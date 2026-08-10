@@ -224,6 +224,12 @@ impl TerminalView {
         if !self.runtime_uses_tmux() {
             return false;
         }
+        if self.tmux_exclusive {
+            termy_toast::info(
+                "tmux_exclusive keeps Termy in control mode; disable it to detach to a classic terminal",
+            );
+            return false;
+        }
 
         // Detach should remain recoverable even if tmux just invalidated panes.
         let size = self
@@ -267,15 +273,106 @@ impl TerminalView {
             return false;
         }
 
-        // Exit recovery uses a deterministic fallback when no active pane remains.
-        let size = self
-            .active_terminal()
-            .map(|terminal| terminal.size())
-            .unwrap_or_default();
-        if let Some(reason) = reason {
-            termy_toast::error(reason);
+        match tmux_exit_recovery_decision(self.tmux_exclusive) {
+            TmuxExitRecoveryDecision::RestartControlMode => {
+                if let Some(reason) = reason {
+                    termy_toast::warning(format!(
+                        "{reason}; restarting tmux control mode (tmux_exclusive)"
+                    ));
+                } else {
+                    termy_toast::warning(
+                        "tmux control mode exited; restarting (tmux_exclusive)",
+                    );
+                }
+                self.restart_tmux_runtime_after_exit(cx)
+            }
+            TmuxExitRecoveryDecision::TransitionToNative => {
+                // Exit recovery uses a deterministic fallback when no active pane remains.
+                let size = self
+                    .active_terminal()
+                    .map(|terminal| terminal.size())
+                    .unwrap_or_default();
+                if let Some(reason) = reason {
+                    termy_toast::error(reason);
+                }
+                self.transition_tmux_runtime_to_native(size, cx)
+            }
         }
-        self.transition_tmux_runtime_to_native(size, cx)
+    }
+
+    /// Force-restart control mode after the previous client already exited.
+    /// Best-effort cleanup of the dead client must not block spawning a replacement.
+    fn restart_tmux_runtime_after_exit(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.runtime_uses_tmux() {
+            return false;
+        }
+
+        let runtime_config = self.tmux_runtime().config.clone();
+        let cols = self.tmux_runtime().client_cols.max(1);
+        let rows = self.tmux_runtime().client_rows.max(1);
+        let initial_working_dir = self.tmux_runtime().preferred_cwd.clone().or_else(|| {
+            termy_terminal_ui::resolve_launch_working_directory(
+                self.configured_working_dir.as_deref(),
+                self.terminal_runtime.working_dir_fallback,
+            )
+            .map(|path| path.to_string_lossy().into_owned())
+        });
+
+        if let Err(error) = TmuxClient::verify_tmux_version(
+            &runtime_config.command_prefix,
+            runtime_config.binary.as_str(),
+            3,
+            3,
+        ) {
+            termy_toast::error(format!("tmux exclusive restart failed: {error}"));
+            return false;
+        }
+
+        let next_client = match TmuxClient::new(
+            runtime_config.clone(),
+            cols,
+            rows,
+            initial_working_dir.as_deref(),
+            Some(self.event_wakeup_tx.clone()),
+        ) {
+            Ok(client) => client,
+            Err(error) => {
+                termy_toast::error(format!(
+                    "tmux exclusive restart failed to start control mode: {error}"
+                ));
+                return false;
+            }
+        };
+
+        let snapshot = match next_client.refresh_snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let _ = next_client.shutdown_default();
+                termy_toast::error(format!(
+                    "tmux exclusive restart failed to fetch snapshot: {error}"
+                ));
+                return false;
+            }
+        };
+
+        // Previous control client already exited; ignore cleanup failures.
+        let _ = self.tmux_runtime().client.shutdown_default();
+
+        self.runtime = RuntimeState::Tmux(TmuxRuntime::new(
+            runtime_config,
+            next_client,
+            initial_working_dir,
+            cols,
+            rows,
+        ));
+        self.native_pane_layout_trees.clear();
+        self.native_pane_zoom_snapshots.clear();
+        self.apply_tmux_snapshot_rehydrate(snapshot);
+        self.reset_tab_interaction_state();
+        self.clear_selection();
+        self.refresh_runtime_capability_surfaces(cx);
+        cx.notify();
+        true
     }
 
     pub(in crate::terminal_view) fn tmux_client_cols(&self) -> u16 {

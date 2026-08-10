@@ -261,6 +261,7 @@ impl TerminalView {
                 self.command_palette.input().text(),
                 self.tmux_active_session_name_for_session_palette()
                     .as_deref(),
+                !self.tmux_exclusive,
             ),
             CommandPaletteMode::Layouts => {
                 let mut items = self
@@ -718,6 +719,7 @@ impl TerminalView {
                 self.command_palette.input().text(),
                 self.tmux_active_session_name_for_session_palette()
                     .as_deref(),
+                !self.tmux_exclusive,
             );
             self.command_palette.set_items(items);
         } else if self.command_palette.mode() == CommandPaletteMode::Layouts {

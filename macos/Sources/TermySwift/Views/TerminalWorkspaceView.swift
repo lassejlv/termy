@@ -112,7 +112,7 @@ struct TerminalWorkspaceView: View {
         ZStack {
             if let tmuxControlModel {
                 TmuxControlWorkspaceView(model: tmuxControlModel) { errorMessage in
-                    fallBackFromTmux(errorMessage)
+                    handleTmuxControlFailure(errorMessage)
                 }
             } else if let zoomedPane = store.zoomedPane {
                 TerminalPaneLeafView(pane: zoomedPane, store: store)
@@ -384,6 +384,34 @@ struct TerminalWorkspaceView: View {
                 "Workspace reset failed: \(String(reflecting: type(of: error)), privacy: .public)"
             )
             workspacePersistenceError = "Could not reset workspace: \(error)"
+        }
+    }
+
+    private func handleTmuxControlFailure(_ errorMessage: String) {
+        if configurationStore.configuration.tmux.exclusive {
+            restartExclusiveTmux(reason: errorMessage)
+        } else {
+            fallBackFromTmux(errorMessage)
+        }
+    }
+
+    private func restartExclusiveTmux(reason: String) {
+        TermyNativeLog.lifecycle.notice(
+            "tmux_exclusive restart after control-mode exit: \(reason, privacy: .public)"
+        )
+        tmuxControlModel?.stop()
+        tmuxControlModel = nil
+        do {
+            let model = try TmuxControlWorkspaceModel()
+            tmuxControlModel = model
+            tmuxFallbackMessage =
+                "tmux control mode exited; restarted because tmux_exclusive is enabled."
+        } catch {
+            TermyNativeLog.lifecycle.error(
+                "tmux_exclusive restart failed: \(String(describing: error), privacy: .public)"
+            )
+            tmuxFallbackMessage =
+                "tmux_exclusive is enabled, but control mode could not restart (\(error))."
         }
     }
 
@@ -788,6 +816,15 @@ private struct TmuxControlWorkspaceView: View {
             if !model.start() {
                 onUnavailable(model.errorMessage ?? "tmux control mode failed to start")
             }
+        }
+        .onChange(of: model.errorMessage) { _, message in
+            guard let message, message == "tmux control session exited" else {
+                return
+            }
+            guard configurationStore.configuration.tmux.exclusive else {
+                return
+            }
+            onUnavailable(message)
         }
         .onDisappear {
             model.stop()

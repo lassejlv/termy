@@ -285,6 +285,7 @@ impl CommandPaletteState {
         &self,
         query: &str,
         active_session_name: Option<&str>,
+        allow_detach: bool,
     ) -> Vec<CommandPaletteItem> {
         match self.tmux_session_intent {
             TmuxSessionIntent::AttachOrSwitch => {
@@ -297,7 +298,7 @@ impl CommandPaletteState {
                 let query = query.trim();
                 if query.is_empty() {
                     let mut utility_items = Vec::new();
-                    if active_session_name.is_some() {
+                    if allow_detach && active_session_name.is_some() {
                         utility_items.push(CommandPaletteItem::tmux_session_detach_current());
                     }
                     if !self.tmux_session_rows.is_empty() {
@@ -381,14 +382,14 @@ mod tests {
             TmuxSocketTarget::Default,
         );
 
-        let with_exact = state.tmux_session_items_for_query("work", None);
+        let with_exact = state.tmux_session_items_for_query("work", None, true);
         assert_eq!(with_exact.len(), 1);
         assert!(matches!(
             with_exact[0].kind,
             CommandPaletteItemKind::TmuxSessionAttachOrSwitch { .. }
         ));
 
-        let with_new = state.tmux_session_items_for_query("new-session", None);
+        let with_new = state.tmux_session_items_for_query("new-session", None, true);
         assert_eq!(with_new.len(), 2);
         assert!(matches!(
             with_new[0].kind,
@@ -408,7 +409,7 @@ mod tests {
             TmuxSocketTarget::DedicatedTermy,
         );
 
-        let items = state.tmux_session_items_for_query("work", None);
+        let items = state.tmux_session_items_for_query("work", None, true);
         assert_eq!(items.len(), 2);
         assert!(matches!(
             items[0].kind,
@@ -431,7 +432,7 @@ mod tests {
             TmuxSocketTarget::DedicatedTermy,
         );
 
-        let items = state.tmux_session_items_for_query("work", None);
+        let items = state.tmux_session_items_for_query("work", None, true);
         assert_eq!(items.len(), 2);
         assert!(items.iter().all(|item| matches!(
             item.kind,
@@ -467,7 +468,7 @@ mod tests {
             TmuxSocketTarget::Default,
         );
 
-        let items = state.tmux_session_items_for_query("", Some("work"));
+        let items = state.tmux_session_items_for_query("", Some("work"), true);
         let active = items
             .iter()
             .find(|item| item.title.starts_with("work"))
@@ -500,17 +501,17 @@ mod tests {
         );
         state.begin_tmux_session_rename("work", TmuxSocketTarget::Default);
 
-        let empty = state.tmux_session_items_for_query("   ", Some("work"));
+        let empty = state.tmux_session_items_for_query("   ", Some("work"), true);
         assert_eq!(empty.len(), 1);
         assert!(!empty[0].enabled);
         assert_eq!(empty[0].status_hint.as_deref(), Some("name required"));
 
-        let same = state.tmux_session_items_for_query("work", Some("work"));
+        let same = state.tmux_session_items_for_query("work", Some("work"), true);
         assert_eq!(same.len(), 1);
         assert!(!same[0].enabled);
         assert_eq!(same[0].status_hint.as_deref(), Some("unchanged"));
 
-        let valid = state.tmux_session_items_for_query("next", Some("work"));
+        let valid = state.tmux_session_items_for_query("next", Some("work"), true);
         assert_eq!(valid.len(), 1);
         assert!(valid[0].enabled);
         assert_eq!(valid[0].status_hint, None);
@@ -533,7 +534,7 @@ mod tests {
             TmuxSocketTarget::DedicatedTermy,
         );
 
-        let items = state.tmux_session_items_for_query("", None);
+        let items = state.tmux_session_items_for_query("", None, true);
         let attach_rows = items
             .iter()
             .filter(|item| {
@@ -558,7 +559,7 @@ mod tests {
             TmuxSocketTarget::Default,
         );
 
-        let items = state.tmux_session_items_for_query("", None);
+        let items = state.tmux_session_items_for_query("", None, true);
         let attach_rows = items
             .iter()
             .filter(|item| {
@@ -575,7 +576,7 @@ mod tests {
     fn tmux_session_create_row_uses_configured_create_socket_target() {
         let mut state = CommandPaletteState::new(false);
         state.set_tmux_session_rows(Vec::new(), TmuxSocketTarget::DedicatedTermy);
-        let items = state.tmux_session_items_for_query("new-session", None);
+        let items = state.tmux_session_items_for_query("new-session", None, true);
         assert_eq!(items.len(), 1);
         let create_socket_target = match &items[0].kind {
             CommandPaletteItemKind::TmuxSessionCreateAndAttach { socket_target, .. } => {
@@ -607,7 +608,7 @@ mod tests {
             TmuxSocketTarget::Default,
         );
 
-        let items = state.tmux_session_items_for_query("", Some("work"));
+        let items = state.tmux_session_items_for_query("", Some("work"), true);
         assert!(matches!(
             items.first().map(|item| &item.kind),
             Some(CommandPaletteItemKind::TmuxSessionDetachCurrent)
@@ -623,6 +624,26 @@ mod tests {
     }
 
     #[test]
+    fn tmux_attach_intent_hides_detach_utility_when_exclusive() {
+        let mut state = CommandPaletteState::new(false);
+        state.set_tmux_session_rows(
+            vec![tmux_row("work", TmuxSocketTarget::Default)],
+            TmuxSocketTarget::Default,
+        );
+
+        let items = state.tmux_session_items_for_query("", Some("work"), false);
+        assert!(
+            !items
+                .iter()
+                .any(|item| matches!(item.kind, CommandPaletteItemKind::TmuxSessionDetachCurrent))
+        );
+        assert!(matches!(
+            items.first().map(|item| &item.kind),
+            Some(CommandPaletteItemKind::TmuxSessionOpenRenameMode)
+        ));
+    }
+
+    #[test]
     fn tmux_attach_intent_hides_detach_utility_when_runtime_is_native() {
         let mut state = CommandPaletteState::new(false);
         state.set_tmux_session_rows(
@@ -630,7 +651,7 @@ mod tests {
             TmuxSocketTarget::Default,
         );
 
-        let items = state.tmux_session_items_for_query("", None);
+        let items = state.tmux_session_items_for_query("", None, true);
         assert!(
             !items
                 .iter()
@@ -656,7 +677,7 @@ mod tests {
             TmuxSocketTarget::Default,
         );
 
-        let items = state.tmux_session_items_for_query("wo", Some("work"));
+        let items = state.tmux_session_items_for_query("wo", Some("work"), true);
         assert!(!items.iter().any(|item| matches!(
             item.kind,
             CommandPaletteItemKind::TmuxSessionDetachCurrent

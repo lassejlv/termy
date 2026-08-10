@@ -388,6 +388,7 @@ impl SettingsWindow {
         let command_prefix_meta = Self::setting_metadata_or_fallback("tmux_command_prefix");
         let tmux_enabled = self.config.tmux_enabled;
         let tmux_persistence = self.config.tmux_persistence;
+        let tmux_exclusive = self.config.tmux_exclusive;
         let tmux_show_active_pane_border = self.config.tmux_show_active_pane_border;
         let binary = self.config.tmux_binary.clone();
         let command_prefix = self.config.tmux_command_prefix.clone().unwrap_or_default();
@@ -407,6 +408,14 @@ impl SettingsWindow {
                 "tmux_persistence-toggle",
                 RootSettingId::TmuxPersistence,
                 tmux_persistence,
+                "Saved",
+                cx,
+            ));
+            rows.push(self.render_root_bool_setting_row(
+                "tmux_exclusive",
+                "tmux_exclusive-toggle",
+                RootSettingId::TmuxExclusive,
+                tmux_exclusive,
                 "Saved",
                 cx,
             ));

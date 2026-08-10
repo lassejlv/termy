@@ -288,6 +288,7 @@ pub struct TermyFfiNativeConfig {
     pub auto_update: bool,
     pub tmux_enabled: bool,
     pub tmux_persistence: bool,
+    pub tmux_exclusive: bool,
     pub tmux_show_active_pane_border: bool,
     pub simple_mode: bool,
     pub native_tab_persistence: bool,
@@ -1162,6 +1163,7 @@ pub unsafe extern "C" fn termy_config_native(
                 auto_update: app_config.auto_update,
                 tmux_enabled: app_config.tmux_enabled,
                 tmux_persistence: app_config.tmux_persistence,
+                tmux_exclusive: app_config.tmux_exclusive,
                 tmux_show_active_pane_border: app_config.tmux_show_active_pane_border,
                 simple_mode: app_config.simple_mode,
                 native_tab_persistence: app_config.native_tab_persistence,
@@ -3644,7 +3646,7 @@ mod tests {
 
     #[test]
     fn config_from_contents_exposes_safety_config() {
-        let contents = b"warn_on_quit = true\nwarn_on_quit_with_running_process = false\nauto_update = false\ntmux_enabled = true\ntmux_persistence = false\ntmux_binary = /opt/homebrew/bin/tmux\ntmux_show_active_pane_border = false\nsimple_mode = true\nnative_tab_persistence = true\nnative_layout_autosave = true\nnative_buffer_persistence = true\nshow_debug_overlay = true\nonboarding_complete = false\ntab_close_visibility = always\ntab_width_mode = active_grow_sticky\ntab_bar_position = right\nnative_tab_placement = sidebar\ntab_switch_modifier_hints = false\nui_font_family = Avenir Next\nchrome_contrast = true\ncommand_palette_show_keybinds = false\napp_icon = old\nshell_integration_enabled = false\nprogress_indicator_enabled = false\nauto_hide_tabbar = false\nshow_termy_in_titlebar = false\n";
+        let contents = b"warn_on_quit = true\nwarn_on_quit_with_running_process = false\nauto_update = false\ntmux_enabled = true\ntmux_persistence = false\ntmux_exclusive = true\ntmux_binary = /opt/homebrew/bin/tmux\ntmux_show_active_pane_border = false\nsimple_mode = true\nnative_tab_persistence = true\nnative_layout_autosave = true\nnative_buffer_persistence = true\nshow_debug_overlay = true\nonboarding_complete = false\ntab_close_visibility = always\ntab_width_mode = active_grow_sticky\ntab_bar_position = right\nnative_tab_placement = sidebar\ntab_switch_modifier_hints = false\nui_font_family = Avenir Next\nchrome_contrast = true\ncommand_palette_show_keybinds = false\napp_icon = old\nshell_integration_enabled = false\nprogress_indicator_enabled = false\nauto_hide_tabbar = false\nshow_termy_in_titlebar = false\n";
         let mut config = ptr::null_mut();
         assert_eq!(
             unsafe { termy_config_from_contents(contents.as_ptr(), contents.len(), &mut config) },
@@ -3667,6 +3669,7 @@ mod tests {
         assert!(!native.auto_update);
         assert!(native.tmux_enabled);
         assert!(!native.tmux_persistence);
+        assert!(native.tmux_exclusive);
         assert!(!native.tmux_show_active_pane_border);
         assert!(native.simple_mode);
         assert!(native.native_tab_persistence);

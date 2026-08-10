@@ -3,8 +3,8 @@ use crate::constants::{
     DEFAULT_MOUSE_SCROLL_MULTIPLIER, DEFAULT_PANE_FOCUS_STRENGTH, DEFAULT_SCROLLBACK_HISTORY,
     DEFAULT_SIDEBAR_WIDTH, DEFAULT_TAB_SWITCH_MODIFIER_HINTS, DEFAULT_TAB_TITLE_COMMAND_FORMAT,
     DEFAULT_TAB_TITLE_EXPLICIT_PREFIX, DEFAULT_TAB_TITLE_FALLBACK, DEFAULT_TAB_TITLE_PROMPT_FORMAT,
-    DEFAULT_TERM, DEFAULT_TMUX_BINARY, DEFAULT_TMUX_ENABLED, DEFAULT_TMUX_PERSISTENCE,
-    DEFAULT_TMUX_SHOW_ACTIVE_PANE_BORDER, DEFAULT_WARN_ON_QUIT,
+    DEFAULT_TERM, DEFAULT_TMUX_BINARY, DEFAULT_TMUX_ENABLED, DEFAULT_TMUX_EXCLUSIVE,
+    DEFAULT_TMUX_PERSISTENCE, DEFAULT_TMUX_SHOW_ACTIVE_PANE_BORDER, DEFAULT_WARN_ON_QUIT,
     DEFAULT_WARN_ON_QUIT_WITH_RUNNING_PROCESS,
 };
 
@@ -353,6 +353,7 @@ pub struct AppConfig {
     pub auto_update: bool,
     pub tmux_enabled: bool,
     pub tmux_persistence: bool,
+    pub tmux_exclusive: bool,
     pub native_tab_persistence: bool,
     pub native_layout_autosave: bool,
     pub native_buffer_persistence: bool,
@@ -453,6 +454,7 @@ impl Default for AppConfig {
             auto_update: true,
             tmux_enabled: DEFAULT_TMUX_ENABLED,
             tmux_persistence: DEFAULT_TMUX_PERSISTENCE,
+            tmux_exclusive: DEFAULT_TMUX_EXCLUSIVE,
             native_tab_persistence: false,
             native_layout_autosave: false,
             native_buffer_persistence: false,

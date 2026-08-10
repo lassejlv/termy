@@ -55,6 +55,20 @@ fn tmux_detach_transition_decision(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TmuxExitRecoveryDecision {
+    TransitionToNative,
+    RestartControlMode,
+}
+
+fn tmux_exit_recovery_decision(exclusive: bool) -> TmuxExitRecoveryDecision {
+    if exclusive {
+        TmuxExitRecoveryDecision::RestartControlMode
+    } else {
+        TmuxExitRecoveryDecision::TransitionToNative
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TmuxPostActionRefresh {
     ImmediateSnapshot,
     EventDriven,
@@ -174,6 +188,18 @@ mod tests {
         assert_eq!(
             tmux_detach_transition_decision(true, true),
             TmuxDetachTransitionDecision::CommitNativeTransition
+        );
+    }
+
+    #[test]
+    fn tmux_exit_recovery_decision_respects_exclusive_mode() {
+        assert_eq!(
+            tmux_exit_recovery_decision(false),
+            TmuxExitRecoveryDecision::TransitionToNative
+        );
+        assert_eq!(
+            tmux_exit_recovery_decision(true),
+            TmuxExitRecoveryDecision::RestartControlMode
         );
     }
 

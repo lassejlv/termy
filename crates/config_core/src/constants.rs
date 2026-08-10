@@ -17,6 +17,7 @@ pub(crate) const DEFAULT_COLORTERM: &str = "truecolor";
 pub(crate) const DEFAULT_TMUX_ENABLED: bool = false;
 pub(crate) const DEFAULT_TMUX_BINARY: &str = "tmux";
 pub(crate) const DEFAULT_TMUX_PERSISTENCE: bool = true;
+pub(crate) const DEFAULT_TMUX_EXCLUSIVE: bool = false;
 pub(crate) const DEFAULT_TMUX_SHOW_ACTIVE_PANE_BORDER: bool = false;
 pub(crate) const DEFAULT_MOUSE_SCROLL_MULTIPLIER: f32 = 3.0;
 /// Unitless multiplier applied to the font's natural cell height to produce the

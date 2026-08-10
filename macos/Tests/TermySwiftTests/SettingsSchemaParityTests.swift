@@ -13,6 +13,7 @@ final class SettingsSchemaParityTests: XCTestCase {
             "auto_update",
             "tmux_enabled",
             "tmux_persistence",
+            "tmux_exclusive",
             "tmux_binary",
             "tmux_command_prefix",
             "tmux_show_active_pane_border",

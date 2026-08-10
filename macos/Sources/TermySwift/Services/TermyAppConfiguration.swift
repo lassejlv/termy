@@ -274,12 +274,14 @@ struct TermyAppConfiguration {
 struct TermyTmuxConfiguration {
     var enabled: Bool
     var persistence: Bool
+    var exclusive: Bool
     var binary: String
     var showActivePaneBorder: Bool
 
     static let `default` = TermyTmuxConfiguration(
         enabled: false,
         persistence: true,
+        exclusive: false,
         binary: "tmux",
         showActivePaneBorder: true
     )
@@ -287,11 +289,13 @@ struct TermyTmuxConfiguration {
     init(
         enabled: Bool,
         persistence: Bool,
+        exclusive: Bool,
         binary: String,
         showActivePaneBorder: Bool
     ) {
         self.enabled = enabled
         self.persistence = persistence
+        self.exclusive = exclusive
         self.binary = binary
         self.showActivePaneBorder = showActivePaneBorder
     }
@@ -299,6 +303,7 @@ struct TermyTmuxConfiguration {
     init(_ ffiConfig: TermyFfiNativeConfig, binary: String) {
         enabled = ffiConfig.tmux_enabled
         persistence = ffiConfig.tmux_persistence
+        exclusive = ffiConfig.tmux_exclusive
         self.binary = binary
         showActivePaneBorder = ffiConfig.tmux_show_active_pane_border
     }
