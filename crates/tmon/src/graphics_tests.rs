@@ -71,7 +71,9 @@ fn encode_base64(input: &[u8]) -> String {
 fn decode_hex(input: &str) -> Vec<u8> {
     input
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let hex = std::str::from_utf8(pair).unwrap();
             u8::from_str_radix(hex, 16).unwrap()

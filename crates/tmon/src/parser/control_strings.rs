@@ -291,7 +291,7 @@ impl Parser {
             "4" => {
                 let values = fields.collect::<Vec<_>>();
                 if values.len() % 2 == 0 {
-                    for pair in values.chunks_exact(2) {
+                    for pair in values.as_chunks::<2>().0 {
                         let Some(index) = pair[0].parse::<u8>().ok() else {
                             continue;
                         };

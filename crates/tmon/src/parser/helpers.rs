@@ -124,7 +124,7 @@ pub(super) fn decode_hex_ascii(input: &[u8]) -> Option<String> {
         return None;
     }
     let mut decoded = Vec::with_capacity(input.len() / 2);
-    for pair in input.chunks_exact(2) {
+    for pair in input.as_chunks::<2>().0 {
         decoded.push((hex(pair[0])? << 4) | hex(pair[1])?);
     }
     String::from_utf8(decoded).ok()

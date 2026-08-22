@@ -196,8 +196,8 @@ fn validate_png(data: &[u8]) -> Result<(u32, u32), String> {
                         u16::from_be_bytes(payload.try_into().unwrap())
                             <= png_sample_max(header.bit_depth)
                     }
-                    2 if length == 6 => payload.chunks_exact(2).all(|sample| {
-                        u16::from_be_bytes(sample.try_into().unwrap())
+                    2 if length == 6 => payload.as_chunks::<2>().0.iter().all(|sample| {
+                        u16::from_be_bytes(*sample)
                             <= png_sample_max(header.bit_depth)
                     }),
                     3 => palette_entries.is_some_and(|entries| length > 0 && length <= entries),

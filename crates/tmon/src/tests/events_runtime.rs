@@ -111,8 +111,9 @@ fn bounded_event_queue_evicts_an_old_command_as_one_cycle() {
         .iter()
         .filter(|event| event_priority(event) == EventPriority::Lifecycle)
         .collect::<Vec<_>>();
-    assert!(lifecycle.chunks_exact(3).remainder().is_empty());
-    assert!(lifecycle.chunks_exact(3).all(|cycle| {
+    let (cycles, remainder) = lifecycle.as_chunks::<3>();
+    assert!(remainder.is_empty());
+    assert!(cycles.iter().all(|cycle| {
         matches!(cycle[0], Event::ShellCommandStart)
             && matches!(cycle[1], Event::ShellCommandExecuting)
             && matches!(cycle[2], Event::ShellCommandFinished(_))
