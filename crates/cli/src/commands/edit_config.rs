@@ -57,7 +57,7 @@ fn editor_launchers(path: &Path, editor: Option<OsString>) -> Vec<EditorLauncher
     #[cfg(target_os = "macos")]
     launchers.push(EditorLauncher::new(
         "open",
-        vec![OsString::from("-t"), path.clone()],
+        vec![OsString::from("-t"), path],
     ));
 
     #[cfg(target_os = "linux")]
@@ -136,6 +136,36 @@ mod tests {
         assert_eq!(
             error,
             "Could not open the config file: preferred exited with an error; fallback exited with an error"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_launchers_prefer_editor_then_open() {
+        let path = Path::new("config.toml");
+        let launchers = editor_launchers(path, Some(OsString::from("nvim")));
+
+        assert_eq!(launchers.len(), 2);
+        assert_eq!(launchers[0].program, OsString::from("nvim"));
+        assert_eq!(launchers[0].args, [OsString::from("config.toml")]);
+        assert_eq!(launchers[1].program, OsString::from("open"));
+        assert_eq!(
+            launchers[1].args,
+            [OsString::from("-t"), OsString::from("config.toml")]
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_launchers_use_open_when_editor_is_unset() {
+        let path = Path::new("config.toml");
+        let launchers = editor_launchers(path, None);
+
+        assert_eq!(launchers.len(), 1);
+        assert_eq!(launchers[0].program, OsString::from("open"));
+        assert_eq!(
+            launchers[0].args,
+            [OsString::from("-t"), OsString::from("config.toml")]
         );
     }
 }
