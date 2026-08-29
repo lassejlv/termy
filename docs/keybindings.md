@@ -254,6 +254,7 @@ Related UI option:
 - `copy`
 - `paste`
 - `select_all`
+- `clear_screen`
 - `close_search`
 - `search_next`
 - `search_previous`

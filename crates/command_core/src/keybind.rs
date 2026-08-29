@@ -663,6 +663,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_clear_screen_keybind() {
+        let lines = [KeybindLineRef {
+            line_number: 1,
+            value: "secondary-k=clear_screen",
+        }];
+
+        let (directives, warnings) = parse_keybind_directives(&lines);
+
+        assert!(warnings.is_empty());
+        assert!(matches!(
+            directives.as_slice(),
+            [KeybindDirective::Bind { trigger, action }]
+                if trigger == "secondary-k" && action.config_name() == "clear_screen"
+        ));
+    }
+
+    #[test]
     fn resolve_keybinds_applies_directives_in_order() {
         let defaults = vec![
             resolved("secondary-p", CommandId::ToggleCommandPalette),

@@ -971,6 +971,16 @@ define_commands!(
             MenuActionRole::SelectAll
         ))
     ),
+    (
+        ClearScreen,
+        TERMINAL_CONTEXT,
+        Some(palette(
+            "Clear Screen",
+            "clear terminal viewport",
+            CommandPaletteVisibility::Always
+        )),
+        None
+    ),
     (CloseSearch, TERMINAL_CONTEXT, None, None),
     (
         SearchNext,
@@ -1145,6 +1155,19 @@ mod tests {
             CommandAction::palette_entries()
                 .iter()
                 .any(|entry| entry.action == CommandAction::SwitchTheme)
+        );
+    }
+
+    #[test]
+    fn clear_screen_is_configurable_and_palette_visible() {
+        assert_eq!(
+            CommandAction::from_config_name("clear_screen"),
+            Some(CommandAction::ClearScreen)
+        );
+        assert!(
+            CommandAction::palette_entries()
+                .iter()
+                .any(|entry| entry.action == CommandAction::ClearScreen)
         );
     }
 

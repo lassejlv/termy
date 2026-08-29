@@ -55,6 +55,7 @@ macro_rules! termy_command_catalog {
             (Copy, "copy"),
             (Paste, "paste"),
             (SelectAll, "select_all"),
+            (ClearScreen, "clear_screen"),
             (CloseSearch, "close_search"),
             (SearchNext, "search_next"),
             (SearchPrevious, "search_previous"),

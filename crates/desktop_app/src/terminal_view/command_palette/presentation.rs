@@ -52,6 +52,7 @@ pub(super) fn command_icon_path(id: CommandId) -> &'static str {
         Quit => "icons/command_palette/power.svg",
         ToggleCommandPalette => "icons/command_palette/command.svg",
         Copy | Paste | SelectAll => "icons/command_palette/clipboard.svg",
+        ClearScreen => "icons/settings/reset.svg",
         InstallCli => "icons/command_palette/cli.svg",
         ToggleTabBarVisibility => "icons/settings/tabs.svg",
         ToggleWorkspaceSidebar => "icons/command_palette/sidebar.svg",
@@ -135,7 +136,7 @@ pub(super) fn command_category(id: CommandId) -> &'static str {
         | SearchPrevious
         | ToggleSearchCaseSensitive
         | ToggleSearchRegex => "Search",
-        Copy | Paste | SelectAll => "Edit",
+        Copy | Paste | SelectAll | ClearScreen => "Edit",
         SwitchTheme | ImportColors | ZoomIn | ZoomOut | ZoomReset => "Appearance",
         OpenConfig | PrettifyConfig | OpenSettings | InstallCli => "Settings",
         AppInfo | RestartApp | CheckForUpdates | Quit | ToggleCommandPalette | ToggleInspector => {

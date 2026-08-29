@@ -1741,6 +1741,7 @@ impl TerminalView {
             | CommandAction::Copy
             | CommandAction::Paste
             | CommandAction::SelectAll
+            | CommandAction::ClearScreen
             | CommandAction::OpenSearch
             | CommandAction::CloseSearch
             | CommandAction::SearchNext

@@ -30,6 +30,16 @@ description: Every action you can bind to a trigger.
 
 `copy`, `paste`.
 
+## Terminal
+
+`clear_screen` sends the same form-feed control character as `Ctrl+L` to the
+active pane, clearing the viewport while preserving scrollback in shells that
+use the conventional `Ctrl+L` behavior.
+
+```txt
+keybind = secondary-k=clear_screen
+```
+
 ## App
 
 `toggle_command_palette`, `open_settings`, `open_config`, `prettify_config`,

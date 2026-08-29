@@ -220,6 +220,13 @@ impl TerminalView {
             CommandAction::Copy | CommandAction::Paste | CommandAction::SelectAll => {
                 self.execute_input_command_action(action, cx);
             }
+            CommandAction::ClearScreen => {
+                // Form feed is the control character produced by Ctrl+L.
+                self.write_terminal_input(b"\x0c", cx);
+                if self.clear_selection() {
+                    cx.notify();
+                }
+            }
             CommandAction::ZoomIn | CommandAction::ZoomOut | CommandAction::ZoomReset => {
                 self.execute_layout_command_action(action, cx);
             }
@@ -734,6 +741,15 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.execute_command_action(CommandAction::Paste, true, window, cx);
+    }
+
+    pub(in super::super) fn handle_clear_screen_action(
+        &mut self,
+        _: &commands::ClearScreen,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ClearScreen, true, window, cx);
     }
 
     pub(in super::super) fn handle_zoom_in_action(
