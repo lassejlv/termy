@@ -2,6 +2,7 @@
 
 use std::{
     collections::{BTreeSet, HashMap},
+    ffi::c_void,
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     ptr, slice, str,
@@ -14,12 +15,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use flume::{Receiver, Sender, bounded};
 use termy_core::{
     ConfigDiagnostic, ConfigDiagnosticKind, KittyGraphicsRenderPlacement, LoadedTermyConfig,
-    ProgressState, Terminal, TerminalClipboardTarget, TerminalDamageSnapshot, TerminalDirtySpan,
-    TerminalEvent, TerminalGlyphMetrics, TerminalGlyphNeighbors, TerminalGlyphRectSnap,
-    TerminalGlyphRenderKind, TerminalGlyphStrokeKind, TerminalKeyEventKind, TerminalMouseButton,
-    TerminalMouseEventKind, TerminalMouseModifiers, TerminalMousePosition, TerminalOptions,
-    TerminalQueryColors, TerminalReplyHost, TerminalRuntimeConfig, TerminalSize, TermyCell,
-    TermyColor, TermyFrameUpdate, TermyKeystroke, TermyModifiers, TermySearchOptions,
+    ProgressState, Terminal, TerminalClipboardContent, TerminalClipboardLocation,
+    TerminalClipboardReadRequest, TerminalClipboardReadResult, TerminalClipboardTarget,
+    TerminalClipboardWriteRequest, TerminalClipboardWriteResult, TerminalDamageSnapshot,
+    TerminalDirtySpan, TerminalEvent, TerminalGlyphMetrics, TerminalGlyphNeighbors,
+    TerminalGlyphRectSnap, TerminalGlyphRenderKind, TerminalGlyphStrokeKind, TerminalKeyEventKind,
+    TerminalMouseButton, TerminalMouseEventKind, TerminalMouseModifiers, TerminalMousePosition,
+    TerminalOptions, TerminalQueryColors, TerminalReplyHost, TerminalRuntimeConfig, TerminalSize,
+    TermyCell, TermyColor, TermyFrameUpdate, TermyKeystroke, TermyModifiers, TermySearchOptions,
     TermySharedSearchMatch, encode_mouse_report, keystroke_to_input_with_options,
     load_config_from_contents, load_config_from_default_path, load_config_from_path,
     terminal_glyph_plan,
@@ -129,6 +132,82 @@ pub struct TermyFfiBytes {
     pub len: usize,
     pub capacity: usize,
 }
+
+/// Non-owning bytes supplied by an FFI caller or borrowed for a callback.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiByteSlice {
+    pub ptr: *const u8,
+    pub len: usize,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiClipboardContent {
+    pub mime_type: TermyFfiByteSlice,
+    pub data: TermyFfiByteSlice,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiClipboardReadRequest {
+    pub location: u32,
+    pub mime_types_ptr: *const TermyFfiByteSlice,
+    pub mime_types_len: usize,
+    pub list_available: bool,
+    pub name: TermyFfiByteSlice,
+    pub has_name: bool,
+    pub permission_granted: bool,
+    pub can_remember_permission: bool,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiClipboardReadResponse {
+    pub status: u32,
+    pub available_formats_ptr: *const TermyFfiByteSlice,
+    pub available_formats_len: usize,
+    pub contents_ptr: *const TermyFfiClipboardContent,
+    pub contents_len: usize,
+    pub remember_permission: bool,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiClipboardWriteRequest {
+    pub location: u32,
+    pub contents_ptr: *const TermyFfiClipboardContent,
+    pub contents_len: usize,
+    pub name: TermyFfiByteSlice,
+    pub has_name: bool,
+    pub permission_granted: bool,
+    pub can_remember_permission: bool,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiClipboardWriteResponse {
+    pub status: u32,
+    pub remember_permission: bool,
+}
+
+pub type TermyFfiUserData = *mut c_void;
+pub type TermyFfiClipboardReadReplyCallback = unsafe extern "C" fn(
+    user_data: TermyFfiUserData,
+    response: *const TermyFfiClipboardReadResponse,
+);
+pub type TermyFfiClipboardReadCallback = unsafe extern "C" fn(
+    user_data: TermyFfiUserData,
+    request: *const TermyFfiClipboardReadRequest,
+    reply_user_data: TermyFfiUserData,
+    reply_callback: TermyFfiClipboardReadReplyCallback,
+);
+pub type TermyFfiClipboardWriteCallback = unsafe extern "C" fn(
+    user_data: TermyFfiUserData,
+    request: *const TermyFfiClipboardWriteRequest,
+) -> TermyFfiClipboardWriteResponse;
+pub type TermyFfiProtocolReplyCallback =
+    unsafe extern "C" fn(user_data: TermyFfiUserData, reply: TermyFfiByteSlice);
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -469,6 +548,262 @@ impl TerminalReplyHost for EmptyReplyHost {
     fn load_clipboard(&mut self, _target: TerminalClipboardTarget) -> Option<String> {
         None
     }
+}
+
+const FFI_CLIPBOARD_LOCATION_CLIPBOARD: u32 = 1;
+const FFI_CLIPBOARD_LOCATION_PRIMARY: u32 = 2;
+const FFI_CLIPBOARD_RESULT_SUCCESS: u32 = 0;
+const FFI_CLIPBOARD_RESULT_DENIED: u32 = 1;
+const FFI_CLIPBOARD_RESULT_UNSUPPORTED: u32 = 2;
+const FFI_CLIPBOARD_RESULT_BUSY: u32 = 3;
+const FFI_CLIPBOARD_RESULT_INVALID_DATA: u32 = 4;
+const FFI_CLIPBOARD_RESULT_IO_ERROR: u32 = 5;
+
+struct FfiClipboardReplyHost {
+    user_data: TermyFfiUserData,
+    read_callback: Option<TermyFfiClipboardReadCallback>,
+    write_callback: Option<TermyFfiClipboardWriteCallback>,
+    protocol_reply_callback: Option<TermyFfiProtocolReplyCallback>,
+}
+
+struct FfiClipboardReadCapture {
+    result: Option<TerminalClipboardReadResult>,
+}
+
+unsafe extern "C" fn capture_ffi_clipboard_read_response(
+    user_data: TermyFfiUserData,
+    response: *const TermyFfiClipboardReadResponse,
+) {
+    if user_data.is_null() {
+        return;
+    }
+    let capture = unsafe { &mut *user_data.cast::<FfiClipboardReadCapture>() };
+    if capture.result.is_some() {
+        return;
+    }
+    capture.result = Some(if response.is_null() {
+        TerminalClipboardReadResult::IoError
+    } else {
+        unsafe { clipboard_read_result_from_ffi(*response) }
+    });
+}
+
+impl TerminalReplyHost for FfiClipboardReplyHost {
+    fn load_clipboard(&mut self, _target: TerminalClipboardTarget) -> Option<String> {
+        None
+    }
+
+    fn protocol_reply(&mut self, bytes: &[u8]) {
+        if let Some(callback) = self.protocol_reply_callback {
+            unsafe { callback(self.user_data, ffi_byte_slice(bytes)) };
+        }
+    }
+
+    fn read_clipboard(
+        &mut self,
+        request: TerminalClipboardReadRequest,
+    ) -> TerminalClipboardReadResult {
+        let Some(callback) = self.read_callback else {
+            return TerminalClipboardReadResult::Denied;
+        };
+        let mime_types = request
+            .mime_types
+            .iter()
+            .map(|mime_type| ffi_byte_slice(mime_type.as_bytes()))
+            .collect::<Vec<_>>();
+        let (name, has_name) = request
+            .name
+            .as_deref()
+            .map_or((TermyFfiByteSlice::default(), false), |name| {
+                (ffi_byte_slice(name.as_bytes()), true)
+            });
+        let ffi_request = TermyFfiClipboardReadRequest {
+            location: ffi_clipboard_location(request.location),
+            mime_types_ptr: mime_types.as_ptr(),
+            mime_types_len: mime_types.len(),
+            list_available: request.list_available,
+            name,
+            has_name,
+            permission_granted: request.permission_granted,
+            can_remember_permission: request.can_remember_permission,
+        };
+        let mut capture = FfiClipboardReadCapture { result: None };
+        unsafe {
+            callback(
+                self.user_data,
+                &ffi_request,
+                ptr::from_mut(&mut capture).cast(),
+                capture_ffi_clipboard_read_response,
+            );
+        }
+        let result = capture
+            .result
+            .unwrap_or(TerminalClipboardReadResult::IoError);
+        validate_clipboard_read_result(&request, result)
+    }
+
+    fn write_clipboard(
+        &mut self,
+        request: TerminalClipboardWriteRequest,
+    ) -> TerminalClipboardWriteResult {
+        let Some(callback) = self.write_callback else {
+            return TerminalClipboardWriteResult::Unsupported;
+        };
+        let contents = request
+            .contents
+            .iter()
+            .map(|content| TermyFfiClipboardContent {
+                mime_type: ffi_byte_slice(content.mime_type.as_bytes()),
+                data: ffi_byte_slice(&content.data),
+            })
+            .collect::<Vec<_>>();
+        let (name, has_name) = request
+            .name
+            .as_deref()
+            .map_or((TermyFfiByteSlice::default(), false), |name| {
+                (ffi_byte_slice(name.as_bytes()), true)
+            });
+        let ffi_request = TermyFfiClipboardWriteRequest {
+            location: ffi_clipboard_location(request.location),
+            contents_ptr: contents.as_ptr(),
+            contents_len: contents.len(),
+            name,
+            has_name,
+            permission_granted: request.permission_granted,
+            can_remember_permission: request.can_remember_permission,
+        };
+        let response = unsafe { callback(self.user_data, &ffi_request) };
+
+        match response.status {
+            FFI_CLIPBOARD_RESULT_SUCCESS => TerminalClipboardWriteResult::Success {
+                remember_permission: response.remember_permission,
+            },
+            FFI_CLIPBOARD_RESULT_DENIED => TerminalClipboardWriteResult::Denied,
+            FFI_CLIPBOARD_RESULT_UNSUPPORTED => TerminalClipboardWriteResult::Unsupported,
+            FFI_CLIPBOARD_RESULT_BUSY => TerminalClipboardWriteResult::Busy,
+            FFI_CLIPBOARD_RESULT_INVALID_DATA => TerminalClipboardWriteResult::InvalidData,
+            FFI_CLIPBOARD_RESULT_IO_ERROR => TerminalClipboardWriteResult::IoError,
+            _ => TerminalClipboardWriteResult::IoError,
+        }
+    }
+}
+
+fn ffi_clipboard_location(location: TerminalClipboardLocation) -> u32 {
+    match location {
+        TerminalClipboardLocation::Clipboard => FFI_CLIPBOARD_LOCATION_CLIPBOARD,
+        TerminalClipboardLocation::Primary => FFI_CLIPBOARD_LOCATION_PRIMARY,
+    }
+}
+
+fn clipboard_location_from_ffi(location: u32) -> Option<TerminalClipboardLocation> {
+    match location {
+        FFI_CLIPBOARD_LOCATION_CLIPBOARD => Some(TerminalClipboardLocation::Clipboard),
+        FFI_CLIPBOARD_LOCATION_PRIMARY => Some(TerminalClipboardLocation::Primary),
+        _ => None,
+    }
+}
+
+fn ffi_byte_slice(bytes: &[u8]) -> TermyFfiByteSlice {
+    TermyFfiByteSlice {
+        ptr: bytes.as_ptr(),
+        len: bytes.len(),
+    }
+}
+
+unsafe fn ffi_returned_slice<'a, T>(ptr: *const T, len: usize) -> Option<&'a [T]> {
+    if len == 0 {
+        return Some(&[]);
+    }
+    if ptr.is_null()
+        || !(ptr as usize).is_multiple_of(std::mem::align_of::<T>())
+        || len.checked_mul(std::mem::size_of::<T>())? > isize::MAX as usize
+    {
+        return None;
+    }
+    Some(unsafe { slice::from_raw_parts(ptr, len) })
+}
+
+unsafe fn copied_ffi_bytes(bytes: TermyFfiByteSlice) -> Option<Vec<u8>> {
+    unsafe { ffi_returned_slice(bytes.ptr, bytes.len) }.map(<[u8]>::to_vec)
+}
+
+unsafe fn copied_ffi_string(bytes: TermyFfiByteSlice) -> Option<String> {
+    let bytes = unsafe { ffi_returned_slice(bytes.ptr, bytes.len) }?;
+    str::from_utf8(bytes).ok().map(ToOwned::to_owned)
+}
+
+unsafe fn copied_ffi_strings(ptr: *const TermyFfiByteSlice, len: usize) -> Option<Vec<String>> {
+    unsafe { ffi_returned_slice(ptr, len) }?
+        .iter()
+        .map(|value| unsafe { copied_ffi_string(*value) })
+        .collect()
+}
+
+unsafe fn copied_ffi_clipboard_contents(
+    ptr: *const TermyFfiClipboardContent,
+    len: usize,
+) -> Option<Vec<TerminalClipboardContent>> {
+    unsafe { ffi_returned_slice(ptr, len) }?
+        .iter()
+        .map(|content| {
+            Some(TerminalClipboardContent {
+                mime_type: unsafe { copied_ffi_string(content.mime_type) }?,
+                data: unsafe { copied_ffi_bytes(content.data) }?,
+            })
+        })
+        .collect()
+}
+
+unsafe fn clipboard_read_result_from_ffi(
+    response: TermyFfiClipboardReadResponse,
+) -> TerminalClipboardReadResult {
+    match response.status {
+        FFI_CLIPBOARD_RESULT_SUCCESS => {
+            let Some(available_formats) = (unsafe {
+                copied_ffi_strings(
+                    response.available_formats_ptr,
+                    response.available_formats_len,
+                )
+            }) else {
+                return TerminalClipboardReadResult::IoError;
+            };
+            let Some(contents) = (unsafe {
+                copied_ffi_clipboard_contents(response.contents_ptr, response.contents_len)
+            }) else {
+                return TerminalClipboardReadResult::IoError;
+            };
+            TerminalClipboardReadResult::Success {
+                available_formats,
+                contents,
+                remember_permission: response.remember_permission,
+            }
+        }
+        FFI_CLIPBOARD_RESULT_DENIED => TerminalClipboardReadResult::Denied,
+        FFI_CLIPBOARD_RESULT_UNSUPPORTED => TerminalClipboardReadResult::Unsupported,
+        FFI_CLIPBOARD_RESULT_BUSY => TerminalClipboardReadResult::Busy,
+        FFI_CLIPBOARD_RESULT_INVALID_DATA | FFI_CLIPBOARD_RESULT_IO_ERROR => {
+            TerminalClipboardReadResult::IoError
+        }
+        _ => TerminalClipboardReadResult::IoError,
+    }
+}
+
+fn validate_clipboard_read_result(
+    request: &TerminalClipboardReadRequest,
+    result: TerminalClipboardReadResult,
+) -> TerminalClipboardReadResult {
+    let TerminalClipboardReadResult::Success { ref contents, .. } = result else {
+        return result;
+    };
+    if contents.iter().any(|content| {
+        !request
+            .mime_types
+            .iter()
+            .any(|requested| requested == &content.mime_type)
+    }) {
+        return TerminalClipboardReadResult::IoError;
+    }
+    result
 }
 
 impl From<TermyFfiSize> for TerminalSize {
@@ -3469,6 +3804,54 @@ pub unsafe extern "C" fn termy_kitty_graphics_batch_free(
     })
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_kitty_clipboard_paste_events_enabled(
+    terminal: *mut TermyFfiTerminal,
+    out_enabled: *mut bool,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_enabled.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        unsafe {
+            *out_enabled = (*terminal).terminal.kitty_clipboard_paste_events_enabled();
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_send_kitty_clipboard_paste_event(
+    terminal: *mut TermyFfiTerminal,
+    location: u32,
+    available_formats_ptr: *const TermyFfiByteSlice,
+    available_formats_len: usize,
+    out_sent: *mut bool,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_sent.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        if available_formats_len > 0 && available_formats_ptr.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        let Some(location) = clipboard_location_from_ffi(location) else {
+            return TermyFfiStatus::InvalidArgument;
+        };
+        let Some(available_formats) =
+            (unsafe { copied_ffi_strings(available_formats_ptr, available_formats_len) })
+        else {
+            return TermyFfiStatus::InvalidArgument;
+        };
+        unsafe {
+            *out_sent = (*terminal)
+                .terminal
+                .send_kitty_clipboard_paste_event(location, &available_formats);
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
 /// Look up the OSC 8 hyperlink under a viewport cell. Sets `out_found` and,
 /// when found, fills `out_link` with the contiguous link run on that row.
 /// A found link's `uri` must be released with `termy_hyperlink_free`.
@@ -3590,32 +3973,57 @@ pub unsafe extern "C" fn termy_damage_free(damage: *mut TermyFfiDamage) -> Termy
     })
 }
 
+unsafe fn drain_events_with_host(
+    terminal: *mut TermyFfiTerminal,
+    host: &mut impl TerminalReplyHost,
+    out_batch: *mut TermyFfiEventBatch,
+) -> TermyFfiStatus {
+    if terminal.is_null() || out_batch.is_null() {
+        return TermyFfiStatus::Null;
+    }
+
+    let (events, has_more) = unsafe { (*terminal).terminal.drain_events(host) };
+    let events = events
+        .into_iter()
+        .map(ffi_event_from_event)
+        .collect::<Vec<_>>();
+    let (events_ptr, events_len, events_capacity) = leak_vec(events);
+    unsafe {
+        *out_batch = TermyFfiEventBatch {
+            events_ptr,
+            events_len,
+            events_capacity,
+            has_more,
+        };
+    }
+    TermyFfiStatus::Ok
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_drain_events(
     terminal: *mut TermyFfiTerminal,
     out_batch: *mut TermyFfiEventBatch,
 ) -> TermyFfiStatus {
+    ffi_status_guard(|| unsafe { drain_events_with_host(terminal, &mut EmptyReplyHost, out_batch) })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_drain_events_with_clipboard(
+    terminal: *mut TermyFfiTerminal,
+    user_data: TermyFfiUserData,
+    read_callback: Option<TermyFfiClipboardReadCallback>,
+    write_callback: Option<TermyFfiClipboardWriteCallback>,
+    protocol_reply_callback: Option<TermyFfiProtocolReplyCallback>,
+    out_batch: *mut TermyFfiEventBatch,
+) -> TermyFfiStatus {
     ffi_status_guard(|| {
-        if terminal.is_null() || out_batch.is_null() {
-            return TermyFfiStatus::Null;
-        }
-
-        let (events, has_more) = unsafe { (*terminal).terminal.drain_events(&mut EmptyReplyHost) };
-        let events = events
-            .into_iter()
-            .map(ffi_event_from_event)
-            .collect::<Vec<_>>();
-        let (events_ptr, events_len, events_capacity) = leak_vec(events);
-
-        unsafe {
-            *out_batch = TermyFfiEventBatch {
-                events_ptr,
-                events_len,
-                events_capacity,
-                has_more,
-            };
-        }
-        TermyFfiStatus::Ok
+        let mut host = FfiClipboardReplyHost {
+            user_data,
+            read_callback,
+            write_callback,
+            protocol_reply_callback,
+        };
+        unsafe { drain_events_with_host(terminal, &mut host, out_batch) }
     })
 }
 

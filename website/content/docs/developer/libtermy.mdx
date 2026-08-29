@@ -220,6 +220,29 @@ Full updates are row-major: `index = row * cols + col`. Partial-update cells are
 ordered by dirty span, left to right. A partial cell does not carry its own row
 or column; derive the position from its span.
 
+### Kitty clipboard callbacks from C
+
+Use `termy_terminal_drain_events_with_clipboard` to service Kitty OSC 5522 MIME
+clipboard requests. The read and write callbacks run synchronously during the
+drain, on the thread that called it. The host owns permission prompts and system
+clipboard access. Missing callbacks fail closed: reads are denied and writes are
+reported as unsupported.
+
+Read requests include requested MIME types, location, application name, and
+permission state. Invoke the supplied reply callback before the read callback
+returns; libtermy copies all response slices during that invocation. Write
+request slices are borrowed only for the callback. Never retain callback data,
+retain a read reply function, or re-enter the same terminal handle from a
+callback. Continue using the callback-enabled drain for every batch while
+`has_more` is true.
+
+PTY-backed terminals return protocol responses directly to their child.
+Display-only hosts receive response bytes through the protocol-reply callback
+and must forward them to their external transport. Use
+`termy_terminal_kitty_clipboard_paste_events_enabled` and
+`termy_terminal_send_kitty_clipboard_paste_event` to notify applications of an
+ordinary paste with its available MIME formats.
+
 ### Batched special-glyph plans from C
 
 Keep one full row-major `TermyFfiCell` buffer in the host and patch frame updates

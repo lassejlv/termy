@@ -15,6 +15,10 @@ const C_CONTRACT_SOURCE: &str = r#"
 _Static_assert(TERMY_FFI_OK == 0, "status enum starts at OK");
 _Static_assert(TERMY_FFI_PANICKED == 8, "panic status is stable");
 _Static_assert(TERMY_FFI_INVALID_ARGUMENT == 9, "invalid argument status is stable");
+_Static_assert(TERMY_FFI_CLIPBOARD_LOCATION_CLIPBOARD == 1, "clipboard location is stable");
+_Static_assert(TERMY_FFI_CLIPBOARD_LOCATION_PRIMARY == 2, "primary location is stable");
+_Static_assert(TERMY_FFI_CLIPBOARD_RESULT_SUCCESS == 0, "clipboard success is stable");
+_Static_assert(TERMY_FFI_CLIPBOARD_RESULT_IO_ERROR == 5, "clipboard I/O error is stable");
 _Static_assert(sizeof(TermyFfiCell) == 20, "cell ABI size is stable");
 _Static_assert(sizeof(TermyFfiGlyphPoint) == 8, "glyph point ABI size is stable");
 _Static_assert(sizeof(TermyFfiGlyphRect) == 24, "glyph rect ABI size is stable");
@@ -23,6 +27,37 @@ _Static_assert(offsetof(TermyFfiCell, italic) > offsetof(TermyFfiCell, line_wrap
 _Static_assert(offsetof(TermyFfiFrame, cells_ptr) < offsetof(TermyFfiFrame, cursor), "frame cell storage precedes cursor");
 _Static_assert(offsetof(TermyFfiFrameUpdate, damage_kind) < offsetof(TermyFfiFrameUpdate, spans_ptr), "frame update damage metadata precedes spans");
 _Static_assert(offsetof(TermyFfiEventBatch, has_more) > offsetof(TermyFfiEventBatch, events_capacity), "event batch has_more follows vector storage");
+_Static_assert(offsetof(TermyFfiClipboardReadRequest, name) > offsetof(TermyFfiClipboardReadRequest, mime_types_len), "clipboard read name follows MIME types");
+_Static_assert(offsetof(TermyFfiClipboardWriteRequest, name) > offsetof(TermyFfiClipboardWriteRequest, contents_len), "clipboard write name follows contents");
+
+static void read_clipboard(
+    TermyFfiUserData user_data,
+    const TermyFfiClipboardReadRequest *request,
+    TermyFfiUserData reply_user_data,
+    TermyFfiClipboardReadReplyCallback reply_callback) {
+  (void)user_data;
+  (void)request;
+  TermyFfiClipboardReadResponse response = {0};
+  response.status = TERMY_FFI_CLIPBOARD_RESULT_UNSUPPORTED;
+  reply_callback(reply_user_data, &response);
+}
+
+static TermyFfiClipboardWriteResponse write_clipboard(
+    TermyFfiUserData user_data,
+    const TermyFfiClipboardWriteRequest *request) {
+  (void)user_data;
+  (void)request;
+  TermyFfiClipboardWriteResponse response = {0};
+  response.status = TERMY_FFI_CLIPBOARD_RESULT_UNSUPPORTED;
+  return response;
+}
+
+static void protocol_reply(
+    TermyFfiUserData user_data,
+    TermyFfiByteSlice reply) {
+  (void)user_data;
+  (void)reply;
+}
 
 void termy_header_contract(void) {
   TermyFfiSize size = termy_size_default();
@@ -32,7 +67,11 @@ void termy_header_contract(void) {
   TermyFfiGlyphRenderPlan glyph_plan = {0};
   TermyFfiKittyGraphicsBatch graphics = {0};
   uint64_t graphics_revision = 0;
+  bool clipboard_enabled = false;
+  bool paste_event_sent = false;
+  TermyFfiEventBatch events = {0};
   const uint8_t bytes[] = {'o', 'k'};
+  TermyFfiByteSlice formats[] = {{bytes, sizeof(bytes)}};
 
   TermyFfiStatus status = termy_display_terminal_new(size, &terminal);
   (void)status;
@@ -51,6 +90,17 @@ void termy_header_contract(void) {
   (void)termy_terminal_kitty_graphics_revision(terminal, &graphics_revision);
   (void)termy_terminal_kitty_graphics_placements(terminal, &graphics);
   (void)termy_kitty_graphics_batch_free(&graphics);
+  (void)termy_terminal_drain_events_with_clipboard(
+      terminal, 0, read_clipboard, write_clipboard, protocol_reply, &events);
+  (void)termy_event_batch_free(&events);
+  (void)termy_terminal_kitty_clipboard_paste_events_enabled(
+      terminal, &clipboard_enabled);
+  (void)termy_terminal_send_kitty_clipboard_paste_event(
+      terminal,
+      TERMY_FFI_CLIPBOARD_LOCATION_CLIPBOARD,
+      formats,
+      1,
+      &paste_event_sent);
   (void)termy_frame_free(&frame);
   (void)termy_terminal_free(terminal);
 }

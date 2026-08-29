@@ -239,9 +239,10 @@ impl TmonBackend {
                 event => translated.push(terminal_event(event)),
             }
         }
-        // A display-only core terminal has no transport for automatic protocol
-        // replies. Match the retained backend, which discards those writes.
-        let _ = self.terminal.discard_protocol_replies(usize::MAX);
+        let protocol_replies = self.terminal.drain_protocol_replies();
+        if !protocol_replies.is_empty() {
+            host.protocol_reply(&protocol_replies);
+        }
         (translated, has_more)
     }
 

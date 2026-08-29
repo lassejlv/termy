@@ -106,6 +106,9 @@ Use `termy_ffi` as an opaque-handle API:
 - `termy_terminal_take_damage`
 - `termy_damage_free`
 - `termy_terminal_drain_events`
+- `termy_terminal_drain_events_with_clipboard`
+- `termy_terminal_kitty_clipboard_paste_events_enabled`
+- `termy_terminal_send_kitty_clipboard_paste_event`
 - `termy_event_batch_free`
 - `termy_terminal_search`
 - `termy_search_batch_free`
@@ -117,6 +120,22 @@ Search match line payloads owned by a search batch are freed by
 `termy_search_batch_free`.
 Embedders should synchronize access to a terminal handle if they call into it
 from multiple threads.
+
+Kitty OSC 5522 clipboard requests are serviced synchronously while draining
+events. C and Swift hosts that provide platform clipboard integration should use
+`termy_terminal_drain_events_with_clipboard`, enforce their own permission
+policy, and keep using that entry point while `has_more` is true. Read callbacks
+receive a callback-scoped request and must invoke the supplied reply callback
+before returning; libtermy copies response slices during that invocation. Write
+callbacks receive borrowed MIME content and return a result directly. Callbacks
+must not retain borrowed values or re-enter the same terminal handle. Missing
+read callbacks deny access and missing write callbacks report unsupported.
+
+PTY-backed terminals send generated protocol replies to their child directly.
+For display-only terminals, the protocol-reply callback receives bytes that the
+host must forward to its external transport. Before an ordinary paste, query
+`termy_terminal_kitty_clipboard_paste_events_enabled` and, when enabled, call
+`termy_terminal_send_kitty_clipboard_paste_event` with the available MIME types.
 
 `termy_terminal_new_with_options` is the host-control constructor. It accepts an
 optional loaded config plus a launch working directory, startup command, and a

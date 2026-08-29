@@ -29,6 +29,9 @@ impl TerminalClipboardTarget {
 pub trait TerminalReplyHost {
     fn load_clipboard(&mut self, target: TerminalClipboardTarget) -> Option<String>;
 
+    /// Receive protocol replies when the terminal has no owned PTY transport.
+    fn protocol_reply(&mut self, _bytes: &[u8]) {}
+
     fn read_clipboard(
         &mut self,
         _request: TerminalClipboardReadRequest,

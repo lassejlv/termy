@@ -47,6 +47,20 @@ typedef enum {
 } TermyFfiProgressState;
 
 typedef enum {
+  TERMY_FFI_CLIPBOARD_LOCATION_CLIPBOARD = 1,
+  TERMY_FFI_CLIPBOARD_LOCATION_PRIMARY = 2,
+} TermyFfiClipboardLocation;
+
+typedef enum {
+  TERMY_FFI_CLIPBOARD_RESULT_SUCCESS = 0,
+  TERMY_FFI_CLIPBOARD_RESULT_DENIED = 1,
+  TERMY_FFI_CLIPBOARD_RESULT_UNSUPPORTED = 2,
+  TERMY_FFI_CLIPBOARD_RESULT_BUSY = 3,
+  TERMY_FFI_CLIPBOARD_RESULT_INVALID_DATA = 4,
+  TERMY_FFI_CLIPBOARD_RESULT_IO_ERROR = 5,
+} TermyFfiClipboardResultStatus;
+
+typedef enum {
   TERMY_FFI_GLYPH_RENDER_BLOCK_ELEMENT = 1,
   TERMY_FFI_GLYPH_RENDER_BOX_DRAWING = 2,
   TERMY_FFI_GLYPH_RENDER_SEXTANT = 3,
@@ -148,6 +162,69 @@ typedef struct {
   size_t len;
   size_t capacity;
 } TermyFfiBytes;
+
+/* Non-owning bytes. The owner and lifetime depend on the containing call or
+ * callback and are documented with that API. */
+typedef struct {
+  const uint8_t *ptr;
+  size_t len;
+} TermyFfiByteSlice;
+
+typedef struct {
+  TermyFfiByteSlice mime_type;
+  TermyFfiByteSlice data;
+} TermyFfiClipboardContent;
+
+typedef struct {
+  uint32_t location;
+  const TermyFfiByteSlice *mime_types_ptr;
+  size_t mime_types_len;
+  bool list_available;
+  TermyFfiByteSlice name;
+  bool has_name;
+  bool permission_granted;
+  bool can_remember_permission;
+} TermyFfiClipboardReadRequest;
+
+typedef struct {
+  uint32_t status;
+  const TermyFfiByteSlice *available_formats_ptr;
+  size_t available_formats_len;
+  const TermyFfiClipboardContent *contents_ptr;
+  size_t contents_len;
+  bool remember_permission;
+} TermyFfiClipboardReadResponse;
+
+typedef struct {
+  uint32_t location;
+  const TermyFfiClipboardContent *contents_ptr;
+  size_t contents_len;
+  TermyFfiByteSlice name;
+  bool has_name;
+  bool permission_granted;
+  bool can_remember_permission;
+} TermyFfiClipboardWriteRequest;
+
+typedef struct {
+  uint32_t status;
+  bool remember_permission;
+} TermyFfiClipboardWriteResponse;
+
+typedef void *TermyFfiUserData;
+typedef void (*TermyFfiClipboardReadReplyCallback)(
+    TermyFfiUserData user_data,
+    const TermyFfiClipboardReadResponse *response);
+typedef void (*TermyFfiClipboardReadCallback)(
+    TermyFfiUserData user_data,
+    const TermyFfiClipboardReadRequest *request,
+    TermyFfiUserData reply_user_data,
+    TermyFfiClipboardReadReplyCallback reply_callback);
+typedef TermyFfiClipboardWriteResponse (*TermyFfiClipboardWriteCallback)(
+    TermyFfiUserData user_data,
+    const TermyFfiClipboardWriteRequest *request);
+typedef void (*TermyFfiProtocolReplyCallback)(
+    TermyFfiUserData user_data,
+    TermyFfiByteSlice reply);
 
 typedef struct {
   uint64_t placement_serial;
@@ -642,6 +719,15 @@ TermyFfiStatus termy_terminal_kitty_graphics_placements(
     TermyFfiKittyGraphicsBatch *out_batch);
 TermyFfiStatus termy_kitty_graphics_batch_free(
     TermyFfiKittyGraphicsBatch *batch);
+TermyFfiStatus termy_terminal_kitty_clipboard_paste_events_enabled(
+    TermyFfiTerminal *terminal,
+    bool *out_enabled);
+TermyFfiStatus termy_terminal_send_kitty_clipboard_paste_event(
+    TermyFfiTerminal *terminal,
+    uint32_t location,
+    const TermyFfiByteSlice *available_formats_ptr,
+    size_t available_formats_len,
+    bool *out_sent);
 TermyFfiStatus termy_terminal_hyperlink_at(
     TermyFfiTerminal *terminal,
     size_t row,
@@ -655,6 +741,23 @@ TermyFfiStatus termy_terminal_take_damage(
 TermyFfiStatus termy_damage_free(TermyFfiDamage *damage);
 TermyFfiStatus termy_terminal_drain_events(
     TermyFfiTerminal *terminal,
+    TermyFfiEventBatch *out_batch);
+/* Drain events while synchronously servicing Kitty OSC 5522 clipboard
+ * requests. Request fields and their nested byte slices are borrowed only for
+ * the duration of each callback. A read callback must invoke reply_callback
+ * synchronously before returning and must not retain it or reply_user_data;
+ * response slices are copied during that invocation. Either host callback may
+ * be NULL; missing reads are denied and missing writes are unsupported. The
+ * host must enforce its own clipboard permission policy using the request
+ * permission fields. protocol_reply_callback receives reply bytes for
+ * display-only terminals without an owned PTY; its byte slice is borrowed only
+ * for that callback. No callback may re-enter the same terminal handle. */
+TermyFfiStatus termy_terminal_drain_events_with_clipboard(
+    TermyFfiTerminal *terminal,
+    TermyFfiUserData user_data,
+    TermyFfiClipboardReadCallback read_callback,
+    TermyFfiClipboardWriteCallback write_callback,
+    TermyFfiProtocolReplyCallback protocol_reply_callback,
     TermyFfiEventBatch *out_batch);
 TermyFfiStatus termy_event_batch_free(TermyFfiEventBatch *batch);
 TermyFfiStatus termy_terminal_search(

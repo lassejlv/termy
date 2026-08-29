@@ -2436,7 +2436,7 @@ fn drain_runtime_events<T: EventListener>(
     query_colors: TerminalQueryColors,
     kitty_clipboard: &FairMutex<KittyClipboardHostState>,
     host: &mut impl TerminalReplyHost,
-    mut write_reply: impl FnMut(&[u8]),
+    mut write_reply: impl FnMut(&[u8]) -> bool,
 ) -> (Vec<TerminalEvent>, bool) {
     let fallback_live_colors = alacritty_terminal::term::color::Colors::default();
     let mut events = Vec::with_capacity(16);
@@ -2462,7 +2462,7 @@ fn drain_runtime_events<T: EventListener>(
                 };
 
                 if let Some(response) = response {
-                    write_reply(&response);
+                    dispatch_protocol_reply(host, &mut write_reply, &response);
                 }
 
                 if let Some(event) = terminal_event_from_alacritty(event) {
@@ -2474,7 +2474,7 @@ fn drain_runtime_events<T: EventListener>(
             }
             RuntimeEvent::KittyClipboard(packet) => {
                 for response in kitty_clipboard.lock().handle_osc(packet, host) {
-                    write_reply(&response);
+                    dispatch_protocol_reply(host, &mut write_reply, &response);
                 }
             }
             RuntimeEvent::KittyClipboardControl(control) => match control {
@@ -2488,7 +2488,11 @@ fn drain_runtime_events<T: EventListener>(
                     } else {
                         2
                     };
-                    write_reply(format!("\x1b[?5522;{status}$y").as_bytes());
+                    dispatch_protocol_reply(
+                        host,
+                        &mut write_reply,
+                        format!("\x1b[?5522;{status}$y").as_bytes(),
+                    );
                 }
             },
         }
@@ -2502,6 +2506,16 @@ fn drain_runtime_events<T: EventListener>(
 
     flush_pending_wakeup(&mut events, &mut wakeup_pending);
     (events, false)
+}
+
+fn dispatch_protocol_reply(
+    host: &mut impl TerminalReplyHost,
+    write_reply: &mut impl FnMut(&[u8]) -> bool,
+    response: &[u8],
+) {
+    if !write_reply(response) {
+        host.protocol_reply(response);
+    }
 }
 
 fn push_drained_terminal_event(
@@ -3366,12 +3380,17 @@ mod tests {
         requested_targets: Vec<TerminalClipboardTarget>,
         kitty_reads: Vec<TerminalClipboardReadRequest>,
         kitty_writes: Vec<TerminalClipboardWriteRequest>,
+        protocol_replies: Vec<u8>,
     }
 
     impl TerminalReplyHost for RecordingReplyHost {
         fn load_clipboard(&mut self, target: TerminalClipboardTarget) -> Option<String> {
             self.requested_targets.push(target);
             self.clipboard_text.clone()
+        }
+
+        fn protocol_reply(&mut self, bytes: &[u8]) {
+            self.protocol_replies.extend_from_slice(bytes);
         }
 
         fn read_clipboard(
@@ -3418,6 +3437,21 @@ mod tests {
         assert_eq!(host.kitty_writes[0].contents.len(), 2);
         assert_eq!(host.kitty_writes[0].contents[0].mime_type, "text/utf8");
         assert_eq!(host.kitty_writes[0].contents[1].data, b"hello");
+        let replies = String::from_utf8_lossy(&host.protocol_replies);
+        assert!(replies.contains("type=read:status=OK:id=list"));
+        assert!(replies.contains("type=read:status=DONE:id=list"));
+        assert!(replies.contains("type=write:status=DONE:id=write"));
+
+        host.protocol_replies.clear();
+        assert!(terminal.send_kitty_clipboard_paste_event(
+            crate::TerminalClipboardLocation::Clipboard,
+            &["text/plain".to_string()],
+        ));
+        let (_, has_more) = terminal.drain_events(&mut host);
+        assert!(!has_more);
+        let replies = String::from_utf8_lossy(&host.protocol_replies);
+        assert!(replies.contains("type=read:status=OK"));
+        assert!(replies.contains("type=read:status=DONE"));
     }
 
     #[test]
@@ -3555,7 +3589,10 @@ mod tests {
             TerminalQueryColors::default(),
             &kitty_clipboard,
             &mut reply_host,
-            |response| replies.push(String::from_utf8(response.to_vec()).unwrap()),
+            |response| {
+                replies.push(String::from_utf8(response.to_vec()).unwrap());
+                true
+            },
         );
 
         assert_eq!(
@@ -3607,7 +3644,7 @@ mod tests {
             TerminalQueryColors::default(),
             &kitty_clipboard,
             &mut reply_host,
-            |_| {},
+            |_| true,
         );
 
         assert!(!has_more);
@@ -3648,7 +3685,7 @@ mod tests {
             TerminalQueryColors::default(),
             &kitty_clipboard,
             &mut reply_host,
-            |_| {},
+            |_| true,
         );
 
         assert!(!has_more);

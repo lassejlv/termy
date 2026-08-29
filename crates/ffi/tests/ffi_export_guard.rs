@@ -113,6 +113,12 @@ fn header_function_names(header: &str) -> BTreeSet<String> {
 
 fn canonical_rust_type(raw_type: &str) -> String {
     let raw_type = raw_type.trim().trim_end_matches(',').trim();
+    if let Some(inner) = raw_type
+        .strip_prefix("Option<")
+        .and_then(|value| value.strip_suffix('>'))
+    {
+        return canonical_rust_type(inner);
+    }
     if let Some(rest) = raw_type.strip_prefix("*const ") {
         return format!("*const {}", canonical_rust_type(rest));
     }

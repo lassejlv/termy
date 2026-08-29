@@ -22,6 +22,7 @@ pub(super) struct AlacrittyBackend {
     resize_anchor_state: Arc<crate::resize_anchor::ResizeAnchorState>,
     graphics_size: Arc<FairMutex<TerminalSize>>,
     pty_tx: Option<EventLoopSender>,
+    pending_protocol_replies: FairMutex<Vec<u8>>,
     events_rx: Receiver<RuntimeEvent>,
     size: TerminalSize,
     query_colors: TerminalQueryColors,
@@ -164,6 +165,7 @@ impl AlacrittyBackend {
             resize_anchor_state,
             graphics_size,
             pty_tx: Some(pty_tx),
+            pending_protocol_replies: FairMutex::new(Vec::new()),
             events_rx,
             size,
             query_colors: runtime_config.query_colors,
@@ -217,6 +219,7 @@ impl AlacrittyBackend {
             resize_anchor_state,
             graphics_size: Arc::new(FairMutex::new(size)),
             pty_tx: None,
+            pending_protocol_replies: FairMutex::new(Vec::new()),
             events_rx,
             size,
             query_colors: runtime_config.query_colors,
@@ -445,13 +448,25 @@ impl AlacrittyBackend {
         else {
             return false;
         };
-        self.write_owned(notification);
+        if self.pty_tx.is_some() {
+            self.write_owned(notification);
+        } else {
+            self.pending_protocol_replies.lock().extend(notification);
+        }
         true
     }
 
     /// Drain pending Alacritty events, writing reply bytes back to the PTY when required.
     /// Returns the collected events and whether more events remain (batch limit hit).
     pub fn drain_events(&self, host: &mut impl TerminalReplyHost) -> (Vec<TerminalEvent>, bool) {
+        let pending_protocol_replies = {
+            let mut pending = self.pending_protocol_replies.lock();
+            std::mem::take(&mut *pending)
+        };
+        if !pending_protocol_replies.is_empty() {
+            host.protocol_reply(&pending_protocol_replies);
+        }
+
         // Reset before probing the queue. A previous drain can consume a Wakeup
         // queued concurrently while leaving the coalescing flag set. Another
         // PTY update can then be folded into that flag without queueing a new
@@ -478,7 +493,11 @@ impl AlacrittyBackend {
             self.query_colors,
             &self.kitty_clipboard,
             host,
-            |response| self.write(response),
+            |response| {
+                let has_transport = self.pty_tx.is_some();
+                self.write(response);
+                has_transport
+            },
         )
     }
 
