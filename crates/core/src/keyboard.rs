@@ -254,6 +254,11 @@ fn basic_keystroke_to_input(
         return Some(input.to_vec());
     }
 
+    #[cfg(target_os = "windows")]
+    if let Some(text) = windows_altgr_text(keystroke) {
+        return Some(text.as_bytes().to_vec());
+    }
+
     if modifiers.control && !modifiers.platform && !modifiers.function && key.len() == 1 {
         let c = key.chars().next().unwrap();
         if c.is_ascii_alphabetic() {
@@ -413,7 +418,7 @@ fn textual_sequence_base(
 }
 
 fn pure_text_event_text(keystroke: &Keystroke) -> Option<&str> {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = keystroke;
         None
@@ -445,6 +450,33 @@ fn pure_text_event_text(keystroke: &Keystroke) -> Option<&str> {
 
         None
     }
+
+    #[cfg(target_os = "windows")]
+    {
+        windows_altgr_text(keystroke)
+    }
+}
+
+// Windows reports AltGr as a synthetic Left-Ctrl + Right-Alt chord. The OS's
+// own key translation (surfaced to us as `key_char`) already resolves that
+// combination to the correct composed character (e.g. AltGr+2 -> "@"); a
+// genuine Ctrl+Alt shortcut never produces such a `key_char` because Ctrl
+// suppresses text composition. Treat a populated, printable `key_char` here
+// as authoritative over the control+alt modifier flags instead of
+// misreporting it as a dead Ctrl+Alt shortcut.
+#[cfg(target_os = "windows")]
+fn windows_altgr_text(keystroke: &Keystroke) -> Option<&str> {
+    let modifiers = keystroke.modifiers;
+    if !modifiers.control || !modifiers.alt || modifiers.platform || modifiers.function {
+        return None;
+    }
+
+    let text = keystroke.key_char.as_deref()?;
+    if text.is_empty() || is_control_character(text) {
+        return None;
+    }
+
+    Some(text)
 }
 
 fn unshifted_text_character(keystroke: &Keystroke, ch: char) -> char {
@@ -922,7 +954,7 @@ impl SequenceModifiers {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     use super::pure_text_event_text;
     use super::{
         Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, associated_text,
@@ -1443,6 +1475,58 @@ mod tests {
         assert_eq!(
             pure_text_event_text(&keystroke("[", Some("["), modifiers)),
             Some("[")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_altgr_chord_uses_pure_text_path() {
+        let modifiers = Modifiers {
+            control: true,
+            alt: true,
+            ..Modifiers::default()
+        };
+
+        // AltGr+2 on a layout where that combo produces "@" (e.g. Danish).
+        assert_eq!(
+            pure_text_event_text(&keystroke("2", Some("@"), modifiers)),
+            Some("@")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_real_ctrl_alt_chord_is_not_treated_as_text() {
+        let modifiers = Modifiers {
+            control: true,
+            alt: true,
+            ..Modifiers::default()
+        };
+
+        // A genuine Ctrl+Alt shortcut never has a composed key_char.
+        assert_eq!(pure_text_event_text(&keystroke("2", None, modifiers)), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_altgr_chord_falls_back_to_literal_text_without_report_all_keys() {
+        let modifiers = Modifiers {
+            control: true,
+            alt: true,
+            ..Modifiers::default()
+        };
+
+        assert_eq!(
+            keystroke_to_input(
+                &keystroke("2", Some("@"), modifiers),
+                TerminalKeyEventKind::Press,
+                TerminalKeyboardMode {
+                    disambiguate_escape_codes: true,
+                    ..TerminalKeyboardMode::default()
+                },
+                false,
+            ),
+            Some(b"@".to_vec())
         );
     }
 
