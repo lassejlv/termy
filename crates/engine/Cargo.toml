@@ -1,0 +1,23 @@
+[package]
+name = "engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+bitflags = { workspace = true, features = ["serde"] }
+bincode.workspace = true
+serde.workspace = true
+smol_str.workspace = true
+tmon-pty = { path = "../pty" }
+unicode-width.workspace = true
+vte.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+nix.workspace = true
+
+[lints]
+workspace = true

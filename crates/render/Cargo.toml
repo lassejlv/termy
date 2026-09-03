@@ -1,0 +1,17 @@
+[package]
+name = "render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+bytemuck.workspace = true
+glyphon.workspace = true
+engine = { path = "../engine" }
+wgpu.workspace = true
+winit.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,51 @@
+[workspace]
+members = [
+    "crates/engine",
+    "crates/ffi",
+    "crates/mux",
+    "crates/pty",
+    "crates/render",
+    "crates/app",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.96"
+
+[workspace.dependencies]
+anyhow = "1.0.99"
+arboard = "3.6.1"
+base64 = "0.22.1"
+bitflags = "2.9.4"
+bincode = { version = "2.0.1", features = ["serde"] }
+bytemuck = { version = "1.23.2", features = ["derive"] }
+glyphon = "0.12.0"
+libc = "0.2.175"
+nix = { version = "0.28.0", features = ["poll", "signal"] }
+pollster = "0.4.0"
+serde = { version = "1.0.219", features = ["derive", "rc"] }
+serde_json = "1.0.143"
+smol_str = { version = "0.3.6", features = ["serde"] }
+toml_edit = "0.25.13"
+unicode-width = "0.2.1"
+vte = "0.15.0"
+wgpu = { version = "30.0.1", default-features = false, features = ["metal", "parking_lot", "std", "wgsl"] }
+winit = { version = "0.30.13", default-features = false, features = ["rwh_06"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
