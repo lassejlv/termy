@@ -5,13 +5,20 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_BUNDLE="${1:-$ROOT_DIR/dist/Tmon.app}"
 INFO_PLIST="$APP_BUNDLE/Contents/Info.plist"
 APP_BINARY="$APP_BUNDLE/Contents/MacOS/tmon"
+APP_ICON_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$INFO_PLIST")"
+APP_ICON="$APP_BUNDLE/Contents/Resources/$APP_ICON_NAME"
 
 if [[ ! -x "$APP_BINARY" ]]; then
   echo "missing executable: $APP_BINARY" >&2
   exit 1
 fi
+if [[ ! -f "$APP_ICON" ]]; then
+  echo "missing app icon: $APP_ICON" >&2
+  exit 1
+fi
 
 plutil -lint "$INFO_PLIST"
+sips -g format -g pixelWidth -g pixelHeight "$APP_ICON"
 codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 lipo -info "$APP_BINARY"
 

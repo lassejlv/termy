@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Tmon"
 BINARY_NAME="tmon"
+APP_ICON_SOURCE="$ROOT_DIR/assets/tmon-logo-smooth.png"
+APP_ICON_RESOURCE="$ROOT_DIR/packaging/Tmon.icns"
+APP_ICON_NAME="Tmon.icns"
 ARCH_MODE="universal"
 CREATE_ARCHIVE=1
 MINIMUM_MACOS="${TMON_MINIMUM_MACOS:-14.0}"
@@ -51,8 +54,19 @@ trap 'rm -rf "$STAGING_DIR"' EXIT
 STAGED_APP="$STAGING_DIR/$APP_NAME.app"
 STAGED_CONTENTS="$STAGED_APP/Contents"
 STAGED_MACOS="$STAGED_CONTENTS/MacOS"
+STAGED_RESOURCES="$STAGED_CONTENTS/Resources"
 STAGED_BINARY="$STAGED_MACOS/$BINARY_NAME"
-mkdir -p "$STAGED_MACOS"
+mkdir -p "$STAGED_MACOS" "$STAGED_RESOURCES"
+
+if [[ ! -f "$APP_ICON_SOURCE" ]]; then
+  echo "missing app icon source: $APP_ICON_SOURCE" >&2
+  exit 1
+fi
+if [[ ! -f "$APP_ICON_RESOURCE" ]]; then
+  echo "missing packaged app icon generated from $APP_ICON_SOURCE: $APP_ICON_RESOURCE" >&2
+  exit 1
+fi
+cp "$APP_ICON_RESOURCE" "$STAGED_RESOURCES/$APP_ICON_NAME"
 
 case "$ARCH_MODE" in
   native)

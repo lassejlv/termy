@@ -10,6 +10,8 @@
   <string>tmon</string>
   <key>CFBundleIdentifier</key>
   <string>com.tmon.app</string>
+  <key>CFBundleIconFile</key>
+  <string>Tmon.icns</string>
   <key>CFBundleInfoDictionaryVersion</key>
   <string>6.0</string>
   <key>CFBundleName</key>
