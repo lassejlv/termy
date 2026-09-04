@@ -1,0 +1,77 @@
+name: Terminal rendering or input regression
+description: Report a reproducible terminal, TUI, font, display, or input problem without private data.
+title: "[Regression] "
+labels:
+  - regression
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not use this form for security issues. Review screenshots and terminal streams for secrets, commands, tokens, customer data, private hostnames, and filesystem paths before attaching them.
+  - type: input
+    id: version
+    attributes:
+      label: Tmon version and build
+      placeholder: "0.1.0 (1)"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: macOS build and architecture
+      placeholder: "macOS 15.6 (24G84), arm64"
+    validations:
+      required: true
+  - type: input
+    id: display
+    attributes:
+      label: GPU, display scale, and refresh rate
+      placeholder: "Apple M4, Retina 2x, 120 Hz"
+    validations:
+      required: true
+  - type: input
+    id: font
+    attributes:
+      label: Font family and size
+      placeholder: "Menlo 15"
+    validations:
+      required: true
+  - type: input
+    id: keyboard
+    attributes:
+      label: Keyboard layout and input method
+      placeholder: "Danish, no IME / Japanese IME"
+    validations:
+      required: true
+  - type: input
+    id: application
+    attributes:
+      label: Shell or terminal application
+      placeholder: "zsh, tmux 3.x, Claude Code, OpenCode"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use disposable data and include the exact key sequence or sanitized terminal byte stream when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Reviewed evidence
+      description: Attach a sanitized screenshot, recording, fixture, or reviewed support JSON. Leave blank if it could expose private content.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I reviewed every attachment and removed secrets, private paths, commands, terminal contents, and customer data that are not essential to this report.
+          required: true

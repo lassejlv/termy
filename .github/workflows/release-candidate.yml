@@ -1,0 +1,58 @@
+name: Release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: Monotonic CFBundleVersion value
+        required: true
+        default: "1"
+        type: string
+      minimum_macos:
+        description: Minimum supported macOS version
+        required: true
+        default: "14.0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    name: Build ad hoc internal candidate
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      TMON_BUILD_NUMBER: ${{ inputs.build_number }}
+      TMON_MINIMUM_MACOS: ${{ inputs.minimum_macos }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install pinned release tools
+        run: |
+          cargo install cargo-deny --version 0.19.0 --locked
+          cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Build release candidate
+        run: bash script/release_candidate.sh
+
+      - name: Upload release candidate and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmon-release-candidate-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/Tmon.app
+            dist/Tmon-*-macos-universal.zip
+            dist/Tmon-*-macos-universal.zip.sha256
+            dist/Tmon-*-release-evidence.json

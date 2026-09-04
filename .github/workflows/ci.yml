@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-and-package:
+    name: Quality and universal package
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve pinned Rust toolchain
+        run: |
+          rustup show active-toolchain
+          rustup target list --installed
+
+      - name: Install pinned release tools
+        run: |
+          cargo install cargo-deny --version 0.19.0 --locked
+          cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Run the production candidate gate
+        run: bash script/release_candidate.sh
+
+      - name: Upload package evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: tmon-${{ github.sha }}-universal
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            dist/Tmon.app
+            dist/Tmon-*-macos-universal.zip
+            dist/Tmon-*-macos-universal.zip.sha256
+            dist/Tmon-*-release-evidence.json

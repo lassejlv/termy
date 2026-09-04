@@ -1,0 +1,216 @@
+{
+  "schema_version": 3,
+  "duration_seconds": 20,
+  "cycles": 169,
+  "bytes_written": 811200,
+  "bytes_drained": 1010970,
+  "warmup_bytes_written": 108000,
+  "warmup_bytes_drained": 145024,
+  "detach_reattach_count": 3,
+  "tab_churn_count": 17,
+  "resize_count": 169,
+  "long_idle_count": 1,
+  "baseline": {
+    "rss_kib": 60048,
+    "cpu_percent": 5.4,
+    "file_descriptors": 16,
+    "threads": 5
+  },
+  "maximum": {
+    "rss_kib": 72112,
+    "cpu_percent": 10.3,
+    "file_descriptors": 16,
+    "threads": 5
+  },
+  "rss_growth_kib": 12064,
+  "settle_seconds": 5,
+  "steady_state_baseline": {
+    "rss_kib": 70928,
+    "cpu_percent": 10.3,
+    "file_descriptors": 16,
+    "threads": 5
+  },
+  "steady_state_maximum": {
+    "rss_kib": 72112,
+    "cpu_percent": 10.3,
+    "file_descriptors": 16,
+    "threads": 5
+  },
+  "steady_state_rss_growth_kib": 1184,
+  "fd_growth": 0,
+  "thread_growth": 0,
+  "daemon_count": 1,
+  "limits": {
+    "rss_kib": 262144,
+    "rss_growth_kib": 65536,
+    "steady_rss_growth_kib": 16384,
+    "cpu_percent": 100.0,
+    "fd_growth": 16,
+    "thread_growth": 8
+  },
+  "samples": [
+    {
+      "elapsed_seconds": 0,
+      "process": {
+        "rss_kib": 60048,
+        "cpu_percent": 5.4,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 1,
+      "process": {
+        "rss_kib": 60416,
+        "cpu_percent": 3.2,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 2,
+      "process": {
+        "rss_kib": 61056,
+        "cpu_percent": 2.8,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 3,
+      "process": {
+        "rss_kib": 61328,
+        "cpu_percent": 3.4,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 4,
+      "process": {
+        "rss_kib": 61856,
+        "cpu_percent": 4.5,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 5,
+      "process": {
+        "rss_kib": 70928,
+        "cpu_percent": 10.3,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 6,
+      "process": {
+        "rss_kib": 71056,
+        "cpu_percent": 3.7,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 8,
+      "process": {
+        "rss_kib": 71200,
+        "cpu_percent": 3.2,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 9,
+      "process": {
+        "rss_kib": 71312,
+        "cpu_percent": 3.7,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 10,
+      "process": {
+        "rss_kib": 71376,
+        "cpu_percent": 4.1,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 12,
+      "process": {
+        "rss_kib": 71488,
+        "cpu_percent": 1.9,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 13,
+      "process": {
+        "rss_kib": 71616,
+        "cpu_percent": 4.1,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 14,
+      "process": {
+        "rss_kib": 71808,
+        "cpu_percent": 3.4,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 15,
+      "process": {
+        "rss_kib": 71840,
+        "cpu_percent": 1.6,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 16,
+      "process": {
+        "rss_kib": 71856,
+        "cpu_percent": 1.7,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 17,
+      "process": {
+        "rss_kib": 71888,
+        "cpu_percent": 7.7,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 19,
+      "process": {
+        "rss_kib": 72064,
+        "cpu_percent": 3.2,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    },
+    {
+      "elapsed_seconds": 20,
+      "process": {
+        "rss_kib": 72112,
+        "cpu_percent": 3.1,
+        "file_descriptors": 16,
+        "threads": 5
+      }
+    }
+  ],
+  "passed": true
+}

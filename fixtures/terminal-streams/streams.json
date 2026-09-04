@@ -1,0 +1,56 @@
+{
+  "streams": [
+    {
+      "id": "claude-code-record-symbol",
+      "origin": "Minimized from the attached Claude Code comparison",
+      "columns": 40,
+      "rows": 3,
+      "chunks": [
+        "\u001b[2J\u001b[H⏺ Hey. What need?",
+        "\u001b[3;1H✽ Cogitated for 2s · done 8:01 PM"
+      ],
+      "expected_cells": [
+        { "row": 0, "column": 0, "text": "⏺" },
+        { "row": 0, "column": 2, "text": "H" },
+        { "row": 2, "column": 0, "text": "✽" },
+        { "row": 2, "column": 21, "text": "d" }
+      ],
+      "cursor": { "row": 2, "column": 33, "shape": "block", "blinking": true }
+    },
+    {
+      "id": "opencode-animated-footer",
+      "origin": "Minimized from the attached OpenCode footer capture",
+      "columns": 40,
+      "rows": 2,
+      "chunks": [
+        "\u001b[2;4H\u001b[38;2;192;153;255m■⬝⬝⬝⬝⬝⬝⬝\u001b[2;13H\u001b[38;2;200;211;245mesc \u001b[38;2;130;139;184minterrupt",
+        "\u001b[2;4H\u001b[38;2;192;153;255m■■⬝⬝⬝⬝⬝⬝\u001b[2;13H\u001b[38;2;200;211;245mesc \u001b[38;2;130;139;184minterrupt",
+        "\u001b[2;4H\u001b[38;2;192;153;255m⬝■■■■■■⬝\u001b[2;13H\u001b[38;2;200;211;245mesc \u001b[38;2;130;139;184minterrupt",
+        "\u001b[2;4H\u001b[38;2;192;153;255m⬝⬝⬝⬝⬝■■■\u001b[2;13H\u001b[38;2;200;211;245mesc \u001b[38;2;130;139;184minterrupt"
+      ],
+      "expected_cells": [
+        { "row": 1, "column": 3, "text": "⬝" },
+        { "row": 1, "column": 8, "text": "■" },
+        { "row": 1, "column": 12, "text": "e" },
+        { "row": 1, "column": 16, "text": "i" }
+      ],
+      "cursor": { "row": 1, "column": 25, "shape": "block", "blinking": true }
+    },
+    {
+      "id": "ghostty-style-steady-block-cursor",
+      "origin": "Minimized from the attached Ghostty Tokyo Night cursor comparison",
+      "columns": 40,
+      "rows": 2,
+      "chunks": [
+        "\u001b[2J\u001b[H➜  Dev git:(main) ✕ \u001b[2 q\u001b]12;#c0caf5\u0007"
+      ],
+      "expected_cells": [
+        { "row": 0, "column": 0, "text": "➜" },
+        { "row": 0, "column": 3, "text": "D" },
+        { "row": 0, "column": 7, "text": "g" },
+        { "row": 0, "column": 18, "text": "✕" }
+      ],
+      "cursor": { "row": 0, "column": 20, "shape": "block", "blinking": false }
+    }
+  ]
+}

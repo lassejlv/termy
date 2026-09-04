@@ -409,6 +409,44 @@ fn osc_title_directory_and_clipboard_become_events() {
 }
 
 #[test]
+fn oversized_osc_metadata_is_ignored_without_leaking_prior_hyperlinks() {
+    let mut terminal = terminal(8, 3);
+    let oversized_title = "t".repeat(1_025);
+    let oversized_directory = "d".repeat(4_097);
+    let oversized_pointer = "p".repeat(513);
+    let oversized_selection = "c".repeat(17);
+    terminal.feed(format!("\x1b]2;{oversized_title}\x07").as_bytes());
+    terminal.feed(format!("\x1b]7;{oversized_directory}\x07").as_bytes());
+    terminal.feed(format!("\x1b]22;{oversized_pointer}\x07").as_bytes());
+    terminal.feed(format!("\x1b]52;{oversized_selection};aGVsbG8=\x07").as_bytes());
+    assert!(terminal.drain_events().is_empty());
+
+    terminal.feed(b"\x1b]8;;https://example.com\x1b\\A");
+    assert!(
+        terminal
+            .hyperlink_at(SelectionPoint { column: 0, row: 0 })
+            .is_some()
+    );
+    let oversized_hyperlink = "h".repeat(8_193);
+    terminal.feed(format!("\x1b]8;;{oversized_hyperlink}\x1b\\B").as_bytes());
+    assert_eq!(
+        terminal.hyperlink_at(SelectionPoint { column: 1, row: 0 }),
+        None,
+        "an invalid hyperlink must clear the previous hyperlink state"
+    );
+}
+
+#[test]
+fn osc_window_titles_drop_embedded_control_characters() {
+    let mut terminal = terminal(8, 3);
+    terminal.feed(b"\x1b]2;safe\n\t title\x07");
+    assert_eq!(
+        terminal.drain_events(),
+        vec![TerminalEvent::Title("safe title".to_owned())]
+    );
+}
+
+#[test]
 fn alternate_screen_does_not_destroy_main_screen() {
     let mut terminal = terminal(8, 3);
     terminal.feed(b"main\x1b[?1049halt\x1b[?1049l");

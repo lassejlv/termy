@@ -5,7 +5,7 @@ repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 target_dir="$repo_root/target/debug"
 smoke_binary="$target_dir/ffi-c-smoke"
 
-cargo build --manifest-path "$repo_root/Cargo.toml" -p ffi
+cargo build --locked --manifest-path "$repo_root/Cargo.toml" -p ffi
 
 case "$(uname -s)" in
   Darwin)

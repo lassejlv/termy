@@ -11,6 +11,23 @@ use toml_edit::DocumentMut;
 
 const DEFAULT_SCROLLBACK_LIMIT: usize = 5_000;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Osc52Policy {
+    Disabled,
+    FocusedWindow,
+    ActiveTab,
+}
+
+impl Osc52Policy {
+    pub(crate) const fn allows(self, active_tab: bool, window_focused: bool) -> bool {
+        match self {
+            Self::Disabled => false,
+            Self::FocusedWindow => active_tab && window_focused,
+            Self::ActiveTab => active_tab,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct AppConfig {
     pub(crate) font_family: String,
@@ -18,6 +35,7 @@ pub(crate) struct AppConfig {
     pub(crate) padding: f32,
     pub(crate) scrollback_limit: usize,
     pub(crate) inactive_scrollback_limit: usize,
+    pub(crate) osc52_policy: Osc52Policy,
     pub(crate) theme: Theme,
     pub(crate) shell: Option<OsString>,
     pub(crate) working_directory: Option<PathBuf>,
@@ -32,6 +50,7 @@ impl Default for AppConfig {
             padding: renderer.padding,
             scrollback_limit: DEFAULT_SCROLLBACK_LIMIT,
             inactive_scrollback_limit: 1_000,
+            osc52_policy: Osc52Policy::Disabled,
             theme: renderer.theme,
             shell: None,
             working_directory: None,
@@ -107,6 +126,17 @@ impl AppConfig {
         }
         if config.inactive_scrollback_limit > config.scrollback_limit {
             bail!("inactive-scrollback-limit must not exceed scrollback-limit");
+        }
+        if let Some(value) = document.get("osc52-clipboard") {
+            config.osc52_policy =
+                match value.as_str().context("osc52-clipboard must be a string")? {
+                    "disabled" => Osc52Policy::Disabled,
+                    "focused-window" => Osc52Policy::FocusedWindow,
+                    "active-tab" => Osc52Policy::ActiveTab,
+                    _ => {
+                        bail!("osc52-clipboard must be disabled, focused-window, or active-tab")
+                    }
+                };
         }
         if let Some(value) = document.get("colors") {
             let colors = value.as_table().context("colors must be a table")?;
@@ -282,7 +312,7 @@ fn expand_home(path: &str) -> PathBuf {
 mod tests {
     use std::{fs, path::Path, time::SystemTime};
 
-    use super::{AppConfig, ensure_config_file, select_default_config_path};
+    use super::{AppConfig, Osc52Policy, ensure_config_file, select_default_config_path};
 
     #[test]
     fn defaults_are_small_and_daily_driver_friendly() {
@@ -291,6 +321,7 @@ mod tests {
         assert!((config.font_size - 15.0).abs() < f32::EPSILON);
         assert_eq!(config.scrollback_limit, 5_000);
         assert_eq!(config.inactive_scrollback_limit, 1_000);
+        assert_eq!(config.osc52_policy, Osc52Policy::Disabled);
     }
 
     #[test]
@@ -302,6 +333,7 @@ font-size = 14.5
 padding = 10
 scrollback-limit = 12000
 inactive-scrollback-limit = 2000
+osc52-clipboard = "focused-window"
 shell = "/bin/fish"
 working-directory = "~/Code"
 
@@ -325,6 +357,7 @@ bright-blue = "#0088ff"
         assert!((config.padding - 10.0).abs() < f32::EPSILON);
         assert_eq!(config.scrollback_limit, 12_000);
         assert_eq!(config.inactive_scrollback_limit, 2_000);
+        assert_eq!(config.osc52_policy, Osc52Policy::FocusedWindow);
         assert_eq!(config.theme.foreground, [216, 222, 233]);
         assert_eq!(config.theme.background, [16, 18, 22]);
         assert_eq!(config.theme.cursor, [136, 192, 208]);
@@ -353,6 +386,23 @@ bright-blue = "#0088ff"
         assert!(AppConfig::parse("[colors]\nbackground = 'black'").is_err());
         assert!(AppConfig::parse("[colors]\nred = '#12345g'").is_err());
         assert!(AppConfig::parse("colors = '#000000'").is_err());
+        assert!(AppConfig::parse("osc52-clipboard = 'always'").is_err());
+    }
+
+    #[test]
+    fn osc52_policy_never_allows_inactive_tabs() {
+        for policy in [
+            Osc52Policy::Disabled,
+            Osc52Policy::FocusedWindow,
+            Osc52Policy::ActiveTab,
+        ] {
+            assert!(!policy.allows(false, false));
+            assert!(!policy.allows(false, true));
+        }
+        assert!(!Osc52Policy::Disabled.allows(true, true));
+        assert!(!Osc52Policy::FocusedWindow.allows(true, false));
+        assert!(Osc52Policy::FocusedWindow.allows(true, true));
+        assert!(Osc52Policy::ActiveTab.allows(true, false));
     }
 
     #[test]

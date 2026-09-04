@@ -27,8 +27,15 @@ pub(crate) const fn dynamic_color_index(target: DynamicColor) -> usize {
 pub(crate) fn directory_from_osc7(uri: &str) -> Option<PathBuf> {
     let authority_and_path = uri.strip_prefix("file://")?;
     let path_start = authority_and_path.find('/')?;
+    let authority = &authority_and_path[..path_start];
+    if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+        return None;
+    }
     let encoded_path = &authority_and_path[path_start..];
     let decoded = percent_decode(encoded_path)?;
+    if decoded.chars().any(char::is_control) {
+        return None;
+    }
     let path = PathBuf::from(decoded);
     path.is_absolute().then_some(path)
 }
@@ -81,7 +88,9 @@ mod tests {
     #[test]
     fn osc7_parser_rejects_non_file_relative_and_malformed_paths() {
         assert_eq!(directory_from_osc7("https://example.com/tmp"), None);
+        assert_eq!(directory_from_osc7("file://example.com/tmp"), None);
         assert_eq!(directory_from_osc7("file://localhost/ok%ZZ"), None);
+        assert_eq!(directory_from_osc7("file:///tmp/%0Ahidden"), None);
         assert_eq!(directory_from_osc7("relative/path"), None);
     }
 }

@@ -1,0 +1,37 @@
+[package]
+name = "tmon-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+engine = { path = "../crates/engine" }
+libfuzzer-sys = "0.4.13"
+mux = { path = "../crates/mux", features = ["fuzzing"] }
+
+[[bin]]
+name = "terminal-feed"
+path = "fuzz_targets/terminal_feed.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot-decode"
+path = "fuzz_targets/snapshot_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mux-frame-decode"
+path = "fuzz_targets/mux_frame_decode.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]

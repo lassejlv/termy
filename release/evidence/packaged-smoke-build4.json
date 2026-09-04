@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "generated_unix_seconds": 1788522495,
+  "application_version": "0.1.0",
+  "bundle_build_number": "4",
+  "bundle_identifier": "com.tmon.app",
+  "macos_version": "27.0",
+  "host_architecture": "arm64",
+  "signature_kind": "ad_hoc",
+  "distribution_ready": false,
+  "archive_sha256": "29d3a72e09da04a1eef723450e2bc09cc06fbf96426dc3e8286c9225d8d28f3f",
+  "bundle_verified": true,
+  "isolated_pty_started": true,
+  "session_survived_detach": true,
+  "reattached_without_duplicate_session": true,
+  "support_bundle_privacy_smoke": true,
+  "explicit_session_termination": true,
+  "automated_runtime_passed": true,
+  "visual_matrix_status": "manual_checks_required"
+}

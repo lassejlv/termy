@@ -8,6 +8,7 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 arboard.workspace = true
+diagnostics = { path = "../diagnostics" }
 engine = { path = "../engine" }
 mux = { path = "../mux" }
 render = { path = "../render" }

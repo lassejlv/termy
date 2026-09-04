@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "generated_unix_seconds": 1788525545,
+  "bundle_identifier": "com.tmon.app",
+  "previous_version": "0.1.0",
+  "previous_build": "1",
+  "current_version": "0.1.0",
+  "current_build": "9",
+  "previous_protocol": 2,
+  "current_protocol": 3,
+  "previous_signature": "ad_hoc",
+  "current_signature": "ad_hoc",
+  "release_versions_distinct": true,
+  "signed_release_pair": false,
+  "previous_session_survived_upgrade": true,
+  "generations_coexisted": true,
+  "rollback_reattached_without_duplicate": true,
+  "current_termination_left_previous_alive": true,
+  "protocol_rollback_passed": true,
+  "production_upgrade_rollback_passed": false
+}

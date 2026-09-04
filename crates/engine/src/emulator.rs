@@ -20,6 +20,12 @@ use crate::{
 
 const KEYBOARD_STACK_LIMIT: usize = 64;
 const OSC_CLIPBOARD_LIMIT: usize = 1024 * 1024;
+const OSC_TITLE_LIMIT: usize = 1024;
+const OSC_DIRECTORY_LIMIT: usize = 4096;
+const OSC_HYPERLINK_LIMIT: usize = 8192;
+const OSC_DYNAMIC_COLOR_LIMIT: usize = 64;
+const OSC_POINTER_SHAPE_LIMIT: usize = 512;
+const OSC_CLIPBOARD_SELECTION_LIMIT: usize = 16;
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct KeyboardMode {
@@ -983,8 +989,10 @@ impl Emulator {
         };
         match command {
             "0" | "2" => {
-                let title = join_osc(params, 1);
-                self.events.push_back(TerminalEvent::Title(title));
+                if let Some(mut title) = join_osc_limited(params, 1, OSC_TITLE_LIMIT) {
+                    title.retain(|character| !character.is_control());
+                    self.events.push_back(TerminalEvent::Title(title));
+                }
             }
             "10" => self.osc_dynamic_color(DynamicColor::Foreground, 10, params),
             "11" => self.osc_dynamic_color(DynamicColor::Background, 11, params),
@@ -993,17 +1001,14 @@ impl Emulator {
             "111" => self.reset_dynamic_color(DynamicColor::Background),
             "112" => self.reset_dynamic_color(DynamicColor::Cursor),
             "7" => {
-                let directory = join_osc(params, 1);
-                self.events
-                    .push_back(TerminalEvent::CurrentDirectory(directory));
+                if let Some(directory) = join_osc_limited(params, 1, OSC_DIRECTORY_LIMIT) {
+                    self.events
+                        .push_back(TerminalEvent::CurrentDirectory(directory));
+                }
             }
             "8" => {
-                let uri = join_osc(params, 2);
-                self.template.hyperlink = if uri.is_empty() {
-                    None
-                } else {
-                    Some(Arc::new(uri))
-                };
+                let uri = join_osc_limited(params, 2, OSC_HYPERLINK_LIMIT);
+                self.template.hyperlink = uri.filter(|uri| !uri.is_empty()).map(Arc::new);
             }
             "22" => self.osc_pointer_shape(params),
             "52" => self.osc_clipboard(params),
@@ -1012,7 +1017,9 @@ impl Emulator {
     }
 
     fn osc_dynamic_color(&mut self, target: DynamicColor, command: u8, params: &[&[u8]]) {
-        let value = join_osc(params, 1);
+        let Some(value) = join_osc_limited(params, 1, OSC_DYNAMIC_COLOR_LIMIT) else {
+            return;
+        };
         if value == "?" {
             let [red, green, blue] = self.dynamic_color(target);
             let reply = format!(
@@ -1059,6 +1066,9 @@ impl Emulator {
             .get(1)
             .and_then(|value| std::str::from_utf8(value).ok())
             .unwrap_or("c");
+        if selection.len() > OSC_CLIPBOARD_SELECTION_LIMIT {
+            return;
+        }
         let Some(payload) = params.get(2) else {
             return;
         };
@@ -1080,7 +1090,9 @@ impl Emulator {
     }
 
     fn osc_pointer_shape(&mut self, params: &[&[u8]]) {
-        let value = join_osc(params, 1);
+        let Some(value) = join_osc_limited(params, 1, OSC_POINTER_SHAPE_LIMIT) else {
+            return;
+        };
         let (operation, names) = match value.as_bytes().first().copied() {
             Some(operation @ (b'=' | b'>' | b'<' | b'?')) => {
                 (operation, value.get(1..).unwrap_or_default())
@@ -1308,14 +1320,23 @@ fn extended_color(groups: &[Vec<u16>], index: usize) -> Option<(Color, usize)> {
     }
 }
 
-fn join_osc(params: &[&[u8]], start: usize) -> String {
-    params
-        .get(start..)
-        .unwrap_or_default()
+fn join_osc_limited(params: &[&[u8]], start: usize, limit: usize) -> Option<String> {
+    let values = params.get(start..).unwrap_or_default();
+    let separators = values.len().saturating_sub(1);
+    let length = values
         .iter()
-        .map(|value| String::from_utf8_lossy(value))
-        .collect::<Vec<_>>()
-        .join(";")
+        .try_fold(separators, |length, value| length.checked_add(value.len()))?;
+    if length > limit {
+        return None;
+    }
+    let mut joined = String::with_capacity(length);
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            joined.push(';');
+        }
+        joined.push_str(std::str::from_utf8(value).ok()?);
+    }
+    Some(joined)
 }
 
 fn to_u8(value: u16) -> u8 {

@@ -34,13 +34,18 @@ use palette::{Palette, srgb_to_linear};
 use rects::{RectInstance, RectRenderer};
 use rounded_corners::{RoundedCornerInstance, RoundedCornerRenderer};
 use text_rows::TextRows;
+use unicode_width::UnicodeWidthStr;
 use wgpu::{
     Backends, CommandEncoderDescriptor, CompositeAlphaMode, DeviceDescriptor, Instance,
     InstanceDescriptor, LoadOp, Operations, PresentMode, RenderPassColorAttachment,
     RenderPassDescriptor, RequestAdapterOptions, SurfaceColorSpace, SurfaceConfiguration,
     TextureFormat, TextureUsages, TextureViewDescriptor,
 };
-use winit::{dpi::PhysicalSize, event_loop::ActiveEventLoop, window::Window};
+use winit::{
+    dpi::{PhysicalPosition, PhysicalSize},
+    event_loop::ActiveEventLoop,
+    window::Window,
+};
 
 const DEFAULT_FONT_FAMILY: &str = "Menlo";
 const ATLAS_TRIM_INTERVAL: u64 = 120;
@@ -74,6 +79,13 @@ impl Default for RendererConfig {
 pub struct SearchInput {
     pub query: String,
     pub has_match: Option<bool>,
+    pub preedit: Option<PreeditText>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreeditText {
+    pub text: String,
+    pub cursor: Option<(usize, usize)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -275,6 +287,7 @@ struct BraillePrimitive {
 enum BlockShape {
     Rectangle(EighthRect),
     Quadrants(u8),
+    CenteredSmallSquare,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -374,6 +387,17 @@ struct SearchFieldLayout {
     text_width: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PreeditLayout {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    text_x: f32,
+    text_y: f32,
+    text_width: f32,
+}
+
 impl EighthRect {
     const fn new(left: u8, top: u8, right: u8, bottom: u8) -> Self {
         Self {
@@ -434,6 +458,7 @@ impl BlockShape {
             '\u{259F}' => Some(Self::Quadrants(
                 Self::UPPER_RIGHT | Self::LOWER_LEFT | Self::LOWER_RIGHT,
             )),
+            '\u{2B1D}' => Some(Self::CenteredSmallSquare),
             _ => None,
         }
     }
@@ -463,6 +488,7 @@ impl BlockShape {
                     None
                 },
             ],
+            Self::CenteredSmallSquare => [Some(EighthRect::new(3, 3, 5, 5)), None, None, None],
         }
     }
 }
@@ -504,6 +530,24 @@ fn rounded_cell_rect(
 }
 
 fn block_pixel_rectangles(shape: BlockShape, cell: PixelRect) -> [Option<PixelRect>; 4] {
+    if shape == BlockShape::CenteredSmallSquare {
+        let size = ((cell.right - cell.left) * 0.25).round().max(2.0);
+        let center_x = (cell.left + cell.right) * 0.5;
+        let center_y = (cell.top + cell.bottom) * 0.5;
+        let left = (center_x - size * 0.5).round();
+        let top = (center_y - size * 0.5).round();
+        return [
+            Some(PixelRect {
+                left,
+                top,
+                right: left + size,
+                bottom: top + size,
+            }),
+            None,
+            None,
+            None,
+        ];
+    }
     shape.eighth_rectangles().map(|rectangle| {
         rectangle.map(|rectangle| {
             let horizontal =
@@ -558,9 +602,9 @@ impl WideGlyph {
         }
     }
 
-    fn begin(&mut self, column: usize, text: &str, style: TextStyle) {
+    fn begin(&mut self, column: usize, columns: usize, text: &str, style: TextStyle) {
         self.column = column;
-        self.columns = 2;
+        self.columns = columns;
         self.text.clear();
         self.text.push_str(text);
         self.style = style;
@@ -570,8 +614,8 @@ impl WideGlyph {
         self.column.saturating_add(self.columns) == column && self.style == style
     }
 
-    fn append(&mut self, text: &str) {
-        self.columns = self.columns.saturating_add(2);
+    fn append(&mut self, columns: usize, text: &str) {
+        self.columns = self.columns.saturating_add(columns);
         self.text.push_str(text);
     }
 
@@ -892,16 +936,24 @@ impl RetainedGrid {
                     foreground,
                 });
             }
-            if cell.flags.contains(CellFlags::WIDE) && !cell.text.is_empty() {
+            let presented_text = terminal_text_presentation(cell.text.as_str());
+            let overlay_columns = if cell.flags.contains(CellFlags::WIDE) {
+                Some(2)
+            } else if explicit_emoji_presentation(cell.text.as_str()) || cell.text == "⏺" {
+                Some(1)
+            } else {
+                None
+            };
+            if let Some(columns) = overlay_columns.filter(|_| !cell.text.is_empty()) {
                 if wide_glyph_count != 0
                     && row.wide_glyphs[wide_glyph_count - 1].can_append(column, style)
                 {
-                    row.wide_glyphs[wide_glyph_count - 1].append(cell.text.as_str());
+                    row.wide_glyphs[wide_glyph_count - 1].append(columns, presented_text);
                 } else {
                     if wide_glyph_count == row.wide_glyphs.len() {
                         row.wide_glyphs.push(WideGlyph::new(font_system, metrics));
                     }
-                    row.wide_glyphs[wide_glyph_count].begin(column, cell.text.as_str(), style);
+                    row.wide_glyphs[wide_glyph_count].begin(column, columns, presented_text, style);
                     wide_glyph_count += 1;
                 }
                 ascii_fast_path = false;
@@ -910,6 +962,7 @@ impl RetainedGrid {
             if block_shape.is_some()
                 || box_shape.is_some()
                 || braille_pattern.is_some()
+                || overlay_columns.is_some()
                 || cell
                     .flags
                     .intersects(CellFlags::WIDE | CellFlags::WIDE_SPACER)
@@ -921,7 +974,7 @@ impl RetainedGrid {
             } else if cell.text.is_empty() {
                 row.text.push(' ');
             } else {
-                row.text.push_str(cell.text.as_str());
+                row.text.push_str(presented_text);
             }
             let end = row.text.len();
             if let Some(run) = row.styles.last_mut()
@@ -986,6 +1039,13 @@ pub struct MetalRenderer {
     search_input: Option<SearchInput>,
     prepared_search_input: Option<SearchInput>,
     search_rectangle_scratch: Vec<RectInstance>,
+    preedit_buffer: Buffer,
+    preedit_renderer: TextRenderer,
+    preedit_viewport: Viewport,
+    preedit_rect_renderer: RectRenderer,
+    preedit_input: Option<PreeditText>,
+    prepared_preedit_input: Option<(PreeditText, CursorState)>,
+    preedit_rectangle_scratch: Vec<RectInstance>,
     atlas_preparations_since_trim: u64,
     rect_renderer: RectRenderer,
     rounded_corner_renderer: RoundedCornerRenderer,
@@ -1117,10 +1177,18 @@ impl MetalRenderer {
         let search_renderer =
             TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
         let search_viewport = Viewport::new(&device, &cache);
+        let preedit_buffer = Buffer::new(
+            &mut font_system,
+            Metrics::new(physical_font_size, cell_metrics.height),
+        );
+        let preedit_renderer =
+            TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
+        let preedit_viewport = Viewport::new(&device, &cache);
         let geometry_transform_layout = RowTransforms::layout(&device);
         let geometry_transforms = RowTransforms::new(&device, &geometry_transform_layout, 0);
         let rect_renderer = RectRenderer::new(&device, format, &geometry_transform_layout);
         let search_rect_renderer = RectRenderer::new(&device, format, &geometry_transform_layout);
+        let preedit_rect_renderer = RectRenderer::new(&device, format, &geometry_transform_layout);
         let rounded_corner_renderer =
             RoundedCornerRenderer::new(&device, format, &geometry_transform_layout);
         let braille_renderer = BrailleRenderer::new(&device, format, &geometry_transform_layout);
@@ -1143,6 +1211,13 @@ impl MetalRenderer {
             search_input: None,
             prepared_search_input: None,
             search_rectangle_scratch: Vec::new(),
+            preedit_buffer,
+            preedit_renderer,
+            preedit_viewport,
+            preedit_rect_renderer,
+            preedit_input: None,
+            prepared_preedit_input: None,
+            preedit_rectangle_scratch: Vec::new(),
             atlas_preparations_since_trim: 0,
             rect_renderer,
             rounded_corner_renderer,
@@ -1203,6 +1278,7 @@ impl MetalRenderer {
         self.window = window;
         self.occluded = false;
         self.prepared_search_input = None;
+        self.prepared_preedit_input = None;
         if (self.scale_factor - scale_factor).abs() < f64::EPSILON {
             self.geometry_state.transforms = true;
             self.mark_frame_pending();
@@ -1365,8 +1441,33 @@ impl MetalRenderer {
         self.surface.configure(&self.device, &self.surface_config);
         self.geometry_state.transforms = true;
         self.prepared_search_input = None;
+        self.prepared_preedit_input = None;
         self.mark_frame_pending();
         self.window.request_redraw();
+    }
+
+    /// Recreates and configures the Metal presentation surface for the current native window.
+    ///
+    /// This is the recovery path for a surface reported as lost. It is also exposed so the native
+    /// release harness can exercise the same display-lifecycle operation deterministically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a new presentation surface cannot be created for the current window.
+    pub fn recreate_surface(&mut self) -> Result<()> {
+        let surface = self
+            .instance
+            .create_surface(Arc::clone(&self.window))
+            .context("recreating Metal surface")?;
+        surface.configure(&self.device, &self.surface_config);
+        self.surface = surface;
+        self.occluded = false;
+        self.preparation.mark_viewport_dirty();
+        self.prepared_search_input = None;
+        self.prepared_preedit_input = None;
+        self.mark_frame_pending();
+        self.window.request_redraw();
+        Ok(())
     }
 
     pub fn set_occluded(&mut self, occluded: bool) {
@@ -1402,6 +1503,7 @@ impl MetalRenderer {
         }
         self.scale_factor = scale_factor;
         self.prepared_search_input = None;
+        self.prepared_preedit_input = None;
         self.remeasure_and_rebuild();
     }
 
@@ -1429,6 +1531,60 @@ impl MetalRenderer {
         self.window.request_redraw();
     }
 
+    pub fn set_preedit_input(&mut self, input: Option<PreeditText>) {
+        if self.preedit_input == input {
+            return;
+        }
+        self.preedit_input = input;
+        self.prepared_preedit_input = None;
+        self.geometry_state.dynamic = true;
+        self.mark_frame_pending();
+        self.window.request_redraw();
+    }
+
+    #[must_use]
+    pub fn ime_cursor_area(&self) -> (PhysicalPosition<i32>, PhysicalSize<u32>) {
+        let (x, y, width, height) = if let Some(search) = &self.search_input {
+            let layout = search_field_layout(
+                self.surface_config.width as f32,
+                self.surface_config.height as f32,
+                self.scale_factor as f32,
+            );
+            let committed = search.query.chars().count();
+            let preedit = search.preedit.as_ref().map_or(0, |preedit| {
+                preedit_cursor_columns(&preedit.text, preedit.cursor).0
+            });
+            let character_width = SEARCH_FONT_SIZE * 0.6 * self.scale_factor as f32;
+            (
+                (layout.text_x + (committed + preedit) as f32 * character_width)
+                    .min(layout.text_x + layout.text_width),
+                layout.text_y,
+                character_width,
+                SEARCH_LINE_HEIGHT * self.scale_factor as f32,
+            )
+        } else {
+            let padding = self.physical_padding();
+            (
+                padding + self.cursor.column as f32 * self.cell_metrics.width,
+                padding + self.cursor.row as f32 * self.cell_metrics.height,
+                self.cell_metrics.width,
+                self.cell_metrics.height,
+            )
+        };
+        let max_x = self.surface_config.width.saturating_sub(1) as f32;
+        let max_y = self.surface_config.height.saturating_sub(1) as f32;
+        (
+            PhysicalPosition::new(
+                x.clamp(0.0, max_x).round() as i32,
+                y.clamp(0.0, max_y).round() as i32,
+            ),
+            PhysicalSize::new(
+                width.round().max(1.0) as u32,
+                height.round().max(1.0) as u32,
+            ),
+        )
+    }
+
     pub fn set_dynamic_color(&mut self, target: DynamicColor, color: [u8; 3]) {
         if self.palette.set(target, color) {
             self.dynamic_color_changed(target);
@@ -1442,6 +1598,10 @@ impl MetalRenderer {
     }
 
     fn dynamic_color_changed(&mut self, target: DynamicColor) {
+        // Search and terminal IME overlays use palette colors but are prepared independently from
+        // retained terminal rows, so a palette change must invalidate both overlay caches too.
+        self.prepared_search_input = None;
+        self.prepared_preedit_input = None;
         if matches!(target, DynamicColor::Foreground | DynamicColor::Background) {
             let metrics = self.text_metrics();
             let rebuilt_rows = self.retained.rebuild_all(
@@ -1476,6 +1636,8 @@ impl MetalRenderer {
         self.record_rebuilt_rows(rebuilt_rows);
         self.mark_all_text_rows_dirty();
         self.preparation.mark_viewport_dirty();
+        self.prepared_search_input = None;
+        self.prepared_preedit_input = None;
         self.mark_all_static_geometry_dirty();
         self.geometry_state.transforms = true;
         self.geometry_state.dynamic = true;
@@ -1494,6 +1656,9 @@ impl MetalRenderer {
             self.cursor_blink_visible = true;
         }
         self.cursor = update.cursor;
+        if previous_cursor != self.cursor {
+            self.prepared_preedit_input = None;
+        }
         self.selection = update.selection;
         let metrics = self.text_metrics();
         let retained_update = self.retained.apply_frame(
@@ -1682,12 +1847,8 @@ impl MetalRenderer {
                 return Ok(RenderStatus::Retry);
             }
             wgpu::CurrentSurfaceTexture::Lost => {
-                self.surface = self
-                    .instance
-                    .create_surface(Arc::clone(&self.window))
-                    .context("recreating lost Metal surface")?;
-                self.surface.configure(&self.device, &self.surface_config);
-                self.preparation.mark_viewport_dirty();
+                self.recreate_surface()
+                    .context("recovering lost Metal surface")?;
                 self.metrics.surface_retries = self.metrics.surface_retries.saturating_add(1);
                 return Ok(RenderStatus::Retry);
             }
@@ -1812,6 +1973,7 @@ impl MetalRenderer {
         }
 
         self.prepare_search_input(trim_after_prepare)?;
+        self.prepare_preedit_input(trim_after_prepare)?;
 
         let (geometry_build_ns, geometry_upload_ns) = self.update_geometry();
         frame_timings.geometry_build_ns = geometry_build_ns;
@@ -1875,6 +2037,21 @@ impl MetalRenderer {
                 self.search_renderer
                     .render(&self.atlas, &self.search_viewport, &mut pass)
                     .context("rendering search input")?;
+            }
+            if self.preedit_input.is_some() {
+                pass.set_viewport(
+                    0.0,
+                    0.0,
+                    self.surface_config.width.max(1) as f32,
+                    self.surface_config.height.max(1) as f32,
+                    0.0,
+                    1.0,
+                );
+                self.preedit_rect_renderer
+                    .draw(&mut pass, &self.geometry_transforms);
+                self.preedit_renderer
+                    .render(&self.atlas, &self.preedit_viewport, &mut pass)
+                    .context("rendering IME pre-edit")?;
             }
         }
         if let Some(started) = encoding_started {
@@ -1940,16 +2117,30 @@ impl MetalRenderer {
             self.scale_factor as f32,
         );
         let scale = self.scale_factor as f32;
-        let display = search_field_text(&input.query, layout.text_width, scale);
+        let combined = search_input_text(input);
+        let display = search_field_text(&combined, layout.text_width, scale);
+        let caret = search_caret_character(input, &display);
         build_search_field_geometry(
             &mut self.search_rectangle_scratch,
             layout,
             self.palette,
             input.has_match,
-            (!input.query.is_empty()).then(|| display.chars().count()),
+            caret,
             self.surface_config.width as f32,
             self.surface_config.height as f32,
         );
+        if let Some(preedit) = &input.preedit {
+            build_search_preedit_geometry(
+                &mut self.search_rectangle_scratch,
+                layout,
+                &display,
+                preedit,
+                self.palette,
+                self.scale_factor as f32,
+                self.surface_config.width as f32,
+                self.surface_config.height as f32,
+            );
+        }
         self.search_rect_renderer.upload_overlay(
             &self.device,
             &self.queue,
@@ -2005,6 +2196,99 @@ impl MetalRenderer {
             )
             .context("preparing search input glyphs")?;
         self.prepared_search_input = self.search_input.clone();
+        Ok(())
+    }
+
+    fn prepare_preedit_input(&mut self, force: bool) -> Result<()> {
+        let prepared = self
+            .preedit_input
+            .as_ref()
+            .map(|input| (input.clone(), self.cursor));
+        if self.prepared_preedit_input == prepared && !force {
+            return Ok(());
+        }
+        self.preedit_rectangle_scratch.clear();
+        let Some(input) = &self.preedit_input else {
+            self.preedit_rect_renderer.upload_overlay(
+                &self.device,
+                &self.queue,
+                &self.preedit_rectangle_scratch,
+            );
+            self.prepared_preedit_input = None;
+            return Ok(());
+        };
+        let layout = preedit_layout(
+            input,
+            self.cursor,
+            self.physical_padding(),
+            self.cell_metrics,
+            self.surface_config.width as f32,
+            self.surface_config.height as f32,
+        );
+        build_preedit_geometry(
+            &mut self.preedit_rectangle_scratch,
+            layout,
+            input,
+            self.cell_metrics.width,
+            self.palette,
+            self.surface_config.width as f32,
+            self.surface_config.height as f32,
+        );
+        self.preedit_rect_renderer.upload_overlay(
+            &self.device,
+            &self.queue,
+            &self.preedit_rectangle_scratch,
+        );
+
+        self.preedit_buffer.set_metrics_and_size(
+            self.text_metrics(),
+            Some(layout.text_width),
+            Some(layout.height),
+        );
+        self.preedit_buffer.set_wrap(Wrap::None);
+        self.preedit_buffer.set_text(
+            &input.text,
+            &Attrs::new()
+                .family(Family::Name(&self.retained.font_family))
+                .weight(Weight::NORMAL),
+            Shaping::Advanced,
+            None,
+        );
+        self.preedit_buffer
+            .shape_until_scroll(&mut self.font_system, false);
+        self.preedit_viewport.update(
+            &self.queue,
+            Resolution {
+                width: self.surface_config.width.max(1),
+                height: self.surface_config.height.max(1),
+            },
+        );
+        let color = self.palette.foreground();
+        self.preedit_renderer
+            .prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.atlas,
+                &self.preedit_viewport,
+                [TextArea {
+                    buffer: &self.preedit_buffer,
+                    left: layout.text_x,
+                    top: layout.text_y,
+                    scale: 1.0,
+                    bounds: TextBounds {
+                        left: layout.x.floor() as i32,
+                        top: layout.y.floor() as i32,
+                        right: (layout.x + layout.width).ceil() as i32,
+                        bottom: (layout.y + layout.height).ceil() as i32,
+                    },
+                    default_color: glyphon::Color::rgb(color[0], color[1], color[2]),
+                    custom_glyphs: &[],
+                }],
+                &mut self.swash_cache,
+            )
+            .context("preparing IME pre-edit glyphs")?;
+        self.prepared_preedit_input = prepared;
         Ok(())
     }
 
@@ -2134,7 +2418,7 @@ impl MetalRenderer {
                 &self.retained,
                 RectangleFrame {
                     selection: self.selection,
-                    cursor: if self.search_input.is_some() {
+                    cursor: if self.search_input.is_some() || self.preedit_input.is_some() {
                         CursorState {
                             visible: false,
                             ..self.cursor
@@ -2313,6 +2597,185 @@ fn search_field_text(query: &str, text_width: f32, scale: f32) -> String {
     let mut tail = query.chars().rev().take(tail_length).collect::<Vec<_>>();
     tail.reverse();
     std::iter::once('…').chain(tail).collect()
+}
+
+fn search_input_text(input: &SearchInput) -> String {
+    let Some(preedit) = &input.preedit else {
+        return input.query.clone();
+    };
+    let mut combined = String::with_capacity(input.query.len().saturating_add(preedit.text.len()));
+    combined.push_str(&input.query);
+    combined.push_str(&preedit.text);
+    combined
+}
+
+fn search_caret_character(input: &SearchInput, display: &str) -> Option<usize> {
+    let absolute = if let Some(preedit) = &input.preedit {
+        let cursor = preedit.cursor?.1;
+        input.query.chars().count()
+            + preedit.text[..clamped_char_boundary(&preedit.text, cursor)]
+                .chars()
+                .count()
+    } else {
+        if input.query.is_empty() {
+            return None;
+        }
+        input.query.chars().count()
+    };
+    if !display.starts_with('…') {
+        return Some(absolute.min(display.chars().count()));
+    }
+    let full_count = search_input_text(input).chars().count();
+    let visible_tail = display.chars().count().saturating_sub(1);
+    let hidden = full_count.saturating_sub(visible_tail);
+    Some(if absolute < hidden {
+        1
+    } else {
+        1 + absolute - hidden
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_search_preedit_geometry(
+    rectangles: &mut Vec<RectInstance>,
+    layout: SearchFieldLayout,
+    display: &str,
+    preedit: &PreeditText,
+    palette: Palette,
+    scale: f32,
+    viewport_width: f32,
+    viewport_height: f32,
+) {
+    let character_width = SEARCH_FONT_SIZE * 0.6 * scale;
+    let visible_characters = display.chars().count();
+    let preedit_characters = preedit.text.chars().count().min(visible_characters);
+    if preedit_characters == 0 {
+        return;
+    }
+    let start = visible_characters.saturating_sub(preedit_characters);
+    let x = layout.text_x + start as f32 * character_width;
+    let width = (preedit_characters as f32 * character_width)
+        .min((layout.text_x + layout.text_width - x).max(1.0));
+    rectangles.push(RectInstance::from_pixels(
+        x,
+        layout.text_y + SEARCH_LINE_HEIGHT * scale - 2.0 * scale.max(1.0),
+        width,
+        scale.max(1.0),
+        palette.search_foreground(),
+        0.9,
+        viewport_width,
+        viewport_height,
+    ));
+}
+
+fn preedit_layout(
+    input: &PreeditText,
+    cursor: CursorState,
+    padding: f32,
+    cell_metrics: CellMetrics,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> PreeditLayout {
+    let inset = (cell_metrics.width * 0.15).max(2.0);
+    let columns = UnicodeWidthStr::width(input.text.as_str()).max(1);
+    let width = (columns as f32 * cell_metrics.width + inset * 2.0).min(viewport_width.max(1.0));
+    let height = cell_metrics.height.min(viewport_height.max(1.0));
+    let desired_x = padding + cursor.column as f32 * cell_metrics.width;
+    let desired_y = padding + cursor.row as f32 * cell_metrics.height;
+    let x = desired_x.min((viewport_width - width).max(0.0));
+    let y = if desired_y + height <= viewport_height {
+        desired_y
+    } else {
+        (desired_y - height).max(0.0)
+    };
+    PreeditLayout {
+        x,
+        y,
+        width,
+        height,
+        text_x: x + inset,
+        text_y: y,
+        text_width: (width - inset * 2.0).max(1.0),
+    }
+}
+
+fn preedit_cursor_columns(text: &str, cursor: Option<(usize, usize)>) -> (usize, usize) {
+    let Some((start, end)) = cursor else {
+        return (0, 0);
+    };
+    let start = clamped_char_boundary(text, start);
+    let end = clamped_char_boundary(text, end);
+    (
+        UnicodeWidthStr::width(&text[..start]),
+        UnicodeWidthStr::width(&text[..end]),
+    )
+}
+
+fn clamped_char_boundary(text: &str, requested: usize) -> usize {
+    let mut position = requested.min(text.len());
+    while !text.is_char_boundary(position) {
+        position -= 1;
+    }
+    position
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_preedit_geometry(
+    rectangles: &mut Vec<RectInstance>,
+    layout: PreeditLayout,
+    input: &PreeditText,
+    cell_width: f32,
+    palette: Palette,
+    viewport_width: f32,
+    viewport_height: f32,
+) {
+    rectangles.push(RectInstance::from_pixels(
+        layout.x,
+        layout.y,
+        layout.width,
+        layout.height,
+        palette.background(),
+        0.97,
+        viewport_width,
+        viewport_height,
+    ));
+    let text_columns = UnicodeWidthStr::width(input.text.as_str()).max(1);
+    let underline_width = (text_columns as f32 * cell_width).min(layout.text_width);
+    rectangles.push(RectInstance::from_pixels(
+        layout.text_x,
+        layout.y + layout.height - 2.0,
+        underline_width,
+        2.0,
+        palette.foreground(),
+        0.9,
+        viewport_width,
+        viewport_height,
+    ));
+    if input.cursor.is_some() {
+        let (start, end) = preedit_cursor_columns(&input.text, input.cursor);
+        if start != end {
+            rectangles.push(RectInstance::from_pixels(
+                layout.text_x + start as f32 * cell_width,
+                layout.y,
+                ((end.saturating_sub(start)) as f32 * cell_width).max(1.0),
+                layout.height,
+                palette.selection(),
+                0.55,
+                viewport_width,
+                viewport_height,
+            ));
+        }
+        rectangles.push(RectInstance::from_pixels(
+            layout.text_x + end as f32 * cell_width,
+            layout.y + 2.0,
+            2.0,
+            (layout.height - 4.0).max(1.0),
+            palette.cursor(),
+            0.9,
+            viewport_width,
+            viewport_height,
+        ));
+    }
 }
 
 fn build_search_field_geometry(
@@ -2565,11 +3028,7 @@ fn build_dynamic_geometry_into(
             cursor_width,
             cursor_height,
             frame.cursor_color,
-            if frame.cursor.shape == CursorShape::Block {
-                0.9
-            } else {
-                1.0
-            },
+            1.0,
             frame.viewport_width,
             frame.viewport_height,
         ));
@@ -2744,11 +3203,7 @@ fn build_geometry_into(
             cursor_width,
             cursor_height,
             frame.cursor_color,
-            if frame.cursor.shape == CursorShape::Block {
-                0.9
-            } else {
-                1.0
-            },
+            1.0,
             frame.viewport_width,
             frame.viewport_height,
         ));
@@ -2864,6 +3319,17 @@ fn attrs_for_style(style: TextStyle, font_family: &str) -> Attrs<'_> {
     attrs
 }
 
+fn terminal_text_presentation(text: &str) -> &str {
+    // Claude Code uses the bare record symbol as a terminal UI marker. macOS resolves U+23FA
+    // through Apple Color Emoji when the configured monospace font does not contain it, unlike
+    // terminals that prefer a monochrome text glyph unless U+FE0F explicitly requests emoji.
+    if text == "⏺" { "●" } else { text }
+}
+
+fn explicit_emoji_presentation(text: &str) -> bool {
+    text.contains('\u{fe0f}')
+}
+
 fn measure_cell(font_system: &mut FontSystem, font_size: f32) -> CellMetrics {
     let height = (font_size * 1.2).round().max(1.0);
     let mut buffer = Buffer::new(font_system, Metrics::new(font_size, height));
@@ -2900,19 +3366,22 @@ fn wgpu_color(rgb: [u8; 3]) -> wgpu::Color {
 #[cfg(test)]
 mod render_regression_tests {
     use engine::{
-        Cell, CellFlags, CursorState, DEFAULT_BACKGROUND_RGB, DEFAULT_FOREGROUND_RGB, DynamicColor,
-        RowMoveDirection, SelectionPoint, SelectionRange, Terminal, TerminalConfig,
+        Cell, CellFlags, CursorShape, CursorState, DEFAULT_BACKGROUND_RGB, DEFAULT_CURSOR_RGB,
+        DEFAULT_FOREGROUND_RGB, DynamicColor, RowMoveDirection, SelectionPoint, SelectionRange,
+        Terminal, TerminalConfig,
     };
     use glyphon::{Attrs, Color, Family, FontSystem, Metrics, Shaping, Weight};
 
     use super::{
         BackgroundRun, BlockPrimitive, BlockShape, BraillePrimitive, DEFAULT_FONT_FAMILY,
-        DecorationKind, DecorationPrimitive, Palette, PixelRect, RectangleFrame,
-        RenderPreparationState, RenderRow, RetainedGrid, block_pixel_rectangles,
-        build_geometry_into, build_search_field_geometry, cursor_should_blink,
-        geometric_block_shape, geometric_braille_pattern, measure_cell,
-        redraw_after_occlusion_change, rounded_cell_rect, search_field_layout, search_field_text,
-        selection_spans, text_view_dimensions, text_view_pixel_at, wgpu_color,
+        DecorationKind, DecorationPrimitive, Palette, PixelRect, PreeditText, RectangleFrame,
+        RenderPreparationState, RenderRow, RetainedGrid, SearchInput, block_pixel_rectangles,
+        build_dynamic_geometry_into, build_geometry_into, build_preedit_geometry,
+        build_search_field_geometry, cursor_should_blink, geometric_block_shape,
+        geometric_braille_pattern, measure_cell, preedit_cursor_columns, preedit_layout,
+        redraw_after_occlusion_change, rounded_cell_rect, search_caret_character,
+        search_field_layout, search_field_text, search_input_text, selection_spans,
+        text_view_dimensions, text_view_pixel_at, wgpu_color,
     };
 
     fn eighth_coverage(shape: BlockShape) -> [u8; 8] {
@@ -2945,6 +3414,41 @@ mod render_regression_tests {
     }
 
     #[test]
+    fn default_cursor_matches_ghostty_block_opacity() {
+        let retained = RetainedGrid {
+            columns: 1,
+            rows: 1,
+            ..RetainedGrid::default()
+        };
+        let frame = RectangleFrame {
+            selection: None,
+            cursor: CursorState {
+                visible: true,
+                shape: CursorShape::Block,
+                ..CursorState::default()
+            },
+            cursor_blink_visible: true,
+            padding: 0.0,
+            cell_metrics: super::CellMetrics {
+                width: 18.0,
+                height: 36.0,
+            },
+            font_size: 30.0,
+            viewport_width: 800.0,
+            viewport_height: 600.0,
+            cursor_color: DEFAULT_CURSOR_RGB,
+            selection_color: [76, 110, 175],
+        };
+        let mut rectangles = Vec::new();
+
+        build_dynamic_geometry_into(&mut rectangles, &retained, frame);
+
+        assert_eq!(rectangles.len(), 1);
+        let cursor: [f32; 8] = bytemuck::cast(rectangles[0]);
+        assert!((cursor[7] - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn search_input_is_anchored_top_right_and_keeps_the_query_tail_visible() {
         let layout = search_field_layout(1_000.0, 640.0, 1.0);
         assert!((layout.x + layout.width - 988.0).abs() < f32::EPSILON);
@@ -2969,6 +3473,76 @@ mod render_regression_tests {
             640.0,
         );
         assert_eq!(rectangles.len(), 7);
+    }
+
+    #[test]
+    fn ime_preedit_uses_utf8_cursor_ranges_and_cell_anchored_geometry() {
+        let input = PreeditText {
+            text: "拼音".to_owned(),
+            cursor: Some((3, 3)),
+        };
+        assert_eq!(preedit_cursor_columns(&input.text, input.cursor), (2, 2));
+        let layout = preedit_layout(
+            &input,
+            CursorState {
+                row: 5,
+                column: 10,
+                visible: true,
+                ..CursorState::default()
+            },
+            8.0,
+            super::CellMetrics {
+                width: 18.0,
+                height: 36.0,
+            },
+            1_000.0,
+            640.0,
+        );
+        assert!((layout.x - 188.0).abs() < f32::EPSILON);
+        assert!((layout.y - 188.0).abs() < f32::EPSILON);
+
+        let mut rectangles = Vec::new();
+        build_preedit_geometry(
+            &mut rectangles,
+            layout,
+            &input,
+            18.0,
+            Palette::default(),
+            1_000.0,
+            640.0,
+        );
+        assert_eq!(rectangles.len(), 3);
+
+        let selection = PreeditText {
+            text: input.text,
+            cursor: Some((0, 3)),
+        };
+        build_preedit_geometry(
+            &mut rectangles,
+            layout,
+            &selection,
+            18.0,
+            Palette::default(),
+            1_000.0,
+            640.0,
+        );
+        assert_eq!(rectangles.len(), 7);
+    }
+
+    #[test]
+    fn search_preedit_is_visible_without_committing_it_to_the_query() {
+        let input = SearchInput {
+            query: "find".to_owned(),
+            has_match: None,
+            preedit: Some(PreeditText {
+                text: "拼音".to_owned(),
+                cursor: Some((3, 3)),
+            }),
+        };
+        let combined = search_input_text(&input);
+        assert_eq!(combined, "find拼音");
+        assert_eq!(input.query, "find");
+        assert_eq!(search_caret_character(&input, &combined), Some(5));
     }
 
     #[test]
@@ -3432,6 +4006,207 @@ mod render_regression_tests {
                     .all(|glyph| glyph.x.is_finite() && glyph.w.is_finite()),
                 "{label} produced non-finite glyph geometry"
             );
+        }
+    }
+
+    #[test]
+    fn supported_font_matrix_preserves_mixed_terminal_cell_geometry() {
+        for family in ["Menlo", "Monaco", "Courier New"] {
+            let mut terminal = Terminal::new(TerminalConfig {
+                columns: 48,
+                rows: 1,
+                scrollback_limit: 0,
+            });
+            terminal.feed("ASCII e\u{301} ⏺ ⏺️ 界 ┌─┐ ⣿ █".as_bytes());
+
+            let mut font_system = FontSystem::new();
+            font_system.db_mut().set_monospace_family(family);
+            let cell = measure_cell(&mut font_system, 30.0);
+            assert!(cell.width.is_finite() && cell.width > 0.0, "{family}");
+            assert!(cell.height.is_finite() && cell.height > 0.0, "{family}");
+
+            let mut retained = RetainedGrid::with_font_family(family.to_owned());
+            retained.apply_frame(
+                &terminal.frame_update(true),
+                &mut font_system,
+                Metrics::new(30.0, 36.0),
+                cell.width,
+                Palette::default(),
+            );
+
+            let row = &retained.row_plans[0];
+            assert!(
+                row.text.contains("e\u{301}"),
+                "{family} lost combining mark"
+            );
+            assert!(!row.boxes.is_empty(), "{family} lost box geometry");
+            assert!(!row.blocks.is_empty(), "{family} lost block geometry");
+            assert!(!row.braille.is_empty(), "{family} lost Braille geometry");
+            assert!(
+                !row.wide_glyphs.is_empty(),
+                "{family} lost wide-glyph overlay"
+            );
+            let run = row.buffer.layout_runs().next().expect("mixed font row");
+            assert!(
+                (run.line_w - cell.width * 48.0).abs() < 0.05,
+                "{family} shifted mixed terminal row to {}, expected {}",
+                run.line_w,
+                cell.width * 48.0
+            );
+        }
+    }
+
+    #[test]
+    fn bare_record_symbol_prefers_terminal_text_presentation() {
+        let mut terminal = Terminal::new(TerminalConfig {
+            columns: 4,
+            rows: 1,
+            scrollback_limit: 0,
+        });
+        terminal.feed("⏺".as_bytes());
+
+        let mut font_system = FontSystem::new();
+        font_system
+            .db_mut()
+            .set_monospace_family(DEFAULT_FONT_FAMILY);
+        let cell = measure_cell(&mut font_system, 30.0);
+        let mut retained = RetainedGrid::default();
+        retained.apply_frame(
+            &terminal.frame_update(true),
+            &mut font_system,
+            Metrics::new(30.0, 36.0),
+            cell.width,
+            Palette::default(),
+        );
+
+        let row = &retained.row_plans[0];
+        assert_eq!(row.text, "    ");
+        assert_eq!(row.wide_glyphs.len(), 1);
+        assert_eq!(row.wide_glyphs[0].columns, 1);
+        let run = row.wide_glyphs[0]
+            .buffer
+            .layout_runs()
+            .next()
+            .expect("record symbol overlay run");
+        let glyph = run
+            .glyphs
+            .iter()
+            .find(|glyph| &run.text[glyph.start..glyph.end] == "●")
+            .expect("record symbol glyph");
+        let face = font_system
+            .db()
+            .face(glyph.font_id)
+            .expect("record symbol font face");
+        assert_ne!(face.post_script_name, "AppleColorEmoji");
+    }
+
+    #[test]
+    fn explicit_record_emoji_keeps_emoji_presentation() {
+        let mut terminal = Terminal::new(TerminalConfig {
+            columns: 4,
+            rows: 1,
+            scrollback_limit: 0,
+        });
+        terminal.feed("⏺️".as_bytes());
+
+        let mut font_system = FontSystem::new();
+        font_system
+            .db_mut()
+            .set_monospace_family(DEFAULT_FONT_FAMILY);
+        let cell = measure_cell(&mut font_system, 30.0);
+        let mut retained = RetainedGrid::default();
+        retained.apply_frame(
+            &terminal.frame_update(true),
+            &mut font_system,
+            Metrics::new(30.0, 36.0),
+            cell.width,
+            Palette::default(),
+        );
+
+        let row = &retained.row_plans[0];
+        assert_eq!(row.text, "    ");
+        assert_eq!(row.wide_glyphs.len(), 1);
+        assert_eq!(row.wide_glyphs[0].columns, 1);
+        let run = row.wide_glyphs[0]
+            .buffer
+            .layout_runs()
+            .next()
+            .expect("record emoji overlay run");
+        assert!(run.text.starts_with("⏺️"));
+        let glyph = run.glyphs.first().expect("record emoji glyph");
+        let face = font_system
+            .db()
+            .face(glyph.font_id)
+            .expect("record emoji font face");
+        assert_eq!(face.post_script_name, "AppleColorEmoji");
+    }
+
+    #[test]
+    fn opencode_footer_spinner_keeps_following_text_on_its_terminal_column() {
+        let mut terminal = Terminal::new(TerminalConfig {
+            columns: 40,
+            rows: 1,
+            scrollback_limit: 0,
+        });
+        let mut font_system = FontSystem::new();
+        font_system
+            .db_mut()
+            .set_monospace_family(DEFAULT_FONT_FAMILY);
+        let cell = measure_cell(&mut font_system, 30.0);
+        let metrics = Metrics::new(30.0, 36.0);
+        let mut retained = RetainedGrid::default();
+
+        for spinner in ["■⬝⬝⬝⬝⬝⬝⬝", "■■⬝⬝⬝⬝⬝⬝", "⬝■■■■■■⬝", "⬝⬝⬝⬝⬝■■■"]
+        {
+            terminal.feed(
+                format!(
+                    "\x1b[1;4H\x1b[38;2;192;153;255m{spinner}\x1b[1;13H\x1b[38;2;200;211;245mesc \x1b[38;2;130;139;184minterrupt"
+                )
+                .as_bytes(),
+            );
+            retained.apply_frame(
+                &terminal.frame_update(true),
+                &mut font_system,
+                metrics,
+                cell.width,
+                Palette::default(),
+            );
+
+            let row = &retained.row_plans[0];
+            let run = row
+                .buffer
+                .layout_runs()
+                .next()
+                .expect("OpenCode footer row");
+            let escape = run
+                .glyphs
+                .iter()
+                .find(|glyph| &run.text[glyph.start..glyph.end] == "e")
+                .expect("esc glyph at terminal column 13");
+            assert!(
+                (escape.x - cell.width * 12.0).abs() < 0.01,
+                "spinner {spinner:?} shifted esc to {}, expected {}",
+                escape.x,
+                cell.width * 12.0,
+            );
+            assert_eq!(
+                row.blocks.len(),
+                spinner
+                    .chars()
+                    .filter(|character| *character == '⬝')
+                    .count(),
+            );
+            assert!(!row.text.contains('⬝'));
+            for block in &row.blocks {
+                assert_eq!(block.shape, BlockShape::CenteredSmallSquare);
+                let cell_rect = rounded_cell_rect(0.0, cell.width, cell.height, block.column, 0);
+                let square = block_pixel_rectangles(block.shape, cell_rect)[0]
+                    .expect("retained tiny square");
+                assert!(
+                    ((square.right - square.left) - (square.bottom - square.top)).abs()
+                        < f32::EPSILON
+                );
+            }
         }
     }
 

@@ -57,7 +57,9 @@ and cells. Hosts may rotate row-local shaped text and GPU buffers along with the
 then rebuild only exposed or subsequently modified rows.
 
 Calls for one handle must be serialized, and a handle must not be freed while a call is active. PTY
-callbacks run on the reader thread; `user_data` must remain valid until `tmon_pty_free` returns.
+callbacks run on the reader thread; they must return normally, must only schedule host-loop work,
+and must not call or free the same PTY handle. `user_data` must remain valid until
+`tmon_pty_free` returns.
 All entry points catch Rust panics and return a `TmonStatus`. On failure,
 `tmon_last_error_message()` returns the current thread's diagnostic.
 

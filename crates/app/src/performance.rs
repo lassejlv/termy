@@ -17,10 +17,11 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use engine::{
-    SelectionPoint, Terminal, TerminalConfig, TerminalMemoryStats, TerminalMetrics,
+    SelectionPoint, TERMINAL_SNAPSHOT_VERSION, Terminal, TerminalConfig, TerminalMemoryStats,
+    TerminalMetrics,
     pty::{PtyCommand, pty_size},
 };
-use mux::{Client as MuxClient, TerminalSize};
+use mux::{Client as MuxClient, PROTOCOL_VERSION, TerminalSize};
 use render::{MetalRenderer, RenderStatus, RendererConfig, RendererFrameTimings, RendererMetrics};
 use serde::Serialize;
 use winit::{
@@ -35,7 +36,7 @@ use crate::terminal_window_attributes;
 
 pub(crate) const BENCHMARK_ARGUMENT: &str = "--benchmark-metal";
 
-const REPORT_VERSION: u16 = 2;
+const REPORT_VERSION: u16 = 3;
 const DEFAULT_SAMPLES: usize = 30;
 const IDLE_OBSERVATION: Duration = Duration::from_millis(250);
 const MUX_TIMEOUT: Duration = Duration::from_secs(2);
@@ -120,12 +121,14 @@ enum Workload {
     SelectionDrag,
     Resize,
     SurfaceOnlyResize,
+    ScaleFactor,
+    SurfaceRecreate,
     NativeTabSwitch,
     MultiplexerOutput,
 }
 
 impl Workload {
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 16] = [
         Self::ColdAscii,
         Self::SparseTyping,
         Self::OutputScroll,
@@ -138,6 +141,8 @@ impl Workload {
         Self::SelectionDrag,
         Self::Resize,
         Self::SurfaceOnlyResize,
+        Self::ScaleFactor,
+        Self::SurfaceRecreate,
         Self::NativeTabSwitch,
         Self::MultiplexerOutput,
     ];
@@ -156,6 +161,8 @@ impl Workload {
             Self::SelectionDrag => "selection_drag",
             Self::Resize => "resize",
             Self::SurfaceOnlyResize => "surface_only_resize",
+            Self::ScaleFactor => "scale_factor_rebuild",
+            Self::SurfaceRecreate => "surface_recreate",
             Self::NativeTabSwitch => "native_tab_switch",
             Self::MultiplexerOutput => "multiplexer_output",
         }
@@ -460,6 +467,8 @@ impl BenchmarkApplication {
             Workload::CursorBlink
             | Workload::Resize
             | Workload::SurfaceOnlyResize
+            | Workload::ScaleFactor
+            | Workload::SurfaceRecreate
             | Workload::NativeTabSwitch
             | Workload::MultiplexerOutput => {
                 self.terminal.feed(b"Tmon native Metal performance fixture");
@@ -669,6 +678,52 @@ impl BenchmarkApplication {
                 })
                 .context("finding a surface-only resize that preserves grid dimensions")?;
                 self.renderer_mut().resize_surface(size);
+                self.pending = Some(PendingFrame {
+                    workload,
+                    iteration,
+                    record: true,
+                    atlas_state: "warm",
+                    pipeline_started,
+                    mux_wake_to_drain_ns: 0,
+                    mux_drain_decode_ns: 0,
+                    terminal_feed_ns: 0,
+                    frame_extraction_ns: 0,
+                    terminal_before,
+                    renderer_before,
+                });
+                Ok(())
+            }
+            Workload::ScaleFactor => {
+                let pipeline_started = Instant::now();
+                let terminal_before = self.terminal.metrics();
+                let renderer_before = self.renderer().metrics();
+                let scale_factor = if iteration.is_multiple_of(2) {
+                    if self.display_scale >= 1.5 { 1.0 } else { 2.0 }
+                } else {
+                    self.display_scale
+                };
+                self.renderer_mut().set_scale_factor(scale_factor);
+                let dimensions = self.renderer().grid_dimensions();
+                self.terminal.resize(dimensions.0, dimensions.1);
+                self.extract_apply_and_queue(
+                    workload,
+                    iteration,
+                    true,
+                    "warm",
+                    pipeline_started,
+                    0,
+                    0,
+                    0,
+                    terminal_before,
+                    renderer_before,
+                );
+                Ok(())
+            }
+            Workload::SurfaceRecreate => {
+                let pipeline_started = Instant::now();
+                let terminal_before = self.terminal.metrics();
+                let renderer_before = self.renderer().metrics();
+                self.renderer_mut().recreate_surface()?;
                 self.pending = Some(PendingFrame {
                     workload,
                     iteration,
@@ -905,6 +960,13 @@ impl BenchmarkApplication {
         let workload = Workload::ALL[self.workload_index];
         if self.iteration >= workload.samples(self.config.samples) {
             eprintln!("benchmark complete: {}", workload.name());
+            if matches!(workload, Workload::ScaleFactor) {
+                let display_scale = self.display_scale;
+                self.renderer_mut().set_scale_factor(display_scale);
+                let dimensions = self.renderer().grid_dimensions();
+                self.grid_columns = dimensions.0;
+                self.grid_rows = dimensions.1;
+            }
             self.workload_index += 1;
             self.start_workload()?;
         } else {
@@ -993,6 +1055,14 @@ impl BenchmarkApplication {
             format!("writing benchmark report {}", self.config.output.display())
         })?;
         print_human_summary(&report, &self.config.output);
+        if !report.release_gate.passed {
+            bail!(
+                "native Metal release gate failed (coverage: {}; timing: {}; behavior: {})",
+                failure_summary(&report.release_gate.coverage_failures),
+                failure_summary(&report.release_gate.timing_failures),
+                failure_summary(&report.release_gate.behavior_failures)
+            );
+        }
         self.state = HarnessState::Finished;
         self.mux.take();
         Ok(())
@@ -1366,11 +1436,13 @@ struct BehaviorObservation {
 struct BenchmarkReport {
     report_version: u16,
     generated_unix_seconds: u64,
+    source: BenchmarkSource,
     conditions: BenchmarkConditions,
     budgets: Vec<FrameBudget>,
     gpu_timing: SupportStatus,
     workloads: Vec<WorkloadSummary>,
     observations: Vec<BehaviorObservation>,
+    release_gate: ReleaseGate,
     process: ProcessSummary,
     terminal_memory: TerminalMemoryReport,
     raw_samples: Vec<FrameSample>,
@@ -1384,10 +1456,29 @@ impl BenchmarkReport {
         let workloads = Workload::ALL
             .iter()
             .map(|workload| WorkloadSummary::from_samples(workload.name(), &application.samples))
-            .collect();
+            .collect::<Vec<_>>();
+        let observations = application.observations.clone();
+        let release_gate = ReleaseGate::evaluate(
+            application.display_refresh_hz,
+            application.config.samples,
+            &workloads,
+            &observations,
+        );
         Self {
             report_version: REPORT_VERSION,
             generated_unix_seconds,
+            source: BenchmarkSource {
+                application_version: env!("CARGO_PKG_VERSION").to_owned(),
+                bundle_build_number: option_env!("TMON_BUILD_NUMBER")
+                    .unwrap_or("unavailable")
+                    .to_owned(),
+                source_revision: option_env!("TMON_SOURCE_REVISION")
+                    .unwrap_or("unavailable")
+                    .to_owned(),
+                source_dirty: compiled_source_dirty(),
+                terminal_snapshot_version: TERMINAL_SNAPSHOT_VERSION,
+                mux_protocol_version: PROTOCOL_VERSION,
+            },
             conditions: BenchmarkConditions {
                 hardware: command_output("/usr/sbin/system_profiler", &["SPHardwareDataType", "-detailLevel", "mini"]),
                 macos: command_output("/usr/bin/sw_vers", &[]),
@@ -1414,7 +1505,8 @@ impl BenchmarkReport {
                 reason: "wgpu Metal timestamp queries are not enabled by this adapter contract; use Instruments Metal System Trace for GPU execution time".to_owned(),
             },
             workloads,
-            observations: application.observations.clone(),
+            observations,
+            release_gate,
             process: ProcessSummary {
                 elapsed_ns: duration_ns(application.started.elapsed()),
                 cpu_percent_at_end: current_cpu_percent(),
@@ -1426,6 +1518,76 @@ impl BenchmarkReport {
             raw_samples: application.samples.clone(),
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+struct ReleaseGate {
+    evaluated_refresh_hz: f64,
+    cpu_preparation_p95_budget_ns: u64,
+    renderer_end_to_end_p99_budget_ns: u64,
+    coverage_failures: Vec<String>,
+    timing_failures: Vec<String>,
+    behavior_failures: Vec<String>,
+    passed: bool,
+}
+
+impl ReleaseGate {
+    fn evaluate(
+        refresh_hz: f64,
+        requested_samples: usize,
+        workloads: &[WorkloadSummary],
+        observations: &[BehaviorObservation],
+    ) -> Self {
+        let budget = FrameBudget::for_refresh_rate(refresh_hz.max(1.0));
+        let coverage_failures = workloads
+            .iter()
+            .filter(|workload| {
+                let expected = if workload.name == Workload::ColdAscii.name() {
+                    1
+                } else {
+                    requested_samples
+                };
+                workload.sample_count != expected
+            })
+            .map(|workload| workload.name.clone())
+            .collect::<Vec<_>>();
+        let timing_failures = workloads
+            .iter()
+            .filter(|workload| workload.name != Workload::ColdAscii.name())
+            .filter(|workload| {
+                workload.cpu_preparation.p95_ns > budget.cpu_preparation_budget_ns
+                    || workload.renderer_end_to_end.p99_ns > budget.end_to_end_budget_ns
+            })
+            .map(|workload| workload.name.clone())
+            .collect::<Vec<_>>();
+        let behavior_failures = observations
+            .iter()
+            .filter(|observation| !observation.passed)
+            .map(|observation| observation.name.clone())
+            .collect::<Vec<_>>();
+        let passed = coverage_failures.is_empty()
+            && timing_failures.is_empty()
+            && behavior_failures.is_empty();
+        Self {
+            evaluated_refresh_hz: refresh_hz,
+            cpu_preparation_p95_budget_ns: budget.cpu_preparation_budget_ns,
+            renderer_end_to_end_p99_budget_ns: budget.end_to_end_budget_ns,
+            coverage_failures,
+            timing_failures,
+            behavior_failures,
+            passed,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct BenchmarkSource {
+    application_version: String,
+    bundle_build_number: String,
+    source_revision: String,
+    source_dirty: Option<bool>,
+    terminal_snapshot_version: u16,
+    mux_protocol_version: u16,
 }
 
 #[derive(Debug, Serialize)]
@@ -1636,7 +1798,26 @@ fn print_human_summary(report: &BenchmarkReport, output: &Path) {
             observation.uploads
         );
     }
+    println!(
+        "release gate: {} ({} Hz CPU p95 <= {:.3}ms, renderer p99 <= {:.3}ms)",
+        if report.release_gate.passed {
+            "pass"
+        } else {
+            "FAIL"
+        },
+        report.release_gate.evaluated_refresh_hz,
+        ns_to_ms(report.release_gate.cpu_preparation_p95_budget_ns),
+        ns_to_ms(report.release_gate.renderer_end_to_end_p99_budget_ns)
+    );
     println!("machine-readable report: {}", output.display());
+}
+
+fn failure_summary(failures: &[String]) -> String {
+    if failures.is_empty() {
+        "none".to_owned()
+    } else {
+        failures.join(", ")
+    }
 }
 
 fn duration_ns(duration: Duration) -> u64 {
@@ -1704,9 +1885,21 @@ fn command_output(program: &str, arguments: &[&str]) -> String {
         )
 }
 
+fn compiled_source_dirty() -> Option<bool> {
+    match option_env!("TMON_SOURCE_DIRTY") {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Percentiles, percentile};
+    use std::collections::BTreeMap;
+
+    use super::{
+        BehaviorObservation, Percentiles, ReleaseGate, WorkCounts, WorkloadSummary, percentile,
+    };
 
     #[test]
     fn percentile_uses_nearest_rank_and_handles_empty_samples() {
@@ -1717,5 +1910,71 @@ mod tests {
         assert_eq!(summary.p50_ns, 5);
         assert_eq!(summary.p95_ns, 9);
         assert_eq!(summary.p99_ns, 9);
+    }
+
+    #[test]
+    fn release_gate_rejects_incomplete_slow_or_active_idle_evidence() {
+        let cold = workload("cold_ascii", 1, u64::MAX, u64::MAX);
+        let incomplete = workload("resize", 29, 1, 1);
+        let slow = workload("surface_recreate", 30, 6_000_000, 17_000_000);
+        let active_idle = BehaviorObservation {
+            name: "idle".to_owned(),
+            duration_ns: 1,
+            presented_frames: 1,
+            text_prepares: 0,
+            uploads: 0,
+            passed: false,
+        };
+        let gate = ReleaseGate::evaluate(120.0, 30, &[cold, incomplete, slow], &[active_idle]);
+        assert_eq!(gate.coverage_failures, ["resize"]);
+        assert_eq!(gate.timing_failures, ["surface_recreate"]);
+        assert_eq!(gate.behavior_failures, ["idle"]);
+        assert!(!gate.passed);
+    }
+
+    #[test]
+    fn release_gate_accepts_exact_budget_and_cold_atlas_outlier() {
+        let cold = workload("cold_ascii", 1, u64::MAX, u64::MAX);
+        let warm = workload("scale_factor_rebuild", 30, 5_833_333, 16_666_666);
+        let idle = BehaviorObservation {
+            name: "idle".to_owned(),
+            duration_ns: 1,
+            presented_frames: 0,
+            text_prepares: 0,
+            uploads: 0,
+            passed: true,
+        };
+        assert!(ReleaseGate::evaluate(120.0, 30, &[cold, warm], &[idle]).passed);
+    }
+
+    fn workload(
+        name: &str,
+        sample_count: usize,
+        cpu_p95_ns: u64,
+        renderer_p99_ns: u64,
+    ) -> WorkloadSummary {
+        WorkloadSummary {
+            name: name.to_owned(),
+            sample_count,
+            atlas_states: vec!["warm".to_owned()],
+            cpu_preparation: Percentiles {
+                p50_ns: 0,
+                p95_ns: cpu_p95_ns,
+                p99_ns: cpu_p95_ns,
+            },
+            renderer_end_to_end: Percentiles {
+                p50_ns: 0,
+                p95_ns: renderer_p99_ns,
+                p99_ns: renderer_p99_ns,
+            },
+            pipeline_end_to_end: Percentiles {
+                p50_ns: 0,
+                p95_ns: 0,
+                p99_ns: 0,
+            },
+            stage_p95_ns: BTreeMap::new(),
+            dominant_stage: "none".to_owned(),
+            work: WorkCounts::default(),
+        }
     }
 }

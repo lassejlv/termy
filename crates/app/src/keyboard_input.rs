@@ -670,10 +670,13 @@ fn map_modifier_state(state: ModifiersState, include_alt: bool) -> Modifiers {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::PathBuf};
+
     use engine::{
-        Key as TerminalKey, KeyEventKind, KeypadKey, MediaKey, ModifierKey, Modifiers, Terminal,
-        TerminalConfig,
+        Key as TerminalKey, KeyEventKind, KeypadKey, MediaKey, ModifierKey, Modifiers, MouseButton,
+        MouseEvent, MouseEventKind, Terminal, TerminalConfig,
     };
+    use serde::Deserialize;
     use winit::{
         event::ElementState,
         keyboard::{
@@ -710,6 +713,127 @@ mod tests {
             &mut keyboard_state,
         )
         .expect("key should map")
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct RawPtyCorpus {
+        description: String,
+        cases: Vec<RawPtyCase>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct RawPtyCase {
+        id: String,
+        expected_hex: String,
+    }
+
+    #[test]
+    fn daily_driver_input_fixtures_match_exact_host_visible_bytes() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/input/raw-pty.json");
+        let source = fs::read_to_string(path).expect("read raw PTY input fixtures");
+        let corpus: RawPtyCorpus =
+            serde_json::from_str(&source).expect("parse raw PTY input fixtures");
+        assert!(!corpus.description.is_empty());
+
+        for fixture in corpus.cases {
+            let actual = raw_fixture_bytes(&fixture.id);
+            assert_eq!(
+                bytes_to_hex(&actual),
+                fixture.expected_hex,
+                "raw PTY fixture {}",
+                fixture.id
+            );
+        }
+    }
+
+    fn raw_fixture_bytes(id: &str) -> Vec<u8> {
+        match id {
+            "danish-right-option-at" => {
+                let event = mapped(
+                    PhysicalKey::Code(KeyCode::Backslash),
+                    Key::Character("@"),
+                    Key::Character("'"),
+                    Some("@"),
+                    ModifiersState::ALT,
+                    false,
+                    ElementState::Pressed,
+                    false,
+                );
+                Terminal::new(TerminalConfig::default()).encode_key(&event)
+            }
+            "legacy-xterm-arrow-up" => {
+                let event = mapped(
+                    PhysicalKey::Code(KeyCode::ArrowUp),
+                    Key::Named(NamedKey::ArrowUp),
+                    Key::Named(NamedKey::ArrowUp),
+                    None,
+                    ModifiersState::empty(),
+                    true,
+                    ElementState::Pressed,
+                    false,
+                );
+                Terminal::new(TerminalConfig::default()).encode_key(&event)
+            }
+            "kitty-control-a-press" | "kitty-control-a-release" => {
+                let released = id.ends_with("release");
+                let event = mapped(
+                    PhysicalKey::Code(KeyCode::KeyA),
+                    Key::Character("a"),
+                    Key::Character("a"),
+                    (!released).then_some("a"),
+                    ModifiersState::CONTROL,
+                    true,
+                    if released {
+                        ElementState::Released
+                    } else {
+                        ElementState::Pressed
+                    },
+                    false,
+                );
+                let mut terminal = Terminal::new(TerminalConfig::default());
+                terminal.feed(b"\x1b[=3u");
+                terminal.encode_key(&event)
+            }
+            "bracketed-paste" => {
+                let mut terminal = Terminal::new(TerminalConfig::default());
+                terminal.feed(b"\x1b[?2004h");
+                terminal.encode_paste("hello")
+            }
+            "focus-gained" | "focus-lost" => {
+                let mut terminal = Terminal::new(TerminalConfig::default());
+                terminal.feed(b"\x1b[?1004h");
+                terminal
+                    .focus_changed(id == "focus-gained")
+                    .expect("focus reporting enabled")
+            }
+            "sgr-left-mouse-press" => {
+                let mut terminal = Terminal::new(TerminalConfig::default());
+                terminal.feed(b"\x1b[?1000h\x1b[?1006h");
+                terminal
+                    .encode_mouse(MouseEvent {
+                        button: MouseButton::Left,
+                        kind: MouseEventKind::Press,
+                        column: 1,
+                        row: 2,
+                        pixel_x: 0,
+                        pixel_y: 0,
+                        modifiers: Modifiers::empty(),
+                    })
+                    .expect("mouse reporting enabled")
+            }
+            other => panic!("unknown raw PTY fixture {other:?}"),
+        }
+    }
+
+    fn bytes_to_hex(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
+
+        let mut hex = String::with_capacity(bytes.len() * 2);
+        for byte in bytes {
+            write!(&mut hex, "{byte:02x}").expect("writing to String cannot fail");
+        }
+        hex
     }
 
     #[test]

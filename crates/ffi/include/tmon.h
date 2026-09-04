@@ -578,8 +578,9 @@ TmonStatus tmon_terminal_memory_stats(
 TmonPtyConfig tmon_pty_config_default(void);
 /*
  * The callback may run on the PTY reader thread. It must return quickly and normally
- * only schedules host event-loop work. Events produced during spawn are delivered after
- * out_pty has been populated. Keep user_data alive until tmon_pty_free returns.
+ * and only schedule host event-loop work. It must not call or free the same PTY handle.
+ * Events produced during spawn are delivered after out_pty has been populated. Keep
+ * user_data alive until tmon_pty_free returns.
  */
 TmonStatus tmon_pty_spawn(const TmonPtyConfig *config,
                                     TmonPtyEventCallback callback,

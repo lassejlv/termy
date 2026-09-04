@@ -32,10 +32,8 @@ unsafe fn terminal(columns: usize, rows: usize) -> *mut TmonTerminal {
     };
     let mut terminal = ptr::null_mut();
     // SAFETY: The config and out pointer are valid for this call.
-    assert_eq!(
-        unsafe { tmon_terminal_new(&config, &mut terminal) },
-        TMON_OK
-    );
+    let status = unsafe { tmon_terminal_new(&config, &mut terminal) };
+    assert_eq!(status, TMON_OK);
     assert!(!terminal.is_null());
     terminal
 }

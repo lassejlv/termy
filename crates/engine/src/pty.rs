@@ -1,5 +1,7 @@
 //! Native pseudo-terminal process lifecycle and coalesced asynchronous I/O.
 
+mod process;
+
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
@@ -22,8 +24,9 @@ use nix::{
     poll::{PollFd, PollFlags, PollTimeout, poll},
     unistd::{pipe, write},
 };
-pub use tmon_pty::PtySize;
-use tmon_pty::{Command as NativeCommand, ProcessGroup, PtyMaster};
+pub use process::{
+    Child, Command, ExitStatus, ProcessGroup, PtyMaster, PtySize, SpawnedPty, spawn,
+};
 
 /// Maximum terminal output retained in the shared userspace queue.
 ///
@@ -311,8 +314,7 @@ impl PtySession {
         size: PtySize,
         on_event: impl Fn(PtyEvent) + Send + Sync + 'static,
     ) -> Result<Self> {
-        let mut native_command =
-            NativeCommand::new(&command.program).args(command.arguments.iter());
+        let mut native_command = Command::new(&command.program).args(command.arguments.iter());
         if let Some(directory) = &command.working_directory {
             native_command = native_command.current_dir(directory);
         }
@@ -325,8 +327,8 @@ impl PtySession {
             .env("TERM_PROGRAM", "Tmon")
             .env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
 
-        let tmon_pty::SpawnedPty { master, mut child } =
-            tmon_pty::spawn(&native_command, size).context("opening and spawning native PTY")?;
+        let SpawnedPty { master, mut child } =
+            spawn(&native_command, size).context("opening and spawning native PTY")?;
         let mut reader = master.try_clone().context("cloning PTY reader")?;
         #[cfg(unix)]
         let (shutdown_reader, shutdown_writer) = pipe().context("creating PTY shutdown pipe")?;

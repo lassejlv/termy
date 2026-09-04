@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "duration_seconds": 60,
+  "cycles": 1054,
+  "bytes_written": 5059200,
+  "bytes_drained": 6324068,
+  "detach_reattach_count": 210,
+  "tab_churn_count": 1054,
+  "resize_count": 1054,
+  "baseline": {
+    "rss_kib": 3216,
+    "cpu_percent": 0.3,
+    "file_descriptors": 16,
+    "threads": 5
+  },
+  "maximum": {
+    "rss_kib": 129168,
+    "cpu_percent": 10.2,
+    "file_descriptors": 16,
+    "threads": 5
+  },
+  "rss_growth_kib": 125952,
+  "fd_growth": 0,
+  "thread_growth": 0,
+  "daemon_count": 1,
+  "passed": true
+}

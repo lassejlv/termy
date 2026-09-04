@@ -9,7 +9,7 @@
   <key>CFBundleExecutable</key>
   <string>tmon</string>
   <key>CFBundleIdentifier</key>
-  <string>com.tmon.app</string>
+  <string>@BUNDLE_IDENTIFIER@</string>
   <key>CFBundleIconFile</key>
   <string>Tmon.icns</string>
   <key>CFBundleInfoDictionaryVersion</key>

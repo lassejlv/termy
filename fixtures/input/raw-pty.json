@@ -1,0 +1,13 @@
+{
+  "description": "Exact host-visible PTY bytes for Tmon's daily-driver input contract",
+  "cases": [
+    { "id": "danish-right-option-at", "expected_hex": "40" },
+    { "id": "legacy-xterm-arrow-up", "expected_hex": "1b5b41" },
+    { "id": "kitty-control-a-press", "expected_hex": "1b5b39373b353a3175" },
+    { "id": "kitty-control-a-release", "expected_hex": "1b5b39373b353a3375" },
+    { "id": "bracketed-paste", "expected_hex": "1b5b3230307e68656c6c6f1b5b3230317e" },
+    { "id": "focus-gained", "expected_hex": "1b5b49" },
+    { "id": "focus-lost", "expected_hex": "1b5b4f" },
+    { "id": "sgr-left-mouse-press", "expected_hex": "1b5b3c303b323b334d" }
+  ]
+}

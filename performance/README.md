@@ -1,9 +1,9 @@
 # Tmon Metal performance contract
 
 The native benchmark exercises the real `MetalRenderer`, swapchain, glyph atlas, terminal engine,
-and multiplexer fixture. Run it in release mode with the window visible and unobscured, keep the
-machine on AC power, leave the display at its fixed refresh mode, and avoid interacting with the
-benchmark windows:
+and multiplexer fixture from the already packaged `dist/Tmon.app` candidate. Run it with the window
+visible and unobscured, keep the machine on AC power, leave the display at its fixed refresh mode,
+and avoid interacting with the benchmark windows:
 
 ```sh
 bash script/benchmark_metal.sh --samples 30
@@ -16,16 +16,26 @@ scroll, and dense-CJK gates:
 bash script/performance_gate.sh --samples 30
 ```
 
-The command prints a short summary and writes versioned JSON under `performance/results`. Cold
+Pass `--binary PATH` only when intentionally measuring another packaged candidate. The scripts
+refuse to overwrite an existing report path. The command prints a short summary and writes
+versioned JSON under `performance/results`. Cold
 ASCII records the first atlas population; every warm workload gets an unrecorded warm-up frame.
 Two consecutive runs are required for a release comparison. Compare like-for-like hardware,
 display mode, scale, window/grid, font, build profile, warm-up policy, and sample count.
+Each report records the application and bundle-build, terminal-snapshot, and mux-protocol versions
+plus the Git revision and dirty state embedded when the package was compiled. The report therefore
+describes the tested executable rather than whatever checkout happens to be the current directory.
+The benchmark writes a `release_gate` decision and exits nonzero when workload sample coverage is
+incomplete, any warm workload exceeds the detected display's CPU-p95 or renderer-p99 budget, or
+idle, occluded, or inactive-tab behavior does work. The JSON is written before failure so a
+rejected run remains diagnosable.
 
 ## Reference machine and budgets
 
-The current reference is the checked MacBook Pro (`Mac16,1`), Apple M4, 24 GB RAM, macOS 26.6.2,
-at 120 Hz and 2x scale with Menlo 15 pt and a 2000x1280 physical-pixel surface (normally a
-108x34 grid). The JSON also carries a 60 Hz comparison budget.
+The current reference is the checked MacBook Pro (`Mac16,1`), Apple M4, 24 GB RAM, macOS 27.0
+build `26A5425a`, at 120 Hz and 2x scale with Menlo 15 pt and a 2000x1280 physical-pixel surface
+(normally a 108x34 grid). The JSON also carries a 60 Hz comparison budget. Older checked reports
+retain the OS/build they actually measured; do not relabel them as current-reference evidence.
 
 Warm-workload release blockers are:
 
@@ -44,6 +54,12 @@ and an individual sample can straddle the compositor boundary. The stricter
 `missed_refresh_deadlines` counter still records every renderer frame exceeding one interval.
 Native-tab `pipeline_end_to_end` includes AppKit activation and is reported separately from the
 renderer budget.
+
+The native harness also forces same-window surface recreation and alternates the renderer between
+1x and 2x scale before restoring the connected display's real scale. Those deterministic paths
+exercise surface-loss recovery and scale-dependent font/grid rebuilds, but they do not substitute
+for the packaged-app display matrix: a release still needs recorded Retina/non-Retina moves,
+refresh-rate changes, sleep/wake, and display disconnect/reconnect on physical displays.
 
 Timing thresholds stay out of generic CI because compositor and system variance are material.
 CI-safe invariants cover row-move semantics, copied-cell counts, row-local text/static-geometry

@@ -19,5 +19,6 @@ missing_debug_implementations = "warn"
 [lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"
 module_name_repetitions = "allow"
 too_many_lines = "allow"

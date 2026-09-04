@@ -7,12 +7,12 @@
 #![cfg(unix)]
 
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     io::{ErrorKind, Read, Write},
     os::unix::{
         ffi::{OsStrExt, OsStringExt},
-        fs::PermissionsExt,
+        fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt},
         net::{UnixListener, UnixStream},
         process::CommandExt,
     },
@@ -28,16 +28,33 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
+use diagnostics::Event as DiagnosticEvent;
 use engine::{
     DynamicColor, MousePointerShape, Terminal, TerminalConfig, TerminalEvent,
     pty::{PtyCommand, PtyEvent, PtySession, PtySize},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub const DAEMON_ARGUMENT: &str = "--tmon-multiplexer";
+#[cfg(target_vendor = "apple")]
+use nix::{
+    sys::socket::{getsockopt, sockopt::LocalPeerCred},
+    unistd::Uid,
+};
+#[cfg(any(target_os = "android", target_os = "linux"))]
+use nix::{
+    sys::socket::{getsockopt, sockopt::PeerCredentials},
+    unistd::Uid,
+};
 
-const PROTOCOL_VERSION: u16 = 2;
-const MAX_FRAME_BYTES: usize = 1024 * 1024 * 1024;
+pub const DAEMON_ARGUMENT: &str = "--tmon-multiplexer";
+pub const PROTOCOL_VERSION: u16 = 3;
+
+// Requests contain commands or user input; responses can contain bounded output and complete
+// snapshots for all tabs. Keep the asymmetric limits explicit so an untrusted length prefix is
+// rejected before allocation without preventing a legitimate multi-tab resynchronization.
+const MAX_REQUEST_FRAME_BYTES: usize = 8 * 1024 * 1024;
+const MAX_RESPONSE_FRAME_BYTES: usize = 256 * 1024 * 1024;
+const MAX_WRITE_BYTES: usize = 1024 * 1024;
 const MAX_PENDING_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_RETRY: Duration = Duration::from_millis(20);
@@ -107,6 +124,14 @@ pub struct DrainBatch {
     pub resynchronized_tabs: Vec<TabRestore>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DaemonInfo {
+    pub protocol_version: u16,
+    pub current: bool,
+    pub secure: bool,
+    pub live: bool,
+}
+
 pub struct Client {
     stream: UnixStream,
     socket_path: PathBuf,
@@ -126,6 +151,34 @@ impl std::fmt::Debug for Client {
 }
 
 impl Client {
+    /// Connects only when an existing same-user daemon is listening.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket is absent, unreachable, insecure, or owned by another
+    /// user. This function never starts a daemon or removes a stale socket.
+    pub fn connect_existing(socket_path: &Path) -> Result<Self> {
+        validate_socket_directory(
+            socket_path
+                .parent()
+                .context("multiplexer socket has no parent")?,
+        )?;
+        validate_existing_socket(socket_path)?;
+        let stream = UnixStream::connect(socket_path).with_context(|| {
+            format!(
+                "connecting to existing Tmon multiplexer at {}",
+                socket_path.display()
+            )
+        })?;
+        ensure_current_user_peer_logged(&stream).context("validating Tmon multiplexer owner")?;
+        Ok(Self {
+            stream,
+            socket_path: socket_path.to_owned(),
+            generation: 0,
+            epoch: 0,
+        })
+    }
+
     /// Connects to the per-user daemon, starting it when no live listener exists.
     ///
     /// # Errors
@@ -135,6 +188,8 @@ impl Client {
         prepare_socket_directory(socket_path)?;
         match UnixStream::connect(socket_path) {
             Ok(stream) => {
+                ensure_current_user_peer_logged(&stream)
+                    .context("validating Tmon multiplexer owner")?;
                 return Ok(Self {
                     stream,
                     socket_path: socket_path.to_owned(),
@@ -174,6 +229,8 @@ impl Client {
         loop {
             match UnixStream::connect(socket_path) {
                 Ok(stream) => {
+                    ensure_current_user_peer_logged(&stream)
+                        .context("validating spawned Tmon multiplexer owner")?;
                     return Ok(Self {
                         stream,
                         socket_path: socket_path.to_owned(),
@@ -284,14 +341,14 @@ impl Client {
     ///
     /// Returns an error for a failed PTY write, unknown tab, or stale client.
     pub fn write(&mut self, tab_id: u64, bytes: &[u8]) -> Result<()> {
-        if bytes.is_empty() {
-            return Ok(());
+        for chunk in bytes.chunks(MAX_WRITE_BYTES) {
+            self.expect_ok(&Request::Write {
+                generation: self.generation,
+                tab_id,
+                bytes: chunk.to_vec(),
+            })?;
         }
-        self.expect_ok(&Request::Write {
-            generation: self.generation,
-            tab_id,
-            bytes: bytes.to_vec(),
-        })
+        Ok(())
     }
 
     /// Applies one geometry to every tab, matching Tmon's shared renderer geometry.
@@ -359,7 +416,7 @@ impl Client {
                     return;
                 };
                 loop {
-                    if send_message(
+                    if send_message::<_, MAX_REQUEST_FRAME_BYTES>(
                         &mut stream,
                         &Request::Wait {
                             generation,
@@ -370,7 +427,9 @@ impl Client {
                     {
                         return;
                     }
-                    let Ok(response) = receive_message::<Response>(&mut stream) else {
+                    let Ok(response) =
+                        receive_message::<Response, MAX_RESPONSE_FRAME_BYTES>(&mut stream)
+                    else {
                         return;
                     };
                     let Response::Wake {
@@ -400,6 +459,20 @@ impl Client {
         })
     }
 
+    /// Terminates every PTY owned by the connected daemon and then stops it.
+    ///
+    /// Callers must expose this only as an explicit destructive user action. Ordinary app quit and
+    /// final-window close deliberately detach without sending this request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the daemon uses another protocol or cannot acknowledge termination.
+    pub fn terminate_all_sessions(&mut self) -> Result<()> {
+        self.expect_ok(&Request::TerminateAll {
+            protocol_version: PROTOCOL_VERSION,
+        })
+    }
+
     fn expect_ok(&mut self, request: &Request) -> Result<()> {
         let response = self.request(request)?;
         match response {
@@ -409,8 +482,11 @@ impl Client {
     }
 
     fn request(&mut self, request: &Request) -> Result<Response> {
-        send_message(&mut self.stream, request).context("sending multiplexer request")?;
-        match receive_message(&mut self.stream).context("receiving multiplexer response")? {
+        send_message::<_, MAX_REQUEST_FRAME_BYTES>(&mut self.stream, request)
+            .context("sending multiplexer request")?;
+        match receive_message::<Response, MAX_RESPONSE_FRAME_BYTES>(&mut self.stream)
+            .context("receiving multiplexer response")?
+        {
             Response::Error(message) => Err(anyhow!(message)),
             response => Ok(response),
         }
@@ -440,6 +516,80 @@ fn default_socket_path_for_home(home: &Path) -> PathBuf {
         .join(format!("multiplexer-v{PROTOCOL_VERSION}.sock"))
 }
 
+/// Reports current and older versioned per-user daemons without changing filesystem state.
+///
+/// Socket paths are deliberately omitted from [`DaemonInfo`] so callers can expose this in a
+/// privacy-safe support/status view. A matching but unsafe path is reported with `secure: false`
+/// and is never connected to.
+///
+/// # Errors
+///
+/// Returns an error when the configured runtime directory exists but is not a private directory
+/// owned by the current user, or when it cannot be inspected.
+pub fn inspect_daemons() -> Result<Vec<DaemonInfo>> {
+    inspect_daemons_at(&default_socket_path()?)
+}
+
+#[doc(hidden)]
+pub fn inspect_daemons_at(current_socket_path: &Path) -> Result<Vec<DaemonInfo>> {
+    let runtime_directory = current_socket_path
+        .parent()
+        .context("multiplexer socket has no parent")?;
+    let metadata = match fs::symlink_metadata(runtime_directory) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "inspecting multiplexer directory {}",
+                    runtime_directory.display()
+                )
+            });
+        }
+    };
+    validate_socket_directory_metadata(runtime_directory, &metadata)?;
+
+    let mut daemons = Vec::new();
+    for entry in fs::read_dir(runtime_directory).with_context(|| {
+        format!(
+            "reading multiplexer directory {}",
+            runtime_directory.display()
+        )
+    })? {
+        let entry = entry.context("reading multiplexer directory entry")?;
+        let Some(protocol_version) = protocol_version_from_socket_name(&entry.file_name()) else {
+            continue;
+        };
+        let path = entry.path();
+        let metadata =
+            fs::symlink_metadata(&path).context("inspecting versioned multiplexer socket")?;
+        let secure = metadata.file_type().is_socket() && metadata.uid() == current_user_id();
+        let live = secure
+            && UnixStream::connect(&path)
+                .and_then(|stream| {
+                    ensure_current_user_peer(&stream)
+                        .map_err(|error| std::io::Error::other(error.to_string()))
+                })
+                .is_ok();
+        daemons.push(DaemonInfo {
+            protocol_version,
+            current: path == current_socket_path,
+            secure,
+            live,
+        });
+    }
+    daemons.sort_unstable_by_key(|daemon| daemon.protocol_version);
+    Ok(daemons)
+}
+
+fn protocol_version_from_socket_name(name: &OsStr) -> Option<u16> {
+    name.to_str()?
+        .strip_prefix("multiplexer-v")?
+        .strip_suffix(".sock")?
+        .parse()
+        .ok()
+}
+
 /// Runs the daemon listener until explicitly stopped.
 ///
 /// # Errors
@@ -452,7 +602,7 @@ pub fn serve(socket_path: &Path) -> Result<()> {
         .with_context(|| format!("binding multiplexer socket {}", socket_path.display()))?;
     fs::set_permissions(socket_path, fs::Permissions::from_mode(0o600))
         .context("securing multiplexer socket")?;
-    let _socket_guard = SocketGuard(socket_path.to_owned());
+    let _socket_guard = SocketGuard::new(socket_path)?;
     listener
         .set_nonblocking(true)
         .context("configuring multiplexer listener")?;
@@ -468,6 +618,9 @@ pub fn serve(socket_path: &Path) -> Result<()> {
     while !shared.shutdown.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((stream, _)) => {
+                if ensure_current_user_peer_logged(&stream).is_err() {
+                    continue;
+                }
                 stream
                     .set_nonblocking(false)
                     .context("configuring multiplexer client stream")?;
@@ -487,7 +640,17 @@ pub fn serve(socket_path: &Path) -> Result<()> {
 }
 
 fn handle_connection(mut stream: UnixStream, shared: &Shared) {
-    while let Ok(request) = receive_message::<Request>(&mut stream) {
+    loop {
+        let request = match receive_message::<Request, MAX_REQUEST_FRAME_BYTES>(&mut stream) {
+            Ok(request) => request,
+            Err(error) => {
+                if !is_clean_disconnect(&error) {
+                    diagnostics::record(DiagnosticEvent::MultiplexerFrameRejected);
+                }
+                return;
+            }
+        };
+        let mut closed_tab = None;
         let response = match request {
             Request::Wait {
                 generation,
@@ -499,15 +662,45 @@ fn handle_connection(mut stream: UnixStream, shared: &Shared) {
                 },
                 Err(error) => Response::Error(format!("{error:#}")),
             },
+            Request::CloseTab { generation, tab_id } => {
+                match shared.close_tab(generation, tab_id) {
+                    Ok(tab) => {
+                        closed_tab = Some(tab);
+                        Response::Ok
+                    }
+                    Err(error) => Response::Error(format!("{error:#}")),
+                }
+            }
             request => match shared.handle(request) {
                 Ok(response) => response,
                 Err(error) => Response::Error(format!("{error:#}")),
             },
         };
-        if send_message(&mut stream, &response).is_err() {
+        if send_message::<_, MAX_RESPONSE_FRAME_BYTES>(&mut stream, &response).is_err() {
+            drop(closed_tab);
             return;
         }
+        // Teardown can join the PTY reader, so do it only after releasing daemon state and sending
+        // the close response. New and closed tabs normally stay on the same connection thread,
+        // allowing macOS allocator caches to reuse their buffers instead of retaining cross-thread
+        // frees.
+        drop(closed_tab);
     }
+}
+
+fn is_clean_disconnect(error: &anyhow::Error) -> bool {
+    error.to_string() == "reading multiplexer frame length"
+        && error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+            .is_some_and(|cause| {
+                matches!(
+                    cause.kind(),
+                    ErrorKind::UnexpectedEof
+                        | ErrorKind::ConnectionAborted
+                        | ErrorKind::ConnectionReset
+                )
+            })
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -551,6 +744,9 @@ enum Request {
     },
     Shutdown {
         generation: u64,
+    },
+    TerminateAll {
+        protocol_version: u16,
     },
 }
 
@@ -670,6 +866,32 @@ struct Shared {
 }
 
 impl Shared {
+    fn close_tab(&self, generation: u64, tab_id: u64) -> Result<ServerTab> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("multiplexer state lock poisoned"))?;
+        state.require_generation(generation)?;
+        if state.tabs.len() == 1 {
+            bail!("the final tab detaches instead of closing");
+        }
+        let position = state
+            .tabs
+            .iter()
+            .position(|tab| tab.id == tab_id)
+            .with_context(|| format!("unknown multiplexer tab {tab_id}"))?;
+        let closed = state.tabs.remove(position);
+        for (index, tab) in state.tabs.iter_mut().enumerate() {
+            tab.index = index;
+        }
+        if state.active_tab_id == tab_id {
+            state.active_tab_id = state.tabs[position.min(state.tabs.len() - 1)].id;
+        }
+        state.apply_scrollback_limits();
+        self.notifier.bump();
+        Ok(closed)
+    }
+
     fn handle(&self, request: Request) -> Result<Response> {
         let mut state = self
             .state
@@ -727,28 +949,7 @@ impl Shared {
                 self.notifier.bump();
                 Ok(Response::Tab(tab))
             }
-            Request::CloseTab { generation, tab_id } => {
-                state.require_generation(generation)?;
-                if state.tabs.len() == 1 {
-                    bail!("the final tab detaches instead of closing");
-                }
-                let position = state
-                    .tabs
-                    .iter()
-                    .position(|tab| tab.id == tab_id)
-                    .with_context(|| format!("unknown multiplexer tab {tab_id}"))?;
-                let closed = state.tabs.remove(position);
-                for (index, tab) in state.tabs.iter_mut().enumerate() {
-                    tab.index = index;
-                }
-                if state.active_tab_id == tab_id {
-                    state.active_tab_id = state.tabs[position.min(state.tabs.len() - 1)].id;
-                }
-                state.apply_scrollback_limits();
-                thread::spawn(move || drop(closed));
-                self.notifier.bump();
-                Ok(Response::Ok)
-            }
+            Request::CloseTab { .. } => bail!("close tab requires cleanup-aware handling"),
             Request::ActivateTab { generation, tab_id } => {
                 state.require_generation(generation)?;
                 if !state.tabs.iter().any(|tab| tab.id == tab_id) {
@@ -765,6 +966,9 @@ impl Shared {
                 bytes,
             } => {
                 state.require_generation(generation)?;
+                if bytes.len() > MAX_WRITE_BYTES {
+                    bail!("multiplexer write exceeds the per-request limit");
+                }
                 state.tab(tab_id)?.pty.write(&bytes)?;
                 Ok(Response::Ok)
             }
@@ -798,6 +1002,16 @@ impl Shared {
             }
             Request::Shutdown { generation } => {
                 state.require_generation(generation)?;
+                self.shutdown.store(true, Ordering::Release);
+                self.notifier.bump();
+                Ok(Response::Ok)
+            }
+            Request::TerminateAll { protocol_version } => {
+                if protocol_version != PROTOCOL_VERSION {
+                    bail!(
+                        "multiplexer protocol mismatch: daemon {PROTOCOL_VERSION}, client {protocol_version}"
+                    );
+                }
                 self.shutdown.store(true, Ordering::Release);
                 self.notifier.bump();
                 Ok(Response::Ok)
@@ -1119,11 +1333,32 @@ impl Notifier {
     }
 }
 
-struct SocketGuard(PathBuf);
+struct SocketGuard {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+impl SocketGuard {
+    fn new(path: &Path) -> Result<Self> {
+        let metadata = fs::symlink_metadata(path)
+            .with_context(|| format!("inspecting live multiplexer socket {}", path.display()))?;
+        Ok(Self {
+            path: path.to_owned(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
 
 impl Drop for SocketGuard {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let Ok(metadata) = fs::symlink_metadata(&self.path) else {
+            return;
+        };
+        if metadata.dev() == self.device && metadata.ino() == self.inode {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -1131,18 +1366,50 @@ fn prepare_socket_directory(socket_path: &Path) -> Result<()> {
     let parent = socket_path
         .parent()
         .context("multiplexer socket has no parent")?;
-    if !parent.exists() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating multiplexer directory {}", parent.display()))?;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("securing multiplexer directory {}", parent.display()))?;
-        return Ok(());
+    match fs::symlink_metadata(parent) {
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true).mode(0o700);
+            builder.create(parent).with_context(|| {
+                format!(
+                    "creating private multiplexer directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspecting multiplexer directory {}", parent.display()));
+        }
     }
-    let metadata = fs::metadata(parent)
+    let metadata = fs::symlink_metadata(parent)
         .with_context(|| format!("inspecting multiplexer directory {}", parent.display()))?;
+    validate_socket_directory_metadata(parent, &metadata)
+}
+
+fn validate_socket_directory(parent: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(parent)
+        .with_context(|| format!("inspecting multiplexer directory {}", parent.display()))?;
+    validate_socket_directory_metadata(parent, &metadata)
+}
+
+fn validate_socket_directory_metadata(parent: &Path, metadata: &fs::Metadata) -> Result<()> {
+    if metadata.file_type().is_symlink() {
+        bail!(
+            "multiplexer socket parent must not be a symlink: {}",
+            parent.display()
+        );
+    }
     if !metadata.is_dir() {
         bail!(
             "multiplexer socket parent is not a directory: {}",
+            parent.display()
+        );
+    }
+    if metadata.uid() != current_user_id() {
+        bail!(
+            "multiplexer socket parent is not owned by the current user: {}",
             parent.display()
         );
     }
@@ -1155,9 +1422,45 @@ fn prepare_socket_directory(socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn validate_existing_socket(socket_path: &Path) -> Result<()> {
+    let metadata = fs::symlink_metadata(socket_path)
+        .with_context(|| format!("inspecting multiplexer socket {}", socket_path.display()))?;
+    if !metadata.file_type().is_socket() {
+        bail!(
+            "multiplexer path is not a Unix socket: {}",
+            socket_path.display()
+        );
+    }
+    if metadata.uid() != current_user_id() {
+        bail!(
+            "multiplexer socket is not owned by the current user: {}",
+            socket_path.display()
+        );
+    }
+    Ok(())
+}
+
 fn remove_stale_socket(socket_path: &Path) -> Result<()> {
-    if !socket_path.exists() {
-        return Ok(());
+    let metadata = match fs::symlink_metadata(socket_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!("inspecting multiplexer socket {}", socket_path.display())
+            });
+        }
+    };
+    if !metadata.file_type().is_socket() {
+        bail!(
+            "refusing to replace a non-socket multiplexer path: {}",
+            socket_path.display()
+        );
+    }
+    if metadata.uid() != current_user_id() {
+        bail!(
+            "refusing to replace a multiplexer socket owned by another user: {}",
+            socket_path.display()
+        );
     }
     if UnixStream::connect(socket_path).is_ok() {
         bail!(
@@ -1173,11 +1476,57 @@ fn remove_stale_socket(socket_path: &Path) -> Result<()> {
     })
 }
 
-fn send_message<T: Serialize>(stream: &mut UnixStream, message: &T) -> Result<()> {
-    let encoded = bincode::serde::encode_to_vec(message, bincode::config::standard())
-        .context("encoding multiplexer message")?;
-    if encoded.len() > MAX_FRAME_BYTES {
-        bail!("multiplexer message exceeds the maximum frame size");
+#[cfg(any(target_vendor = "apple", target_os = "android", target_os = "linux"))]
+fn current_user_id() -> u32 {
+    Uid::effective().as_raw()
+}
+
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_os = "linux")))]
+fn current_user_id() -> u32 {
+    // Tmon ships only on macOS. This keeps the Unix-only mux crate inspectable on other targets;
+    // unsupported platforms still get directory ownership checks from their metadata value.
+    fs::symlink_metadata(".").map_or(u32::MAX, |metadata| metadata.uid())
+}
+
+#[cfg(target_vendor = "apple")]
+fn ensure_current_user_peer(stream: &UnixStream) -> Result<()> {
+    let credentials =
+        getsockopt(stream, LocalPeerCred).context("reading local peer credentials")?;
+    if credentials.uid() != current_user_id() {
+        bail!("multiplexer peer is owned by another user");
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "android", target_os = "linux"))]
+fn ensure_current_user_peer(stream: &UnixStream) -> Result<()> {
+    let credentials =
+        getsockopt(stream, PeerCredentials).context("reading local peer credentials")?;
+    if credentials.uid() != current_user_id() {
+        bail!("multiplexer peer is owned by another user");
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_vendor = "apple", target_os = "android", target_os = "linux")))]
+fn ensure_current_user_peer(_stream: &UnixStream) -> Result<()> {
+    bail!("multiplexer peer credentials are unsupported on this platform")
+}
+
+fn ensure_current_user_peer_logged(stream: &UnixStream) -> Result<()> {
+    ensure_current_user_peer(stream).inspect_err(|_| {
+        diagnostics::record(DiagnosticEvent::MultiplexerPeerRejected);
+    })
+}
+
+fn send_message<T: Serialize, const FRAME_LIMIT: usize>(
+    stream: &mut UnixStream,
+    message: &T,
+) -> Result<()> {
+    let encoded = postcard::to_allocvec(message)
+        .map_err(|error| anyhow!("multiplexer message encoding failed: {error}"))?;
+    if encoded.len() > FRAME_LIMIT {
+        bail!("multiplexer message exceeds its frame limit");
     }
     let length = u64::try_from(encoded.len()).context("multiplexer message is too large")?;
     stream
@@ -1188,27 +1537,52 @@ fn send_message<T: Serialize>(stream: &mut UnixStream, message: &T) -> Result<()
         .context("writing multiplexer frame")
 }
 
-fn receive_message<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T> {
+fn receive_message<T: DeserializeOwned, const FRAME_LIMIT: usize>(
+    stream: &mut UnixStream,
+) -> Result<T> {
     let mut length = [0_u8; 8];
     stream
         .read_exact(&mut length)
         .context("reading multiplexer frame length")?;
     let length = usize::try_from(u64::from_be_bytes(length))
         .context("multiplexer frame does not fit in memory")?;
-    if length > MAX_FRAME_BYTES {
-        bail!("multiplexer frame exceeds the maximum size");
+    if length > FRAME_LIMIT {
+        bail!("multiplexer frame exceeds its directional limit");
     }
     let mut encoded = vec![0; length];
     stream
         .read_exact(&mut encoded)
         .context("reading multiplexer frame")?;
-    let (message, consumed): (T, usize) =
-        bincode::serde::decode_from_slice(&encoded, bincode::config::standard())
-            .context("decoding multiplexer message")?;
-    if consumed != encoded.len() {
+    decode_message::<T, FRAME_LIMIT>(&encoded)
+}
+
+fn decode_message<T: DeserializeOwned, const FRAME_LIMIT: usize>(encoded: &[u8]) -> Result<T> {
+    if encoded.len() > FRAME_LIMIT {
+        bail!("multiplexer frame exceeds its directional limit");
+    }
+    let (message, remainder): (T, &[u8]) =
+        postcard::take_from_bytes(encoded).context("decoding multiplexer message")?;
+    if !remainder.is_empty() {
         bail!("multiplexer frame contains trailing data");
     }
     Ok(message)
+}
+
+/// Exercises the complete untrusted request-frame decoder for fuzz targets.
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub fn fuzz_decode_request_frame(frame: &[u8]) {
+    let Some(header) = frame.get(..8) else {
+        return;
+    };
+    let length = u64::from_be_bytes(header.try_into().expect("frame header has eight bytes"));
+    let Ok(length) = usize::try_from(length) else {
+        return;
+    };
+    if length > MAX_REQUEST_FRAME_BYTES || frame.len().checked_sub(8) != Some(length) {
+        return;
+    }
+    let _ = decode_message::<Request, MAX_REQUEST_FRAME_BYTES>(&frame[8..]);
 }
 
 fn unexpected_response<T>(response: &Response) -> Result<T> {
@@ -1226,8 +1600,15 @@ const fn dynamic_color_index(target: DynamicColor) -> usize {
 fn directory_from_osc7(uri: &str) -> Option<PathBuf> {
     let authority_and_path = uri.strip_prefix("file://")?;
     let path_start = authority_and_path.find('/')?;
+    let authority = &authority_and_path[..path_start];
+    if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+        return None;
+    }
     let encoded_path = &authority_and_path[path_start..];
     let decoded = percent_decode(encoded_path)?;
+    if decoded.chars().any(char::is_control) {
+        return None;
+    }
     let path = PathBuf::from(decoded);
     path.is_absolute().then_some(path)
 }
@@ -1261,9 +1642,29 @@ const fn hex(value: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{
+        fs,
+        io::Write,
+        net::Shutdown,
+        os::unix::{
+            fs::{PermissionsExt, symlink},
+            net::{UnixListener, UnixStream},
+        },
+        path::{Path, PathBuf},
+        sync::{Mutex, atomic::AtomicBool, mpsc},
+        thread,
+        time::SystemTime,
+    };
 
-    use super::{PROTOCOL_VERSION, default_socket_path_for_home};
+    use engine::pty::PtyCommand;
+
+    use super::{
+        Client, MAX_REQUEST_FRAME_BYTES, MAX_RESPONSE_FRAME_BYTES, MAX_WRITE_BYTES,
+        PROTOCOL_VERSION, Request, Response, ServerState, Shared, SocketGuard, TerminalSize,
+        default_socket_path_for_home, directory_from_osc7, ensure_current_user_peer,
+        inspect_daemons_at, prepare_socket_directory, receive_message, remove_stale_socket,
+        send_message,
+    };
 
     #[test]
     fn default_socket_is_namespaced_by_protocol_version() {
@@ -1272,5 +1673,274 @@ mod tests {
             path.file_name().and_then(|name| name.to_str()),
             Some(format!("multiplexer-v{PROTOCOL_VERSION}.sock").as_str()),
         );
+    }
+
+    #[test]
+    fn daemon_osc7_path_rejects_remote_authority_and_controls() {
+        assert_eq!(
+            directory_from_osc7("file://localhost/tmp/ok"),
+            Some(PathBuf::from("/tmp/ok"))
+        );
+        assert_eq!(directory_from_osc7("file://example.com/tmp/no"), None);
+        assert_eq!(directory_from_osc7("file:///tmp/%0Ano"), None);
+    }
+
+    #[test]
+    fn closed_tab_cleanup_is_returned_after_releasing_daemon_state() {
+        let (notices, _notices_rx) = mpsc::channel();
+        let mut state = ServerState::new(notices);
+        let size = TerminalSize::new(24, 80, 800, 480);
+        let command = PtyCommand::new("/bin/sh").with_arguments(["-c", "sleep 60"]);
+        let retained_id = state
+            .spawn_tab(command.clone(), size, 128)
+            .expect("spawn retained tab");
+        let target_id = state
+            .spawn_tab(command, size, 128)
+            .expect("spawn target tab");
+        state.active_tab_id = target_id;
+        state.generation = 1;
+        let shared = Shared {
+            state: Mutex::new(state),
+            notifier: super::Notifier::default(),
+            shutdown: AtomicBool::new(false),
+        };
+
+        let closed = shared
+            .close_tab(1, target_id)
+            .expect("remove target before PTY cleanup");
+        let state = shared
+            .state
+            .try_lock()
+            .expect("daemon state lock is released before cleanup");
+        assert_eq!(state.tabs.len(), 1);
+        assert_eq!(state.active_tab_id, retained_id);
+        assert_eq!(state.tabs[0].id, retained_id);
+        assert_eq!(state.tabs[0].index, 0);
+        drop(state);
+        drop(closed);
+    }
+
+    #[test]
+    fn oversized_request_length_is_rejected_before_payload_allocation() {
+        let (mut sender, mut receiver) = UnixStream::pair().expect("create socket pair");
+        let oversized = u64::try_from(MAX_REQUEST_FRAME_BYTES + 1).expect("limit fits u64");
+        sender
+            .write_all(&oversized.to_be_bytes())
+            .expect("write frame length");
+
+        let error = receive_message::<Request, MAX_REQUEST_FRAME_BYTES>(&mut receiver)
+            .expect_err("oversized frame must fail");
+        assert!(error.to_string().contains("directional limit"));
+    }
+
+    #[test]
+    fn truncated_and_trailing_request_frames_are_rejected() {
+        let (mut truncated_sender, mut truncated_receiver) =
+            UnixStream::pair().expect("create truncated socket pair");
+        truncated_sender
+            .write_all(&4_u64.to_be_bytes())
+            .expect("write truncated frame length");
+        truncated_sender
+            .write_all(&[1, 2])
+            .expect("write truncated payload");
+        truncated_sender
+            .shutdown(Shutdown::Write)
+            .expect("close truncated writer");
+        assert!(
+            receive_message::<Request, MAX_REQUEST_FRAME_BYTES>(&mut truncated_receiver).is_err()
+        );
+
+        let request = Request::Wait {
+            generation: 1,
+            since_epoch: 2,
+        };
+        let mut encoded = postcard::to_allocvec(&request).expect("encode request");
+        encoded.push(0);
+        let (mut trailing_sender, mut trailing_receiver) =
+            UnixStream::pair().expect("create trailing socket pair");
+        trailing_sender
+            .write_all(
+                &u64::try_from(encoded.len())
+                    .expect("encoded length fits u64")
+                    .to_be_bytes(),
+            )
+            .expect("write trailing frame length");
+        trailing_sender
+            .write_all(&encoded)
+            .expect("write trailing payload");
+        let error = receive_message::<Request, MAX_REQUEST_FRAME_BYTES>(&mut trailing_receiver)
+            .expect_err("trailing bytes must fail");
+        assert!(error.to_string().contains("trailing data"));
+    }
+
+    #[test]
+    fn send_limit_is_applied_to_encoded_messages() {
+        let (mut sender, _receiver) = UnixStream::pair().expect("create socket pair");
+        let response = Response::Error("too large".repeat(16));
+        let error =
+            send_message::<_, 8>(&mut sender, &response).expect_err("small limit must fail");
+        assert!(error.to_string().contains("frame limit"));
+    }
+
+    #[test]
+    fn client_chunks_large_terminal_writes_in_order() {
+        let (client_stream, mut server_stream) = UnixStream::pair().expect("create socket pair");
+        let server = thread::spawn(move || {
+            let mut lengths = Vec::new();
+            for _ in 0..3 {
+                let request =
+                    receive_message::<Request, MAX_REQUEST_FRAME_BYTES>(&mut server_stream)
+                        .expect("receive chunked write");
+                let Request::Write {
+                    generation,
+                    tab_id,
+                    bytes,
+                } = request
+                else {
+                    panic!("expected write request");
+                };
+                assert_eq!(generation, 7);
+                assert_eq!(tab_id, 11);
+                lengths.push(bytes.len());
+                send_message::<_, MAX_RESPONSE_FRAME_BYTES>(&mut server_stream, &Response::Ok)
+                    .expect("acknowledge write");
+            }
+            lengths
+        });
+        let mut client = Client {
+            stream: client_stream,
+            socket_path: PathBuf::from("/unused-test-socket"),
+            generation: 7,
+            epoch: 0,
+        };
+        let payload = vec![b'x'; MAX_WRITE_BYTES * 2 + 7];
+
+        client.write(11, &payload).expect("write chunked payload");
+        assert_eq!(
+            server.join().expect("server thread should join"),
+            vec![MAX_WRITE_BYTES, MAX_WRITE_BYTES, 7]
+        );
+    }
+
+    #[test]
+    fn connected_peer_credentials_match_the_current_user() {
+        let (stream, _peer) = UnixStream::pair().expect("create socket pair");
+        ensure_current_user_peer(&stream).expect("same-process peer should be trusted");
+    }
+
+    #[test]
+    fn socket_directory_rejects_a_symlink_parent() {
+        let root = isolated_test_root("symlink-parent");
+        let actual = root.join("actual");
+        fs::create_dir_all(&actual).expect("create actual directory");
+        fs::set_permissions(&actual, fs::Permissions::from_mode(0o700))
+            .expect("secure actual directory");
+        let linked = root.join("linked");
+        symlink(&actual, &linked).expect("create directory symlink");
+
+        let error = prepare_socket_directory(&linked.join("mux.sock"))
+            .expect_err("symlink parent must be rejected");
+        assert!(error.to_string().contains("must not be a symlink"));
+        fs::remove_dir_all(root).expect("remove isolated test root");
+    }
+
+    #[test]
+    fn stale_cleanup_never_replaces_a_non_socket_path() {
+        let root = isolated_test_root("regular-stale-path");
+        let runtime = root.join("runtime");
+        fs::create_dir_all(&runtime).expect("create runtime directory");
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))
+            .expect("secure runtime directory");
+        let socket_path = runtime.join("mux.sock");
+        fs::write(&socket_path, b"keep me").expect("write sentinel file");
+
+        let error = remove_stale_socket(&socket_path)
+            .expect_err("regular file must not be treated as a stale socket");
+        assert!(error.to_string().contains("non-socket"));
+        assert_eq!(fs::read(&socket_path).expect("read sentinel"), b"keep me");
+        fs::remove_dir_all(root).expect("remove isolated test root");
+    }
+
+    #[test]
+    fn socket_guard_does_not_remove_a_replaced_path() {
+        let root = isolated_test_root("guard-replacement");
+        fs::create_dir_all(&root).expect("create guard test root");
+        let socket_path = root.join("mux.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind guarded socket");
+        let guard = SocketGuard::new(&socket_path).expect("capture socket identity");
+        drop(listener);
+        fs::remove_file(&socket_path).expect("remove original socket");
+        fs::write(&socket_path, b"replacement").expect("write replacement path");
+
+        drop(guard);
+        assert_eq!(
+            fs::read(&socket_path).expect("replacement must survive"),
+            b"replacement"
+        );
+        fs::remove_dir_all(root).expect("remove isolated test root");
+    }
+
+    #[test]
+    fn daemon_discovery_is_read_only_and_distinguishes_live_stale_and_unsafe_paths() {
+        let root = isolated_test_root("daemon-discovery");
+        fs::create_dir_all(&root).expect("create discovery root");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("secure discovery root");
+        let current_path = root.join(format!("multiplexer-v{PROTOCOL_VERSION}.sock"));
+        let legacy_path = root.join("multiplexer-v2.sock");
+        let stale_path = root.join("multiplexer-v1.sock");
+        let unsafe_path = root.join("multiplexer-v99.sock");
+        let current_listener = UnixListener::bind(&current_path).expect("bind current listener");
+        let legacy_listener = UnixListener::bind(&legacy_path).expect("bind legacy listener");
+        let stale_listener = UnixListener::bind(&stale_path).expect("bind stale listener");
+        drop(stale_listener);
+        fs::write(&unsafe_path, b"not a socket").expect("write unsafe sentinel");
+
+        let daemons = inspect_daemons_at(&current_path).expect("inspect isolated daemons");
+        assert_eq!(
+            daemons,
+            vec![
+                super::DaemonInfo {
+                    protocol_version: 1,
+                    current: false,
+                    secure: true,
+                    live: false,
+                },
+                super::DaemonInfo {
+                    protocol_version: 2,
+                    current: false,
+                    secure: true,
+                    live: true,
+                },
+                super::DaemonInfo {
+                    protocol_version: PROTOCOL_VERSION,
+                    current: true,
+                    secure: true,
+                    live: true,
+                },
+                super::DaemonInfo {
+                    protocol_version: 99,
+                    current: false,
+                    secure: false,
+                    live: false,
+                },
+            ]
+        );
+        assert_eq!(
+            fs::read(&unsafe_path).expect("sentinel survives"),
+            b"not a socket"
+        );
+
+        drop(current_listener);
+        drop(legacy_listener);
+        fs::remove_dir_all(root).expect("remove isolated test root");
+    }
+
+    fn isolated_test_root(label: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .expect("clock after Unix epoch")
+            .as_nanos();
+        Path::new("/tmp").join(format!("tmon-{label}-{}-{unique}", std::process::id()))
     }
 }

@@ -199,6 +199,12 @@ mod tests {
     use super::{Palette, Theme};
 
     #[test]
+    fn default_cursor_matches_ghostty_tokyo_night_color() {
+        assert_eq!(DEFAULT_CURSOR_RGB, [192, 202, 245]);
+        assert_eq!(Theme::default().cursor, [192, 202, 245]);
+    }
+
+    #[test]
     fn resolves_default_indexed_cube_and_grayscale_colors() {
         let palette = Palette::default();
         let mut cell = Cell::default();

@@ -1,0 +1,37 @@
+{
+  "schema_version": 2,
+  "duration_seconds": 1800,
+  "cycles": 14785,
+  "bytes_written": 70968000,
+  "bytes_drained": 88567832,
+  "warmup_bytes_written": 108000,
+  "warmup_bytes_drained": 145024,
+  "detach_reattach_count": 295,
+  "tab_churn_count": 1479,
+  "resize_count": 14785,
+  "long_idle_count": 147,
+  "baseline": {
+    "rss_kib": 61776,
+    "cpu_percent": 6.5,
+    "file_descriptors": 16,
+    "threads": 5
+  },
+  "maximum": {
+    "rss_kib": 102512,
+    "cpu_percent": 10.9,
+    "file_descriptors": 16,
+    "threads": 5
+  },
+  "rss_growth_kib": 40736,
+  "fd_growth": 0,
+  "thread_growth": 0,
+  "daemon_count": 1,
+  "limits": {
+    "rss_kib": 262144,
+    "rss_growth_kib": 32768,
+    "cpu_percent": 100.0,
+    "fd_growth": 16,
+    "thread_growth": 8
+  },
+  "passed": false
+}

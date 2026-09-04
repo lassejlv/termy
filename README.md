@@ -56,6 +56,7 @@ font-size = 15
 padding = 8
 scrollback-limit = 5000
 inactive-scrollback-limit = 1000
+osc52-clipboard = "disabled" # disabled, focused-window, or active-tab
 shell = "/bin/zsh"
 working-directory = "~/Code"
 
@@ -91,6 +92,9 @@ bright-white = "#eceff4"
 Every color accepts `#RRGGBB`; omit any entry to keep Tmon's default for that slot. Terminal OSC
 color changes still override the configured foreground, background, or cursor for that session and
 reset back to the configured theme. Theme changes take effect on the next launch.
+OSC 52 terminal-controlled clipboard writes default to `disabled`. `focused-window` permits only
+the active tab while its window is focused; `active-tab` also permits the active tab while the app
+is unfocused. Inactive tabs and non-system clipboard selections are always denied.
 Tabs are real AppKit window tabs. Inactive tabs keep draining their bounded PTYs but retain fewer
 history rows and do not render.
 Both Option keys preserve macOS layout characters such as Danish `@`; Option-modified navigation
@@ -114,21 +118,33 @@ drains bounded PTY queues while no window is attached, so output-producing jobs 
 blocking behind a disconnected UI. Sessions survive app closure within the current login session;
 reboot/login restoration is intentionally not claimed.
 
+Session administration is deliberately separate from normal launch and quit:
+
+```sh
+tmon --session-status
+tmon --terminate-sessions
+```
+
+`--session-status` is read-only and reports only protocol version plus running, stale, or unsafe
+state; it does not print socket paths, start a daemon, delete a socket, or inspect terminal data.
+`--terminate-sessions` is the explicit destructive action for the current protocol generation: it
+terminates every PTY process group owned by that daemon and then stops the daemon. It never targets
+an older protocol generation. See `SESSION_LIFECYCLE.md` for upgrade, recovery, and cleanup rules.
+
 ## Workspace
 
 - `engine`: terminal grid, VT/OSC parser, modes, scrollback, damage, Kitty keyboard and mouse/input encoders, plus PTY child lifecycle and coalesced asynchronous I/O
 - `mux`: private Unix-socket daemon, tab/process ownership, emulator snapshots, and reconnect protocol
-- `pty`: direct macOS `forkpty`/`execve` process layer with safe command, descriptor, resize, signal, and wait types
 - `ffi`: versioned C ABI with opaque terminal/PTY handles, packed borrowed frame and event views, panic containment, and a Clang/Swift module map
 - `render`: retained row text plans, pixel-aligned block/box-drawing geometry, instanced cell backgrounds, cursor, and macOS Metal presentation
 - `tmon`: winit application and platform event wiring
 
-The engine has no windowing or GPU dependencies. Tmon's `pty` crate talks directly to macOS:
+The engine has no windowing or GPU dependencies. Its PTY module talks directly to macOS:
 `forkpty` establishes the session, process group, and controlling terminal; a prepared `execve`
 launch keeps the post-fork path async-signal-safe; direct close-on-exec `File` descriptors handle
 I/O; and `TIOCSWINSZ`, process-group signalling, and `waitpid` cover the remaining lifecycle. The
-small unsafe syscall boundary is isolated in `crates/pty/src/native.rs`; callers use safe builder
-and ownership types, while the existing `engine::pty::PtySession` API adds asynchronous delivery.
+small unsafe syscall boundary is isolated in `crates/engine/src/pty/native.rs`; callers use safe
+builder and ownership types, while `engine::pty::PtySession` adds asynchronous delivery.
 There is no `portable-pty` dependency or dynamic dispatch in the PTY read/write/resize path.
 
 PTY reads use a lossless 512 KiB queued-output budget plus one fixed 32 KiB read buffer: wakeups are edge-coalesced, the multiplexer continuously drains each queue into its shadow emulator, and `PtySession::drain_output_into` swaps reusable bounded producer/consumer allocations without retaining oversized caller storage. Attached GUI output is bounded separately; a client that falls behind receives a fresh emulator snapshot instead of growing the daemon indefinitely. macOS teardown uses an explicit cancellation descriptor, so idle reads add no polling timer and shutdown can still interrupt a blocked reader before joining it. Ordinary edits copy exact dirty cell spans rather than whole rows or full grids. Each attached terminal session owns a native AppKit window in one tab group, while the selected tab reuses the same Metal device, glyph atlas, font system, and scratch storage by retargeting its presentation surface. The renderer retains shaped text and static geometry per row, moves those GPU caches with terminal scroll operations, uses a conservative monospace ASCII shaping path, and bypasses font shaping for common TUI borders so adjacent cells meet on exact device pixels. Cursor and selection use a small dynamic overlay. Presentation remains vsynced; bursty output is folded into the next redraw, PTY geometry changes immediately during live resize, and occluded or inactive tabs do no shaping, upload, or presentation work.
@@ -193,9 +209,9 @@ The `stability` example fills the configured history, continues sustained output
 
 ## Supported protocol surface
 
-The engine implements the common VT100/xterm control set used by shells and TUIs: cursor motion, erase/insert/delete operations, scrolling regions, main/alternate screen, SGR including indexed and RGB color, bracketed paste, focus and SGR cell/pixel mouse modes, device and mode reports, dynamic foreground/background/cursor colors, synchronized output, OSC title/current-directory/hyperlink/clipboard/pointer events, and text selection. Keyboard input is layout-aware and supports committed IME text, legacy VT/xterm keys and C0 aliases, application cursor/keypad modes, xterm `modifyOtherKeys`/`formatOtherKeys`, and all Kitty progressive keyboard flags for host-visible keys, including event types, alternate keys, report-all, and associated text. Lock-modifier reporting is best-effort because macOS/Winit does not expose a reliable initial Caps Lock or Num Lock state.
+The engine implements the common VT100/xterm control set used by shells and TUIs: cursor motion, erase/insert/delete operations, scrolling regions, main/alternate screen, SGR including indexed and RGB color, bracketed paste, focus and SGR cell/pixel mouse modes, device and mode reports, dynamic foreground/background/cursor colors, synchronized output, OSC title/current-directory/hyperlink/clipboard/pointer events, and text selection. Keyboard input is layout-aware and supports visible IME pre-edit plus committed text, legacy VT/xterm keys and C0 aliases, application cursor/keypad modes, xterm `modifyOtherKeys`/`formatOtherKeys`, and all Kitty progressive keyboard flags for host-visible keys, including event types, alternate keys, report-all, and associated text. Lock-modifier reporting is best-effort because macOS/Winit does not expose a reliable initial Caps Lock or Num Lock state.
 
-This is an intentionally compact engine, not yet a compatibility replacement for mature terminals. Image protocols, sixel, bidi shaping, block selection, and shell integration are natural next layers.
+This is an intentionally compact engine, not yet a compatibility replacement for mature terminals. Image protocols, sixel, bidi shaping, block selection, and shell integration are natural next layers. Tmon 0.1 is also explicitly an accessibility preview: native chrome, keyboard operation, IME, and alerts form the implemented baseline, while terminal contents and the custom search overlay are not yet exposed as a VoiceOver text tree. See `ACCESSIBILITY.md`.
 
 ## Distribution and updates
 
@@ -211,13 +227,23 @@ APPLE_NOTARY_PROFILE=tmon bash script/notarize_macos.sh
 
 The release zip is the deliberately small update contract for now: verify its adjacent checksum,
 replace `Tmon.app`, and keep the config file in Application Support. There is no privileged
-installer or background updater.
+installer or background updater. See `UPDATE.md` for live-session-safe manual updates and rollback,
+`PACKAGED_SMOKE.md` for the exact packaged runtime/visual matrix, and `SUPPORT.md` for the local,
+user-reviewable support bundle.
+
+The installed binary can report versioned daemon state without changing it and can create a
+privacy-safe JSON support file at a new path:
+
+```sh
+/Applications/Tmon.app/Contents/MacOS/tmon --session-status
+/Applications/Tmon.app/Contents/MacOS/tmon --support-bundle "$HOME/Desktop/tmon-support.json"
+```
 
 ## Compatibility matrix
 
 | Target | Status |
 | --- | --- |
-| Apple Silicon, macOS 26 | Runtime, native tabs, PTY lifecycle, input, resize, idle CPU/RSS, and Metal rendering verified |
+| Apple Silicon, macOS 27 | Runtime, native tabs, PTY lifecycle, input, resize, idle CPU/RSS, and Metal rendering verified on the current M4 reference host |
 | Intel, macOS 14+ | Universal x86_64 slice builds; runtime hardware validation remains required |
 | macOS 14–15 on Apple Silicon | Declared deployment target; runtime validation remains required |
 | Linux and Windows app | Not supported; the reusable engine remains window/GPU independent |

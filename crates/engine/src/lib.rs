@@ -1,3 +1,5 @@
+#![deny(unsafe_op_in_unsafe_fn)]
+
 mod cell;
 mod color;
 mod damage;
@@ -29,7 +31,13 @@ use anyhow::{Context, Result, bail};
 use emulator::Emulator;
 use serde::{Deserialize, Serialize};
 
-const TERMINAL_SNAPSHOT_VERSION: u16 = 2;
+/// On-wire version of terminal snapshots exchanged through the multiplexer.
+///
+/// Version 3 changes the encoding from bincode to postcard. Versions describe both the schema and
+/// codec so bytes from an older daemon are never decoded as the current format by accident.
+pub const TERMINAL_SNAPSHOT_VERSION: u16 = 3;
+const MAX_TERMINAL_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
+const MAX_OSC_SEQUENCE_BYTES: usize = 2 * 1024 * 1024 + 256;
 
 #[derive(Serialize)]
 struct TerminalSnapshotRef<'a> {
@@ -106,9 +114,85 @@ impl TerminalMemoryStats {
 }
 
 pub struct Terminal {
-    parser: vte::Parser,
+    parser: BoundedParser,
     emulator: Emulator,
     metrics: TerminalMetrics,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ParserScanState {
+    Ground,
+    Escape,
+    Osc(usize),
+    DiscardingOsc,
+}
+
+struct BoundedParser {
+    inner: vte::Parser,
+    state: ParserScanState,
+}
+
+impl BoundedParser {
+    fn new() -> Self {
+        Self {
+            inner: vte::Parser::new(),
+            state: ParserScanState::Ground,
+        }
+    }
+
+    fn advance(&mut self, performer: &mut Emulator, bytes: &[u8]) {
+        let mut forward_start = 0;
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            match self.state {
+                ParserScanState::Ground => {
+                    if byte == 0x1b {
+                        self.state = ParserScanState::Escape;
+                    }
+                }
+                ParserScanState::Escape => {
+                    self.state = match byte {
+                        b']' => ParserScanState::Osc(0),
+                        0x1b => ParserScanState::Escape,
+                        _ => ParserScanState::Ground,
+                    };
+                }
+                ParserScanState::Osc(length) => match byte {
+                    0x07 | 0x18 | 0x1a => self.state = ParserScanState::Ground,
+                    0x1b => self.state = ParserScanState::Escape,
+                    _ if length >= MAX_OSC_SEQUENCE_BYTES => {
+                        self.inner.advance(performer, &bytes[forward_start..index]);
+                        // `vte` uses an unbounded Vec for OSC data with its std feature. Replacing
+                        // the parser drops that buffer without dispatching the truncated action.
+                        self.inner = vte::Parser::new();
+                        self.state = ParserScanState::DiscardingOsc;
+                        forward_start = index + 1;
+                    }
+                    _ => self.state = ParserScanState::Osc(length + 1),
+                },
+                ParserScanState::DiscardingOsc => match byte {
+                    0x07 | 0x18 | 0x1a => {
+                        self.state = ParserScanState::Ground;
+                        forward_start = index + 1;
+                    }
+                    0x1b => {
+                        // Forward the escape so a following string terminator or a fresh OSC is
+                        // interpreted from a clean parser state.
+                        self.state = ParserScanState::Escape;
+                        forward_start = index;
+                    }
+                    _ => {}
+                },
+            }
+        }
+        if self.state != ParserScanState::DiscardingOsc && forward_start < bytes.len() {
+            self.inner.advance(performer, &bytes[forward_start..]);
+        }
+    }
+
+    #[cfg(test)]
+    const fn is_discarding_osc(&self) -> bool {
+        matches!(self.state, ParserScanState::DiscardingOsc)
+    }
 }
 
 impl std::fmt::Debug for Terminal {
@@ -124,7 +208,7 @@ impl Terminal {
     #[must_use]
     pub fn new(config: TerminalConfig) -> Self {
         Self {
-            parser: vte::Parser::new(),
+            parser: BoundedParser::new(),
             emulator: Emulator::new(config.columns, config.rows, config.scrollback_limit),
             metrics: TerminalMetrics::default(),
         }
@@ -139,14 +223,15 @@ impl Terminal {
     ///
     /// Returns an error if the emulator cannot be encoded.
     pub fn snapshot(&self) -> Result<Vec<u8>> {
-        bincode::serde::encode_to_vec(
-            TerminalSnapshotRef {
-                version: TERMINAL_SNAPSHOT_VERSION,
-                emulator: &self.emulator,
-            },
-            bincode::config::standard(),
-        )
-        .context("serializing terminal snapshot")
+        let encoded = postcard::to_allocvec(&TerminalSnapshotRef {
+            version: TERMINAL_SNAPSHOT_VERSION,
+            emulator: &self.emulator,
+        })
+        .context("serializing terminal snapshot")?;
+        if encoded.len() > MAX_TERMINAL_SNAPSHOT_BYTES {
+            bail!("terminal snapshot exceeds the maximum encoded size");
+        }
+        Ok(encoded)
     }
 
     /// Restores a terminal emulator produced by [`Terminal::snapshot`].
@@ -155,17 +240,19 @@ impl Terminal {
     ///
     /// Returns an error for malformed, trailing, or unsupported snapshot data.
     pub fn from_snapshot(bytes: &[u8]) -> Result<Self> {
-        let (snapshot, consumed): (TerminalSnapshot, usize) =
-            bincode::serde::decode_from_slice(bytes, bincode::config::standard())
-                .context("deserializing terminal snapshot")?;
-        if consumed != bytes.len() {
+        if bytes.len() > MAX_TERMINAL_SNAPSHOT_BYTES {
+            bail!("terminal snapshot exceeds the maximum encoded size");
+        }
+        let (snapshot, remainder): (TerminalSnapshot, &[u8]) =
+            postcard::take_from_bytes(bytes).context("deserializing terminal snapshot")?;
+        if !remainder.is_empty() {
             bail!("terminal snapshot contains trailing data");
         }
         if snapshot.version != TERMINAL_SNAPSHOT_VERSION {
             bail!("unsupported terminal snapshot version {}", snapshot.version);
         }
         Ok(Self {
-            parser: vte::Parser::new(),
+            parser: BoundedParser::new(),
             emulator: snapshot.emulator,
             metrics: TerminalMetrics::default(),
         })
@@ -378,7 +465,7 @@ impl Terminal {
 
 #[cfg(test)]
 mod snapshot_tests {
-    use super::{Terminal, TerminalConfig};
+    use super::{MAX_OSC_SEQUENCE_BYTES, Terminal, TerminalConfig};
 
     #[test]
     fn snapshot_round_trip_preserves_terminal_buffer_and_modes() {
@@ -412,5 +499,34 @@ mod snapshot_tests {
         let mut snapshot = terminal.snapshot().expect("snapshot should encode");
         snapshot.push(0);
         assert!(Terminal::from_snapshot(&snapshot).is_err());
+    }
+
+    #[test]
+    fn oversized_unterminated_osc_is_discarded_and_parser_recovers() {
+        let mut terminal = Terminal::new(TerminalConfig {
+            columns: 8,
+            rows: 2,
+            scrollback_limit: 0,
+        });
+        terminal.feed(b"\x1b");
+        terminal.feed(b"]2;");
+        let payload = vec![b'x'; MAX_OSC_SEQUENCE_BYTES + 32];
+        for chunk in payload.chunks(8192) {
+            terminal.feed(chunk);
+        }
+
+        assert!(terminal.parser.is_discarding_osc());
+        assert!(terminal.drain_events().is_empty());
+
+        terminal.feed(b"\x07ok");
+        assert!(!terminal.parser.is_discarding_osc());
+        assert!(terminal.drain_events().is_empty());
+        let update = terminal.frame_update(true);
+        let text: String = update.row_updates[0]
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect();
+        assert!(text.starts_with("ok"));
     }
 }

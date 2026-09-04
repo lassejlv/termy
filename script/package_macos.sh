@@ -12,6 +12,7 @@ CREATE_ARCHIVE=1
 MINIMUM_MACOS="${TMON_MINIMUM_MACOS:-14.0}"
 BUILD_NUMBER="${TMON_BUILD_NUMBER:-1}"
 SIGN_IDENTITY="${TMON_SIGN_IDENTITY:--}"
+BUNDLE_IDENTIFIER="${TMON_BUNDLE_IDENTIFIER:-com.tmon.app}"
 
 while (( $# > 0 )); do
   case "$1" in
@@ -40,13 +41,40 @@ if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
   echo "TMON_BUILD_NUMBER must contain one to three integer components" >&2
   exit 2
 fi
+if [[ ! "$BUNDLE_IDENTIFIER" =~ ^[A-Za-z0-9][A-Za-z0-9-]*(\.[A-Za-z0-9][A-Za-z0-9-]*)+$ ]]; then
+  echo "TMON_BUNDLE_IDENTIFIER must be a reverse-DNS identifier" >&2
+  exit 2
+fi
 
-PACKAGE_ID="$(cargo pkgid --manifest-path "$ROOT_DIR/Cargo.toml" -p tmon)"
+PACKAGE_ID="$(cargo pkgid --locked --manifest-path "$ROOT_DIR/Cargo.toml" -p tmon)"
 VERSION="${PACKAGE_ID##*@}"
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "Tmon package version must be a numeric three-component version" >&2
   exit 2
 fi
+
+if [[ -z "${TMON_SOURCE_REVISION:-}" ]]; then
+  TMON_SOURCE_REVISION="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || printf 'unavailable')"
+fi
+if [[ -z "${TMON_SOURCE_DIRTY:-}" ]]; then
+  if TREE_STATUS="$(git -C "$ROOT_DIR" status --porcelain=v1 --untracked-files=all 2>/dev/null)"; then
+    if [[ -n "$TREE_STATUS" ]]; then
+      TMON_SOURCE_DIRTY=true
+    else
+      TMON_SOURCE_DIRTY=false
+    fi
+  else
+    TMON_SOURCE_DIRTY=unknown
+  fi
+fi
+case "$TMON_SOURCE_DIRTY" in
+  true|false|unknown) ;;
+  *)
+    echo "TMON_SOURCE_DIRTY must be true, false, or unknown" >&2
+    exit 2
+    ;;
+esac
+export TMON_BUILD_NUMBER TMON_SOURCE_REVISION TMON_SOURCE_DIRTY
 
 export MACOSX_DEPLOYMENT_TARGET="$MINIMUM_MACOS"
 STAGING_DIR="$(mktemp -d /tmp/tmon-package.XXXXXX)"
@@ -67,6 +95,27 @@ if [[ ! -f "$APP_ICON_RESOURCE" ]]; then
   exit 1
 fi
 cp "$APP_ICON_RESOURCE" "$STAGED_RESOURCES/$APP_ICON_NAME"
+for LICENSE_FILE in LICENSE-MIT LICENSE-APACHE; do
+  if [[ ! -f "$ROOT_DIR/$LICENSE_FILE" ]]; then
+    echo "missing license text: $ROOT_DIR/$LICENSE_FILE" >&2
+    exit 1
+  fi
+  cp "$ROOT_DIR/$LICENSE_FILE" "$STAGED_RESOURCES/$LICENSE_FILE"
+done
+for DOCUMENT_FILE in \
+  ACCESSIBILITY.md \
+  PACKAGED_SMOKE.md \
+  SECURITY.md \
+  SESSION_LIFECYCLE.md \
+  SUPPORT.md \
+  THIRD_PARTY_LICENSES.md \
+  UPDATE.md; do
+  if [[ ! -f "$ROOT_DIR/$DOCUMENT_FILE" ]]; then
+    echo "missing bundled release document: $ROOT_DIR/$DOCUMENT_FILE" >&2
+    exit 1
+  fi
+  cp "$ROOT_DIR/$DOCUMENT_FILE" "$STAGED_RESOURCES/$DOCUMENT_FILE"
+done
 
 case "$ARCH_MODE" in
   native)
@@ -83,7 +132,7 @@ case "$ARCH_MODE" in
         exit 2
         ;;
     esac
-    cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --release -p tmon --target "$TARGET"
+    cargo build --locked --manifest-path "$ROOT_DIR/Cargo.toml" --release -p tmon --target "$TARGET"
     cp "$ROOT_DIR/target/$TARGET/release/$BINARY_NAME" "$STAGED_BINARY"
     ARCHIVE_ARCH="$NATIVE_ARCH"
     ;;
@@ -95,7 +144,7 @@ case "$ARCH_MODE" in
         echo "Install it with: rustup target add $TARGET" >&2
         exit 2
       fi
-      cargo build --manifest-path "$ROOT_DIR/Cargo.toml" --release -p tmon --target "$TARGET"
+      cargo build --locked --manifest-path "$ROOT_DIR/Cargo.toml" --release -p tmon --target "$TARGET"
     done
     lipo -create \
       "$ROOT_DIR/target/aarch64-apple-darwin/release/$BINARY_NAME" \
@@ -110,6 +159,7 @@ chmod 755 "$STAGED_BINARY"
   -e "s|@VERSION@|$VERSION|g" \
   -e "s|@BUILD_NUMBER@|$BUILD_NUMBER|g" \
   -e "s|@MINIMUM_MACOS@|$MINIMUM_MACOS|g" \
+  -e "s|@BUNDLE_IDENTIFIER@|$BUNDLE_IDENTIFIER|g" \
   "$ROOT_DIR/packaging/Info.plist.in" > "$STAGED_CONTENTS/Info.plist"
 printf 'APPL????' > "$STAGED_CONTENTS/PkgInfo"
 plutil -lint "$STAGED_CONTENTS/Info.plist"
@@ -129,15 +179,20 @@ if [[ -e "$FINAL_APP" ]]; then
 fi
 mv "$STAGED_APP" "$FINAL_APP"
 
+EXPECTED_ARCHS="$ARCH_MODE" \
+TMON_EXPECTED_VERSION="$VERSION" \
 "$ROOT_DIR/script/verify_macos_bundle.sh" "$FINAL_APP"
 
 if (( CREATE_ARCHIVE == 1 )); then
-  ARCHIVE_NAME="$APP_NAME-$VERSION-macos-$ARCHIVE_ARCH.zip"
+  ARCHIVE_NAME="$APP_NAME-$VERSION-$BUILD_NUMBER-macos-$ARCHIVE_ARCH.zip"
   STAGED_ARCHIVE="$STAGING_DIR/$ARCHIVE_NAME"
   FINAL_ARCHIVE="$DIST_DIR/$ARCHIVE_NAME"
   ditto -c -k --sequesterRsrc --keepParent "$FINAL_APP" "$STAGED_ARCHIVE"
   mv "$STAGED_ARCHIVE" "$FINAL_ARCHIVE"
-  shasum -a 256 "$FINAL_ARCHIVE" > "$FINAL_ARCHIVE.sha256"
+  (
+    cd "$DIST_DIR"
+    shasum -a 256 "$ARCHIVE_NAME" > "$ARCHIVE_NAME.sha256"
+  )
   echo "archive: $FINAL_ARCHIVE"
   echo "checksum: $FINAL_ARCHIVE.sha256"
 fi

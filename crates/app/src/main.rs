@@ -6,6 +6,7 @@
 
 mod config;
 mod find;
+mod ime;
 mod interaction;
 mod keyboard_input;
 mod performance;
@@ -13,6 +14,7 @@ mod performance;
 mod resize_cadence;
 mod session;
 mod shortcuts;
+mod support;
 
 use std::{
     ffi::{OsStr, OsString},
@@ -24,20 +26,22 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use arboard::Clipboard;
-use config::{AppConfig, prepare_config_file};
+use config::{AppConfig, Osc52Policy, prepare_config_file};
+use diagnostics::Event as DiagnosticEvent;
 use engine::pty::{PtyCommand, pty_size};
 use engine::{
     DynamicColor, MouseButton, MouseEvent, MouseEventKind, MousePointerShape, SearchDirection,
     SearchOptions, SelectionPoint, Terminal, TerminalEvent,
 };
 use find::FindState;
+use ime::ImeState;
 use interaction::{
     ClickTracker, MouseRoute, ScrollAccumulator, clear_mouse_state_on_focus_loss, motion_button,
     mouse_button_route, mouse_route, repeat_mouse_report, selected_text_for_clipboard,
 };
 use keyboard_input::{KeyboardState, map_key, map_modifiers};
-use mux::{Client as MuxClient, DAEMON_ARGUMENT, TabRestore, TerminalSize};
-use render::{MetalRenderer, RenderStatus, SearchInput};
+use mux::{Client as MuxClient, DAEMON_ARGUMENT, DaemonInfo, TabRestore, TerminalSize};
+use render::{MetalRenderer, PreeditText, RenderStatus, SearchInput};
 use resize_cadence::ResizeFrameCadence;
 use session::{MAX_TABS, StoredTab, directory_from_osc7, dynamic_color_index};
 use shortcuts::{Shortcut, shortcut_for_character};
@@ -61,17 +65,68 @@ use winit::platform::macos::{
 #[derive(Clone, Debug)]
 enum AppEvent {
     MultiplexerWake,
+    MultiplexerFailed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UserAlert {
+    Startup,
+    Renderer,
+    Multiplexer,
+    PasteTooLarge,
+    Config,
+    Hyperlink,
 }
 
 const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 const LIVE_RESIZE_FRAME_INTERVAL: Duration = Duration::from_micros(16_667);
+const MAX_PASTE_BYTES: usize = 8 * 1024 * 1024;
 const NATIVE_TAB_GROUP: &str = "com.tmon.app.tabs";
+const SESSION_STATUS_ARGUMENT: &str = "--session-status";
+const TERMINATE_SESSIONS_ARGUMENT: &str = "--terminate-sessions";
+const SUPPORT_BUNDLE_ARGUMENT: &str = "--support-bundle";
 #[cfg(target_os = "macos")]
 const MACOS_OPTION_AS_ALT: OptionAsAlt = OptionAsAlt::None;
 
-fn main() -> Result<()> {
+fn main() {
+    let show_startup_alert = is_gui_invocation();
+    if let Err(error) = run() {
+        diagnostics::record(DiagnosticEvent::StartupFailed);
+        eprintln!("Tmon failed: {error:#}");
+        if show_startup_alert {
+            show_alert(UserAlert::Startup);
+        }
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let mut arguments = std::env::args_os().skip(1);
     let first_argument = arguments.next();
+    if first_argument.as_deref() == Some(OsStr::new(SESSION_STATUS_ARGUMENT)) {
+        require_no_more_arguments(arguments)?;
+        return print_session_status();
+    }
+    if first_argument.as_deref() == Some(OsStr::new(TERMINATE_SESSIONS_ARGUMENT)) {
+        require_no_more_arguments(arguments)?;
+        return terminate_current_sessions();
+    }
+    if first_argument.as_deref() == Some(OsStr::new(SUPPORT_BUNDLE_ARGUMENT)) {
+        let output = PathBuf::from(
+            arguments
+                .next()
+                .context("--support-bundle requires an output path")?,
+        );
+        require_no_more_arguments(arguments)?;
+        support::write(&output)?;
+        println!(
+            "Wrote a local support bundle for review to {}",
+            output.display()
+        );
+        return Ok(());
+    }
+
+    diagnostics::initialize();
     if first_argument.as_deref() == Some(OsStr::new(DAEMON_ARGUMENT)) {
         let socket_path = arguments
             .next()
@@ -79,7 +134,9 @@ fn main() -> Result<()> {
         if arguments.next().is_some() {
             bail!("unexpected arguments after multiplexer socket path");
         }
-        return mux::serve(PathBuf::from(socket_path).as_path());
+        return mux::serve(PathBuf::from(socket_path).as_path()).inspect_err(|_| {
+            diagnostics::record(DiagnosticEvent::MultiplexerDaemonFailed);
+        });
     }
     if first_argument.as_deref() == Some(OsStr::new(performance::BENCHMARK_ARGUMENT)) {
         return performance::run(arguments.collect());
@@ -93,6 +150,62 @@ fn main() -> Result<()> {
     let proxy = event_loop.create_proxy();
     let mut application = Application::new(command, proxy, config);
     event_loop.run_app(&mut application).context("running Tmon")
+}
+
+fn is_gui_invocation() -> bool {
+    std::env::args_os()
+        .nth(1)
+        .as_deref()
+        .is_none_or(|argument| {
+            argument != OsStr::new(DAEMON_ARGUMENT)
+                && argument != OsStr::new(performance::BENCHMARK_ARGUMENT)
+                && argument != OsStr::new(SESSION_STATUS_ARGUMENT)
+                && argument != OsStr::new(TERMINATE_SESSIONS_ARGUMENT)
+                && argument != OsStr::new(SUPPORT_BUNDLE_ARGUMENT)
+        })
+}
+
+fn require_no_more_arguments(mut arguments: impl Iterator<Item = OsString>) -> Result<()> {
+    if arguments.next().is_some() {
+        bail!("unexpected arguments after session command");
+    }
+    Ok(())
+}
+
+fn print_session_status() -> Result<()> {
+    let daemons = mux::inspect_daemons()?;
+    if daemons.is_empty() {
+        println!("No Tmon session daemons found.");
+        return Ok(());
+    }
+    for daemon in daemons {
+        println!("{}", daemon_status_line(daemon));
+    }
+    Ok(())
+}
+
+fn daemon_status_line(daemon: DaemonInfo) -> String {
+    let generation = if daemon.current { "current" } else { "older" };
+    let state = if !daemon.secure {
+        "unsafe path (not connected)"
+    } else if daemon.live {
+        "running"
+    } else {
+        "stale socket"
+    };
+    format!(
+        "Tmon session daemon protocol v{} ({generation}): {state}",
+        daemon.protocol_version
+    )
+}
+
+fn terminate_current_sessions() -> Result<()> {
+    let socket_path = mux::default_socket_path()?;
+    let mut multiplexer = MuxClient::connect_existing(&socket_path)
+        .context("no secure current-version Tmon session daemon is available")?;
+    multiplexer.terminate_all_sessions()?;
+    println!("Terminated every session owned by the current Tmon daemon.");
+    Ok(())
 }
 
 fn terminal_window_attributes() -> WindowAttributes {
@@ -132,6 +245,7 @@ struct Application {
     click_tracker: ClickTracker,
     terminal_pointer_shape: MousePointerShape,
     find: FindState,
+    ime: ImeState,
     terminal_title: String,
     current_directory: Option<PathBuf>,
     dynamic_colors: [Option<[u8; 3]>; 3],
@@ -151,6 +265,7 @@ struct Application {
     resize_grid_dirty: bool,
     cursor_blink_deadline: Instant,
     window_focused: bool,
+    runtime_failure_presented: bool,
 }
 
 impl Application {
@@ -173,6 +288,7 @@ impl Application {
             click_tracker: ClickTracker::default(),
             terminal_pointer_shape: MousePointerShape::Text,
             find: FindState::default(),
+            ime: ImeState::default(),
             terminal_title: "Tmon".to_owned(),
             current_directory,
             dynamic_colors: [None; 3],
@@ -192,6 +308,7 @@ impl Application {
             resize_grid_dirty: false,
             cursor_blink_deadline: now + CURSOR_BLINK_INTERVAL,
             window_focused: true,
+            runtime_failure_presented: false,
         }
     }
 
@@ -282,7 +399,13 @@ impl Application {
             && let Err(error) = multiplexer.write(self.active_tab_id, bytes)
         {
             eprintln!("Tmon multiplexer write failed: {error:#}");
+            self.queue_multiplexer_failure(DiagnosticEvent::MultiplexerWriteFailed);
         }
+    }
+
+    fn queue_multiplexer_failure(&self, event: DiagnosticEvent) {
+        diagnostics::record(event);
+        let _ = self.proxy.send_event(AppEvent::MultiplexerFailed);
     }
 
     fn process_terminal_output(&mut self, bytes: &[u8]) {
@@ -336,6 +459,7 @@ impl Application {
         if let Some(renderer) = &mut self.renderer {
             renderer.apply_frame(&update);
         }
+        self.update_ime_cursor_area();
     }
 
     fn apply_pending_resize(&mut self) {
@@ -356,6 +480,7 @@ impl Application {
             self.resize_grid_dirty = true;
             self.terminal_dirty = true;
         }
+        self.update_ime_cursor_area();
     }
 
     fn queue_surface_resize(&mut self, size: PhysicalSize<u32>) {
@@ -397,12 +522,14 @@ impl Application {
             Ok(batch) => batch,
             Err(error) => {
                 eprintln!("Tmon multiplexer drain failed: {error:#}");
+                self.queue_multiplexer_failure(DiagnosticEvent::MultiplexerDrainFailed);
                 return;
             }
         };
         for tab in batch.resynchronized_tabs {
             if let Err(error) = self.resynchronize_tab(tab) {
                 eprintln!("Tmon could not resynchronize a tab: {error:#}");
+                self.queue_multiplexer_failure(DiagnosticEvent::MultiplexerTabFailed);
             }
         }
         for output in batch.outputs {
@@ -478,8 +605,14 @@ impl Application {
                         tab.current_directory = directory_from_osc7(&uri);
                     }
                 }
-                TerminalEvent::ClipboardStore { text, .. } => {
-                    if let Some(clipboard) = &mut self.clipboard {
+                TerminalEvent::ClipboardStore { selection, text } => {
+                    let allowed = osc52_store_allowed(
+                        self.config.osc52_policy,
+                        &selection,
+                        false,
+                        self.window_focused,
+                    );
+                    if allowed && let Some(clipboard) = &mut self.clipboard {
                         let _ = clipboard.set_text(text);
                     }
                 }
@@ -527,8 +660,14 @@ impl Application {
                 TerminalEvent::CurrentDirectory(uri) => {
                     self.current_directory = directory_from_osc7(&uri);
                 }
-                TerminalEvent::ClipboardStore { text, .. } => {
-                    if let Some(clipboard) = &mut self.clipboard {
+                TerminalEvent::ClipboardStore { selection, text } => {
+                    let allowed = osc52_store_allowed(
+                        self.config.osc52_policy,
+                        &selection,
+                        true,
+                        self.window_focused,
+                    );
+                    if allowed && let Some(clipboard) = &mut self.clipboard {
                         let _ = clipboard.set_text(text);
                     }
                 }
@@ -587,13 +726,18 @@ impl Application {
             tab.terminal
                 .set_pixel_size(u32::from(size.pixel_width), u32::from(size.pixel_height));
         }
-        if self.terminal_size != Some(terminal_size)
-            && let Some(multiplexer) = &mut self.multiplexer
-        {
-            match multiplexer.resize_all(terminal_size) {
-                Ok(()) => self.terminal_size = Some(terminal_size),
-                Err(error) => eprintln!("Tmon multiplexer resize failed: {error:#}"),
+        let resize_result = self
+            .multiplexer
+            .as_mut()
+            .filter(|_| self.terminal_size != Some(terminal_size))
+            .map(|multiplexer| multiplexer.resize_all(terminal_size));
+        match resize_result {
+            Some(Ok(())) => self.terminal_size = Some(terminal_size),
+            Some(Err(error)) => {
+                eprintln!("Tmon multiplexer resize failed: {error:#}");
+                self.queue_multiplexer_failure(DiagnosticEvent::MultiplexerResizeFailed);
             }
+            None => {}
         }
         active_changed
     }
@@ -698,12 +842,17 @@ impl Application {
                     (&mut self.clipboard, &mut self.terminal)
                     && let Ok(text) = clipboard.get_text()
                 {
-                    let selection_cleared = terminal.clear_selection();
-                    let bytes = terminal.encode_paste(&text);
-                    if selection_cleared {
-                        self.terminal_dirty = true;
+                    if let Some(bytes) = encode_bounded_paste(terminal, &text) {
+                        let selection_cleared = terminal.clear_selection();
+                        if selection_cleared {
+                            self.terminal_dirty = true;
+                        }
+                        self.send(&bytes);
+                    } else {
+                        eprintln!("Tmon refused a clipboard paste larger than 8 MiB");
+                        diagnostics::record(DiagnosticEvent::ClipboardPasteRejected);
+                        show_alert(UserAlert::PasteTooLarge);
                     }
-                    self.send(&bytes);
                 }
             }
             Shortcut::ZoomIn => self.change_font_size(1.0),
@@ -721,6 +870,7 @@ impl Application {
     }
 
     fn activate_find(&mut self) {
+        self.ime.clear_preedit();
         self.find.activate();
         if self.find.query().is_empty() {
             if let Some(terminal) = &mut self.terminal
@@ -736,6 +886,7 @@ impl Application {
     }
 
     fn close_find(&mut self) {
+        self.ime.clear_preedit();
         self.find.close();
         if let Some(terminal) = &mut self.terminal
             && terminal.reset_search()
@@ -805,13 +956,48 @@ impl Application {
         let input = self.find.is_active().then(|| SearchInput {
             query: self.find.query().to_owned(),
             has_match: self.find.has_match(),
+            preedit: self.ime.preedit().map(|(text, cursor)| PreeditText {
+                text: text.to_owned(),
+                cursor,
+            }),
         });
         if let Some(renderer) = &mut self.renderer {
             renderer.set_search_input(input);
         }
+        self.update_ime_cursor_area();
+    }
+
+    fn refresh_ime_rendering(&mut self) {
+        if self.find.is_active() {
+            if let Some(renderer) = &mut self.renderer {
+                renderer.set_preedit_input(None);
+            }
+            self.refresh_search_input();
+            return;
+        }
+        let input = self.ime.preedit().map(|(text, cursor)| PreeditText {
+            text: text.to_owned(),
+            cursor,
+        });
+        if let Some(renderer) = &mut self.renderer {
+            renderer.set_preedit_input(input);
+        }
+        self.update_ime_cursor_area();
+    }
+
+    fn update_ime_cursor_area(&self) {
+        if !self.ime.enabled() {
+            return;
+        }
+        if let (Some(window), Some(renderer)) = (&self.window, &self.renderer) {
+            let (position, size) = renderer.ime_cursor_area();
+            window.set_ime_cursor_area(position, size);
+        }
     }
 
     fn take_active_tab(&mut self) -> Option<StoredTab> {
+        self.ime.clear_preedit();
+        self.refresh_ime_rendering();
         if self.window_focused {
             let focus = self
                 .terminal
@@ -930,6 +1116,7 @@ impl Application {
         }
         let Ok(tab) = self.spawn_tab(event_loop, count) else {
             eprintln!("Tmon could not create a new tab");
+            self.queue_multiplexer_failure(DiagnosticEvent::MultiplexerTabFailed);
             return;
         };
         let window = Arc::clone(&tab.window);
@@ -939,6 +1126,7 @@ impl Application {
         }
         if let Err(error) = self.install_tab(tab) {
             eprintln!("Tmon could not activate the new tab: {error:#}");
+            self.queue_multiplexer_failure(DiagnosticEvent::MultiplexerTabFailed);
             event_loop.exit();
             return;
         }
@@ -998,6 +1186,7 @@ impl Application {
             && let Err(error) = multiplexer.close_tab(self.active_tab_id)
         {
             eprintln!("Tmon could not close the multiplexer tab: {error:#}");
+            self.queue_multiplexer_failure(DiagnosticEvent::MultiplexerTabFailed);
             return;
         }
         let closed_window = self.window.take();
@@ -1016,6 +1205,7 @@ impl Application {
         let target = self.inactive_tabs.swap_remove(position);
         if let Err(error) = self.install_tab(target) {
             eprintln!("Tmon could not activate a remaining native tab: {error:#}");
+            self.queue_multiplexer_failure(DiagnosticEvent::MultiplexerTabFailed);
             event_loop.exit();
         }
         drop(closed_window);
@@ -1047,6 +1237,7 @@ impl Application {
             && let Err(error) = multiplexer.close_tab(tab.id)
         {
             eprintln!("Tmon could not close the multiplexer tab: {error:#}");
+            self.queue_multiplexer_failure(DiagnosticEvent::MultiplexerTabFailed);
             self.inactive_tabs.push(tab);
             return;
         }
@@ -1308,13 +1499,23 @@ impl ApplicationHandler<AppEvent> for Application {
             && let Err(error) = self.initialize(event_loop)
         {
             eprintln!("Tmon failed to start: {error:#}");
+            diagnostics::record(DiagnosticEvent::StartupFailed);
+            show_alert(UserAlert::Startup);
             event_loop.exit();
         }
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: AppEvent) {
-        let AppEvent::MultiplexerWake = event;
-        self.drain_multiplexer();
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AppEvent) {
+        match event {
+            AppEvent::MultiplexerWake => self.drain_multiplexer(),
+            AppEvent::MultiplexerFailed => {
+                if !self.runtime_failure_presented {
+                    self.runtime_failure_presented = true;
+                    show_alert(UserAlert::Multiplexer);
+                }
+                event_loop.exit();
+            }
+        }
     }
 
     fn window_event(
@@ -1327,6 +1528,7 @@ impl ApplicationHandler<AppEvent> for Application {
             && let Err(error) = self.activate_native_tab(window_id)
         {
             eprintln!("Tmon could not activate a native tab: {error:#}");
+            self.queue_multiplexer_failure(DiagnosticEvent::MultiplexerTabFailed);
             event_loop.exit();
             return;
         }
@@ -1362,7 +1564,15 @@ impl ApplicationHandler<AppEvent> for Application {
                             }
                         }
                         Ok(RenderStatus::Presented | RenderStatus::Occluded) => {}
-                        Err(error) => eprintln!("Metal render failed: {error:#}"),
+                        Err(error) => {
+                            eprintln!("Metal render failed: {error:#}");
+                            diagnostics::record(DiagnosticEvent::RendererFailed);
+                            if !self.runtime_failure_presented {
+                                self.runtime_failure_presented = true;
+                                show_alert(UserAlert::Renderer);
+                            }
+                            event_loop.exit();
+                        }
                     }
                 }
             }
@@ -1375,7 +1585,17 @@ impl ApplicationHandler<AppEvent> for Application {
                 is_synthetic: false,
                 ..
             } => self.handle_key(event_loop, &event),
+            WindowEvent::Ime(Ime::Enabled) => {
+                self.ime.enable();
+                self.update_ime_cursor_area();
+            }
+            WindowEvent::Ime(Ime::Preedit(text, cursor)) => {
+                self.ime.set_preedit(text, cursor);
+                self.refresh_ime_rendering();
+            }
             WindowEvent::Ime(Ime::Commit(text)) => {
+                self.ime.clear_preedit();
+                self.refresh_ime_rendering();
                 if text.is_empty() {
                     return;
                 }
@@ -1389,6 +1609,10 @@ impl ApplicationHandler<AppEvent> for Application {
                     }
                     self.send(&bytes);
                 }
+            }
+            WindowEvent::Ime(Ime::Disabled) => {
+                self.ime.disable();
+                self.refresh_ime_rendering();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = (position.x, position.y);
@@ -1429,6 +1653,7 @@ impl ApplicationHandler<AppEvent> for Application {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.update_ime_cursor_area();
         let Some(renderer) = &mut self.renderer else {
             return;
         };
@@ -1512,6 +1737,8 @@ fn open_hyperlink(hyperlink: &str) {
     #[cfg(target_os = "macos")]
     if let Err(error) = Command::new("/usr/bin/open").arg(hyperlink).spawn() {
         eprintln!("Tmon could not open hyperlink: {error}");
+        diagnostics::record(DiagnosticEvent::HyperlinkOpenFailed);
+        show_alert(UserAlert::Hyperlink);
     }
 }
 
@@ -1520,16 +1747,54 @@ fn open_config() {
         Ok(path) => path,
         Err(error) => {
             eprintln!("Tmon could not prepare its config file: {error:#}");
+            diagnostics::record(DiagnosticEvent::ConfigOpenFailed);
+            show_alert(UserAlert::Config);
             return;
         }
     };
     #[cfg(target_os = "macos")]
     if let Err(error) = Command::new("/usr/bin/open").arg(&path).spawn() {
         eprintln!("Tmon could not open config at {}: {error}", path.display());
+        diagnostics::record(DiagnosticEvent::ConfigOpenFailed);
+        show_alert(UserAlert::Config);
     }
 }
 
+fn show_alert(alert: UserAlert) {
+    #[cfg(target_os = "macos")]
+    {
+        let script = match alert {
+            UserAlert::Startup => {
+                r#"display alert "Tmon could not start" message "No existing terminal sessions were terminated. Run tmon --session-status in another terminal, then review the local Tmon diagnostic log." as critical buttons {"OK"} default button "OK""#
+            }
+            UserAlert::Renderer => {
+                r#"display alert "Tmon rendering stopped" message "This window will detach. Daemon-owned terminal sessions remain running; relaunch Tmon to reconnect." as critical buttons {"OK"} default button "OK""#
+            }
+            UserAlert::Multiplexer => {
+                r#"display alert "Tmon lost its session connection" message "This window will detach without terminating sessions. Relaunch Tmon or run tmon --session-status for recovery state." as critical buttons {"OK"} default button "OK""#
+            }
+            UserAlert::PasteTooLarge => {
+                r#"display alert "Paste not sent" message "The clipboard is larger than Tmon's 8 MiB safety limit." as warning buttons {"OK"} default button "OK""#
+            }
+            UserAlert::Config => {
+                r#"display alert "Tmon could not open its config" message "Review the local Tmon diagnostic log, correct the config file, and try again." as warning buttons {"OK"} default button "OK""#
+            }
+            UserAlert::Hyperlink => {
+                r#"display alert "Tmon could not open the link" message "The link was not opened. Your terminal session is unaffected." as warning buttons {"OK"} default button "OK""#
+            }
+        };
+        let _ = Command::new("/usr/bin/osascript")
+            .args(["-e", script])
+            .status();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = alert;
+}
+
 fn is_openable_hyperlink(hyperlink: &str) -> bool {
+    if hyperlink.chars().any(char::is_control) {
+        return false;
+    }
     let Some((scheme, _)) = hyperlink.split_once(':') else {
         return false;
     };
@@ -1537,6 +1802,10 @@ fn is_openable_hyperlink(hyperlink: &str) -> bool {
         scheme.to_ascii_lowercase().as_str(),
         "http" | "https" | "mailto" | "file"
     )
+}
+
+fn encode_bounded_paste(terminal: &Terminal, text: &str) -> Option<Vec<u8>> {
+    (text.len() <= MAX_PASTE_BYTES).then(|| terminal.encode_paste(text))
 }
 
 fn apply_dynamic_colors(renderer: &mut MetalRenderer, colors: [Option<[u8; 3]>; 3]) {
@@ -1591,11 +1860,25 @@ const fn map_pointer_shape(shape: MousePointerShape) -> CursorIcon {
     }
 }
 
+fn osc52_store_allowed(
+    policy: Osc52Policy,
+    selection: &str,
+    active_tab: bool,
+    window_focused: bool,
+) -> bool {
+    selection == "c" && policy.allows(active_tab, window_focused)
+}
+
 #[cfg(test)]
 mod app_tests {
     use std::time::{Duration, Instant};
 
-    use super::{is_openable_hyperlink, should_request_terminal_redraw};
+    use super::{
+        MAX_PASTE_BYTES, Osc52Policy, daemon_status_line, encode_bounded_paste,
+        is_openable_hyperlink, osc52_store_allowed, should_request_terminal_redraw,
+    };
+    use engine::{Terminal, TerminalConfig};
+    use mux::DaemonInfo;
 
     #[cfg(target_os = "macos")]
     use super::{MACOS_OPTION_AS_ALT, OptionAsAlt};
@@ -1614,6 +1897,84 @@ mod app_tests {
         assert!(!is_openable_hyperlink("javascript:alert(1)"));
         assert!(!is_openable_hyperlink("-a Calculator"));
         assert!(!is_openable_hyperlink("relative/path"));
+        assert!(!is_openable_hyperlink("https://example.com\nfile:///tmp"));
+    }
+
+    #[test]
+    fn session_status_never_contains_socket_paths() {
+        assert_eq!(
+            daemon_status_line(DaemonInfo {
+                protocol_version: 3,
+                current: true,
+                secure: true,
+                live: true,
+            }),
+            "Tmon session daemon protocol v3 (current): running"
+        );
+        assert_eq!(
+            daemon_status_line(DaemonInfo {
+                protocol_version: 2,
+                current: false,
+                secure: true,
+                live: false,
+            }),
+            "Tmon session daemon protocol v2 (older): stale socket"
+        );
+        assert_eq!(
+            daemon_status_line(DaemonInfo {
+                protocol_version: 99,
+                current: false,
+                secure: false,
+                live: false,
+            }),
+            "Tmon session daemon protocol v99 (older): unsafe path (not connected)"
+        );
+    }
+
+    #[test]
+    fn osc52_requires_the_system_clipboard_and_an_allowed_active_tab() {
+        assert!(!osc52_store_allowed(Osc52Policy::Disabled, "c", true, true,));
+        assert!(!osc52_store_allowed(
+            Osc52Policy::FocusedWindow,
+            "c",
+            false,
+            true,
+        ));
+        assert!(!osc52_store_allowed(
+            Osc52Policy::FocusedWindow,
+            "c",
+            true,
+            false,
+        ));
+        assert!(osc52_store_allowed(
+            Osc52Policy::FocusedWindow,
+            "c",
+            true,
+            true,
+        ));
+        assert!(osc52_store_allowed(
+            Osc52Policy::ActiveTab,
+            "c",
+            true,
+            false,
+        ));
+        assert!(!osc52_store_allowed(
+            Osc52Policy::ActiveTab,
+            "p",
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn terminal_paste_has_an_explicit_memory_bound() {
+        let terminal = Terminal::new(TerminalConfig::default());
+        assert_eq!(
+            encode_bounded_paste(&terminal, "safe"),
+            Some(b"safe".to_vec())
+        );
+        let oversized = "x".repeat(MAX_PASTE_BYTES + 1);
+        assert_eq!(encode_bounded_paste(&terminal, &oversized), None);
     }
 
     #[test]

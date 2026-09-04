@@ -1,0 +1,36 @@
+name: Security fuzz smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fuzz:
+    name: Bounded decoder fuzzing
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      TMON_FUZZ_TOOLCHAIN: nightly-2026-09-03
+      TMON_FUZZ_SECONDS_PER_TARGET: "60"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install pinned fuzz toolchain
+        run: |
+          rustup toolchain install "$TMON_FUZZ_TOOLCHAIN" --profile minimal
+          cargo install cargo-fuzz --version 0.13.2 --locked
+
+      - name: Run all decoder fuzz targets
+        run: bash script/fuzz_smoke.sh
