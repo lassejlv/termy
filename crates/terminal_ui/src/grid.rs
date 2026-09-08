@@ -45,6 +45,8 @@ pub struct CellRenderInfo {
     pub underline: Option<TerminalUnderline>,
     pub strikethrough: bool,
     pub render_text: bool,
+    /// Trailing cell occupied by a two-column character.
+    pub wide_character_spacer: bool,
     pub selected: bool,
     /// Part of the current (focused) search match
     pub search_current: bool,
@@ -1503,15 +1505,17 @@ impl TerminalGrid {
         (full_repaint, style_changed, rows)
     }
 
-    fn paint_cursor_for_row(&self, row: usize, origin: gpui::Point<Pixels>, window: &mut Window) {
-        let Some((cursor_col, cursor_row)) = self.cursor_cell else {
-            return;
-        };
+    fn cursor_bounds_for_row(
+        &self,
+        row: usize,
+        origin: gpui::Point<Pixels>,
+    ) -> Option<Bounds<Pixels>> {
+        let (cursor_col, cursor_row) = self.cursor_cell?;
         if !self.cursor_visible {
-            return;
+            return None;
         }
         if cursor_row != row {
-            return;
+            return None;
         }
         let x = origin.x + self.cell_size.width * cursor_col as f32;
         let y = origin.y;
@@ -1520,7 +1524,23 @@ impl TerminalGrid {
             size: self.cell_size,
         };
         let cursor_bounds = match self.cursor_style {
-            TerminalCursorStyle::Block => cell_bounds,
+            TerminalCursorStyle::Block => {
+                // Use the terminal's trailing-cell marker, including emoji and
+                // combined text, rather than guessing width from Unicode alone.
+                let wide = self.cells.get(row).is_some_and(|cells| {
+                    cells
+                        .binary_search_by_key(&(cursor_col + 1), |cell| cell.col)
+                        .ok()
+                        .is_some_and(|index| cells[index].wide_character_spacer)
+                });
+                Bounds::new(
+                    cell_bounds.origin,
+                    Size {
+                        width: self.cell_size.width * if wide { 2.0 } else { 1.0 },
+                        height: self.cell_size.height,
+                    },
+                )
+            }
             TerminalCursorStyle::Line => {
                 let cell_width: f32 = self.cell_size.width.into();
                 let cursor_width = px(cell_width.clamp(1.0, 2.0));
@@ -1534,8 +1554,15 @@ impl TerminalGrid {
             }
         };
 
+        Some(cursor_bounds)
+    }
+
+    fn paint_cursor_for_row(&self, row: usize, origin: gpui::Point<Pixels>, window: &mut Window) {
+        let Some(bounds) = self.cursor_bounds_for_row(row, origin) else {
+            return;
+        };
         window.paint_quad(quad(
-            cursor_bounds,
+            bounds,
             px(0.0),
             self.cursor_color,
             gpui::Edges::default(),
@@ -1850,6 +1877,66 @@ mod tests {
     use gpui::{Bounds, Size, point, px};
 
     #[test]
+    fn block_cursor_covers_entire_wide_character() {
+        let mut spacer = test_cell(2, ' ');
+        spacer.render_text = false;
+        spacer.wide_character_spacer = true;
+        let mut grid = test_grid(vec![test_cell(0, 'a'), test_cell(1, 'に'), spacer], None);
+        grid.cursor_cell = Some((1, 0));
+        grid.cursor_visible = true;
+        let bounds = grid
+            .cursor_bounds_for_row(0, point(px(5.0), px(7.0)))
+            .unwrap();
+        assert_eq!(bounds.origin, point(px(15.0), px(7.0)));
+        assert_eq!(
+            bounds.size,
+            Size {
+                width: px(20.0),
+                height: px(20.0)
+            }
+        );
+        let cursor_fg = test_color(0.0, 0.0, 0.0);
+        let batches = grid.collect_draw_ops(cursor_fg, cursor_fg);
+        assert!(batches.iter().any(|op| matches!(op,
+            TextDrawOp::Batch(batch) if batch.text == "に" && batch.fg == cursor_fg)));
+        grid.cursor_style = TerminalCursorStyle::Line;
+        assert_eq!(
+            grid.cursor_bounds_for_row(0, bounds.origin)
+                .unwrap()
+                .size
+                .width,
+            px(2.0)
+        );
+    }
+
+    #[test]
+    fn cursor_bounds_preserve_narrow_line_and_hidden_cursors() {
+        let mut grid = test_grid(vec![test_cell(0, 'a'), test_cell(1, ' ')], None);
+        grid.cursor_cell = Some((0, 0));
+        grid.cursor_visible = true;
+        let origin = point(px(0.0), px(0.0));
+        assert_eq!(
+            grid.cursor_bounds_for_row(0, origin).unwrap().size.width,
+            px(10.0)
+        );
+        grid.cursor_cell = Some((1, 0));
+        assert_eq!(
+            grid.cursor_bounds_for_row(0, origin).unwrap().size.width,
+            px(10.0)
+        );
+        grid.cursor_style = TerminalCursorStyle::Line;
+        assert_eq!(
+            grid.cursor_bounds_for_row(0, origin).unwrap().size.width,
+            px(2.0)
+        );
+        assert!(grid.cursor_bounds_for_row(1, origin).is_none());
+        grid.cursor_visible = false;
+        assert!(grid.cursor_bounds_for_row(0, origin).is_none());
+        grid.cursor_cell = None;
+        assert!(grid.cursor_bounds_for_row(0, origin).is_none());
+    }
+
+    #[test]
     fn terminal_font_features_disable_all_spacing_affecting_ligatures() {
         let features = terminal_font_features();
         for tag in ["calt", "liga", "clig"] {
@@ -1889,6 +1976,7 @@ mod tests {
             underline: None,
             strikethrough: false,
             render_text: true,
+            wide_character_spacer: false,
             selected: false,
             search_current: false,
             search_match: false,
