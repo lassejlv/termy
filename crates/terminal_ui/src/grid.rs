@@ -251,8 +251,24 @@ struct BlockDraw {
     #[cfg_attr(not(test), allow(dead_code))]
     row: usize,
     col: usize,
+    glyph: char,
     geometry: TerminalGlyphPlan,
     fg: Hsla,
+}
+
+impl BlockDraw {
+    fn plan_for_bounds(
+        &self,
+        bounds: Bounds<Pixels>,
+        font_size: Pixels,
+        scale_factor: f32,
+    ) -> Option<(Bounds<Pixels>, TerminalGlyphPlan)> {
+        if self.geometry.kind() == TerminalGlyphRenderKind::BoxDrawing {
+            snapped_glyph_plan(bounds, self.glyph, font_size, scale_factor)
+        } else {
+            Some((bounds, self.geometry))
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -478,11 +494,12 @@ impl TextBatchBuilder {
 fn snapped_block_rect_bounds(
     cell_bounds: Bounds<Pixels>,
     rect: TerminalGlyphRect,
+    scale_factor: f32,
 ) -> Option<Bounds<Pixels>> {
-    let origin_x: f32 = cell_bounds.origin.x.into();
-    let origin_y: f32 = cell_bounds.origin.y.into();
-    let cell_width: f32 = cell_bounds.size.width.into();
-    let cell_height: f32 = cell_bounds.size.height.into();
+    let origin_x = f32::from(cell_bounds.origin.x) * scale_factor;
+    let origin_y = f32::from(cell_bounds.origin.y) * scale_factor;
+    let cell_width = f32::from(cell_bounds.size.width) * scale_factor;
+    let cell_height = f32::from(cell_bounds.size.height) * scale_factor;
 
     let transformed_left = origin_x + cell_width * rect.left;
     let transformed_right = origin_x + cell_width * rect.right;
@@ -510,24 +527,24 @@ fn snapped_block_rect_bounds(
     }
 
     Some(Bounds {
-        origin: point(px(left), px(top)),
+        origin: point(px(left / scale_factor), px(top / scale_factor)),
         size: Size {
-            width: px(width),
-            height: px(height),
+            width: px(width / scale_factor),
+            height: px(height / scale_factor),
         },
     })
 }
 
-fn snapped_quad_bounds(bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+fn snapped_quad_bounds(bounds: Bounds<Pixels>, scale_factor: f32) -> Option<Bounds<Pixels>> {
     let origin_x: f32 = bounds.origin.x.into();
     let origin_y: f32 = bounds.origin.y.into();
     let width: f32 = bounds.size.width.into();
     let height: f32 = bounds.size.height.into();
 
-    let left = origin_x.round();
-    let right = (origin_x + width).round();
-    let top = origin_y.round();
-    let bottom = (origin_y + height).round();
+    let left = (origin_x * scale_factor).round();
+    let right = ((origin_x + width) * scale_factor).round();
+    let top = (origin_y * scale_factor).round();
+    let bottom = ((origin_y + height) * scale_factor).round();
 
     let snapped_width = right - left;
     let snapped_height = bottom - top;
@@ -536,10 +553,10 @@ fn snapped_quad_bounds(bounds: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
     }
 
     Some(Bounds {
-        origin: point(px(left), px(top)),
+        origin: point(px(left / scale_factor), px(top / scale_factor)),
         size: Size {
-            width: px(snapped_width),
-            height: px(snapped_height),
+            width: px(snapped_width / scale_factor),
+            height: px(snapped_height / scale_factor),
         },
     })
 }
@@ -555,7 +572,7 @@ fn paint_block_element_quad(
     color: Hsla,
 ) {
     for rect in geometry.rects() {
-        if let Some(bounds) = snapped_block_rect_bounds(cell_bounds, *rect) {
+        if let Some(bounds) = snapped_block_rect_bounds(cell_bounds, *rect, window.scale_factor()) {
             let mut fill = color;
             fill.a *= rect.alpha;
             window.paint_quad(quad(
@@ -597,19 +614,12 @@ fn paint_terminal_glyph_strokes(
     color: Hsla,
     font_size: Pixels,
 ) {
-    let Some(cell_bounds) = snapped_quad_bounds(cell_bounds) else {
+    let Some((cell_bounds, plan)) =
+        snapped_glyph_plan(cell_bounds, glyph, font_size, window.scale_factor())
+    else {
         return;
     };
     let cell_width: f32 = cell_bounds.size.width.into();
-    let cell_height: f32 = cell_bounds.size.height.into();
-    let metrics = TerminalGlyphMetrics {
-        cell_width,
-        cell_height,
-        font_size: font_size.into(),
-    };
-    let Some(plan) = terminal_glyph_plan(glyph, metrics, TerminalGlyphNeighbors::default()) else {
-        return;
-    };
     let resolve_point = |value: termy_core::TerminalGlyphPoint| {
         point(
             cell_bounds.origin.x + cell_bounds.size.width * value.x,
@@ -642,6 +652,28 @@ fn paint_terminal_glyph_strokes(
             window.paint_path(path, color);
         }
     }
+}
+
+fn snapped_glyph_plan(
+    cell_bounds: Bounds<Pixels>,
+    glyph: char,
+    font_size: Pixels,
+    scale_factor: f32,
+) -> Option<(Bounds<Pixels>, TerminalGlyphPlan)> {
+    // Straight lines and curved corners must use the same snapped cell. Build
+    // the plan in physical pixels so stroke rounding happens after DPI scaling;
+    // return logical bounds because GPUI applies that scale again when painting.
+    let cell_bounds = snapped_quad_bounds(cell_bounds, scale_factor)?;
+    let plan = terminal_glyph_plan(
+        glyph,
+        TerminalGlyphMetrics {
+            cell_width: (f32::from(cell_bounds.size.width) * scale_factor).round(),
+            cell_height: (f32::from(cell_bounds.size.height) * scale_factor).round(),
+            font_size: f32::from(font_size) * scale_factor,
+        },
+        TerminalGlyphNeighbors::default(),
+    )?;
+    Some((cell_bounds, plan))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -801,7 +833,7 @@ fn text_batches_match_without_row(lhs: &TextBatch, rhs: &TextBatch) -> bool {
 }
 
 fn block_draws_match_without_row(lhs: &BlockDraw, rhs: &BlockDraw) -> bool {
-    lhs.col == rhs.col && lhs.geometry == rhs.geometry && lhs.fg == rhs.fg
+    lhs.col == rhs.col && lhs.glyph == rhs.glyph && lhs.geometry == rhs.geometry && lhs.fg == rhs.fg
 }
 
 fn rounded_corner_draws_match_without_row(
@@ -1162,6 +1194,7 @@ impl TerminalGrid {
                     | TerminalGlyphRenderKind::Braille => TextDrawOp::Block(BlockDraw {
                         row,
                         col: cell.col,
+                        glyph: cell.char,
                         geometry,
                         fg,
                     }),
@@ -1291,7 +1324,7 @@ impl TerminalGrid {
                     height: self.cell_size.height,
                 },
             };
-            if let Some(bounds) = snapped_quad_bounds(cell_bounds) {
+            if let Some(bounds) = snapped_quad_bounds(cell_bounds, window.scale_factor()) {
                 window.paint_quad(quad(
                     bounds,
                     px(0.0),
@@ -1390,7 +1423,11 @@ impl TerminalGrid {
                         origin: point(x, origin.y),
                         size: self.cell_size,
                     };
-                    paint_block_element_quad(window, cell_bounds, &block.geometry, block.fg);
+                    if let Some((cell_bounds, geometry)) =
+                        block.plan_for_bounds(cell_bounds, self.font_size, window.scale_factor())
+                    {
+                        paint_block_element_quad(window, cell_bounds, &geometry, block.fg);
+                    }
                 }
                 TextDrawOp::Sextant(sextant) => {
                     let x = origin.x + self.cell_size.width * sextant.col as f32;
@@ -2056,18 +2093,7 @@ mod tests {
         bounds: Bounds<Pixels>,
         glyph: char,
     ) -> (Bounds<Pixels>, TerminalGlyphPlan) {
-        let bounds = snapped_quad_bounds(bounds).expect("snapped cell bounds");
-        let plan = terminal_glyph_plan(
-            glyph,
-            TerminalGlyphMetrics {
-                cell_width: bounds.size.width.into(),
-                cell_height: bounds.size.height.into(),
-                font_size: 14.0,
-            },
-            TerminalGlyphNeighbors::default(),
-        )
-        .expect("special glyph plan");
-        (bounds, plan)
+        snapped_glyph_plan(bounds, glyph, px(14.0), 1.0).expect("special glyph plan")
     }
 
     fn resolve_glyph_point(
@@ -2142,7 +2168,7 @@ mod tests {
             },
         };
 
-        let snapped = snapped_block_rect_bounds(cell_bounds, rect).expect("expected bounds");
+        let snapped = snapped_block_rect_bounds(cell_bounds, rect, 1.0).expect("expected bounds");
 
         let x: f32 = snapped.origin.x.into();
         let y: f32 = snapped.origin.y.into();
@@ -2202,7 +2228,7 @@ mod tests {
             },
         };
 
-        let snapped = snapped_quad_bounds(bounds).expect("expected bounds");
+        let snapped = snapped_quad_bounds(bounds, 1.0).expect("expected bounds");
         let x: f32 = snapped.origin.x.into();
         let y: f32 = snapped.origin.y.into();
         let width: f32 = snapped.size.width.into();
@@ -2361,6 +2387,124 @@ mod tests {
                 .iter()
                 .all(|rect| rect.left == 0.0 && rect.right == 1.0)
         );
+    }
+
+    #[test]
+    fn rounded_box_corners_align_with_straight_lines_in_fractional_cells() {
+        let cell_size = Size {
+            width: px(8.4287),
+            height: px(19.6),
+        };
+        let mut grid = test_grid(vec![test_cell(0, '╭'), test_cell(1, '─')], None);
+        grid.cell_size = cell_size;
+        let ops = collect_draw_ops(&grid);
+        let TextDrawOp::Block(line) = &ops[1] else {
+            panic!("line must use box geometry")
+        };
+        let corner_bounds = Bounds::new(point(px(0.0), px(32.0)), cell_size);
+        let line_bounds = Bounds::new(point(cell_size.width, px(32.0)), cell_size);
+        let (line_bounds, line_plan) = line
+            .plan_for_bounds(line_bounds, grid.font_size, 1.0)
+            .unwrap();
+        let line_fill = snapped_block_rect_bounds(line_bounds, line_plan.rects()[0], 1.0).unwrap();
+        let (corner_bounds, corner_plan) =
+            snapped_glyph_plan(corner_bounds, '╭', grid.font_size, 1.0).unwrap();
+        let stroke = &corner_plan.strokes()[0];
+        let endpoint = resolve_glyph_point(corner_bounds, stroke.points()[5]);
+        let stroke_width = corner_bounds.size.width * stroke.width;
+        assert_eq!(
+            endpoint.y - stroke_width / 2.0,
+            line_fill.origin.y,
+            "rounded corner and horizontal line must share the same top pixel"
+        );
+        assert_eq!(stroke_width, line_fill.size.height);
+    }
+
+    #[test]
+    fn box_corner_strokes_have_whole_device_pixel_widths() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            let bounds = Bounds::new(
+                point(px(12.3), px(32.7)),
+                Size {
+                    width: px(8.4287),
+                    height: px(19.6),
+                },
+            );
+            let (bounds, plan) = snapped_glyph_plan(bounds, '╭', px(14.0), scale).unwrap();
+            let width = f32::from(bounds.size.width) * plan.strokes()[0].width * scale;
+            assert!(
+                (width - width.round()).abs() < 0.0001,
+                "stroke width must cover whole device pixels at scale {scale}, got {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn box_joins_stay_aligned_across_font_sizes_positions_and_display_scales() {
+        for (font_size, width, height) in [
+            (12.0, 7.225, 16.8),
+            (14.0, 8.4287, 19.6),
+            (16.0, 9.6333, 22.4),
+            (17.0, 10.235, 23.8),
+        ] {
+            for scale in [1.0, 1.25, 1.5, 1.75, 2.0] {
+                let cell_size = Size {
+                    width: px(width),
+                    height: px(height),
+                };
+                let bounds_at = |col: i32, row: i32| {
+                    Bounds::new(
+                        point(
+                            px(12.3 + col as f32 * width),
+                            px(32.7 + row as f32 * height),
+                        ),
+                        cell_size,
+                    )
+                };
+                let line_at = |glyph, col, row| {
+                    let line = BlockDraw {
+                        row: 0,
+                        col: 0,
+                        glyph,
+                        geometry: box_draw_geometry_for_char(glyph, width, height, font_size)
+                            .unwrap(),
+                        fg: Hsla::transparent_black(),
+                    };
+                    let (bounds, plan) = line
+                        .plan_for_bounds(bounds_at(col, row), px(font_size), scale)
+                        .unwrap();
+                    snapped_block_rect_bounds(bounds, plan.rects()[0], scale).unwrap()
+                };
+                for (col, row) in [(0, 0), (1, 1), (3, 7), (8, 13), (11, 29)] {
+                    for (glyph, dx, dy) in [('╭', 1, 1), ('╮', -1, 1), ('╯', -1, -1), ('╰', 1, -1)]
+                    {
+                        let (bounds, plan) =
+                            snapped_glyph_plan(bounds_at(col, row), glyph, px(font_size), scale)
+                                .unwrap();
+                        let stroke = &plan.strokes()[0];
+                        let vertical_end = resolve_glyph_point(bounds, stroke.points()[0]);
+                        let horizontal_end = resolve_glyph_point(bounds, stroke.points()[5]);
+                        let thickness = bounds.size.width * stroke.width;
+                        let horizontal = line_at('─', col + dx, row);
+                        let vertical = line_at('│', col, row + dy);
+                        for (edge, expected) in [
+                            (horizontal_end.y - thickness / 2.0, horizontal.origin.y),
+                            (
+                                horizontal_end.y + thickness / 2.0,
+                                horizontal.bottom_left().y,
+                            ),
+                            (vertical_end.x - thickness / 2.0, vertical.origin.x),
+                            (vertical_end.x + thickness / 2.0, vertical.top_right().x),
+                        ] {
+                            assert!(
+                                (f32::from(edge - expected) * scale).abs() < 0.001,
+                                "{glyph} join at {col},{row}, font {font_size}, scale {scale}: {edge:?} != {expected:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
@@ -3569,6 +3713,7 @@ mod tests {
         let block = TextDrawOp::Block(BlockDraw {
             row: 0,
             col: 7,
+            glyph: '▀',
             geometry: block_element_geometry('\u{2580}').unwrap(),
             fg: Hsla::transparent_black(),
         });
