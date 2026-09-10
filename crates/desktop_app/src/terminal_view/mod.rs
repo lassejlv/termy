@@ -78,6 +78,7 @@ mod runtime;
 mod scrollbar;
 mod search;
 mod session;
+mod surface;
 pub(crate) mod tab_strip;
 mod tabs;
 mod titles;
@@ -1102,6 +1103,15 @@ impl PaneCachedElementIds {
 }
 
 impl TerminalPane {
+    fn sync_alternate_screen_state(&self) {
+        let terminal = self.terminal();
+        let alternate_screen = terminal.alternate_screen_mode();
+        let previous = self.last_alternate_screen.replace(alternate_screen);
+        if alternate_screen && !previous {
+            terminal.nudge_resize();
+        }
+    }
+
     fn new_native(
         id: String,
         left: u16,
@@ -1174,6 +1184,10 @@ struct NativePaneZoomSnapshot {
     layout_tree: Option<NativePaneLayoutTree>,
 }
 impl TerminalTab {
+    fn single_pane_alternate_screen(&self) -> bool {
+        self.panes.len() == 1 && self.panes[0].last_alternate_screen.get()
+    }
+
     fn clear_render_caches(&self) {
         for pane in &self.panes {
             pane.render_cache.borrow_mut().clear();
@@ -2789,7 +2803,12 @@ impl TerminalView {
                 .get(self.session.active_tab)
                 .map_or(0, |tab| tab.panes.len()),
         ) {
-            (self.padding_x, self.padding_y)
+            Self::terminal_padding_for_screen_mode(
+                self.padding_x,
+                self.padding_y,
+                self.active_tab_ref()
+                    .is_some_and(TerminalTab::single_pane_alternate_screen),
+            )
         } else {
             // Multi-pane layouts use per-pane content padding (native) or pane-managed
             // geometry (tmux), so disable global outer padding in that mode.
@@ -2813,6 +2832,18 @@ impl TerminalView {
 
     fn uses_outer_terminal_padding(pane_count: usize) -> bool {
         pane_count <= 1
+    }
+
+    fn terminal_padding_for_screen_mode(
+        padding_x: f32,
+        padding_y: f32,
+        alternate_screen: bool,
+    ) -> (f32, f32) {
+        if alternate_screen {
+            (0.0, 0.0)
+        } else {
+            (padding_x, padding_y)
+        }
     }
 
     fn uses_native_split_content_padding(runtime_uses_tmux: bool, pane_count: usize) -> bool {

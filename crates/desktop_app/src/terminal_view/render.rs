@@ -1,4 +1,5 @@
 use super::scrollbar as terminal_scrollbar;
+use super::surface::{terminal_edge_backgrounds, tui_surface_background};
 use super::*;
 use crate::ui::scrollbar::{self as ui_scrollbar, ScrollbarPaintStyle};
 use alacritty_terminal::vte::ansi::{Color as AnsiColor, NamedColor};
@@ -3143,6 +3144,8 @@ impl Render for TerminalView {
         let effective_background_opacity = self.background_opacity_factor();
         let mut terminal_surface_bg = colors.background;
         terminal_surface_bg.a = self.scaled_background_alpha(terminal_surface_bg.a);
+        let mut window_surface_bg = terminal_surface_bg;
+        let mut chrome_colors = colors.clone();
 
         self.sync_terminal_size(window, layout_cell_size, cx);
         let active_pane_id = self.active_pane_id().map(ToOwned::to_owned);
@@ -3313,6 +3316,22 @@ impl Render for TerminalView {
                     terminal_display_offset = pane_display_offset;
                 }
 
+                let fullscreen_tui = !multi_pane && alternate_screen_mode;
+                let edge_cell = pane_cells.first().and_then(|row| row.first());
+                let pane_surface_bg = tui_surface_background(
+                    fullscreen_tui,
+                    edge_cell.map(|cell| cell.bg),
+                    terminal_surface_bg,
+                );
+                if fullscreen_tui {
+                    window_surface_bg = pane_surface_bg;
+                    chrome_colors.background = pane_surface_bg;
+                    if let Some(cell) = edge_cell {
+                        chrome_colors.foreground = cell.fg.into();
+                    }
+                }
+                let edge_cells = fullscreen_tui.then(|| Arc::clone(&pane_cells));
+
                 let hovered_link_range = if is_active_pane {
                     self.hovered_link
                         .as_ref()
@@ -3368,7 +3387,7 @@ impl Render for TerminalView {
                     pane_cursor_style,
                     cursor_cell,
                     cursor_paint_visible,
-                    terminal_surface_bg,
+                    pane_surface_bg,
                 );
                 let (kitty_below_text, kitty_above_text) = {
                     let mut pane_render_cache = pane.render_cache.borrow_mut();
@@ -3423,6 +3442,46 @@ impl Render for TerminalView {
                 let pane_top = pane_layout.content_frame.origin_y;
                 let pane_width = pane_layout.content_frame.width;
                 let pane_height = pane_layout.content_frame.height;
+
+                if let Some(edge_cells) = edge_cells {
+                    pane_layers.push(
+                        canvas(
+                            move |bounds, _, _| {
+                                terminal_edge_backgrounds(
+                                    Size {
+                                        width: cols,
+                                        height: rows,
+                                    },
+                                    pane_cell_size,
+                                    bounds.size,
+                                    |row, col| {
+                                        edge_cells
+                                            .get(row)
+                                            .and_then(|cells| cells.get(col))
+                                            .map_or(pane_surface_bg.into(), |cell| cell.bg)
+                                    },
+                                )
+                            },
+                            |bounds, fills, window, _| {
+                                for fill in fills {
+                                    window.paint_quad(gpui::fill(
+                                        Bounds::new(
+                                            bounds.origin + fill.bounds.origin,
+                                            fill.bounds.size,
+                                        ),
+                                        fill.color,
+                                    ));
+                                }
+                            },
+                        )
+                        .absolute()
+                        .left(px(content_bounds.origin_x))
+                        .top(px(content_bounds.origin_y))
+                        .w(px(content_bounds.width))
+                        .h(px(content_bounds.height))
+                        .into_any_element(),
+                    );
+                }
 
                 let link_hovered = is_active_pane && self.hovered_link.is_some();
                 let pane_progress_loader = self.pane_progress_loader_element(pane.progress_state);
@@ -3777,21 +3836,22 @@ impl Render for TerminalView {
         self.record_render_metrics_for_pass(render_pass_cache_counts);
 
         let focus_handle = self.focus_handle.clone();
-        let tabbar_bg = terminal_surface_bg;
+        let tabbar_bg = window_surface_bg;
         let show_tab_strip_chrome = self.should_render_tab_strip_chrome();
         let titlebar_height = Self::window_titlebar_height_for(false, show_tab_strip_chrome);
         let vertical_tabs = self.tab_strip_orientation()
             == crate::terminal_view::tab_strip::state::TabStripOrientation::Vertical;
         let show_horizontal_tabbar = show_tab_strip_chrome && !vertical_tabs;
         let tabs_row = show_horizontal_tabbar
-            .then(|| self.render_tab_strip(window, &colors, &ui_font_family, tabbar_bg, cx));
-        let tab_sidebar = (vertical_tabs && show_tab_strip_chrome)
-            .then(|| self.render_tab_sidebar(window, &colors, &ui_font_family, tabbar_bg, cx));
+            .then(|| self.render_tab_strip(window, &chrome_colors, &ui_font_family, tabbar_bg, cx));
+        let tab_sidebar = (vertical_tabs && show_tab_strip_chrome).then(|| {
+            self.render_tab_sidebar(window, &chrome_colors, &ui_font_family, tabbar_bg, cx)
+        });
         let workspace_sidebar = self
             .workspace_sidebar_visible()
-            .then(|| self.render_workspace_sidebar(&colors, &ui_font_family, tabbar_bg, cx));
+            .then(|| self.render_workspace_sidebar(&chrome_colors, &ui_font_family, tabbar_bg, cx));
         let workspace_sidebar_overlay = self.workspace_sidebar_overlay_visible().then(|| {
-            self.render_workspace_sidebar_overlay(&colors, &ui_font_family, tabbar_bg, cx)
+            self.render_workspace_sidebar_overlay(&chrome_colors, &ui_font_family, tabbar_bg, cx)
         });
         let workspace_sidebar_edge_peek = self
             .workspace_sidebar_edge_peek_enabled()
@@ -3803,7 +3863,14 @@ impl Render for TerminalView {
             self.show_termy_in_titlebar,
         )
         .then(|| {
-            self.render_titlebar_branding(window, &colors, &ui_font_family, tabbar_bg, false, cx)
+            self.render_titlebar_branding(
+                window,
+                &chrome_colors,
+                &ui_font_family,
+                tabbar_bg,
+                false,
+                cx,
+            )
         })
         .flatten();
         if self.terminal_scrollbar_mode() == ui_scrollbar::ScrollbarVisibilityMode::OnScroll
@@ -3926,15 +3993,12 @@ impl Render for TerminalView {
                 )
                 .into_any()
         });
-        let mut root_bg = colors.background;
-        root_bg.a = self.scaled_background_alpha(root_bg.a);
-
         let root = div()
             .id("termy-root")
             .flex()
             .flex_col()
             .size_full()
-            .bg(root_bg)
+            .bg(window_surface_bg)
             .font_family(ui_font_family)
             .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _window, cx| {
                 if matches!(

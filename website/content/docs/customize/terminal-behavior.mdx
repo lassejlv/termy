@@ -53,6 +53,13 @@ tmux terminals use the same behavior.
 
 ## UI
 
+Full-screen terminal apps such as OpenCode use the entire content area when
+running in a single pane. Termy removes the shell's horizontal and vertical
+padding while the alternate screen is active, then restores your configured
+padding when the app exits. Opaque app backgrounds extend into Termy's title
+bar, and matching colors fill the window edges so a different terminal theme
+does not leave a contrasting border. Window controls and tabs remain available.
+
 | Key | Default | Description |
 | --- | ------- | ----------- |
 | `command_palette_show_keybinds` | `true` | Show shortcut badges in command palette rows. |

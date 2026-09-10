@@ -59,6 +59,10 @@ impl TerminalView {
                     &mut fingerprint,
                     pane.pane_zoom_steps as u16 as u64,
                 );
+                Self::mix_terminal_resize_fingerprint(
+                    &mut fingerprint,
+                    u64::from(pane.last_alternate_screen.get()),
+                );
             }
         }
         fingerprint
@@ -141,12 +145,7 @@ impl TerminalView {
             return;
         };
         for pane in &tab.panes {
-            let terminal = pane.terminal();
-            let alternate_screen = terminal.alternate_screen_mode();
-            let previous = pane.last_alternate_screen.replace(alternate_screen);
-            if alternate_screen && !previous {
-                terminal.nudge_resize();
-            }
+            pane.sync_alternate_screen_state();
         }
     }
 
@@ -430,6 +429,9 @@ impl TerminalView {
             return;
         }
 
+        // Entering/leaving a full-screen TUI changes its available grid even
+        // when the window size is unchanged. Refresh before the resize cache.
+        self.sync_active_alternate_screen_state();
         let sidebar_width = self.effective_sidebar_width();
         let content_top_inset = self.terminal_content_top_inset();
         let backend_mode = self.runtime_kind();
@@ -454,18 +456,18 @@ impl TerminalView {
         if self.last_terminal_resize_signature == Some(resize_signature)
             && !apply_deferred_inactive_resize
         {
-            self.sync_active_alternate_screen_state();
             return;
         }
 
+        let (padding_x, padding_y) = self.effective_terminal_padding();
         let (cols, rows) = Self::terminal_grid_size_for_pane_count(
             active_pane_count,
             viewport_width,
             viewport_height,
             total_sidebar_width,
             content_top_inset,
-            self.padding_x,
-            self.padding_y,
+            padding_x,
+            padding_y,
             cell_width,
             cell_height,
         );
@@ -492,11 +494,12 @@ impl TerminalView {
                         tab_index += 1;
                         continue;
                     }
-                    let (tab_id, pane_count, should_sync) = {
+                    let (tab_id, pane_count, alternate_screen, should_sync) = {
                         let tab = &mut self.session.tabs[tab_index];
                         (
                             tab.id,
                             tab.panes.len(),
+                            tab.single_pane_alternate_screen(),
                             Self::repair_native_tab_active_pane_for_resize(tab),
                         )
                     };
@@ -504,14 +507,19 @@ impl TerminalView {
                     if !should_sync {
                         continue;
                     }
+                    let (padding_x, padding_y) = Self::terminal_padding_for_screen_mode(
+                        self.padding_x,
+                        self.padding_y,
+                        alternate_screen,
+                    );
                     let (cols, rows) = Self::terminal_grid_size_for_pane_count(
                         pane_count,
                         viewport_width,
                         viewport_height,
                         total_sidebar_width,
                         content_top_inset,
-                        self.padding_x,
-                        self.padding_y,
+                        padding_x,
+                        padding_y,
                         cell_width,
                         cell_height,
                     );
@@ -625,7 +633,6 @@ impl TerminalView {
         } else {
             self.last_terminal_resize_signature = Some(final_resize_signature);
         }
-        self.sync_active_alternate_screen_state();
     }
 }
 
@@ -707,6 +714,36 @@ mod tests {
 
         assert_eq!(single_pane, (77, 27));
         assert_eq!(split_pane, (80, 28));
+    }
+
+    #[test]
+    fn fullscreen_tui_gets_the_whole_grid_and_restores_shell_padding_on_exit() {
+        for native in [true, false] {
+            let mut pane = test_pane("fullscreen-tui");
+            if native {
+                pane.terminal = Terminal::new_test_display(TerminalSize::default());
+            }
+            for (sequence, expected_padding, expected_size) in [
+                (b"".as_slice(), (12.0, 8.0), (77, 27)),
+                (b"\x1b[?1049h".as_slice(), (0.0, 0.0), (80, 28)),
+                (b"\x1b[?1049l".as_slice(), (12.0, 8.0), (77, 27)),
+            ] {
+                pane.terminal().hydrate_output(sequence);
+                pane.sync_alternate_screen_state();
+                let padding = TerminalView::terminal_padding_for_screen_mode(
+                    12.0,
+                    8.0,
+                    pane.last_alternate_screen.get(),
+                );
+                assert_eq!(padding, expected_padding);
+                assert_eq!(
+                    TerminalView::terminal_grid_size_for_pane_count(
+                        1, 800.0, 600.0, 0.0, 32.0, padding.0, padding.1, 10.0, 20.0,
+                    ),
+                    expected_size,
+                );
+            }
+        }
     }
 
     #[test]
