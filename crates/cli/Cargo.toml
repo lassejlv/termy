@@ -1,6 +1,6 @@
 [package]
 name = "termy_cli"
-version = "0.2.43"
+version = "0.2.50"
 edition = "2024"
 
 [lints]

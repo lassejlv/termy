@@ -1,6 +1,6 @@
 [package]
 name = "termy"
-version = "0.2.43"
+version = "0.2.50"
 edition = "2024"
 
 [package.metadata.bundle]
