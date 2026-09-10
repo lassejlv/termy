@@ -6665,6 +6665,7 @@ dependencies = [
  "url",
  "webbrowser",
  "winresource",
+ "zed-font-kit",
 ]
 
 [[package]]

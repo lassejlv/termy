@@ -191,7 +191,7 @@ fn open_main_window(
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let titlebar = Some(gpui::TitlebarOptions {
         title: Some("Termy".into()),
-        appears_transparent: true,
+        appears_transparent: false,
         traffic_light_position: None,
     });
 

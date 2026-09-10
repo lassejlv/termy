@@ -20,9 +20,8 @@ static LAST_FALLBACK_NOTIFICATION: Mutex<Option<String>> = Mutex::new(None);
 /// map to are not installed. Presenting those as installed lets users save a
 /// family that silently resolves to a proportional fallback.
 ///
-/// The platform default is the one family that must stay selectable even when
-/// enumeration misses it (e.g. the generic `monospace` alias on Linux): it is
-/// the fallback target, so listing it can never send a user to a worse font.
+/// Keep the platform default selectable. Generic aliases such as Linux's
+/// `monospace` are resolved to a concrete family before measuring or shaping.
 pub(crate) fn available_font_families(fonts: Vec<String>) -> Vec<String> {
     let mut fonts = fonts
         .into_iter()
@@ -70,43 +69,96 @@ pub(crate) fn canonical_available_font_family(
 
 /// Resolve the configured terminal font to a real fixed-pitch family.
 ///
-/// A missing family otherwise falls through GPUI's application font stack to
-/// Segoe UI on Windows. Termy's grid then forces every glyph to that
-/// proportional font's `M` advance, which looks like extra letter spacing.
+/// GPUI 0.2.2 treats Linux's `monospace` alias as a literal family name. A
+/// missing family falls through to a UI font (e.g. Noto Sans on KDE). Forcing
+/// every glyph to that proportional font's `M` advance adds letter spacing.
 pub(crate) fn effective_terminal_font_family(
     requested: &str,
     text_system: &TextSystem,
 ) -> SharedString {
     let available = available_font_families(text_system.all_font_names());
-    let Some(candidate) = canonical_available_font_family(requested, &available) else {
-        notify_fallback(requested.trim(), "is not installed");
-        return DEFAULT_FONT_FAMILY.into();
+    let fallback = || -> SharedString {
+        let preferred = system_monospace_family();
+        select_fixed_pitch_family(Some(&preferred), &available, |family| {
+            font_has_fixed_ascii_advances(text_system, family)
+        })
+        .unwrap_or_else(|| {
+            log::error!(
+                "No usable monospace font is installed; install a fixed-pitch terminal font"
+            );
+            DEFAULT_FONT_FAMILY
+        })
+        .to_string()
+        .into()
     };
 
-    // The platform default is exempt: it is the fallback target, so rejecting
-    // it would only produce a self-referential warning.
-    if !candidate.eq_ignore_ascii_case(DEFAULT_FONT_FAMILY)
-        && !font_has_fixed_ascii_advances(text_system, &candidate)
-    {
-        notify_fallback(&candidate, "resolved to a proportional font");
-        return DEFAULT_FONT_FAMILY.into();
+    if requested.trim().eq_ignore_ascii_case("monospace") {
+        clear_fallback_notification();
+        return fallback();
+    }
+
+    let Some(candidate) = canonical_available_font_family(requested, &available) else {
+        let fallback = fallback();
+        notify_fallback(requested.trim(), "is not installed", &fallback);
+        return fallback;
+    };
+
+    if !font_has_fixed_ascii_advances(text_system, &candidate) {
+        let fallback = fallback();
+        notify_fallback(&candidate, "resolved to a proportional font", &fallback);
+        return fallback;
     }
 
     clear_fallback_notification();
     candidate.into()
 }
 
-fn notify_fallback(requested: &str, reason: &str) {
+#[cfg(target_os = "linux")]
+fn system_monospace_family() -> String {
+    use font_kit::{family_name::FamilyName, properties::Properties, source::SystemSource};
+
+    // Fontconfig applies the user's desktop font preferences and substitutions.
+    // GPUI needs the selected font's concrete family, not the generic alias.
+    SystemSource::new()
+        .select_best_match(&[FamilyName::Monospace], &Properties::new())
+        .ok()
+        .and_then(|handle| handle.load().ok())
+        .map(|font| font.family_name())
+        .unwrap_or_else(|| DEFAULT_FONT_FAMILY.to_string())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn system_monospace_family() -> String {
+    DEFAULT_FONT_FAMILY.to_string()
+}
+
+fn select_fixed_pitch_family<'a>(
+    preferred: Option<&str>,
+    available: &'a [String],
+    mut is_fixed_pitch: impl FnMut(&str) -> bool,
+) -> Option<&'a str> {
+    let preferred = preferred.and_then(|preferred| {
+        available
+            .iter()
+            .find(|family| family.eq_ignore_ascii_case(preferred))
+    });
+    preferred
+        .into_iter()
+        .chain(available)
+        // Never pass the unresolved generic alias back into GPUI's UI fallback.
+        .find(|family| !family.eq_ignore_ascii_case("monospace") && is_fixed_pitch(family))
+        .map(String::as_str)
+}
+
+fn notify_fallback(requested: &str, reason: &str, fallback: &str) {
     let mut last = LAST_FALLBACK_NOTIFICATION
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if !mark_fallback(&mut last, requested) {
         return;
     }
-    log::warn!("Configured terminal font '{requested}' {reason}; using '{DEFAULT_FONT_FAMILY}'");
-    crate::ui::toast::warning(format!(
-        "Font \"{requested}\" {reason}; using {DEFAULT_FONT_FAMILY}"
-    ));
+    log::warn!("Configured terminal font '{requested}' {reason}; using '{fallback}'");
+    crate::ui::toast::warning(format!("Font \"{requested}\" {reason}; using {fallback}"));
 }
 
 fn clear_fallback_notification() {
@@ -218,6 +270,94 @@ mod tests {
         assert!(ascii_advances_are_fixed(&[8.4, 8.4, 8.4, 8.4, 8.4]));
         assert!(!ascii_advances_are_fixed(&[12.0, 3.0, 13.0, 8.0, 4.0]));
         assert!(!ascii_advances_are_fixed(&[8.4, f32::NAN]));
+    }
+
+    #[test]
+    fn fallback_resolves_generic_alias_to_a_concrete_fixed_pitch_family() {
+        let available = vec![
+            "Noto Sans".to_string(),
+            "Noto Sans Mono".to_string(),
+            "monospace".to_string(),
+        ];
+        let selected = select_fixed_pitch_family(Some("monospace"), &available, |family| {
+            assert_ne!(
+                family, "monospace",
+                "an alias must not enter GPUI's fallback stack"
+            );
+            family == "Noto Sans Mono"
+        });
+        assert_eq!(selected, Some("Noto Sans Mono"));
+    }
+
+    #[test]
+    fn fallback_honors_the_desktop_monospace_preference() {
+        let available = vec!["DejaVu Sans Mono".to_string(), "JetBrains Mono".to_string()];
+        assert_eq!(
+            select_fixed_pitch_family(Some("jetbrains mono"), &available, |_| true),
+            Some("JetBrains Mono")
+        );
+    }
+
+    #[test]
+    fn fallback_validates_the_default_instead_of_exempting_it() {
+        let available = vec!["Noto Sans".to_string(), "DejaVu Sans Mono".to_string()];
+        for preferred in [Some("Noto Sans"), Some("Missing Mono"), None] {
+            assert_eq!(
+                select_fixed_pitch_family(preferred, &available, |family| {
+                    family == "DejaVu Sans Mono"
+                }),
+                Some("DejaVu Sans Mono")
+            );
+        }
+        assert_eq!(select_fixed_pitch_family(None, &available, |_| false), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_font_resolution_uses_real_fixed_pitch_metrics() {
+        // GPUI's test context uses NoopTextSystem, which cannot catch a font
+        // fallback regression. Headless Application uses the real Linux backend
+        // without requiring an X11/Wayland display or GPU.
+        let app = gpui::Application::headless();
+        let text_system = app.text_system();
+        let preferred = system_monospace_family();
+        assert_ne!(preferred, "monospace", "install a system monospace font");
+        for requested in [
+            "monospace",
+            " MONOSPACE ",
+            "__termy_missing_font__",
+            "sans-serif",
+            &preferred,
+        ] {
+            let family = effective_terminal_font_family(requested, &text_system);
+            assert_ne!(family.as_ref(), "monospace");
+            assert!(
+                font_has_fixed_ascii_advances(&text_system, &family),
+                "{requested} resolved to proportional {family}"
+            );
+
+            let font = gpui::font(family.clone());
+            let font_id = text_system.resolve_font(&font);
+            for font_size in [10.0, 14.0, 24.0] {
+                let font_size = px(font_size);
+                let advances = TERMINAL_METRIC_GLYPHS.map(|glyph| {
+                    f32::from(
+                        text_system
+                            .advance(font_id, font_size, glyph)
+                            .unwrap()
+                            .width,
+                    )
+                });
+                assert!(
+                    ascii_advances_are_fixed(&advances),
+                    "{family} must keep equal character widths at {font_size:?}: {advances:?}"
+                );
+            }
+        }
+        assert_eq!(
+            effective_terminal_font_family(&preferred, &text_system).as_ref(),
+            preferred
+        );
     }
 
     #[test]

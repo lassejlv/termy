@@ -180,7 +180,7 @@ fn open_settings_window_with_section(
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let titlebar = Some(gpui::TitlebarOptions {
         title: Some("Settings".into()),
-        appears_transparent: true,
+        appears_transparent: false,
         traffic_light_position: None,
     });
 
@@ -190,6 +190,9 @@ fn open_settings_window_with_section(
             titlebar,
             window_background,
             app_id: Some(APP_ID.to_string()),
+            // Match the terminal window: let KDE/the window manager own the frame.
+            #[cfg(target_os = "linux")]
+            window_decorations: Some(gpui::WindowDecorations::Server),
             is_resizable: true,
             window_min_size: Some(minimum_window_size),
             ..Default::default()

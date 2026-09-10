@@ -80,6 +80,7 @@ jobs:
             cmake \
             clang \
             pkg-config \
+            fonts-dejavu-core \
             libfontconfig-dev \
             libwayland-dev \
             libx11-xcb-dev \
