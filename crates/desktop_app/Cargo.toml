@@ -1,6 +1,6 @@
 [package]
 name = "termy"
-version = "0.2.50"
+version = "0.2.51"
 edition = "2024"
 
 [package.metadata.bundle]
@@ -14,6 +14,7 @@ icon = ["../../assets/termy.icns"]
 workspace = true
 
 [dependencies]
+image = { version = "0.25", default-features = false }
 gpui = { workspace = true }
 
 # Terminal emulation

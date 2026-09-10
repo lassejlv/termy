@@ -21,19 +21,7 @@ pub(super) struct TerminalLineRange {
     pub(super) columns: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum TerminalViewportScrollDirection {
-    Up,
-    Down,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct TerminalViewportScroll {
-    pub(super) top: usize,
-    pub(super) bottom: usize,
-    pub(super) count: usize,
-    pub(super) direction: TerminalViewportScrollDirection,
-}
+pub(super) use termy_core::{TerminalViewportScroll, TerminalViewportScrollDirection};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TerminalRenderDamageSnapshot {
@@ -47,23 +35,7 @@ impl TerminalRenderDamageSnapshot {
     pub(super) fn from_core(update: termy_core::TerminalRenderDamageSnapshot) -> Self {
         Self {
             damage: update.damage,
-            scrolls: update
-                .scrolls
-                .into_iter()
-                .map(|scroll| TerminalViewportScroll {
-                    top: scroll.top,
-                    bottom: scroll.bottom,
-                    count: scroll.count,
-                    direction: match scroll.direction {
-                        termy_core::TerminalViewportScrollDirection::Up => {
-                            TerminalViewportScrollDirection::Up
-                        }
-                        termy_core::TerminalViewportScrollDirection::Down => {
-                            TerminalViewportScrollDirection::Down
-                        }
-                    },
-                })
-                .collect(),
+            scrolls: update.scrolls,
             generation: Some(update.generation),
             palette_revision: Some(update.palette_revision),
         }

@@ -167,7 +167,7 @@ impl TerminalView {
         let Some(png) = selection
             .as_ref()
             .and_then(|selection| self.current_kitty_image_placement(selection))
-            .map(|placement| placement.png)
+            .map(|placement| placement.image.png().clone())
         else {
             let _ = self.close_terminal_context_menu(cx);
             return;

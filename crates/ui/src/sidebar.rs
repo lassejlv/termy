@@ -11,12 +11,11 @@ use crate::metrics::{
     CAPTION_SIZE, CONTROL_HEIGHT, CONTROL_RADIUS, GROUP_TITLE_SIZE, LABEL_SIZE, SIDEBAR_GROUP_GAP,
     SIDEBAR_GROUP_LABEL_PADDING_BOTTOM, SIDEBAR_GROUP_LABEL_PADDING_X, SIDEBAR_ICON_GAP,
     SIDEBAR_ICON_SIZE, SIDEBAR_ITEM_GAP, SIDEBAR_ITEM_HEIGHT, SIDEBAR_ITEM_PADDING_X,
-    SIDEBAR_ITEM_RADIUS, SIDEBAR_PADDING_X, SIDEBAR_PADDING_Y, SIDEBAR_SELECTED_ACCENT_INSET_Y,
-    SIDEBAR_SELECTED_ACCENT_WIDTH, SIDEBAR_WIDTH,
+    SIDEBAR_ITEM_RADIUS, SIDEBAR_PADDING_X, SIDEBAR_PADDING_Y, SIDEBAR_WIDTH,
 };
 use crate::theme::tokens;
 
-/// Fixed 208px navigation rail. It never scrolls with the content column.
+/// Fixed 216px navigation rail. It never scrolls with the content column.
 #[derive(IntoElement)]
 pub struct Sidebar {
     children: Vec<AnyElement>,
@@ -217,8 +216,7 @@ impl RenderOnce for SidebarGroupLabel {
     }
 }
 
-/// One navigable section. Selected items take an accent wash plus a 2px accent
-/// bar inset 8px top and bottom.
+/// One navigable section, with a compact icon tile and a solid selection fill.
 #[derive(IntoElement)]
 pub struct SidebarItem {
     id: ElementId,
@@ -261,14 +259,10 @@ impl SidebarItem {
 impl RenderOnce for SidebarItem {
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let theme = tokens(cx);
-        let (icon_color, label_color, weight) = if self.selected {
-            (theme.accent, theme.text_primary, gpui::FontWeight::MEDIUM)
+        let (label_color, weight) = if self.selected {
+            (theme.text_on_accent, gpui::FontWeight::MEDIUM)
         } else {
-            (
-                theme.text_secondary,
-                theme.text_secondary,
-                gpui::FontWeight::NORMAL,
-            )
+            (theme.text_secondary, gpui::FontWeight::NORMAL)
         };
 
         let mut item = div()
@@ -284,7 +278,7 @@ impl RenderOnce for SidebarItem {
             .cursor_pointer();
 
         if self.selected {
-            item = item.bg(theme.accent_soft);
+            item = item.bg(theme.accent);
         } else {
             item = item.hover(move |style| style.bg(theme.bg_hover));
         }
@@ -293,20 +287,30 @@ impl RenderOnce for SidebarItem {
             item = item.on_click(move |event, window, cx| handler(event, window, cx));
         }
 
-        item.children(self.selected.then(|| {
+        item.children(self.icon.map(|icon| {
+            let color = match icon {
+                IconName::General | IconName::Keybindings => theme.text_muted,
+                IconName::Appearance | IconName::Themes => theme.danger,
+                IconName::Tabs | IconName::Plugins => theme.accent,
+                IconName::Terminal => theme.text_primary,
+                IconName::Ssh => theme.success,
+                IconName::Colors => theme.warning,
+                _ => theme.text_secondary,
+            };
             div()
-                .absolute()
-                .left_0()
-                .top(SIDEBAR_SELECTED_ACCENT_INSET_Y)
-                .w(SIDEBAR_SELECTED_ACCENT_WIDTH)
-                .h(SIDEBAR_ITEM_HEIGHT - SIDEBAR_SELECTED_ACCENT_INSET_Y * 2.0)
-                .rounded(px(1.0))
-                .bg(theme.accent)
+                .size(px(22.0))
+                .flex_none()
+                .rounded(px(5.0))
+                .bg(color)
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    Icon::new(icon)
+                        .size(SIDEBAR_ICON_SIZE)
+                        .color(crate::theme::contrasting_text(color)),
+                )
         }))
-        .children(
-            self.icon
-                .map(|icon| Icon::new(icon).size(SIDEBAR_ICON_SIZE).color(icon_color)),
-        )
         .child(
             div()
                 .flex_grow()

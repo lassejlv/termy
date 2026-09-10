@@ -89,3 +89,4 @@ pub use termy_config_core::{
     AppConfig, ConfigDiagnostic, ConfigDiagnosticKind, ConfigParseReport,
     CursorStyle as AppConfigCursorStyle, SystemAppearance, config_path,
 };
+pub use tmon::{GraphicsImage, graphics_display_size};

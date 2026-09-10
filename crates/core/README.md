@@ -73,3 +73,25 @@ primitives with the harness every embedder ends up writing anyway:
 
 In short: the VT engine is an implementation detail; libtermy is the portable
 terminal contract plus the harness embedders actually need.
+
+## Kitty graphics
+
+The protocol pipeline separates command interception, bounded upload assembly,
+pixel decoding, placement/deletion, and animation. Both core engines expose
+`GraphicsImage` pixels and share geometry, frame composition, animation timing,
+and shared-memory transport. Raw uploads avoid PNG encoding; PNG uploads decode
+once. `image.png()` is an explicit lazy export for clipboard and C hosts.
+
+`KittyGraphicsRenderPlacement` includes signed column offsets, optional Unicode
+placeholder cell coordinates, clipped margin rows, and an animation deadline.
+Use `graphics_display_size` with the current cell metrics and pixel offsets;
+`occupied_cols/rows` describe cursor occupancy, not stretched image dimensions.
+For a virtual cell, fit the full prototype with preserved aspect ratio and clip
+to that cell. Paint z values below -1073741824 below non-default backgrounds,
+other negative values below text, and nonnegative values above text.
+
+Run protocol regressions with `cargo test -p termy_core kitty_graphics` and run
+native-wrapper tests for both engines using `TERMY_CORE_TEST_BACKEND=alacritty`
+and `TERMY_CORE_TEST_BACKEND=tmon`. The `measure_raw_upload_cost` test reports a
+bounded upload benchmark; it does not measure GPU time or establish acceptance
+in every third-party application.

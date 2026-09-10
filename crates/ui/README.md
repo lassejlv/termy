@@ -4,7 +4,7 @@ Termy's settings design system as reusable GPUI components.
 
 ## Owner
 
-This crate owns Termy's chrome vocabulary: color tokens derived from the active
+This crate owns Termy's chrome vocabulary: accessible color tokens derived from the active
 terminal theme, layout metrics, and the stateless components built on them —
 sidebar, section headers, grouped cards, setting rows, controls (select,
 stepper, switch, slider, text field, segmented control, shortcut box), and
@@ -18,7 +18,7 @@ rendered from plain arguments belongs to the surface that owns the state.
 Numbers mirror the shipped settings window
 (`crates/desktop_app/src/settings_view/`), so a kit-built panel lines up with the
 app's own panels. See `src/metrics.rs` for the full table and `src/theme.rs` for
-the alpha ladder.
+the theme palette and settings contrast adjustments.
 
 ## Validation
 

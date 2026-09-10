@@ -532,7 +532,7 @@ impl SettingsWindow {
         let accent = self.accent();
         let input_bg = self.bg_input();
         let font = Font {
-            family: self.config.ui_font_family.clone().into(),
+            family: ".SystemUIFont".into(),
             ..gpui::font("")
         };
         let display = if secret {
@@ -689,7 +689,7 @@ impl SettingsWindow {
         // The elevated color is a translucent foreground tint. Making that tint
         // opaque turns light themes into a white sheet, so use the theme's
         // actual background color for an opaque menu surface instead.
-        let mut popup_bg = self.colors.background;
+        let mut popup_bg = self.ui_tokens().bg_overlay;
         popup_bg.a = 1.0;
         let popup_border = self.border_color();
         let toggle_plugin = plugin_id.clone();
@@ -971,7 +971,7 @@ impl SettingsWindow {
         let status_color = if ready {
             self.accent()
         } else {
-            self.colors.ansi[3]
+            self.ui_tokens().warning
         };
 
         div()
@@ -1170,7 +1170,7 @@ impl SettingsWindow {
             "Disabled"
         };
         let status_color = if has_error {
-            self.colors.ansi[1]
+            self.ui_tokens().danger
         } else if enabled {
             self.accent()
         } else {
@@ -1298,7 +1298,7 @@ impl SettingsWindow {
         if let Some(error) = self.plugin_bun_error.clone() {
             messages.push(error);
         }
-        let error_color = self.colors.ansi[1];
+        let error_color = self.ui_tokens().danger;
         let mut content = div()
             .w_full()
             .px(px(CARD_ROW_PADDING_X))

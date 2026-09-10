@@ -118,8 +118,8 @@ impl Button {
                 hover_background: Some(with_alpha(theme.accent, 0.88)),
             },
             ButtonVariant::Secondary => ButtonColors {
-                background: None,
-                border: Some(theme.border),
+                background: Some(theme.bg_input),
+                border: Some(theme.card_border),
                 label: theme.text_secondary,
                 hover_background: Some(theme.bg_hover),
             },
@@ -166,7 +166,8 @@ impl RenderOnce for Button {
             .rounded(BUTTON_RADIUS)
             .text_size(self.size.text_size())
             .text_color(colors.label)
-            .font_weight(weight);
+            .font_weight(weight)
+            .whitespace_nowrap();
 
         if let Some(background) = colors.background {
             button = button.bg(background);
@@ -178,7 +179,7 @@ impl RenderOnce for Button {
         if self.disabled {
             button = button.opacity(0.45);
         } else {
-            button = button.cursor_pointer();
+            button = button.cursor_pointer().active(|style| style.opacity(0.72));
             if let Some(hover_background) = colors.hover_background {
                 button = button.hover(move |style| style.bg(hover_background));
             }

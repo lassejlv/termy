@@ -8,28 +8,25 @@
 use gpui::{Pixels, px};
 
 // ── Sidebar ──────────────────────────────────────────────────────
-pub const SIDEBAR_WIDTH: Pixels = px(208.0);
+pub const SIDEBAR_WIDTH: Pixels = px(216.0);
 pub const SIDEBAR_PADDING_X: Pixels = px(10.0);
 pub const SIDEBAR_PADDING_Y: Pixels = px(12.0);
-pub const SIDEBAR_ITEM_HEIGHT: Pixels = px(32.0);
+pub const SIDEBAR_ITEM_HEIGHT: Pixels = px(36.0);
 pub const SIDEBAR_ITEM_RADIUS: Pixels = px(7.0);
 pub const SIDEBAR_ITEM_PADDING_X: Pixels = px(10.0);
 pub const SIDEBAR_ITEM_GAP: Pixels = px(4.0);
-pub const SIDEBAR_ICON_SIZE: Pixels = px(18.0);
+pub const SIDEBAR_ICON_SIZE: Pixels = px(16.0);
 pub const SIDEBAR_ICON_GAP: Pixels = px(10.0);
 pub const SIDEBAR_GROUP_GAP: Pixels = px(16.0);
 pub const SIDEBAR_GROUP_LABEL_PADDING_X: Pixels = px(8.0);
 pub const SIDEBAR_GROUP_LABEL_PADDING_BOTTOM: Pixels = px(6.0);
-/// Accent bar on the selected item — 2px wide, inset 8px top and bottom.
-pub const SIDEBAR_SELECTED_ACCENT_WIDTH: Pixels = px(2.0);
-pub const SIDEBAR_SELECTED_ACCENT_INSET_Y: Pixels = px(8.0);
 
 // ── Content column ───────────────────────────────────────────────
 /// Content never widens past this; extra window width becomes right slack.
-pub const CONTENT_MAX_WIDTH: Pixels = px(800.0);
-pub const CONTENT_GUTTER_X: Pixels = px(32.0);
-pub const CONTENT_GUTTER_Y: Pixels = px(24.0);
-pub const CARD_GAP: Pixels = px(22.0);
+pub const CONTENT_MAX_WIDTH: Pixels = px(720.0);
+pub const CONTENT_GUTTER_X: Pixels = px(28.0);
+pub const CONTENT_GUTTER_Y: Pixels = px(28.0);
+pub const CARD_GAP: Pixels = px(24.0);
 pub const CARD_RADIUS: Pixels = px(10.0);
 pub const CARD_ROW_PADDING_X: Pixels = px(16.0);
 pub const CARD_ROW_PADDING_Y: Pixels = px(11.0);
@@ -41,8 +38,8 @@ pub const RESET_SLOT_SIZE: Pixels = px(20.0);
 pub const RESET_ICON_SIZE: Pixels = px(14.0);
 
 // ── Controls ─────────────────────────────────────────────────────
-pub const CONTROL_WIDTH: Pixels = px(300.0);
-pub const CONTROL_HEIGHT: Pixels = px(30.0);
+pub const CONTROL_WIDTH: Pixels = px(224.0);
+pub const CONTROL_HEIGHT: Pixels = px(28.0);
 pub const CONTROL_RADIUS: Pixels = px(6.0);
 pub const CONTROL_INNER_PADDING: Pixels = px(8.0);
 pub const CONTROL_TEXT_PADDING: Pixels = px(10.0);
@@ -50,9 +47,9 @@ pub const BUTTON_RADIUS: Pixels = px(6.0);
 pub const BUTTON_HEIGHT: Pixels = px(30.0);
 pub const BUTTON_HEIGHT_SMALL: Pixels = px(26.0);
 
-pub const SWITCH_WIDTH: Pixels = px(38.0);
-pub const SWITCH_HEIGHT: Pixels = px(22.0);
-pub const SWITCH_KNOB_SIZE: Pixels = px(18.0);
+pub const SWITCH_WIDTH: Pixels = px(32.0);
+pub const SWITCH_HEIGHT: Pixels = px(19.0);
+pub const SWITCH_KNOB_SIZE: Pixels = px(15.0);
 pub const SWITCH_RADIUS: Pixels = px(11.0);
 pub const SWITCH_PADDING: Pixels = px(2.0);
 
@@ -80,14 +77,14 @@ pub const BADGE_PADDING_X: Pixels = px(6.0);
 pub const SCROLLBAR_WIDTH: Pixels = px(8.0);
 
 // ── Type scale ───────────────────────────────────────────────────
-pub const SECTION_TITLE_SIZE: Pixels = px(22.0);
+pub const SECTION_TITLE_SIZE: Pixels = px(20.0);
 pub const SECTION_SUBTITLE_SIZE: Pixels = px(13.0);
-/// Uppercase group labels above each card.
-pub const GROUP_TITLE_SIZE: Pixels = px(11.0);
+/// Sentence case group labels above each card.
+pub const GROUP_TITLE_SIZE: Pixels = px(13.0);
 /// Setting labels and control values.
 pub const BODY_SIZE: Pixels = px(13.0);
 /// Descriptions under a label, captions, chips.
-pub const LABEL_SIZE: Pixels = px(11.0);
+pub const LABEL_SIZE: Pixels = px(12.0);
 pub const LABEL_LINE_HEIGHT: Pixels = px(16.0);
 pub const CAPTION_SIZE: Pixels = px(12.0);
 pub const BADGE_SIZE: Pixels = px(10.0);

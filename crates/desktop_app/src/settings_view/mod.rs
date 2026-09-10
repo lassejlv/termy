@@ -45,21 +45,17 @@ use self::ssh::{ActiveSshInput, SshHostForm};
 use self::state::{ActiveTextInput, DropdownOption, EditableField};
 use input_mode::KeyInputMode;
 
-const SIDEBAR_WIDTH: f32 = 208.0;
-const SIDEBAR_ICON_SIZE: f32 = 18.0;
-const SIDEBAR_ITEM_HEIGHT: f32 = 32.0;
+const SIDEBAR_WIDTH: f32 = 216.0;
+const SIDEBAR_ICON_SIZE: f32 = 16.0;
+const SIDEBAR_ITEM_HEIGHT: f32 = 36.0;
 const SIDEBAR_ITEM_RADIUS: f32 = 7.0;
-// Accent bar marking the selected sidebar item; mirrors the active-tab and
-// command-palette selection indicators so the chrome speaks one language.
-const SIDEBAR_SELECTED_ACCENT_WIDTH: f32 = 2.0;
-const SIDEBAR_SELECTED_ACCENT_INSET_Y: f32 = 8.0;
 const SIDEBAR_GROUP_GAP: f32 = 16.0;
 const SIDEBAR_GROUP_LABEL_SIZE: f32 = 11.0;
 // Settings content is constrained and centered like native macOS System
 // Settings so rows do not stretch label-to-control across wide windows.
-const SETTINGS_CONTENT_MAX_WIDTH: f32 = 800.0;
-const SETTINGS_CONTROL_WIDTH: f32 = 300.0;
-const SETTINGS_CONTROL_HEIGHT: f32 = 30.0;
+const SETTINGS_CONTENT_MAX_WIDTH: f32 = 720.0;
+const SETTINGS_CONTROL_WIDTH: f32 = 224.0;
+const SETTINGS_CONTROL_HEIGHT: f32 = 28.0;
 const NUMERIC_STEP_BUTTON_SIZE: f32 = 22.0;
 const SETTINGS_INPUT_TEXT_SIZE: f32 = 13.0;
 const SETTINGS_SEARCH_NAV_THROTTLE_MS: u64 = 70;
@@ -70,12 +66,11 @@ const SETTINGS_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 18.0;
 const SETTINGS_SCROLLBAR_TRACK_ALPHA: f32 = 0.10;
 const SETTINGS_SCROLLBAR_THUMB_ALPHA: f32 = 0.42;
 const SETTINGS_SCROLLBAR_THUMB_ACTIVE_ALPHA: f32 = 0.58;
-const SETTINGS_OVERLAY_PANEL_ALPHA_FLOOR_RATIO: f32 = 0.72;
-const SETTINGS_SWITCH_WIDTH: f32 = 38.0;
-const SETTINGS_SWITCH_HEIGHT: f32 = 22.0;
-const SETTINGS_SWITCH_KNOB_SIZE: f32 = 18.0;
+const SETTINGS_SWITCH_WIDTH: f32 = 32.0;
+const SETTINGS_SWITCH_HEIGHT: f32 = 19.0;
+const SETTINGS_SWITCH_KNOB_SIZE: f32 = 15.0;
 const SETTINGS_SEARCH_PREVIEW_LIMIT: usize = 6;
-const SETTINGS_SLIDER_VALUE_WIDTH: f32 = 60.0;
+const SETTINGS_SLIDER_VALUE_WIDTH: f32 = 42.0;
 const SETTINGS_OPACITY_STEP_RATIO: f32 = 0.05;
 const SETTINGS_CONTROL_INNER_PADDING: f32 = 8.0;
 const SETTINGS_OPACITY_CONTROL_GAP: f32 = 6.0;
@@ -84,12 +79,12 @@ const SETTINGS_INPUT_RADIUS: f32 = 6.0;
 const SETTINGS_BUTTON_RADIUS: f32 = 6.0;
 const SETTINGS_SWITCH_RADIUS: f32 = 11.0;
 // Section title and subtitle sizes now live in `termy_ui::metrics`.
-const GROUP_TITLE_SIZE: f32 = 11.0;
-const CARD_GAP: f32 = 22.0;
+const GROUP_TITLE_SIZE: f32 = 13.0;
+const CARD_GAP: f32 = 24.0;
 const CARD_ROW_PADDING_X: f32 = 16.0;
 const CARD_ROW_PADDING_Y: f32 = 11.0;
-const CONTENT_GUTTER_X: f32 = 32.0;
-const CONTENT_GUTTER_Y: f32 = 24.0;
+const CONTENT_GUTTER_X: f32 = 28.0;
+const CONTENT_GUTTER_Y: f32 = 28.0;
 static NEXT_BACKGROUND_OPACITY_PREVIEW_OWNER_ID: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SettingsSection {
@@ -230,7 +225,7 @@ impl SettingsWindow {
             searchable_settings,
             searchable_setting_indices,
             sidebar_search_state: TextInputState::new(String::new()),
-            sidebar_search_active: true,
+            sidebar_search_active: false,
             sidebar_search_selecting: false,
             sidebar_search_cache_query: String::new(),
             sidebar_search_match_cache: HashSet::new(),
@@ -346,8 +341,8 @@ impl SettingsWindow {
         self.system_appearance = next;
         if self.config.theme_mode != config::AppearanceMode::Manual {
             self.colors = TerminalColors::from_config(&self.config, self.system_appearance);
-            cx.notify();
         }
+        cx.notify();
     }
 
     fn theme_store_api_base_url() -> String {
@@ -757,6 +752,17 @@ impl SettingsWindow {
         event.keystroke.key.eq_ignore_ascii_case("escape") && !event.keystroke.modifiers.modified()
     }
 
+    fn focus_settings_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.active_input = None;
+        self.ssh_input = None;
+        self.plugin_setting_input = None;
+        self.theme_store_search_active = false;
+        self.sidebar_search_active = true;
+        self.sidebar_search_state.select_all();
+        self.focus_handle.focus(window);
+        cx.notify();
+    }
+
     fn handle_global_shortcuts(
         &mut self,
         event: &KeyDownEvent,
@@ -765,6 +771,11 @@ impl SettingsWindow {
     ) -> bool {
         if Self::key_requires_secondary_only(event, "q") {
             cx.quit();
+            return true;
+        }
+
+        if Self::key_requires_secondary_only(event, "f") {
+            self.focus_settings_search(window, cx);
             return true;
         }
 
@@ -1213,6 +1224,7 @@ impl Render for SettingsWindow {
             let bounds_entity = cx.entity();
             div()
                 .id("settings-scrollbar-lane")
+                .relative()
                 .flex_none()
                 .w(px(SETTINGS_SCROLLBAR_WIDTH + 4.0))
                 .min_w(px(SETTINGS_SCROLLBAR_WIDTH + 4.0))
@@ -1256,6 +1268,11 @@ impl Render for SettingsWindow {
         div()
             .id("settings-root")
             .track_focus(&self.focus_handle)
+            .on_action(
+                cx.listener(|view, _: &crate::commands::OpenSearch, window, cx| {
+                    view.focus_settings_search(window, cx);
+                }),
+            )
             .on_key_down(cx.listener(Self::handle_key_down))
             .on_any_mouse_down(cx.listener(|view, _event: &MouseDownEvent, _window, cx| {
                 if view.active_input.is_some()
@@ -1333,7 +1350,8 @@ impl Render for SettingsWindow {
             .flex()
             .size_full()
             .bg(bg)
-            .font_family(self.config.ui_font_family.clone())
+            .font_family(".SystemUIFont")
+            .text_size(px(13.0))
             .child(self.render_sidebar(cx))
             .child(
                 // Keep the shared content pane shrink-safe so wide rows cannot

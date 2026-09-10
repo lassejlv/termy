@@ -152,14 +152,22 @@ impl PaneTerminal {
                     let screen = KittyGraphicsScreen::from_alternate_screen(
                         term.mode().contains(TermMode::ALT_SCREEN),
                     );
-                    let result = self.kitty_graphics.lock().apply_on_screen(
+                    let mut graphics = self.kitty_graphics.lock();
+                    let placeholders =
+                        if command.action() == 'd' && graphics.has_virtual_placements() {
+                            kitty_graphics_placeholders_from_alacritty_grid(term.grid())
+                        } else {
+                            Vec::new()
+                        };
+                    let result = graphics.apply_on_screen_with_placeholders(
                         command,
-                        cursor.column.0,
-                        cursor.line.0.max(0) as usize,
+                        (cursor.column.0, cursor.line.0.max(0) as usize),
                         term.grid().history_size(),
                         self.size(),
                         screen,
+                        &placeholders,
                     );
+                    drop(graphics);
                     graphics_changed |= result.changed;
                     if result.cursor_advance_screen == Some(screen)
                         && let Some((cols, rows)) = result.cursor_advance
@@ -233,6 +241,7 @@ impl PaneTerminal {
 
     pub fn resize(&self, new_size: TerminalSize) {
         let new_size = Self::normalized_size(new_size);
+        let mut cursor_tracker = self.kitty_graphics_cursor_tracker.lock();
         let term = self.cloned_term_arc();
         let mut term = term.lock();
         let mut inner = self.inner.lock();
@@ -241,9 +250,9 @@ impl PaneTerminal {
         // a partially-applied resize.
         inner.size = new_size;
         term.resize(new_size);
-        self.kitty_graphics_cursor_tracker
-            .lock()
-            .reset_scroll_region();
+        cursor_tracker.reset_scroll_region();
+        self.kitty_graphics.lock().resize(new_size);
+        self.kitty_graphics_revision.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn size(&self) -> TerminalSize {
@@ -360,10 +369,18 @@ impl PaneTerminal {
     }
 
     pub fn kitty_graphics_revision(&self) -> u64 {
+        if self
+            .kitty_graphics
+            .lock()
+            .advance_animations(std::time::Instant::now())
+        {
+            self.kitty_graphics_revision.fetch_add(1, Ordering::Relaxed);
+        }
         self.kitty_graphics_revision.load(Ordering::Relaxed)
     }
 
     pub fn kitty_graphics_snapshot(&self) -> (u64, Vec<KittyGraphicsRenderPlacement>) {
+        let revision = self.kitty_graphics_revision();
         let term = self.cloned_term_arc();
         let term = term.lock();
         let grid = term.grid();
@@ -381,7 +398,7 @@ impl PaneTerminal {
                 screen,
                 &placeholders,
             );
-        (self.kitty_graphics_revision(), placements)
+        (revision, placements)
     }
 }
 

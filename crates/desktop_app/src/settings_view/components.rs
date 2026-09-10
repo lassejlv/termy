@@ -52,7 +52,7 @@ impl SettingsWindow {
                 .px_2()
                 .py(px(5.0))
                 .rounded(px(SETTINGS_BUTTON_RADIUS))
-                .text_xs()
+                .text_size(px(12.0))
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .text_color(text_muted)
                 .cursor_pointer()
@@ -65,7 +65,8 @@ impl SettingsWindow {
                     }
                     cx.notify();
                 }))
-                .child("Reset section")
+                .whitespace_nowrap()
+                .child("Reset defaults…")
                 .on_click(cx.listener(move |view, _, _, cx| {
                     view.confirm_reset_section_to_defaults(section, cx);
                 }))
@@ -227,10 +228,15 @@ impl SettingsWindow {
                     .min_w(px(0.0))
                     .flex_col()
                     .gap(px(1.0))
-                    .child(div().text_sm().text_color(self.text_primary()).child(title))
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(13.0))
+                            .text_color(self.text_primary())
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
                             .text_color(self.text_muted())
                             .line_height(px(16.0))
                             .child(description),
@@ -292,10 +298,9 @@ impl SettingsWindow {
         on_toggle: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> impl IntoElement {
         let accent = self.accent_with_alpha(0.95);
-        let mut bg_off = self.colors.foreground;
-        bg_off.a = 0.28;
+        let bg_off = self.ui_tokens().border;
         let track_color = if checked { accent } else { bg_off };
-        let knob_color = self.contrasting_text_for_fill(track_color, self.bg_card());
+        let knob_color = gpui::rgb(0xffffff);
         let knob_top = (SETTINGS_SWITCH_HEIGHT - SETTINGS_SWITCH_KNOB_SIZE) * 0.5;
         let knob_left = if checked {
             SETTINGS_SWITCH_WIDTH - SETTINGS_SWITCH_KNOB_SIZE - knob_top
@@ -311,6 +316,7 @@ impl SettingsWindow {
             .bg(track_color)
             .cursor_pointer()
             .relative()
+            .active(|s| s.opacity(0.78))
             .child(
                 div()
                     .absolute()
@@ -324,12 +330,15 @@ impl SettingsWindow {
             )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |view, _event: &MouseDownEvent, window, cx| {
+                cx.listener(|_view, _event: &MouseDownEvent, _window, cx| {
                     cx.stop_propagation();
-                    on_toggle(view, window, cx);
-                    cx.notify();
                 }),
             )
+            .on_click(cx.listener(move |view, _, window, cx| {
+                cx.stop_propagation();
+                on_toggle(view, window, cx);
+                cx.notify();
+            }))
     }
 
     pub(super) fn active_dropdown_options(
@@ -357,7 +366,7 @@ impl SettingsWindow {
         field: EditableField,
         options: Vec<DropdownOption>,
         text_secondary: Rgba,
-        hover_bg: Rgba,
+        _hover_bg: Rgba,
         border_color: Rgba,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
@@ -365,21 +374,30 @@ impl SettingsWindow {
             return None;
         }
 
-        let mut list = div().flex().flex_col().py_1();
+        let accent = self.accent();
+        let on_accent = self.ui_tokens().text_on_accent;
+        let current_value = self.editable_field_value(field);
+        let mut list = div().flex().flex_col().p(px(4.0)).gap(px(1.0));
         for (index, option) in options.into_iter().enumerate() {
             let option_label = option.display_text();
+            let selected = option.value.eq_ignore_ascii_case(&current_value);
             let option_value = option.value.clone();
             list = list.child(
                 div()
                     .id(SharedString::from(format!(
                         "dropdown-option-{field:?}-{index}"
                     )))
-                    .px_3()
-                    .py_1()
-                    .text_sm()
+                    .px(px(6.0))
+                    .py(px(5.0))
+                    .rounded(px(4.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .text_size(px(13.0))
                     .text_color(text_secondary)
                     .cursor_pointer()
-                    .hover(|this| this.bg(hover_bg))
+                    .hover(move |this| this.bg(accent).text_color(on_accent))
+                    .active(move |this| this.bg(accent).text_color(on_accent))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |view, _event: &MouseDownEvent, _window, cx| {
@@ -387,11 +405,17 @@ impl SettingsWindow {
                             view.apply_dropdown_selection(field, &option_value, cx);
                         }),
                     )
-                    .child(option_label),
+                    .child(div().w(px(12.0)).flex_none().children(selected.then(|| {
+                        svg()
+                            .path("icons/check.svg")
+                            .size(px(12.0))
+                            .text_color(text_secondary)
+                    })))
+                    .child(div().min_w(px(0.0)).text_ellipsis().child(option_label)),
             );
         }
 
-        let mut dropdown_bg = self.colors.background;
+        let mut dropdown_bg = self.ui_tokens().bg_overlay;
         dropdown_bg.a = 1.0;
         Some(
             deferred(
@@ -401,7 +425,7 @@ impl SettingsWindow {
                     )))
                     .occlude()
                     .absolute()
-                    .top(px(SETTINGS_CONTROL_HEIGHT + 2.0))
+                    .top(px(SETTINGS_CONTROL_HEIGHT + 5.0))
                     .left_0()
                     .right_0()
                     .max_h(if field == EditableField::Theme {
@@ -413,6 +437,7 @@ impl SettingsWindow {
                     .overflow_x_hidden()
                     .rounded(px(SETTINGS_BUTTON_RADIUS))
                     .bg(dropdown_bg)
+                    .shadow_lg()
                     .border_1()
                     .border_color(border_color)
                     .on_mouse_down(
@@ -448,7 +473,7 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let is_secret_field = Self::is_secret_field(field);
-        let readonly_display_value = if !is_active && uses_dropdown {
+        let readonly_display_value = if uses_dropdown && (!is_active || !uses_text_input) {
             self.dropdown_display_value(field, &display_value)
         } else if !is_active && is_secret_field {
             Self::masked_secret_value(&display_value)
@@ -458,7 +483,7 @@ impl SettingsWindow {
 
         if is_numeric {
             let chevron_size = px(11.0);
-            let stepper_w = px(NUMERIC_STEP_BUTTON_SIZE);
+            let stepper_w = px(18.0);
             let stepper_h = px(NUMERIC_STEP_BUTTON_SIZE * 0.5);
             return div()
                 .h_full()
@@ -469,7 +494,7 @@ impl SettingsWindow {
                 .child(
                     div()
                         .flex_1()
-                        .text_sm()
+                        .text_size(px(13.0))
                         .text_color(text_secondary)
                         .child(display_value),
                 )
@@ -480,6 +505,10 @@ impl SettingsWindow {
                         .items_center()
                         .justify_center()
                         .w(stepper_w)
+                        .rounded(px(4.0))
+                        .bg(self.bg_hover())
+                        .border_1()
+                        .border_color(self.card_border_color())
                         .child(
                             div()
                                 .id(SharedString::from(format!("inc-{field:?}")))
@@ -492,6 +521,7 @@ impl SettingsWindow {
                                 .rounded_t(px(SETTINGS_INPUT_RADIUS - 2.0))
                                 .text_color(text_primary)
                                 .hover(|s| s.bg(bg_card))
+                                .active(|s| s.bg(bg_card).opacity(0.65))
                                 .child(
                                     svg()
                                         .path(SharedString::from("icons/settings/chevron-up.svg"))
@@ -515,6 +545,7 @@ impl SettingsWindow {
                                 .rounded_b(px(SETTINGS_INPUT_RADIUS - 2.0))
                                 .text_color(text_primary)
                                 .hover(|s| s.bg(bg_card))
+                                .active(|s| s.bg(bg_card).opacity(0.65))
                                 .child(
                                     svg()
                                         .path(SharedString::from("icons/settings/chevron-down.svg"))
@@ -546,7 +577,7 @@ impl SettingsWindow {
                     );
 
                 let font = Font {
-                    family: self.config.ui_font_family.clone().into(),
+                    family: ".SystemUIFont".into(),
                     ..gpui::font("")
                 };
 
@@ -577,7 +608,7 @@ impl SettingsWindow {
                     .into_any_element();
             }
             let font = Font {
-                family: self.config.ui_font_family.clone().into(),
+                family: ".SystemUIFont".into(),
                 ..gpui::font("")
             };
             return TextInputElement::new(
@@ -601,6 +632,8 @@ impl SettingsWindow {
             .child(
                 div()
                     .flex_1()
+                    .min_w(px(0.0))
+                    .text_ellipsis()
                     .text_size(px(SETTINGS_INPUT_TEXT_SIZE))
                     .text_color(text_secondary)
                     .child(readonly_display_value),
@@ -618,7 +651,7 @@ impl SettingsWindow {
         } else if field == EditableField::FontFamily {
             readonly = readonly.child(
                 div()
-                    .text_xs()
+                    .text_size(px(12.0))
                     .text_color(self.text_muted())
                     .font_family(self.config.font_family.clone())
                     .child("Ag"),
@@ -626,23 +659,36 @@ impl SettingsWindow {
         } else if field == EditableField::UiFontFamily {
             readonly = readonly.child(
                 div()
-                    .text_xs()
+                    .text_size(px(12.0))
                     .text_color(self.text_muted())
                     .font_family(self.config.ui_font_family.clone())
                     .child("Ag"),
             );
         }
         if uses_dropdown {
-            let chevron_path = if is_active {
-                "icons/settings/chevron-up.svg"
-            } else {
-                "icons/settings/chevron-down.svg"
-            };
             readonly = readonly.child(
-                svg()
-                    .path(SharedString::from(chevron_path))
-                    .size(px(12.0))
-                    .text_color(self.text_muted()),
+                div()
+                    .flex_none()
+                    .w(px(16.0))
+                    .h(px(20.0))
+                    .rounded(px(4.0))
+                    .bg(self.accent())
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        svg()
+                            .path("icons/settings/chevron-up.svg")
+                            .size(px(10.0))
+                            .text_color(self.ui_tokens().text_on_accent),
+                    )
+                    .child(
+                        svg()
+                            .path("icons/settings/chevron-down.svg")
+                            .size(px(10.0))
+                            .text_color(self.ui_tokens().text_on_accent),
+                    ),
             );
         }
         readonly.into_any_element()
@@ -656,6 +702,16 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) {
         cx.stop_propagation();
+        if Self::field_uses_click_only_dropdown(field)
+            && self
+                .active_input
+                .as_ref()
+                .is_some_and(|input| input.field == field)
+        {
+            self.active_input = None;
+            cx.notify();
+            return;
+        }
         if !self
             .active_input
             .as_ref()
@@ -735,10 +791,10 @@ impl SettingsWindow {
         let uses_dropdown = Self::field_uses_dropdown(field);
         let text_secondary = self.text_secondary();
         let hover_bg = self.bg_hover();
-        let row_hover_bg = self.bg_elevated();
+        let row_hover_bg = self.bg_hover();
         let input_bg = self.bg_input();
         let border_color = self.border_color();
-        let idle_border = self.card_border_color();
+        let idle_border = self.border_color();
         let accent = self.accent();
         let bg_card = self.bg_card();
         let text_primary = self.text_primary();
@@ -826,14 +882,14 @@ impl SettingsWindow {
                     .gap(px(2.0))
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(px(13.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(text_primary)
                             .child(title),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(12.0))
                             .text_color(text_muted)
                             .line_height(px(17.0))
                             .child(description),
@@ -848,7 +904,11 @@ impl SettingsWindow {
                     .gap_2()
                     .child(
                         div()
-                            .w(px(SETTINGS_CONTROL_WIDTH))
+                            .w(px(if is_numeric {
+                                104.0
+                            } else {
+                                SETTINGS_CONTROL_WIDTH
+                            }))
                             .relative()
                             .h(px(SETTINGS_CONTROL_HEIGHT))
                             .flex()
@@ -1019,7 +1079,7 @@ impl SettingsWindow {
             .border_color(border_color)
             .text_color(text_primary)
             .font_weight(gpui::FontWeight::BOLD)
-            .text_sm()
+            .text_size(px(13.0))
             .child(label)
             .on_click(cx.listener(move |view, _, _, cx| {
                 match view.step_background_opacity(delta) {
@@ -1184,7 +1244,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .w(px(SETTINGS_SLIDER_VALUE_WIDTH))
-                    .text_sm()
+                    .text_size(px(13.0))
                     .text_color(text_secondary)
                     .text_align(TextAlign::Center)
                     .child(percentage),
@@ -1265,14 +1325,14 @@ impl SettingsWindow {
                     .gap(px(2.0))
                     .child(
                         div()
-                            .text_sm()
+                            .text_size(px(13.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(text_primary)
                             .child(title),
                     )
                     .child(
                         div()
-                            .text_xs()
+                            .text_size(px(12.0))
                             .text_color(text_muted)
                             .line_height(px(17.0))
                             .child(description),

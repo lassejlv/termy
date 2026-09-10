@@ -2,15 +2,27 @@ use gpui::Window;
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{Mutex, OnceLock},
     time::Instant,
 };
 
 const PROBE_PATH_ENV: &str = "TERMY_LAUNCH_PROBE_FILE";
 static PROCESS_STARTED_AT: OnceLock<Instant> = OnceLock::new();
+static STAGES: Mutex<Vec<(&'static str, u128)>> = Mutex::new(Vec::new());
 
 pub(crate) fn mark_process_start() {
     let _ = PROCESS_STARTED_AT.set(Instant::now());
+}
+
+pub(crate) fn record_stage(name: &'static str) {
+    if env::var_os(PROBE_PATH_ENV).is_none() {
+        return;
+    }
+    if let Some(started_at) = PROCESS_STARTED_AT.get()
+        && let Ok(mut stages) = STAGES.lock()
+    {
+        stages.push((name, started_at.elapsed().as_micros()));
+    }
 }
 
 pub(crate) fn record_after_next_frame(window: &mut Window) {
@@ -29,7 +41,13 @@ pub(crate) fn record_after_next_frame(window: &mut Window) {
             return;
         }
         let elapsed_ms = started_at.elapsed().as_millis();
-        let contents = probe_contents(std::process::id(), elapsed_ms, width, height);
+        let mut contents = probe_contents(std::process::id(), elapsed_ms, width, height);
+        if let Ok(stages) = STAGES.lock() {
+            use std::fmt::Write;
+            for (name, micros) in stages.iter() {
+                let _ = writeln!(contents, "stage_{name}_us={micros}");
+            }
+        }
         if let Err(error) = write_probe(&path, &contents) {
             log::warn!("Failed to write launch probe '{}': {error}", path.display());
         }

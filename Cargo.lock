@@ -6622,7 +6622,7 @@ dependencies = [
 
 [[package]]
 name = "termy"
-version = "0.2.50"
+version = "0.2.51"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -6634,6 +6634,7 @@ dependencies = [
  "flume",
  "fs4",
  "gpui",
+ "image",
  "libsqlite3-sys",
  "log",
  "notify",
@@ -6684,7 +6685,7 @@ dependencies = [
 
 [[package]]
 name = "termy_cli"
-version = "0.2.50"
+version = "0.2.51"
 dependencies = [
  "clap",
  "core-foundation 0.10.0",

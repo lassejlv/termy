@@ -234,6 +234,14 @@ pub struct TermyFfiKittyGraphicsPlacement {
     pub x_offset: u32,
     pub y_offset: u32,
     pub z_index: i32,
+    pub col_offset: i32,
+    pub is_virtual_cell: bool,
+    pub virtual_cell_col: u32,
+    pub virtual_cell_row: u32,
+    pub clip_top_rows: u32,
+    pub clip_bottom_rows: u32,
+    /// Zero for a static placement; otherwise the next animation wakeup delay.
+    pub next_frame_delay_ms: u64,
 }
 
 #[repr(C)]
@@ -926,7 +934,7 @@ fn ffi_kitty_graphics_placement_from_placement(
         placement_serial: placement.placement_serial,
         image_id: placement.image_id,
         placement_id: placement.placement_id,
-        png: ffi_bytes_from_vec(placement.png.as_ref().to_vec()),
+        png: ffi_bytes_from_vec(placement.image.png().as_ref().to_vec()),
         image_width: placement.image_width,
         image_height: placement.image_height,
         image_generation: placement.image_generation,
@@ -945,6 +953,19 @@ fn ffi_kitty_graphics_placement_from_placement(
         x_offset: placement.x_offset,
         y_offset: placement.y_offset,
         z_index: placement.z_index,
+        col_offset: placement.col_offset,
+        is_virtual_cell: placement.virtual_cell.is_some(),
+        virtual_cell_col: placement.virtual_cell.map_or(0, |cell| cell.0),
+        virtual_cell_row: placement.virtual_cell.map_or(0, |cell| cell.1),
+        clip_top_rows: placement.clip_top_rows,
+        clip_bottom_rows: placement.clip_bottom_rows,
+        next_frame_delay_ms: placement.animation_deadline.map_or(0, |deadline| {
+            deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_millis()
+                .max(1)
+                .min(u64::MAX as u128) as u64
+        }),
     }
 }
 

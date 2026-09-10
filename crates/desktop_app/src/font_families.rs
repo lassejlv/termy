@@ -76,7 +76,17 @@ pub(crate) fn effective_terminal_font_family(
     requested: &str,
     text_system: &TextSystem,
 ) -> SharedString {
+    // Most launches need one installed family. Enumerating every system font
+    // creates thousands of descriptors before the first window can paint.
+    #[cfg(target_os = "macos")]
+    if let Some(candidate) = directly_available_font_family(requested)
+        && font_has_fixed_ascii_advances(text_system, &candidate)
+    {
+        clear_fallback_notification();
+        return candidate.into();
+    }
     let available = available_font_families(text_system.all_font_names());
+    crate::launch_probe::record_stage("font_catalog_loaded");
     let fallback = || -> SharedString {
         let preferred = system_monospace_family();
         select_fixed_pitch_family(Some(&preferred), &available, |family| {
@@ -111,6 +121,24 @@ pub(crate) fn effective_terminal_font_family(
 
     clear_fallback_notification();
     candidate.into()
+}
+
+#[cfg(target_os = "macos")]
+fn directly_available_font_family(requested: &str) -> Option<String> {
+    let requested = requested.trim();
+    let concrete = match requested {
+        "" => return None,
+        ".ZedMono" | "Zed Plex Mono" => "Lilex",
+        ".ZedSans" | "Zed Plex Sans" => "IBM Plex Sans",
+        family if family.eq_ignore_ascii_case("monospace") => DEFAULT_FONT_FAMILY,
+        family => family,
+    };
+    let font =
+        core_text::font::new_from_name(concrete, f64::from(TERMINAL_METRIC_FONT_SIZE)).ok()?;
+    let family = font.family_name();
+    // CoreText silently substitutes missing names. Never accept that fallback
+    // as evidence that the configured family exists.
+    family.eq_ignore_ascii_case(concrete).then_some(family)
 }
 
 #[cfg(target_os = "linux")]
@@ -214,6 +242,24 @@ fn ascii_advances_are_fixed(advances: &[f32]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn direct_font_lookup_preserves_missing_family_detection_and_generic_alias() {
+        assert_eq!(
+            directly_available_font_family(" Menlo ").as_deref(),
+            Some("Menlo")
+        );
+        assert_eq!(
+            directly_available_font_family("monospace").as_deref(),
+            Some(DEFAULT_FONT_FAMILY)
+        );
+        assert_eq!(
+            directly_available_font_family("Termy missing font 8f77d2"),
+            None
+        );
+        assert_eq!(directly_available_font_family(""), None);
+    }
 
     #[test]
     fn available_fonts_hide_unavailable_zed_aliases_and_deduplicate_case() {

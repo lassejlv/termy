@@ -695,7 +695,7 @@ impl TerminalView {
                     .as_ref()
                     .and_then(|selection| self.current_kitty_image_placement(selection))
                 {
-                    cx.write_to_clipboard(kitty_png_clipboard_item(image.png.as_ref()));
+                    cx.write_to_clipboard(kitty_png_clipboard_item(image.image.png().as_ref()));
                     crate::ui::toast::success("Copied image");
                     self.notify_overlay(cx);
                     return true;
@@ -735,6 +735,10 @@ impl TerminalView {
             }
             CommandAction::SelectAll => {
                 if self.select_all_in_active_inline_input(cx) {
+                    return true;
+                }
+                if self.select_all_terminal_contents() {
+                    cx.notify();
                     return true;
                 }
                 false

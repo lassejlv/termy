@@ -743,6 +743,15 @@ impl TerminalView {
         self.execute_command_action(CommandAction::Paste, true, window, cx);
     }
 
+    pub(in super::super) fn handle_select_all_action(
+        &mut self,
+        _: &commands::SelectAll,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::SelectAll, true, window, cx);
+    }
+
     pub(in super::super) fn handle_clear_screen_action(
         &mut self,
         _: &commands::ClearScreen,

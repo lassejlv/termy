@@ -511,6 +511,7 @@ fn main() {
     let startup_arguments = parse_startup_arguments(cli_args);
     let (deeplink_tx, deeplink_rx) = flume::unbounded::<Vec<String>>();
     let application = Application::new().with_assets(crate::asset_source::EmbeddedAssets);
+    launch_probe::record_stage("platform_created");
 
     if !startup_arguments.deeplinks.is_empty()
         && let Err(error) = deeplink_tx.send(startup_arguments.deeplinks.clone())
@@ -528,6 +529,7 @@ fn main() {
     });
 
     application.run(move |cx: &mut App| {
+        launch_probe::record_stage("application_running");
         spawn_deeplink_listener(cx, deeplink_rx);
 
         cx.on_action(|_: &OpenConfig, _cx| {
@@ -547,10 +549,12 @@ fn main() {
         let startup_load =
             config::load_runtime_config(&mut startup_config_error, "Failed to load config");
         let mut app_config = startup_load.config;
+        launch_probe::record_stage("config_loaded");
         if let Some(working_dir) = startup_arguments.working_dir {
             app_config.working_dir = Some(working_dir);
         }
-        app_icon::apply_from_config(&app_config);
+        app_icon::apply_at_startup(&app_config);
+        launch_probe::record_stage("icon_applied");
         if let Some(message) = guard_tmux_startup(&mut app_config) {
             log::warn!("{message}");
             crate::ui::toast::warning(message);
@@ -562,6 +566,7 @@ fn main() {
             app_config.tmux_enabled
         };
         keybindings::install_keybindings(cx, &app_config, tmux_runtime_active);
+        launch_probe::record_stage("keybindings_installed");
         let startup_config = app_config;
 
         if let Err(error) = open_main_window(cx, startup_config) {

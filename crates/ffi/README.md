@@ -18,6 +18,11 @@ clipboard permissions and must not re-enter the terminal from a callback.
 Display-only hosts forward bytes received by the protocol-reply callback to
 their external transport.
 
+The Kitty placement struct now includes signed column offsets, Unicode cell
+coordinates, margin clipping, and `next_frame_delay_ms` (zero means static).
+The PNG buffer remains independently owned and is released with the batch.
+Hosts must rebuild against the updated header; the placement struct ABI changed.
+
 ## Validation
 
 ```sh

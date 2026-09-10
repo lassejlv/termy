@@ -19,3 +19,24 @@ cargo test -p termy_terminal_ui
 - `termy_ffi`
 - `termy` / `crates/desktop_app`
 - app settings, workspace stores, or command execution workflows
+
+`TerminalGrid::split_background()` shares cached row operations between the
+background and foreground passes when Kitty images must be painted between
+cell backgrounds and text. Panes without such images keep one grid pass.
+
+The paint cache retains immutable source rows and their cursor/hover decorations.
+When an engine reports a full redraw, unchanged or shifted rows can reuse their
+draw operations and shaped text without rebuilding them. Tmon's explicit scroll
+operations rotate the retained rows directly; exposed rows and cursor transitions
+are rebuilt. Every frame still paints all visible rows because GPUI does not
+preserve the previous frame's pixels. Font, color, selection, and geometry changes
+remain part of cache validation. Clearing a hidden pane also drops retained cells.
+
+Run the bounded scroll preparation comparison with:
+
+```sh
+cargo test --locked --release -p termy_terminal_ui repeated_full_damage_scrolling -- --nocapture
+```
+
+This compares row preparation with and without source-row reuse and checks that
+both paths produce the same final operations. It does not measure GPU frame time.

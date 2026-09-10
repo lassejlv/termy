@@ -306,20 +306,40 @@ impl AlacrittyBackend {
                     }
                 }
                 KittyGraphicsItem::Command(command) => {
+                    term_mutated |= parser.sync_bytes_count() > 0;
+                    let track_scrolls = self.kitty_graphics.lock().has_placements();
+                    let effects = prepare_kitty_graphics_command(
+                        &mut cursor_tracker,
+                        &mut parser,
+                        &mut term,
+                        track_scrolls,
+                        Some(&self.resize_anchor_state),
+                    );
+                    if !effects.is_empty() {
+                        graphics_changed |= effects.apply_to(&mut self.kitty_graphics.lock());
+                    }
                     let cursor = term.grid().cursor.point;
                     let full_screen_scroll_region =
                         cursor_tracker.region_covers_full_screen(term.grid().screen_lines());
                     let screen = KittyGraphicsScreen::from_alternate_screen(
                         term.mode().contains(TermMode::ALT_SCREEN),
                     );
-                    let result = self.kitty_graphics.lock().apply_on_screen(
+                    let mut graphics = self.kitty_graphics.lock();
+                    let placeholders =
+                        if command.action() == 'd' && graphics.has_virtual_placements() {
+                            kitty_graphics_placeholders_from_alacritty_grid(term.grid())
+                        } else {
+                            Vec::new()
+                        };
+                    let result = graphics.apply_on_screen_with_placeholders(
                         command,
-                        cursor.column.0,
-                        cursor.line.0.max(0) as usize,
+                        (cursor.column.0, cursor.line.0.max(0) as usize),
                         term.grid().history_size(),
                         self.size,
                         screen,
+                        &placeholders,
                     );
+                    drop(graphics);
                     graphics_changed |= result.changed;
                     if result.cursor_advance_screen == Some(screen)
                         && let Some((cols, rows)) = result.cursor_advance
@@ -371,6 +391,8 @@ impl AlacrittyBackend {
         }
         let mut term = self.term.lock();
         term.resize(new_size);
+        self.kitty_graphics.lock().resize(new_size);
+        self.kitty_graphics_revision.fetch_add(1, Ordering::Relaxed);
         self.kitty_graphics_cursor_tracker
             .lock()
             .reset_scroll_region();
@@ -405,6 +427,13 @@ impl AlacrittyBackend {
 
     /// Monotonic revision for Kitty image or placement state.
     pub fn kitty_graphics_revision(&self) -> u64 {
+        if self
+            .kitty_graphics
+            .lock()
+            .advance_animations(std::time::Instant::now())
+        {
+            self.kitty_graphics_revision.fetch_add(1, Ordering::Relaxed);
+        }
         self.kitty_graphics_revision.load(Ordering::Relaxed)
     }
 
@@ -415,17 +444,18 @@ impl AlacrittyBackend {
         let screen =
             KittyGraphicsScreen::from_alternate_screen(term.mode().contains(TermMode::ALT_SCREEN));
         let placeholders = kitty_graphics_placeholders_from_alacritty_grid(grid);
-        let placements = self
-            .kitty_graphics
-            .lock()
-            .render_placements_on_screen_with_placeholders(
-                grid.history_size(),
-                grid.display_offset(),
-                grid.screen_lines(),
-                grid.columns(),
-                screen,
-                &placeholders,
-            );
+        let mut graphics = self.kitty_graphics.lock();
+        if graphics.advance_animations(std::time::Instant::now()) {
+            self.kitty_graphics_revision.fetch_add(1, Ordering::Relaxed);
+        }
+        let placements = graphics.render_placements_on_screen_with_placeholders(
+            grid.history_size(),
+            grid.display_offset(),
+            grid.screen_lines(),
+            grid.columns(),
+            screen,
+            &placeholders,
+        );
         (
             self.kitty_graphics_revision.load(Ordering::Relaxed),
             placements,

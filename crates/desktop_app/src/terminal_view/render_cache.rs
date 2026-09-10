@@ -1,5 +1,4 @@
 use super::SelectionPos;
-use std::{collections::HashMap, sync::Arc};
 use termy_terminal_ui::{TerminalGridPaintCacheHandle, TerminalGridRows};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,7 +38,7 @@ pub(in crate::terminal_view) struct TerminalPaneRenderCache {
     pub(in crate::terminal_view) display_offset: usize,
     pub(in crate::terminal_view) key: Option<TerminalPaneRenderCacheKey>,
     pub(in crate::terminal_view) paint_cache: TerminalGridPaintCacheHandle,
-    pub(in crate::terminal_view) kitty_images: HashMap<(u32, u64), Arc<gpui::Image>>,
+    pub(in crate::terminal_view) kitty_images: super::kitty_images::KittyImageCache,
     pub(in crate::terminal_view) kitty_placements: Vec<termy_core::KittyGraphicsRenderPlacement>,
     pub(in crate::terminal_view) kitty_placements_key: Option<KittyGraphicsRenderCacheKey>,
 }
@@ -88,7 +87,7 @@ mod tests {
                 },
             }),
             paint_cache: TerminalGridPaintCacheHandle::default(),
-            kitty_images: HashMap::new(),
+            kitty_images: Default::default(),
             kitty_placements: Vec::new(),
             kitty_placements_key: None,
         };

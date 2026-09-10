@@ -66,6 +66,7 @@ mod constants;
 mod inline_input;
 mod inspector;
 mod interaction;
+mod kitty_images;
 #[cfg(target_os = "macos")]
 mod macos_file_drop;
 mod metrics;
@@ -1412,6 +1413,8 @@ pub struct TerminalView {
     resize_indicator_visible_until: Option<Instant>,
     resize_indicator_animation_scheduled: bool,
     resize_throttle_task: Option<gpui::Task<()>>,
+    kitty_animation_task: Option<gpui::Task<()>>,
+    kitty_animation_deadline: Option<Instant>,
     last_resize_applied_at: Option<Instant>,
     last_terminal_resize_signature: Option<TerminalResizeSignature>,
     deferred_inactive_resize: DeferredTerminalResize,
@@ -2837,13 +2840,10 @@ impl TerminalView {
     fn terminal_padding_for_screen_mode(
         padding_x: f32,
         padding_y: f32,
-        alternate_screen: bool,
+        _alternate_screen: bool,
     ) -> (f32, f32) {
-        if alternate_screen {
-            (0.0, 0.0)
-        } else {
-            (padding_x, padding_y)
-        }
+        // Alternate-screen applications get the same configured inset as the shell.
+        (padding_x, padding_y)
     }
 
     fn uses_native_split_content_padding(runtime_uses_tmux: bool, pane_count: usize) -> bool {
@@ -3600,10 +3600,12 @@ impl TerminalView {
     }
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>, config: AppConfig) -> Self {
+        crate::launch_probe::record_stage("window_created");
         let effective_font_family = crate::font_families::effective_terminal_font_family(
             &config.font_family,
             cx.text_system().as_ref(),
         );
+        crate::launch_probe::record_stage("font_resolved");
         let focus_handle = cx.focus_handle();
         let blur_focus_handle = focus_handle.clone();
         let (event_wakeup_tx, event_wakeup_rx) = bounded(1);
@@ -3815,6 +3817,7 @@ impl TerminalView {
         let resolved_runtime_kind = runtime.kind();
 
         let plugin_runtime = PluginRuntime::new(config_path.as_deref());
+        crate::launch_probe::record_stage("terminal_created");
         let mut view = Self {
             session: SessionState::new(),
             workspace_sidebar_enabled: config.sidebar_enabled,
@@ -3943,6 +3946,8 @@ impl TerminalView {
             resize_indicator_visible_until: None,
             resize_indicator_animation_scheduled: false,
             resize_throttle_task: None,
+            kitty_animation_task: None,
+            kitty_animation_deadline: None,
             last_resize_applied_at: None,
             last_terminal_resize_signature: None,
             deferred_inactive_resize: DeferredTerminalResize::Idle,
@@ -4152,6 +4157,7 @@ impl TerminalView {
             Some(cx.observe_window_appearance(window, |view, window, cx| {
                 view.handle_window_appearance_change(window.appearance(), cx);
             }));
+        crate::launch_probe::record_stage("view_created");
         view
     }
 

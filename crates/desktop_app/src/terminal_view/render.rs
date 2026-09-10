@@ -23,25 +23,15 @@ struct KittyGraphicsSelectionPaint<'a> {
 fn kitty_graphics_layers(
     placements: &[KittyGraphicsRenderPlacement],
     cell_size: Size<Pixels>,
-    image_cache: &mut HashMap<(u32, u64), Arc<gpui::Image>>,
+    image_cache: &mut super::kitty_images::KittyImageCache,
+    cx: &App,
     selection: KittyGraphicsSelectionPaint<'_>,
-) -> (Vec<AnyElement>, Vec<AnyElement>) {
-    const MAX_CACHED_KITTY_IMAGES: usize = 256;
+) -> (Vec<AnyElement>, Vec<AnyElement>, Vec<AnyElement>) {
+    let mut below_background = Vec::new();
     let mut below_text = Vec::new();
     let mut above_text = Vec::new();
     let cell_width: f32 = cell_size.width.into();
     let cell_height: f32 = cell_size.height.into();
-    let active_images: HashSet<(u32, u64)> = placements
-        .iter()
-        .map(|placement| (placement.image_id, placement.image_generation))
-        .collect();
-    let active_image_ids = active_images
-        .iter()
-        .map(|(image_id, _)| *image_id)
-        .collect::<HashSet<_>>();
-    image_cache.retain(|(image_id, generation), _| {
-        !active_image_ids.contains(image_id) || active_images.contains(&(*image_id, *generation))
-    });
 
     for placement in placements {
         let bounds = kitty_graphics_placement_bounds(placement, cell_width, cell_height);
@@ -49,24 +39,57 @@ fn kitty_graphics_layers(
             continue;
         }
 
-        let scale_x = bounds.width / placement.source_width.max(1) as f32;
-        let scale_y = bounds.height / placement.source_height.max(1) as f32;
-        let image = image_cache
-            .entry((placement.image_id, placement.image_generation))
-            .or_insert_with(|| {
-                Arc::new(gpui::Image::from_bytes(
-                    gpui::ImageFormat::Png,
-                    placement.png.as_ref().to_vec(),
-                ))
-            })
-            .clone();
-        let image_element = gpui::img(image)
+        let (image_width, image_height) = termy_core::graphics_display_size(
+            placement.source_width,
+            placement.source_height,
+            placement.display_cols,
+            placement.display_rows,
+            (cell_width, cell_height),
+            (placement.x_offset, placement.y_offset),
+            placement.virtual_cell.is_some(),
+        );
+        let scale_x = image_width / placement.source_width.max(1) as f32;
+        let scale_y = image_height / placement.source_height.max(1) as f32;
+        let (tile_x, tile_y) = placement.virtual_cell.unwrap_or((0, 0));
+        let image = image_cache.get(placement, cx);
+        let texture_border = if placement.image.rgba().is_some() {
+            1.0
+        } else {
+            0.0
+        };
+        let offset = point(
+            px((placement.source_x as f32 + texture_border) * scale_x + tile_x as f32 * cell_width),
+            px((placement.source_y as f32 + texture_border) * scale_y
+                + (tile_y as f32 + placement.clip_top_rows as f32) * cell_height),
+        );
+        let image_size = gpui::size(
+            px((placement.image_width as f32 + texture_border * 2.0) * scale_x),
+            px((placement.image_height as f32 + texture_border * 2.0) * scale_y),
+        );
+        let image_element = match image {
+            gpui::ImageSource::Render(image) => canvas(
+                |_, _, _| (),
+                move |bounds, (), window, _| {
+                    let image_bounds = Bounds::new(bounds.origin - offset, image_size);
+                    if let Err(error) =
+                        window.paint_image(image_bounds, Default::default(), image, 0, false)
+                    {
+                        log::warn!("unable to paint Kitty image: {error}");
+                    }
+                },
+            )
             .absolute()
-            .left(px(-(placement.source_x as f32 * scale_x)))
-            .top(px(-(placement.source_y as f32 * scale_y)))
-            .w(px(placement.image_width as f32 * scale_x))
-            .h(px(placement.image_height as f32 * scale_y))
-            .object_fit(ObjectFit::Fill);
+            .size_full()
+            .into_any_element(),
+            source => gpui::img(source)
+                .absolute()
+                .left(-offset.x)
+                .top(-offset.y)
+                .w(image_size.width)
+                .h(image_size.height)
+                .object_fit(ObjectFit::Fill)
+                .into_any_element(),
+        };
         let selected = selection
             .explicit
             .is_some_and(|selected| selected.matches(selection.pane_id, placement))
@@ -101,16 +124,15 @@ fn kitty_graphics_layers(
                 )
             })
             .into_any_element();
-        if placement.z_index < 0 {
+        if placement.z_index < -1_073_741_824 {
+            below_background.push(layer);
+        } else if placement.z_index < 0 {
             below_text.push(layer);
         } else {
             above_text.push(layer);
         }
     }
-    if image_cache.len() > MAX_CACHED_KITTY_IMAGES {
-        image_cache.retain(|key, _| active_images.contains(key));
-    }
-    (below_text, above_text)
+    (below_background, below_text, above_text)
 }
 
 fn blend_rgb_only(base: gpui::Rgba, target: gpui::Rgba, factor: f32) -> gpui::Rgba {
@@ -371,8 +393,6 @@ fn finalized_cache_update_strategy(
 thread_local! {
     static DIRTY_SPAN_RANGES: std::cell::RefCell<Vec<(usize, usize, usize)>> =
         std::cell::RefCell::new(Vec::with_capacity(128));
-    static SCROLL_DAMAGE_ROWS: std::cell::RefCell<Vec<usize>> =
-        std::cell::RefCell::new(Vec::with_capacity(128));
 }
 
 fn dirty_span_cell_upper_bound(spans: &[TerminalDirtySpan], rows: usize, cols: usize) -> usize {
@@ -465,28 +485,14 @@ fn paint_damage_from_scrolls_and_spans(
         return paint_damage_from_dirty_spans(spans, row_count);
     }
     let metrics_started_at = terminal_ui_render_metrics_enabled().then(Instant::now);
-    let result = SCROLL_DAMAGE_ROWS.with(|buf| {
-        let mut rows = buf.borrow_mut();
-        rows.clear();
-        for scroll in scrolls {
-            if scroll.top > scroll.bottom || scroll.top >= row_count {
-                continue;
-            }
-            rows.extend(scroll.top..=scroll.bottom.min(row_count.saturating_sub(1)));
-        }
-        rows.extend(
-            spans
-                .iter()
-                .filter_map(|span| (span.row < row_count).then_some(span.row)),
-        );
-        rows.sort_unstable();
-        rows.dedup();
-        if rows.is_empty() {
-            TerminalGridPaintDamage::None
-        } else {
-            TerminalGridPaintDamage::Rows(Arc::from(rows.as_slice()))
-        }
-    });
+    let result = TerminalGridPaintDamage::Scroll {
+        scrolls: Arc::from(scrolls),
+        ranges: spans
+            .iter()
+            .filter(|span| span.row < row_count)
+            .map(|span| (span.row, span.left_col, span.right_col))
+            .collect(),
+    };
     if let Some(started_at) = metrics_started_at {
         add_span_damage_compute_us(started_at.elapsed().as_micros() as u64);
     }
@@ -1281,6 +1287,7 @@ impl TerminalView {
         selection_bg.a = SELECTION_BG_ALPHA;
         let selection_fg = colors.background;
         TerminalGrid {
+            paint_phase: termy_terminal_ui::TerminalGridPaintPhase::All,
             cells,
             paint_cache,
             paint_damage,
@@ -3144,8 +3151,7 @@ impl Render for TerminalView {
         let effective_background_opacity = self.background_opacity_factor();
         let mut terminal_surface_bg = colors.background;
         terminal_surface_bg.a = self.scaled_background_alpha(terminal_surface_bg.a);
-        let mut window_surface_bg = terminal_surface_bg;
-        let mut chrome_colors = colors.clone();
+        let mut terminal_area_background = None;
 
         self.sync_terminal_size(window, layout_cell_size, cx);
         let active_pane_id = self.active_pane_id().map(ToOwned::to_owned);
@@ -3175,6 +3181,7 @@ impl Render for TerminalView {
         divider_line_rgba.a = self.scaled_chrome_neutral_border_alpha(0.42);
         let divider_line_color: gpui::Hsla = divider_line_rgba.into();
         let mut pane_layers = Vec::<AnyElement>::new();
+        let mut kitty_animation_deadline: Option<Instant> = None;
         let mut pane_dividers = Vec::<AnyElement>::new();
         let mut pane_resize_handles = Vec::<AnyElement>::new();
         let mut pane_focus_accents = Vec::<AnyElement>::new();
@@ -3317,18 +3324,15 @@ impl Render for TerminalView {
                 }
 
                 let fullscreen_tui = !multi_pane && alternate_screen_mode;
-                let edge_cell = pane_cells.first().and_then(|row| row.first());
                 let pane_surface_bg = tui_surface_background(
                     fullscreen_tui,
-                    edge_cell.map(|cell| cell.bg),
+                    pane_cells
+                        .iter()
+                        .flat_map(|row| row.iter().map(|cell| cell.bg)),
                     terminal_surface_bg,
                 );
-                if fullscreen_tui {
-                    window_surface_bg = pane_surface_bg;
-                    chrome_colors.background = pane_surface_bg;
-                    if let Some(cell) = edge_cell {
-                        chrome_colors.foreground = cell.fg.into();
-                    }
+                if fullscreen_tui && pane_surface_bg != terminal_surface_bg {
+                    terminal_area_background = Some(pane_surface_bg);
                 }
                 let edge_cells = fullscreen_tui.then(|| Arc::clone(&pane_cells));
 
@@ -3364,7 +3368,7 @@ impl Render for TerminalView {
                 let pane_cell_size = self
                     .cached_cell_size_for_font_size(pane_font_size)
                     .unwrap_or(layout_cell_size);
-                let terminal_grid = self.build_terminal_grid_from_cache(
+                let mut terminal_grid = self.build_terminal_grid_from_cache(
                     pane_cells,
                     paint_cache,
                     paint_damage,
@@ -3389,7 +3393,7 @@ impl Render for TerminalView {
                     cursor_paint_visible,
                     pane_surface_bg,
                 );
-                let (kitty_below_text, kitty_above_text) = {
+                let (kitty_below_background, kitty_below_text, kitty_above_text) = {
                     let mut pane_render_cache = pane.render_cache.borrow_mut();
                     let graphics_revision = terminal.kitty_graphics_revision().unwrap_or(0);
                     let mut graphics_cache_key = KittyGraphicsRenderCacheKey {
@@ -3415,11 +3419,22 @@ impl Render for TerminalView {
                         pane_render_cache.kitty_placements = placements;
                         pane_render_cache.kitty_placements_key = Some(graphics_cache_key);
                     }
+                    for deadline in pane_render_cache
+                        .kitty_placements
+                        .iter()
+                        .filter_map(|placement| placement.animation_deadline)
+                    {
+                        kitty_animation_deadline = Some(
+                            kitty_animation_deadline
+                                .map_or(deadline, |current| current.min(deadline)),
+                        );
+                    }
                     let pane_render_cache = &mut *pane_render_cache;
                     kitty_graphics_layers(
                         &pane_render_cache.kitty_placements,
                         pane_cell_size,
                         &mut pane_render_cache.kitty_images,
+                        cx,
                         KittyGraphicsSelectionPaint {
                             pane_id: pane.id.as_str(),
                             display_offset: pane_display_offset,
@@ -3429,6 +3444,15 @@ impl Render for TerminalView {
                         },
                     )
                 };
+
+                let kitty_grid_background = (!kitty_below_text.is_empty()).then(|| {
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .child(terminal_grid.split_background())
+                        .into_any_element()
+                });
 
                 let Some(pane_layout) = self.terminal_pane_layout(active_tab, pane, content_bounds)
                 else {
@@ -3475,10 +3499,10 @@ impl Render for TerminalView {
                             },
                         )
                         .absolute()
-                        .left(px(content_bounds.origin_x))
-                        .top(px(content_bounds.origin_y))
-                        .w(px(content_bounds.width))
-                        .h(px(content_bounds.height))
+                        .left(px(pane_left))
+                        .top(px(pane_top))
+                        .w(px((content_bounds.right() - pane_left).max(0.0)))
+                        .h(px((content_bounds.bottom() - pane_top).max(0.0)))
                         .into_any_element(),
                     );
                 }
@@ -3496,6 +3520,8 @@ impl Render for TerminalView {
                         .overflow_hidden()
                         .cursor_text()
                         .when(link_hovered, |el| el.cursor_pointer())
+                        .children(kitty_below_background)
+                        .children(kitty_grid_background)
                         .children(kitty_below_text)
                         .child(terminal_grid)
                         .children(kitty_above_text)
@@ -3800,6 +3826,27 @@ impl Render for TerminalView {
             }
         }
 
+        if self.kitty_animation_deadline != kitty_animation_deadline {
+            self.kitty_animation_deadline = kitty_animation_deadline;
+            self.kitty_animation_task = kitty_animation_deadline.map(|deadline| {
+                cx.spawn(async move |this, cx| {
+                    smol::Timer::after(
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .max(Duration::from_millis(1)),
+                    )
+                    .await;
+                    let _ = cx.update(|cx| {
+                        this.update(cx, |view, cx| {
+                            view.kitty_animation_deadline = None;
+                            view.kitty_animation_task = None;
+                            cx.notify();
+                        })
+                    });
+                })
+            });
+        }
+
         if self.session.tabs.is_empty()
             && let Some(content_bounds) = self.terminal_content_bounds(window)
         {
@@ -3836,22 +3883,21 @@ impl Render for TerminalView {
         self.record_render_metrics_for_pass(render_pass_cache_counts);
 
         let focus_handle = self.focus_handle.clone();
-        let tabbar_bg = window_surface_bg;
+        let tabbar_bg = terminal_surface_bg;
         let show_tab_strip_chrome = self.should_render_tab_strip_chrome();
         let titlebar_height = Self::window_titlebar_height_for(false, show_tab_strip_chrome);
         let vertical_tabs = self.tab_strip_orientation()
             == crate::terminal_view::tab_strip::state::TabStripOrientation::Vertical;
         let show_horizontal_tabbar = show_tab_strip_chrome && !vertical_tabs;
         let tabs_row = show_horizontal_tabbar
-            .then(|| self.render_tab_strip(window, &chrome_colors, &ui_font_family, tabbar_bg, cx));
-        let tab_sidebar = (vertical_tabs && show_tab_strip_chrome).then(|| {
-            self.render_tab_sidebar(window, &chrome_colors, &ui_font_family, tabbar_bg, cx)
-        });
+            .then(|| self.render_tab_strip(window, &colors, &ui_font_family, tabbar_bg, cx));
+        let tab_sidebar = (vertical_tabs && show_tab_strip_chrome)
+            .then(|| self.render_tab_sidebar(window, &colors, &ui_font_family, tabbar_bg, cx));
         let workspace_sidebar = self
             .workspace_sidebar_visible()
-            .then(|| self.render_workspace_sidebar(&chrome_colors, &ui_font_family, tabbar_bg, cx));
+            .then(|| self.render_workspace_sidebar(&colors, &ui_font_family, tabbar_bg, cx));
         let workspace_sidebar_overlay = self.workspace_sidebar_overlay_visible().then(|| {
-            self.render_workspace_sidebar_overlay(&chrome_colors, &ui_font_family, tabbar_bg, cx)
+            self.render_workspace_sidebar_overlay(&colors, &ui_font_family, tabbar_bg, cx)
         });
         let workspace_sidebar_edge_peek = self
             .workspace_sidebar_edge_peek_enabled()
@@ -3863,14 +3909,7 @@ impl Render for TerminalView {
             self.show_termy_in_titlebar,
         )
         .then(|| {
-            self.render_titlebar_branding(
-                window,
-                &chrome_colors,
-                &ui_font_family,
-                tabbar_bg,
-                false,
-                cx,
-            )
+            self.render_titlebar_branding(window, &colors, &ui_font_family, tabbar_bg, false, cx)
         })
         .flatten();
         if self.terminal_scrollbar_mode() == ui_scrollbar::ScrollbarVisibilityMode::OnScroll
@@ -3998,7 +4037,7 @@ impl Render for TerminalView {
             .flex()
             .flex_col()
             .size_full()
-            .bg(window_surface_bg)
+            .bg(terminal_surface_bg)
             .font_family(ui_font_family)
             .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _window, cx| {
                 if matches!(
@@ -4087,6 +4126,7 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_minimize_window_action))
                     .on_action(cx.listener(Self::handle_copy_action))
                     .on_action(cx.listener(Self::handle_paste_action))
+                    .on_action(cx.listener(Self::handle_select_all_action))
                     .on_action(cx.listener(Self::handle_clear_screen_action))
                     .on_action(cx.listener(Self::handle_zoom_in_action))
                     .on_action(cx.listener(Self::handle_zoom_out_action))
@@ -4141,6 +4181,10 @@ impl Render for TerminalView {
                                     .child(
                                         div()
                                             .id("terminal-surface")
+                                            .when_some(
+                                                terminal_area_background,
+                                                |surface, background| surface.bg(background),
+                                            )
                                             .relative()
                                             .flex_1()
                                             .h_full()
@@ -4776,7 +4820,7 @@ mod tests {
     }
 
     #[test]
-    fn scroll_paint_damage_rebuilds_moved_and_dirty_rows() {
+    fn scroll_paint_damage_preserves_scroll_operations_and_dirty_ranges() {
         let damage = paint_damage_from_scrolls_and_spans(
             &[TerminalViewportScroll {
                 top: 1,
@@ -4793,7 +4837,15 @@ mod tests {
         );
         assert_eq!(
             damage,
-            TerminalGridPaintDamage::Rows(Arc::from([1, 2, 3, 5]))
+            TerminalGridPaintDamage::Scroll {
+                scrolls: Arc::from([TerminalViewportScroll {
+                    top: 1,
+                    bottom: 3,
+                    count: 1,
+                    direction: TerminalViewportScrollDirection::Up,
+                }]),
+                ranges: Arc::from([(5, 2, 4)]),
+            }
         );
     }
 

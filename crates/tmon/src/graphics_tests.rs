@@ -296,28 +296,29 @@ fn upload_and_stored_image_limits_are_distinct() {
 #[test]
 fn stored_image_count_is_bounded_and_evicts_oldest_unplaced_image() {
     let mut state = GraphicsState::default();
-    let pixel: Arc<[u8]> = Arc::from([0_u8]);
+    let pixel = Arc::new(GraphicsImage::from_rgba(1, 1, vec![0; 4]));
     let protected = u32::try_from(MAX_STORED_IMAGES + 1).unwrap();
 
     for image_id in 1..=protected {
         state.images.insert(
             image_id,
             StoredImage {
-                png: pixel.clone(),
+                image: pixel.clone(),
                 width: 1,
                 height: 1,
                 number: None,
+                animation: None,
                 generation: u64::from(image_id),
             },
         );
         state.insertion_order.push_back(image_id);
-        state.stored_bytes += 1;
+        state.stored_bytes += pixel.byte_len();
     }
 
     assert!(state.enforce_quota(Some(protected)));
     assert_eq!(state.images.len(), MAX_STORED_IMAGES);
     assert_eq!(state.insertion_order.len(), MAX_STORED_IMAGES);
-    assert_eq!(state.stored_bytes, MAX_STORED_IMAGES);
+    assert_eq!(state.stored_bytes, MAX_STORED_IMAGES * 4);
     assert!(!state.images.contains_key(&1));
     assert!(state.images.contains_key(&protected));
 }
@@ -342,11 +343,11 @@ fn failed_image_replacement_keeps_the_previous_image_and_placements() {
         size,
     );
     assert!(!invalid.changed);
-    assert_eq!(state.images.get(&7).unwrap().png, image.png);
+    assert_eq!(state.images.get(&7).unwrap().image, image.image);
     assert_eq!(state.placements.len(), placements.len());
     assert_eq!(state.placements[0].serial, placements[0].serial);
 
-    state.stored_bytes = MAX_STORED_IMAGE_BYTES.saturating_add(image.png.len());
+    state.stored_bytes = MAX_STORED_IMAGE_BYTES.saturating_add(image.image.byte_len());
     let quota = state.apply(
         command("a=T,f=32,s=1,v=1,i=7,C=1,q=1", &[0, 0, 255, 255]),
         &mut grid,
@@ -356,7 +357,7 @@ fn failed_image_replacement_keeps_the_previous_image_and_placements() {
     assert!(
         String::from_utf8_lossy(&quota.replies).contains("ENOSPC:image storage quota exceeded")
     );
-    assert_eq!(state.images.get(&7).unwrap().png, image.png);
+    assert_eq!(state.images.get(&7).unwrap().image, image.image);
     assert_eq!(state.placements.len(), placements.len());
     assert_eq!(state.placements[0].serial, placements[0].serial);
 }
@@ -370,10 +371,11 @@ fn anonymous_image_ids_wrap_without_stalling_at_one() {
     state.images.insert(
         1,
         StoredImage {
-            png: Arc::from([0_u8]),
+            image: Arc::new(GraphicsImage::from_rgba(1, 1, vec![0; 4])),
             width: 1,
             height: 1,
             number: None,
+            animation: None,
             generation: 1,
         },
     );
@@ -423,7 +425,7 @@ fn raw_rgba_upload_encodes_png_and_places_at_cursor() {
     assert_eq!(result.replies, b"\x1b_Gi=42;OK\x1b\\");
     let placements = state.render_placements(&grid);
     assert_eq!(placements.len(), 1);
-    assert!(placements[0].png.starts_with(b"\x89PNG"));
+    assert!(placements[0].image.png().starts_with(b"\x89PNG"));
     assert_eq!((placements[0].viewport_row, placements[0].col), (5, 4));
 }
 
@@ -630,7 +632,7 @@ fn continuation_rejects_new_upload_controls_and_discards_pending_data() {
 }
 
 #[test]
-fn chunked_placement_does_not_advance_a_different_screen() {
+fn chunked_placement_uses_and_advances_the_completion_screen() {
     let size = Size {
         cols: 8,
         rows: 4,
@@ -647,12 +649,18 @@ fn chunked_placement_does_not_advance_a_different_screen() {
     let alternate_cursor = grid.cursor_position();
     let final_chunk = GraphicsCommand::parse(b"m=0;A/8=".to_vec(), false);
     assert!(state.apply(final_chunk, &mut grid, size).changed);
-    assert_eq!(grid.cursor_position(), alternate_cursor);
-
-    grid.set_mode(true, 1049, false);
+    assert_eq!(
+        grid.cursor_position(),
+        (alternate_cursor.0 + 2, alternate_cursor.1 + 1)
+    );
     let placements = state.render_placements(&grid);
     assert_eq!(placements.len(), 1);
-    assert_eq!((placements[0].viewport_row, placements[0].col), (1, 2));
+    assert_eq!(
+        (placements[0].col, placements[0].viewport_row as usize),
+        alternate_cursor
+    );
+    grid.set_mode(true, 1049, false);
+    assert!(state.render_placements(&grid).is_empty());
 }
 
 #[test]
@@ -866,7 +874,7 @@ fn explicit_dimensions_keep_full_occupancy_past_the_right_edge() {
 
     state.apply(command("a=p,i=85,p=3,r=3,C=1,q=1", &[]), &mut grid, size);
     let row_sized = &state.render_placements(&grid)[0];
-    assert_eq!(row_sized.display_cols, Some(12));
+    assert_eq!(row_sized.display_cols, None);
     assert_eq!(row_sized.occupied_cols, 12);
 }
 
@@ -892,7 +900,7 @@ fn natural_size_placement_still_truncates_at_the_right_edge() {
     assert!(placed.changed);
     let placement = &state.render_placements(&grid)[0];
     assert_eq!(placement.source_width, 2);
-    assert_eq!(placement.display_cols, Some(2));
+    assert_eq!(placement.display_cols, None);
     assert_eq!(placement.occupied_cols, 2);
     assert!(!placement_contains(&state.placements[0], 1, 8));
 }

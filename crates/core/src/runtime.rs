@@ -276,6 +276,13 @@ enum KittyGraphicsTextEffect {
     EnteredAlternateScreen,
     TerminalReset,
     PreservePrimaryAcrossPartialHistoryGrowth(usize),
+    ScrollRegion {
+        screen: KittyGraphicsScreen,
+        top: usize,
+        bottom: usize,
+        lines: i64,
+        history_size: usize,
+    },
     ScrollUpWithoutHistory {
         screen: KittyGraphicsScreen,
         lines: usize,
@@ -312,6 +319,13 @@ impl KittyGraphicsTextEffects {
                 KittyGraphicsTextEffect::ScrollUpWithoutHistory { screen, lines } => {
                     graphics.scroll_up_without_history_on_screen(lines, screen)
                 }
+                KittyGraphicsTextEffect::ScrollRegion {
+                    screen,
+                    top,
+                    bottom,
+                    lines,
+                    history_size,
+                } => graphics.scroll_region_on_screen(screen, top, bottom, lines, history_size),
                 KittyGraphicsTextEffect::ClearViewport {
                     screen,
                     history_size,
@@ -334,6 +348,8 @@ struct KittyGraphicsScrollObservation {
     full_screen_region: bool,
     physical_lines: usize,
     history_before: usize,
+    top: usize,
+    bottom: usize,
 }
 
 struct KittyGraphicsTrackingHandler<'a, T> {
@@ -389,6 +405,8 @@ impl<T: EventListener> KittyGraphicsTrackingHandler<'_, T> {
             full_screen_region: self.tracker.region.covers_full_screen(screen_lines),
             physical_lines,
             history_before: self.term.grid().history_size(),
+            top: self.tracker.region.bounds(screen_lines).0,
+            bottom: self.tracker.region.bounds(screen_lines).1,
         })
     }
 
@@ -429,6 +447,29 @@ impl<T: EventListener> KittyGraphicsTrackingHandler<'_, T> {
                     });
             }
             (KittyGraphicsScreen::Alternate, false) => (),
+        }
+        if !observation.full_screen_region {
+            self.effects.push(KittyGraphicsTextEffect::ScrollRegion {
+                screen: observation.screen,
+                top: observation.top,
+                bottom: observation.bottom,
+                lines: observation.physical_lines as i64,
+                history_size: self.term.grid().history_size(),
+            });
+        }
+    }
+
+    fn record_region_scroll(&mut self, top: usize, bottom: usize, lines: i64) {
+        if self.track_scrolls && lines != 0 && top < bottom {
+            self.effects.push(KittyGraphicsTextEffect::ScrollRegion {
+                screen: KittyGraphicsScreen::from_alternate_screen(
+                    self.term.mode().contains(TermMode::ALT_SCREEN),
+                ),
+                top,
+                bottom,
+                lines,
+                history_size: self.term.grid().history_size(),
+            });
         }
     }
 
@@ -512,6 +553,46 @@ impl<T: EventListener> Handler for KittyGraphicsTrackingHandler<'_, T> {
         self.finish_scroll(observation);
     }
 
+    fn scroll_down(&mut self, lines: usize) {
+        let (top, bottom) = self.tracker.region.bounds(self.term.grid().screen_lines());
+        Handler::scroll_down(&mut *self.term, lines);
+        self.record_region_scroll(top, bottom, -(lines.min(bottom.saturating_sub(top)) as i64));
+    }
+
+    fn reverse_index(&mut self) {
+        let (top, bottom) = self.tracker.region.bounds(self.term.grid().screen_lines());
+        let scrolls = self.term.grid().cursor.point.line.0 == top as i32;
+        Handler::reverse_index(&mut *self.term);
+        if scrolls {
+            self.record_region_scroll(top, bottom, -1);
+        }
+    }
+
+    fn insert_blank_lines(&mut self, lines: usize) {
+        let (top, bottom) = self.tracker.region.bounds(self.term.grid().screen_lines());
+        let row = self.term.grid().cursor.point.line.0.max(0) as usize;
+        Handler::insert_blank_lines(&mut *self.term, lines);
+        if row >= top && row < bottom {
+            self.record_region_scroll(row, bottom, -(lines.min(bottom - row) as i64));
+        }
+    }
+
+    fn delete_lines(&mut self, lines: usize) {
+        let (top, bottom) = self.tracker.region.bounds(self.term.grid().screen_lines());
+        let row = self.term.grid().cursor.point.line.0.max(0) as usize;
+        let mut observation = if row >= top && row < bottom {
+            self.observe_scroll(lines.min(bottom - row))
+        } else {
+            None
+        };
+        if let Some(observation) = observation.as_mut() {
+            observation.top = row;
+            observation.full_screen_region &= row == 0;
+        }
+        Handler::delete_lines(&mut *self.term, lines);
+        self.finish_scroll(observation);
+    }
+
     fn reset_state(&mut self) {
         self.tracker.reset_scroll_region();
         if let Some(state) = self.resize_anchor_state {
@@ -592,9 +673,6 @@ impl<T: EventListener> Handler for KittyGraphicsTrackingHandler<'_, T> {
         fn bell();
         fn substitute();
         fn set_horizontal_tabstop();
-        fn scroll_down(rows: usize);
-        fn insert_blank_lines(lines: usize);
-        fn delete_lines(lines: usize);
         fn erase_chars(count: usize);
         fn delete_chars(count: usize);
         fn move_backward_tabs(count: u16);
@@ -604,7 +682,6 @@ impl<T: EventListener> Handler for KittyGraphicsTrackingHandler<'_, T> {
         fn clear_line(mode: ansi::LineClearMode);
         fn clear_tabs(mode: ansi::TabulationClearMode);
         fn set_tabs(interval: u16);
-        fn reverse_index();
         fn terminal_attribute(attr: ansi::Attr);
         fn set_mode(mode: ansi::Mode);
         fn unset_mode(mode: ansi::Mode);
@@ -654,6 +731,34 @@ fn advance_terminal_text<T: EventListener>(
             track_scrolls,
         };
         parser.advance(&mut handler, bytes);
+    }
+    effects
+}
+
+/// Catch the grid up to an intercepted graphics command without ending the
+/// application's synchronized frame. VTE stages text during mode 2026, while
+/// Kitty APCs are parsed outside VTE; their cursor, screen, and scroll effects
+/// must nevertheless be applied in byte-stream order.
+fn prepare_kitty_graphics_command<T: EventListener>(
+    tracker: &mut KittyGraphicsCursorTracker,
+    parser: &mut ansi::Processor,
+    term: &mut Term<T>,
+    track_scrolls: bool,
+    resize_anchor_state: Option<&crate::resize_anchor::ResizeAnchorState>,
+) -> KittyGraphicsTextEffects {
+    let mut effects = KittyGraphicsTextEffects::default();
+    if parser.sync_timeout().sync_timeout().is_some() {
+        let mut handler = KittyGraphicsTrackingHandler {
+            term,
+            tracker,
+            effects: &mut effects,
+            resize_anchor_state,
+            track_scrolls,
+        };
+        parser.stop_sync(&mut handler);
+        // Keep the frame synchronized (and its watchdog armed) until the real
+        // ESU arrives. The PTY loop must not wake the renderer at this barrier.
+        parser.advance(&mut handler, b"\x1b[?2026h");
     }
     effects
 }
@@ -1826,6 +1931,18 @@ impl NativeEventLoop {
                         }
                     }
                     KittyGraphicsItem::Command(command) => {
+                        term_mutated |= state.parser.sync_bytes_count() > 0;
+                        let track_scrolls = self.kitty_graphics.lock().has_placements();
+                        let effects = prepare_kitty_graphics_command(
+                            &mut state.kitty_graphics_cursor_tracker,
+                            &mut state.parser,
+                            &mut **terminal,
+                            track_scrolls,
+                            Some(&self.resize_anchor_state),
+                        );
+                        if !effects.is_empty() {
+                            graphics_changed |= effects.apply_to(&mut self.kitty_graphics.lock());
+                        }
                         let cursor = terminal.grid().cursor.point;
                         let history_size = terminal.grid().history_size();
                         let screen_lines = terminal.grid().screen_lines();
@@ -1836,14 +1953,23 @@ impl NativeEventLoop {
                             terminal.mode().contains(TermMode::ALT_SCREEN),
                         );
                         let size = *self.terminal_size.lock();
-                        let result = self.kitty_graphics.lock().apply_on_screen(
+                        let mut graphics = self.kitty_graphics.lock();
+                        let placeholders = if command.action() == 'd'
+                            && graphics.has_virtual_placements()
+                        {
+                            crate::kitty_graphics_placeholders_from_alacritty_grid(terminal.grid())
+                        } else {
+                            Vec::new()
+                        };
+                        let result = graphics.apply_on_screen_with_placeholders(
                             command,
-                            cursor.column.0,
-                            cursor.line.0.max(0) as usize,
+                            (cursor.column.0, cursor.line.0.max(0) as usize),
                             history_size,
                             size,
                             screen,
+                            &placeholders,
                         );
+                        drop(graphics);
                         graphics_changed |= result.changed;
                         if let Some(response) = result.response {
                             state.write_list.push_back(Cow::Owned(response));
@@ -1883,7 +2009,8 @@ impl NativeEventLoop {
         if term_mutated && let Some(terminal) = terminal.as_deref() {
             self.render_state.record_mutation(terminal);
         }
-        if graphics_changed || (state.parser.sync_bytes_count() < parsed && parsed > 0) {
+        if state.parser.sync_timeout().sync_timeout().is_none() && (graphics_changed || parsed > 0)
+        {
             self.event_proxy.send_event(AlacEvent::Wakeup);
         }
 
@@ -2633,7 +2760,7 @@ mod tests {
         assert_eq!(placements[0].image_id, 77);
         assert_eq!(placements[0].display_cols, Some(2));
         assert_eq!(placements[0].display_rows, Some(3));
-        assert!(placements[0].png.starts_with(b"\x89PNG"));
+        assert!(placements[0].image.png().starts_with(b"\x89PNG"));
 
         let cursor = terminal.cursor_position();
         assert_eq!(cursor, (2, 3));

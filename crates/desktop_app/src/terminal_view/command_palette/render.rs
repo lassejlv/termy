@@ -11,21 +11,21 @@ use gpui::prelude::FluentBuilder;
 use gpui::uniform_list;
 use std::ops::Range;
 
-/// Renders a row title with the query's matched characters accented. Disabled
+/// Renders a row title with the query's matched characters emphasized. Disabled
 /// rows and rows without a query keep flat text.
 fn highlighted_title(
     title: String,
     highlights: &[Range<usize>],
     is_enabled: bool,
-    style: &CommandPaletteStyle,
+    text_color: gpui::Rgba,
 ) -> AnyElement {
     if highlights.is_empty() || !is_enabled {
         return title.into_any_element();
     }
 
     let highlight = gpui::HighlightStyle {
-        color: Some(style.match_text.into()),
-        font_weight: Some(gpui::FontWeight::BOLD),
+        color: Some(text_color.into()),
+        font_weight: Some(gpui::FontWeight::SEMIBOLD),
         ..Default::default()
     };
     let runs: Vec<(Range<usize>, gpui::HighlightStyle)> = highlights
@@ -47,13 +47,8 @@ fn highlighted_title(
         .into_any_element()
 }
 
-/// Draws a keybinding as one chip per key: `⇧⌘K` reads as three caps, and a
-/// multi-keystroke binding puts extra space between its keystrokes.
-fn shortcut_keycap_row(
-    label: &str,
-    text_color: gpui::Rgba,
-    style: &CommandPaletteStyle,
-) -> AnyElement {
+/// Menu-style shortcut hints, with spacing between separate keystrokes.
+fn shortcut_keycap_row(label: &str, text_color: gpui::Rgba) -> AnyElement {
     let keystrokes = shortcut_keycaps(label);
     if keystrokes.is_empty() {
         return div().into_any_element();
@@ -73,15 +68,11 @@ fn shortcut_keycap_row(
                 .children(keycaps.into_iter().map(|keycap| {
                     div()
                         .flex_none()
-                        .h(px(20.0))
-                        .min_w(px(20.0))
-                        .px(px(5.0))
+                        .h(px(22.0))
                         .flex()
                         .items_center()
                         .justify_center()
-                        .rounded(px(COMMAND_PALETTE_SHORTCUT_RADIUS))
-                        .bg(style.shortcut_bg)
-                        .text_size(px(10.0))
+                        .text_size(px(12.0))
                         .text_color(text_color)
                         .child(keycap)
                 }))
@@ -273,40 +264,28 @@ impl TerminalView {
                 .status_hint
                 .clone()
                 .or_else(|| (!is_enabled).then(|| COMMAND_PALETTE_UNAVAILABLE_HINT.to_string()));
-            let text_color = if is_enabled {
+            let text_color = if is_selected {
+                style.selected_text
+            } else if is_enabled {
                 style.primary_text
             } else {
                 style.muted_text
             };
-            let shortcut_text = if is_enabled {
+            let shortcut_text = if is_selected {
+                style.selected_text
+            } else if is_enabled {
                 style.shortcut_text
             } else {
                 style.muted_text
             };
             let icon_path = palette_item_icon_path(&item);
-            // Selection is carried by the row background and accent bar alone;
-            // a tint flip here would make every unselected row read as dimmed.
-            let icon_tint = if is_enabled {
-                style.icon_text
+            let item_category = palette_item_category(&item);
+            let secondary_text = if is_selected {
+                style.selected_text
             } else {
                 style.muted_text
             };
-            let category = show_categories
-                .then(|| palette_item_category(&item))
-                .flatten();
-
-            let selection_accent = is_selected.then(|| {
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(COMMAND_PALETTE_SELECTED_ACCENT_INSET_Y))
-                    .w(px(COMMAND_PALETTE_SELECTED_ACCENT_WIDTH))
-                    .h(px((COMMAND_PALETTE_ROW_HEIGHT
-                        - (COMMAND_PALETTE_SELECTED_ACCENT_INSET_Y * 2.0))
-                        .max(0.0)))
-                    .rounded_full()
-                    .bg(style.selected_accent)
-            });
+            let category = show_categories.then_some(item_category).flatten();
 
             rows.push(
                 div()
@@ -321,7 +300,6 @@ impl TerminalView {
                     } else {
                         transparent
                     })
-                    .children(selection_accent)
                     .when(is_enabled, |row| row.cursor_pointer())
                     .on_mouse_move(
                         cx.listener(move |this, event: &MouseMoveEvent, _window, cx| {
@@ -353,20 +331,21 @@ impl TerminalView {
                                 div()
                                     .flex()
                                     .items_center()
-                                    .gap(px(12.0))
+                                    .gap(px(10.0))
                                     .flex_1()
                                     .min_w(px(0.0))
                                     .child(
                                         gpui::svg()
+                                            .flex_none()
                                             .path(gpui::SharedString::from(icon_path))
                                             .size(px(COMMAND_PALETTE_ROW_ICON_SIZE))
-                                            .text_color(icon_tint),
+                                            .text_color(text_color),
                                     )
                                     .child(div().flex_1().truncate().child(highlighted_title(
                                         title,
                                         &title_highlights,
                                         is_enabled,
-                                        &style,
+                                        text_color,
                                     ))),
                             )
                             .child(
@@ -378,13 +357,11 @@ impl TerminalView {
                                         div()
                                             .flex_none()
                                             .max_w(px(COMMAND_PALETTE_ROW_CATEGORY_MAX_WIDTH))
-                                            // Sits a touch further from the key
-                                            // chips than they sit from each other.
-                                            .mr(px(4.0))
+                                            .mr(px(8.0))
                                             .overflow_hidden()
                                             .truncate()
                                             .text_size(px(11.0))
-                                            .text_color(style.muted_text)
+                                            .text_color(secondary_text)
                                             .child(label)
                                     }))
                                     .children(status_hint.map(|label| {
@@ -401,9 +378,11 @@ impl TerminalView {
                                             .text_color(style.muted_text)
                                             .child(label)
                                     }))
-                                    .children(shortcut.map(|label| {
-                                        shortcut_keycap_row(&label, shortcut_text, &style)
-                                    })),
+                                    .children(
+                                        shortcut.map(|label| {
+                                            shortcut_keycap_row(&label, shortcut_text)
+                                        }),
+                                    ),
                             ),
                     )
                     .into_any_element(),
@@ -429,8 +408,13 @@ impl TerminalView {
             let height: f32 = viewport.height.into();
             (height - self.terminal_content_top_inset()).max(0.0)
         });
-        self.command_palette.set_visible_rows(layout.visible_rows);
-        let list_height = command_palette_viewport_height(layout.visible_rows);
+        let visible_rows = if plugin_ui.is_some() {
+            layout.visible_rows
+        } else {
+            item_count.max(1).min(layout.visible_rows)
+        };
+        self.command_palette.set_visible_rows(visible_rows);
+        let list_height = command_palette_viewport_height(visible_rows);
         let mode_title = if let Some(title) = plugin_ui_title.as_ref() {
             title.clone()
         } else {
@@ -493,11 +477,9 @@ impl TerminalView {
                 }
                 CommandPaletteMode::TmuxSessions => {
                     match self.command_palette.tmux_session_intent() {
-                        TmuxSessionIntent::AttachOrSwitch => &[
-                            ("↵", "Open/Create/Manage Session"),
-                            ("esc", "Back"),
-                            ("↑↓", "Navigate"),
-                        ],
+                        TmuxSessionIntent::AttachOrSwitch => {
+                            &[("↵", "Open"), ("esc", "Back"), ("↑↓", "Navigate")]
+                        }
                         TmuxSessionIntent::RenameSelect => {
                             &[("↵", "Select Session"), ("esc", "Back"), ("↑↓", "Navigate")]
                         }
@@ -510,11 +492,9 @@ impl TerminalView {
                     }
                 }
                 CommandPaletteMode::Layouts => match self.command_palette.saved_layout_intent() {
-                    SavedLayoutIntent::Browse => &[
-                        ("↵", "Load/Save/Manage Layout"),
-                        ("esc", "Back"),
-                        ("↑↓", "Navigate"),
-                    ],
+                    SavedLayoutIntent::Browse => {
+                        &[("↵", "Open"), ("esc", "Back"), ("↑↓", "Navigate")]
+                    }
                     SavedLayoutIntent::SaveInput => {
                         &[("↵", "Save Layout"), ("esc", "Back"), ("↑↓", "Navigate")]
                     }
@@ -552,10 +532,7 @@ impl TerminalView {
             }
         };
         let style = CommandPaletteStyle::resolve(self);
-        let input_font = Font {
-            family: self.ui_font_family.clone(),
-            ..gpui::font("")
-        };
+        let input_font = gpui::font(".SystemUIFont");
         let empty_state_message = match self.command_palette.mode() {
             CommandPaletteMode::TmuxSessions
                 if self.command_palette.tmux_session_intent()
@@ -572,7 +549,7 @@ impl TerminalView {
             }
             CommandPaletteMode::Tasks => match self.command_palette.task_intent() {
                 TaskIntent::Browse if self.command_palette.input().text().trim().is_empty() => {
-                    "No tasks configured. Create one here or add task.<name>.command entries to config.txt."
+                    "No tasks yet. Create a task to run a saved command."
                 }
                 TaskIntent::CreateGlobalInput | TaskIntent::CreateLayoutInput => {
                     "Enter a task as name: command"
@@ -622,6 +599,7 @@ impl TerminalView {
                 cx.processor(Self::render_command_palette_rows),
             )
             .flex_1()
+            .min_w(px(0.0))
             .h(px(list_height))
             .track_scroll(self.command_palette.scroll_handle().clone())
             .into_any_element();
@@ -651,6 +629,8 @@ impl TerminalView {
                 list_container = list_container.child(
                     div()
                         .id("command-palette-scrollbar-lane")
+                        .relative()
+                        .flex_none()
                         .w(px(COMMAND_PALETTE_SCROLLBAR_WIDTH + 4.0))
                         .h(px(list_height))
                         .pl(px(2.0))
@@ -702,11 +682,7 @@ impl TerminalView {
             b: 0.0,
             a: COMMAND_PALETTE_SCRIM_ALPHA,
         };
-        let mut divider = style.muted_text;
-        divider.a = COMMAND_PALETTE_DIVIDER_ALPHA;
-
-        // Breadcrumb, not a trailing tag: which sub-mode you are in decides what
-        // Enter does, so it reads before the query instead of after it.
+        // Keep the mode above the query so long search text keeps its space.
         let mode_breadcrumb: Option<AnyElement> = if plugin_ui.is_none()
             && matches!(self.command_palette.mode(), CommandPaletteMode::Commands)
         {
@@ -715,14 +691,10 @@ impl TerminalView {
             Some(
                 div()
                     .flex_none()
-                    .max_w(px(COMMAND_PALETTE_BREADCRUMB_MAX_WIDTH))
-                    .h(px(22.0))
-                    .px(px(8.0))
-                    .rounded(px(COMMAND_PALETTE_SHORTCUT_RADIUS))
-                    .bg(style.shortcut_bg)
+                    .h(px(16.0))
                     .overflow_hidden()
                     .text_size(px(11.0))
-                    .text_color(style.primary_text)
+                    .text_color(style.muted_text)
                     .flex()
                     .items_center()
                     .child(div().min_w(px(0.0)).truncate().child(mode_title))
@@ -730,20 +702,39 @@ impl TerminalView {
             )
         };
 
-        let input_placeholder =
-            if plugin_ui.is_some() && self.command_palette.input().text().is_empty() {
-                Some("Search commands…".to_string())
-            } else {
-                (self.command_palette.mode() == CommandPaletteMode::PluginInputs
-                    && self.command_palette.input().text().is_empty())
-                .then(|| self.plugin_input_placeholder())
-                .filter(|placeholder| !placeholder.is_empty())
-            };
+        let input_placeholder = self.command_palette.input().text().is_empty().then(|| {
+            if plugin_ui.is_some() {
+                return "Search commands…".to_string();
+            }
+            match self.command_palette.mode() {
+                CommandPaletteMode::Commands => "Search commands…".to_string(),
+                CommandPaletteMode::Themes => "Search themes…".to_string(),
+                CommandPaletteMode::TmuxSessions => {
+                    match self.command_palette.tmux_session_intent() {
+                        TmuxSessionIntent::RenameInput => "New session name…".to_string(),
+                        _ => "Search sessions…".to_string(),
+                    }
+                }
+                CommandPaletteMode::Layouts => match self.command_palette.saved_layout_intent() {
+                    SavedLayoutIntent::SaveInput | SavedLayoutIntent::RenameInput => {
+                        "Layout name…".to_string()
+                    }
+                    _ => "Search layouts…".to_string(),
+                },
+                CommandPaletteMode::Tasks => match self.command_palette.task_intent() {
+                    TaskIntent::Browse => "Search tasks…".to_string(),
+                    _ => "Name: command…".to_string(),
+                },
+                CommandPaletteMode::PluginInputs => self.plugin_input_placeholder(),
+                CommandPaletteMode::AppInfo => "Search app information…".to_string(),
+            }
+        });
         let input_head = div()
             .id("command-palette-input")
             .w_full()
+            .flex_none()
             .h(px(COMMAND_PALETTE_INPUT_HEAD_HEIGHT))
-            .px(px(COMMAND_PALETTE_ROW_PADDING_X + 4.0))
+            .px(px(16.0))
             .flex()
             .items_center()
             .gap(px(12.0))
@@ -753,47 +744,57 @@ impl TerminalView {
                     .size(px(18.0))
                     .text_color(style.muted_text),
             )
-            .children(mode_breadcrumb)
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.0))
-                    .h(px(22.0))
-                    .relative()
-                    .overflow_hidden()
-                    .children(input_placeholder.map(|placeholder| {
+                    .flex()
+                    .flex_col()
+                    .justify_center()
+                    .children(mode_breadcrumb)
+                    .child(
                         div()
-                            .absolute()
-                            .left_0()
-                            .right_0()
-                            .top_0()
-                            .truncate()
-                            .text_size(px(COMMAND_PALETTE_INPUT_TEXT_SIZE))
-                            .text_color(style.muted_text)
-                            .child(placeholder)
-                    }))
-                    .child(self.render_inline_input_layer(
-                        input_font,
-                        px(COMMAND_PALETTE_INPUT_TEXT_SIZE),
-                        style.primary_text.into(),
-                        style.input_selection.into(),
-                        InlineInputAlignment::Left,
-                        cx,
-                    )),
+                            .w_full()
+                            .h(px(22.0))
+                            .relative()
+                            .overflow_hidden()
+                            .children(input_placeholder.map(|placeholder| {
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .top_0()
+                                    .truncate()
+                                    .text_size(px(COMMAND_PALETTE_INPUT_TEXT_SIZE))
+                                    .line_height(px(22.0))
+                                    .text_color(style.muted_text)
+                                    .child(placeholder)
+                            }))
+                            .child(self.render_inline_input_layer(
+                                input_font,
+                                px(COMMAND_PALETTE_INPUT_TEXT_SIZE),
+                                style.primary_text.into(),
+                                style.input_selection.into(),
+                                InlineInputAlignment::Left,
+                                cx,
+                            )),
+                    ),
             );
 
         let result_counter = if plugin_ui.is_some() {
-            "Plugin UI".to_string()
+            "Extension".to_string()
         } else {
             format!(
                 "{item_count} {}",
-                if item_count == 1 { "item" } else { "items" }
+                if item_count == 1 { "result" } else { "results" }
             )
         };
         let footer = div()
             .w_full()
+            .flex_none()
             .h(px(COMMAND_PALETTE_FOOTER_HEIGHT))
-            .px(px(COMMAND_PALETTE_ROW_PADDING_X))
+            .px(px(14.0))
+            .bg(style.footer_bg)
             .flex()
             .items_center()
             .justify_between()
@@ -845,6 +846,7 @@ impl TerminalView {
         let panel = div()
             .id("command-palette-panel")
             .w(px(layout.width))
+            .font_family(".SystemUIFont")
             .rounded(px(COMMAND_PALETTE_PANEL_RADIUS))
             .bg(style.panel_bg)
             .border_1()
@@ -860,9 +862,9 @@ impl TerminalView {
                 }),
             )
             .child(input_head)
-            .child(div().h(px(1.0)).w_full().bg(divider))
+            .child(div().h(px(1.0)).w_full().bg(style.divider))
             .child(div().w_full().px(px(6.0)).py(px(6.0)).child(list))
-            .child(div().h(px(1.0)).w_full().bg(divider))
+            .child(div().h(px(1.0)).w_full().bg(style.divider))
             .child(footer);
 
         let scrollbar_drag_active =

@@ -23,7 +23,7 @@ impl KittyGraphicsState {
         parent_placement_id: u32,
     ) -> Result<(), String> {
         if image_id == parent_image_id && placement_id == parent_placement_id {
-            return Err("EINVAL:a placement cannot be relative to itself".into());
+            return Err("ECYCLE:a placement cannot be relative to itself".into());
         }
         let mut parent = self
             .placement_by_key(screen, parent_image_id, parent_placement_id)
@@ -64,18 +64,32 @@ impl KittyGraphicsState {
                 PlacementLocation::Direct { anchor_line, col } => {
                     let col = i64::try_from(col)
                         .unwrap_or(i64::MAX)
-                        .saturating_add(horizontal_offset)
-                        .max(0);
+                        .saturating_add(horizontal_offset);
                     return Some(ResolvedOrigin::Buffer {
                         anchor_line: anchor_line.saturating_add(vertical_offset),
-                        col: usize::try_from(col).unwrap_or(usize::MAX),
+                        col,
                     });
                 }
                 PlacementLocation::Virtual => {
                     let matching = placeholders.iter().filter(|placeholder| {
                         placeholder.image_id == current.image_id
-                            && (current.placement_id == 0
-                                || placeholder.placement_id == current.placement_id)
+                            && (placeholder.placement_id == current.placement_id
+                                || (placeholder.placement_id == 0
+                                    && self
+                                        .placements
+                                        .iter()
+                                        .rev()
+                                        .find(|candidate| {
+                                            candidate.screen == current.screen
+                                                && candidate.image_id == current.image_id
+                                                && matches!(
+                                                    candidate.location,
+                                                    PlacementLocation::Virtual
+                                                )
+                                        })
+                                        .is_some_and(|candidate| {
+                                            candidate.placement_serial == current.placement_serial
+                                        })))
                     });
                     let (row, col) = if relative {
                         matching.fold(None, |origin, placeholder| {
@@ -101,11 +115,10 @@ impl KittyGraphicsState {
                     };
                     let col = i64::try_from(col)
                         .unwrap_or(i64::MAX)
-                        .saturating_add(horizontal_offset)
-                        .max(0);
+                        .saturating_add(horizontal_offset);
                     return Some(ResolvedOrigin::Viewport {
                         row: row.saturating_add(vertical_offset),
-                        col: usize::try_from(col).unwrap_or(usize::MAX),
+                        col,
                     });
                 }
                 PlacementLocation::Relative {
@@ -128,12 +141,18 @@ impl KittyGraphicsState {
     }
 
     pub(super) fn remove_orphaned_relative_placements(&mut self) {
+        let mut removed_images = std::collections::HashSet::new();
         loop {
-            let existing = self
+            let existing: std::collections::HashSet<_> = self
                 .placements
                 .iter()
-                .map(|placement| (placement.screen, placement.image_id, placement.placement_id))
-                .collect::<Vec<_>>();
+                .flat_map(|p| {
+                    [
+                        (p.screen, p.image_id, p.placement_id),
+                        (p.screen, p.image_id, 0),
+                    ]
+                })
+                .collect();
             let before = self.placements.len();
             self.placements.retain(|placement| {
                 let PlacementLocation::Relative {
@@ -144,14 +163,23 @@ impl KittyGraphicsState {
                 else {
                     return true;
                 };
-                existing.iter().any(|(screen, image_id, placement_id)| {
-                    *screen == placement.screen
-                        && *image_id == parent_image_id
-                        && (parent_placement_id == 0 || *placement_id == parent_placement_id)
-                })
+                let keep =
+                    existing.contains(&(placement.screen, parent_image_id, parent_placement_id));
+                if !keep {
+                    removed_images.insert(placement.image_id);
+                }
+                keep
             });
-            if self.placements.len() == before {
+            if before == self.placements.len() {
                 break;
+            }
+        }
+        for id in removed_images {
+            if !self.placements.iter().any(|p| p.image_id == id) {
+                if let Some(image) = self.images.remove(&id) {
+                    self.stored_bytes = self.stored_bytes.saturating_sub(image.byte_len());
+                }
+                self.insertion_order.retain(|candidate| *candidate != id);
             }
         }
     }

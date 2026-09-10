@@ -6,10 +6,18 @@
 //! native and tmux engines do not depend on this runtime path.
 
 mod graphics;
+mod graphics_geometry;
 mod grid;
 mod inflate;
 #[doc(hidden)]
 pub mod kitty_graphics_unicode;
+pub use graphics_geometry::{GraphicsRowSpan, graphics_display_size};
+mod graphics_animation;
+pub use graphics_animation::{
+    GraphicsAnimation, GraphicsAnimationControl, GraphicsComposition, GraphicsFrameUpdate,
+};
+mod graphics_shared_memory;
+pub use graphics_shared_memory::read_graphics_shared_memory;
 mod parser;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 mod pty;
@@ -38,7 +46,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub use graphics::GraphicsRenderPlacement;
+pub use graphics::{GraphicsImage, GraphicsRenderPlacement};
 pub use grid::{
     Attributes, Cell, Color, Combining, CursorState, CursorStyle, DamageSnapshot, DirtySpan,
     Hyperlink, KeyboardMode, LinkMatch, MouseMode, Palette, Rgb, ScrollDamage, ScrollDirection,
@@ -1232,11 +1240,12 @@ impl Terminal {
 
     /// Monotonic revision for rendered Kitty placement state.
     pub fn kitty_graphics_revision(&self) -> u64 {
-        self.engine
+        let mut engine = self
+            .engine
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .parser
-            .graphics_revision()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        engine.parser.advance_graphics();
+        engine.parser.graphics_revision()
     }
 
     pub fn kitty_graphics_placements(&self) -> Vec<GraphicsRenderPlacement> {
@@ -1245,10 +1254,11 @@ impl Terminal {
 
     /// Capture the Kitty revision and visible placements under one engine lock.
     pub fn kitty_graphics_snapshot(&self) -> (u64, Vec<GraphicsRenderPlacement>) {
-        let engine = self
+        let mut engine = self
             .engine
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        engine.parser.advance_graphics();
         (
             engine.parser.graphics_revision(),
             engine.parser.graphics_placements(&engine.grid),

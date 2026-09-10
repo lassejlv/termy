@@ -1,6 +1,6 @@
 //! The setting row: three lanes, always in the same places.
 //!
-//! Label grows, control is a fixed 300px, reset is a fixed 20px — reserved even
+//! Label grows, control is a fixed 224px, reset is a fixed 20px — reserved even
 //! when a row has nothing to reset, so glyphs and controls line up vertically
 //! down a whole card.
 

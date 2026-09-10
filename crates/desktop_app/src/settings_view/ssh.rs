@@ -504,7 +504,7 @@ impl SettingsWindow {
             self.border_color()
         };
         let font = Font {
-            family: self.config.ui_font_family.clone().into(),
+            family: ".SystemUIFont".into(),
             ..gpui::font("")
         };
 

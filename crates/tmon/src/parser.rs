@@ -1,10 +1,9 @@
+mod graphics;
+
 use crate::grid::{Charset, Grid, Rgb, UnderlineStyle};
 use crate::{
     ClipboardRequest, ClipboardTarget, KittyClipboardPacket, Osc52, Size, decode_base64,
-    graphics::{
-        GraphicsCommand, GraphicsRenderPlacement, GraphicsState, MAX_COMMAND_BYTES,
-        MAX_CONTROL_BYTES,
-    },
+    graphics::{GraphicsCommand, GraphicsState, MAX_COMMAND_BYTES, MAX_CONTROL_BYTES},
 };
 use std::{
     collections::VecDeque,
@@ -365,6 +364,7 @@ impl Parser {
     }
 
     pub(crate) fn set_size(&mut self, size: Size) {
+        self.graphics.resize(size);
         self.size = size;
     }
 
@@ -374,26 +374,6 @@ impl Parser {
 
     pub(crate) fn kitty_clipboard_paste_events_mode(&self) -> bool {
         self.kitty_clipboard_paste_events
-    }
-
-    pub(crate) fn graphics_revision(&self) -> u64 {
-        self.graphics.revision()
-    }
-
-    pub(crate) fn graphics_placements(&self, grid: &Grid) -> Vec<GraphicsRenderPlacement> {
-        self.graphics.render_placements(grid)
-    }
-
-    pub(crate) fn has_graphics_placements(&self) -> bool {
-        self.graphics.has_placements()
-    }
-
-    pub(crate) fn has_primary_graphics_placements(&self) -> bool {
-        self.graphics.has_primary_placements()
-    }
-
-    pub(crate) fn bump_graphics_revision(&mut self) {
-        self.graphics.bump_revision();
     }
 
     pub(crate) fn sync_grid_effects(&mut self, grid: &mut Grid) -> bool {

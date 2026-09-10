@@ -13,7 +13,15 @@ use crate::{
     inflate::{InflateError, OutputLimit, decompress_zlib as inflate_zlib},
 };
 
+mod command;
 mod placement;
+pub(crate) use command::GraphicsCommand;
+mod animation;
+mod deletion;
+mod transport;
+use transport::*;
+mod image_data;
+pub use image_data::GraphicsImage;
 
 const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
 const MAX_STORED_IMAGE_BYTES: usize = 128 * 1024 * 1024;
@@ -28,89 +36,22 @@ const MAX_PIXELS: u64 = (MAX_UPLOAD_BYTES / 4) as u64;
 const MAX_PLACEMENTS: usize = 4096;
 const MAX_RELATIVE_DEPTH: usize = 8;
 
-#[derive(Debug)]
-pub(crate) struct GraphicsCommand {
-    control: Vec<(char, String)>,
-    payload: Vec<u8>,
-    oversized: bool,
-}
-
-impl GraphicsCommand {
-    pub(crate) fn parse(mut bytes: Vec<u8>, oversized: bool) -> Self {
-        // A missing separator must not turn a payload-sized command into a control string.
-        // Inspect one byte past the limit so a separator at the exact boundary is accepted.
-        let separator = bytes[..bytes.len().min(MAX_CONTROL_BYTES + 1)]
-            .iter()
-            .position(|byte| *byte == b';');
-        let control_oversized = separator.is_none() && bytes.len() > MAX_CONTROL_BYTES;
-        let control_end = separator.unwrap_or(bytes.len().min(MAX_CONTROL_BYTES));
-        let field_count = bytes[..control_end]
-            .split(|byte| *byte == b',')
-            .take(MAX_CONTROL_FIELDS + 1)
-            .count();
-        let fields_oversized = field_count > MAX_CONTROL_FIELDS;
-        let control = bytes[..control_end]
-            .split(|byte| *byte == b',')
-            .take(MAX_CONTROL_FIELDS)
-            .filter_map(|field| {
-                let (&key, value) = field.split_first()?;
-                let value = value.strip_prefix(b"=")?;
-                if !key.is_ascii() {
-                    return None;
-                }
-                let value = std::str::from_utf8(value).ok()?;
-                Some((char::from(key), value.to_owned()))
-            })
-            .collect();
-        let oversized = oversized || control_oversized || fields_oversized;
-        let payload = if oversized {
-            // Drop an already-rejected payload with its original allocation instead of
-            // shifting up to MAX_COMMAND_BYTES only for `apply` to discard it.
-            Vec::new()
-        } else if let Some(index) = separator {
-            // Keep the potentially large payload in the parser's allocation. Draining the
-            // small control prefix moves it in place instead of cloning it into another Vec.
-            bytes.drain(..=index);
-            bytes
-        } else {
-            Vec::new()
-        };
-        Self {
-            control,
-            payload,
-            oversized,
-        }
-    }
-
-    fn value(&self, key: char) -> Option<&str> {
-        self.control
-            .iter()
-            .rev()
-            .find_map(|(candidate, value)| (*candidate == key).then_some(value.as_str()))
-    }
-
-    fn char_value(&self, key: char) -> Option<char> {
-        let mut chars = self.value(key)?.chars();
-        let value = chars.next()?;
-        chars.next().is_none().then_some(value)
-    }
-
-    fn u32_value(&self, key: char) -> Option<u32> {
-        self.value(key)?.parse().ok()
-    }
-
-    fn i32_value(&self, key: char) -> Option<i32> {
-        self.value(key)?.parse().ok()
-    }
-}
-
 #[derive(Clone, Debug)]
 struct StoredImage {
-    png: Arc<[u8]>,
+    image: Arc<GraphicsImage>,
     width: u32,
     height: u32,
     number: Option<u32>,
+    animation: Option<crate::GraphicsAnimation>,
     generation: u64,
+}
+
+impl StoredImage {
+    fn byte_len(&self) -> usize {
+        self.animation
+            .as_ref()
+            .map_or_else(|| self.image.byte_len(), |animation| animation.byte_len())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +69,8 @@ struct Placement {
     display_rows: Option<u32>,
     occupied_cols: u32,
     occupied_rows: u32,
+    clip_top_rows: u32,
+    clip_bottom_rows: u32,
     x_offset: u32,
     y_offset: u32,
     z_index: i32,
@@ -162,8 +105,8 @@ struct UnicodePlaceholder {
 
 #[derive(Clone, Copy, Debug)]
 enum ResolvedOrigin {
-    Buffer { anchor_line: i64, col: usize },
-    Viewport { row: i64, col: usize },
+    Buffer { anchor_line: i64, col: i64 },
+    Viewport { row: i64, col: i64 },
 }
 
 #[derive(Debug)]
@@ -187,12 +130,15 @@ pub struct GraphicsRenderPlacement {
     pub placement_serial: u64,
     pub image_id: u32,
     pub placement_id: u32,
-    pub png: Arc<[u8]>,
+    pub image: Arc<GraphicsImage>,
     pub image_width: u32,
     pub image_height: u32,
     pub image_generation: u64,
+    pub animation_deadline: Option<std::time::Instant>,
     pub viewport_row: i32,
     pub col: usize,
+    pub col_offset: i32,
+    pub virtual_cell: Option<(u32, u32)>,
     pub source_x: u32,
     pub source_y: u32,
     pub source_width: u32,
@@ -201,6 +147,8 @@ pub struct GraphicsRenderPlacement {
     pub display_rows: Option<u32>,
     pub occupied_cols: u32,
     pub occupied_rows: u32,
+    pub clip_top_rows: u32,
+    pub clip_bottom_rows: u32,
     pub x_offset: u32,
     pub y_offset: u32,
     pub z_index: i32,
@@ -217,6 +165,7 @@ pub(crate) struct GraphicsState {
     next_generation: u64,
     next_serial: u64,
     revision: u64,
+    viewport_rows: u16,
 }
 
 #[derive(Default)]
@@ -226,6 +175,29 @@ pub(crate) struct ApplyResult {
 }
 
 impl GraphicsState {
+    pub(crate) fn resize(&mut self, size: Size) {
+        self.viewport_rows = size.rows;
+        for placement in &mut self.placements {
+            let (width, height) = crate::graphics_display_size(
+                placement.source_width,
+                placement.source_height,
+                placement.display_cols,
+                placement.display_rows,
+                (size.cell_width.max(1.0), size.cell_height.max(1.0)),
+                (placement.x_offset, placement.y_offset),
+                matches!(placement.location, PlacementLocation::Virtual),
+            );
+            placement.occupied_cols = ((width + placement.x_offset as f32)
+                / size.cell_width.max(1.0))
+            .ceil()
+            .max(1.0) as u32;
+            placement.occupied_rows = ((height + placement.y_offset as f32)
+                / size.cell_height.max(1.0))
+            .ceil()
+            .max(1.0) as u32;
+        }
+    }
+
     pub(crate) fn apply_grid_effect(&mut self, effect: GridEffect) -> bool {
         match effect {
             GridEffect::ScrollUp {
@@ -295,6 +267,7 @@ impl GraphicsState {
         grid: &mut Grid,
         size: Size,
     ) -> ApplyResult {
+        self.viewport_rows = size.rows;
         if command.oversized {
             command.payload = Vec::new();
             let response_command = self
@@ -306,6 +279,13 @@ impl GraphicsState {
                 "EFBIG:image command exceeds storage limit",
             );
         }
+        if let Err(error) = command.validate() {
+            let response_command = self
+                .pending
+                .take()
+                .map_or(command, |pending| pending.command);
+            return failure(&response_command, error);
+        }
         if command.value('i').is_some() && command.value('I').is_some() {
             command.payload = Vec::new();
             self.pending = None;
@@ -315,6 +295,18 @@ impl GraphicsState {
             );
         }
         let action = command.char_value('a').unwrap_or('t');
+        if matches!(action, 'a' | 'c')
+            || (action == 'd' && matches!(command.char_value('d'), Some('f' | 'F')))
+        {
+            if action == 'd' {
+                self.pending = None;
+            }
+            return match self.edit_animation(&command, None) {
+                Ok(id) => success_for_image(&command, true, id),
+                Err(error) => failure(&command, &error),
+            };
+        }
+
         if action == 'd' {
             command.payload = Vec::new();
             return self.delete(&command, grid);
@@ -323,7 +315,7 @@ impl GraphicsState {
             command.payload = Vec::new();
             return self.put(&command, grid, size);
         }
-        if !matches!(action, 't' | 'T' | 'q') {
+        if !matches!(action, 't' | 'T' | 'q' | 'f') {
             command.payload = Vec::new();
             return failure(&command, "EINVAL:unsupported graphics action");
         }
@@ -370,11 +362,12 @@ impl GraphicsState {
         };
         let more = command.u32_value('m').unwrap_or(0) == 1;
         if let Some(mut pending) = self.pending.take() {
-            if command
-                .control
-                .iter()
-                .any(|(key, _)| !matches!(key, 'm' | 'q'))
-            {
+            if command.control.iter().any(|(key, _)| {
+                !(matches!(key, 'm' | 'q')
+                    || *key == 'a'
+                        && command.char_value('a') == Some('f')
+                        && pending.command.char_value('a') == Some('f'))
+            }) {
                 return failure(
                     &pending.command,
                     "EINVAL:continuation contains unsupported control data",
@@ -391,7 +384,15 @@ impl GraphicsState {
                     first.control.push((key, value));
                 }
             }
-            return self.finish_upload(first, pending.decoded, pending.context, grid);
+            let (cursor_col, cursor_row) = grid.cursor_position();
+            let context = UploadContext {
+                cursor_col,
+                cursor_row,
+                history_size: grid.history_size(),
+                size,
+                alternate: grid.alternate_screen_mode(),
+            };
+            return self.finish_upload(first, pending.decoded, context, grid);
         }
 
         let (cursor_col, cursor_row) = grid.cursor_position();
@@ -432,10 +433,16 @@ impl GraphicsState {
             },
             Some(_) => return failure(&command, "EINVAL:unsupported compression"),
         };
-        let (png, width, height) = match normalize_image(&command, data) {
+        let (image, width, height) = match normalize_image(&command, data) {
             Ok(image) => image,
             Err(error) => return failure(&command, &error),
         };
+        if command.char_value('a') == Some('f') {
+            return match self.edit_animation(&command, Some(image)) {
+                Ok(id) => success_for_image(&command, true, id),
+                Err(error) => failure(&command, &error),
+            };
+        }
         if command.char_value('a').unwrap_or('t') == 'q' {
             return success(&command, false);
         }
@@ -450,13 +457,14 @@ impl GraphicsState {
         };
         let next_generation = self.next_generation.wrapping_add(1).max(1);
         let image = StoredImage {
-            png: Arc::from(png),
+            image: Arc::new(image),
             width,
             height,
             number: image_number,
+            animation: None,
             generation: next_generation,
         };
-        let byte_len = image.png.len();
+        let byte_len = image.byte_len();
         let Some(evictions) = self.quota_evictions_for_replacement(image_id, byte_len) else {
             return failure(&command, "ENOSPC:image storage quota exceeded");
         };
@@ -574,10 +582,12 @@ impl GraphicsState {
         let source_y = command.u32_value('y').unwrap_or(0).min(image.height);
         let source_width = command
             .u32_value('w')
+            .filter(|value| *value > 0)
             .unwrap_or(image.width.saturating_sub(source_x))
             .min(image.width.saturating_sub(source_x));
         let source_height = command
             .u32_value('h')
+            .filter(|value| *value > 0)
             .unwrap_or(image.height.saturating_sub(source_y))
             .min(image.height.saturating_sub(source_y));
         if source_width == 0 || source_height == 0 {
@@ -586,45 +596,46 @@ impl GraphicsState {
 
         let cell_width = size.cell_width.max(1.0);
         let cell_height = size.cell_height.max(1.0);
-        let requested_cols = command.u32_value('c').filter(|value| *value > 0);
-        let requested_rows = command.u32_value('r').filter(|value| *value > 0);
-        let available_cols = u32::from(size.cols)
-            .saturating_sub(u32::try_from(cursor_col).unwrap_or(u32::MAX))
-            .max(1);
+        let display_cols = command.u32_value('c').filter(|value| *value > 0);
+        let display_rows = command.u32_value('r').filter(|value| *value > 0);
+        let virtual_placement = command.u32_value('U').unwrap_or(0) == 1;
+        let x_offset = (if virtual_placement {
+            0
+        } else {
+            command.u32_value('X').unwrap_or(0)
+        })
+        .min((cell_width.ceil() as u32).saturating_sub(1));
+        let y_offset = (if virtual_placement {
+            0
+        } else {
+            command.u32_value('Y').unwrap_or(0)
+        })
+        .min((cell_height.ceil() as u32).saturating_sub(1));
         let mut placed_source_width = source_width;
-        let (display_cols, display_rows) = match (requested_cols, requested_rows) {
-            (Some(cols), Some(rows)) => (Some(cols), Some(rows)),
-            (Some(cols), None) => {
-                let height = cols as f32 * cell_width * source_height as f32 / source_width as f32;
-                (
-                    Some(cols),
-                    Some((height / cell_height).ceil().max(1.0) as u32),
-                )
-            }
-            (None, Some(rows)) => {
-                let width = rows as f32 * cell_height * source_width as f32 / source_height as f32;
-                (
-                    Some((width / cell_width).ceil().max(1.0) as u32),
-                    Some(rows),
-                )
-            }
-            (None, None) => {
-                let available_width = available_cols as f32 * cell_width;
-                if source_width as f32 > available_width {
-                    placed_source_width = available_width.floor().max(1.0) as u32;
-                }
-                let cols = (placed_source_width as f32 / cell_width).ceil().max(1.0) as u32;
-                (
-                    Some(cols.min(available_cols)),
-                    Some((source_height as f32 / cell_height).ceil().max(1.0) as u32),
-                )
-            }
-        };
-        let occupied_cols = display_cols.unwrap_or(1);
-        let occupied_rows = display_rows.unwrap_or(1);
+        if display_cols.is_none()
+            && display_rows.is_none()
+            && !virtual_placement
+            && command.value('P').is_none()
+        {
+            let available = (usize::from(size.cols).saturating_sub(cursor_col) as f32 * cell_width
+                - x_offset as f32)
+                .max(1.0);
+            placed_source_width = source_width.min(available.floor() as u32);
+        }
+        let (width, height) = crate::graphics_display_size(
+            placed_source_width,
+            source_height,
+            display_cols,
+            display_rows,
+            (cell_width, cell_height),
+            (x_offset, y_offset),
+            virtual_placement,
+        );
+        let occupied_cols = ((width + x_offset as f32) / cell_width).ceil().max(1.0) as u32;
+        let occupied_rows = ((height + y_offset as f32) / cell_height).ceil().max(1.0) as u32;
         let placement_id = command.u32_value('p').unwrap_or(0);
         let virtual_placement = command.u32_value('U').unwrap_or(0) == 1;
-        let relative_parent = command.u32_value('P');
+        let relative_parent = command.u32_value('P').filter(|id| *id > 0);
         if virtual_placement && relative_parent.is_some() {
             return Err("EINVAL:a virtual placement cannot be relative".into());
         }
@@ -671,8 +682,10 @@ impl GraphicsState {
             display_rows,
             occupied_cols,
             occupied_rows,
-            x_offset: command.u32_value('X').unwrap_or(0),
-            y_offset: command.u32_value('Y').unwrap_or(0),
+            clip_top_rows: 0,
+            clip_bottom_rows: 0,
+            x_offset,
+            y_offset,
             z_index: command.i32_value('z').unwrap_or(0),
         };
         let advances_cursor = !virtual_placement && relative_parent.is_none();
@@ -698,174 +711,6 @@ impl GraphicsState {
         }
     }
 
-    fn delete(&mut self, command: &GraphicsCommand, grid: &Grid) -> ApplyResult {
-        self.pending = None;
-        let selector = command.char_value('d').unwrap_or('a');
-        let free_data = selector.is_ascii_uppercase();
-        let selector = selector.to_ascii_lowercase();
-        let alternate = grid.alternate_screen_mode();
-        let before = self.placements.len();
-        let mut affected_images = HashSet::new();
-        let mut resolved_image_id = None;
-        match selector {
-            'a' => self.placements.retain(|placement| {
-                let remove = placement.alternate == alternate
-                    && !matches!(placement.location, PlacementLocation::Virtual);
-                if remove {
-                    affected_images.insert(placement.image_id);
-                }
-                !remove
-            }),
-            'i' => {
-                let image_id = command.u32_value('i').unwrap_or(0);
-                let placement_id = command.u32_value('p').unwrap_or(0);
-                if image_id != 0 {
-                    affected_images.insert(image_id);
-                    resolved_image_id = Some(image_id);
-                }
-                self.placements.retain(|placement| {
-                    placement.image_id != image_id
-                        || (placement_id != 0 && placement.placement_id != placement_id)
-                });
-            }
-            'n' => {
-                let placement_id = command.u32_value('p').unwrap_or(0);
-                if let Some(image_id) = self.resolve_image_id(command) {
-                    affected_images.insert(image_id);
-                    resolved_image_id = Some(image_id);
-                    self.placements.retain(|placement| {
-                        placement.image_id != image_id
-                            || (placement_id != 0 && placement.placement_id != placement_id)
-                    });
-                }
-            }
-            'c' => {
-                let (col, row) = grid.cursor_position();
-                let line = if alternate {
-                    row as i64
-                } else {
-                    grid.history_size() as i64 + row as i64
-                };
-                self.placements.retain(|placement| {
-                    let remove = placement.alternate == alternate
-                        && placement_contains(placement, line, col);
-                    if remove {
-                        affected_images.insert(placement.image_id);
-                    }
-                    !remove
-                });
-            }
-            'p' | 'q' => {
-                let col = command.u32_value('x').unwrap_or(1).saturating_sub(1) as usize;
-                let row = command.u32_value('y').unwrap_or(1).saturating_sub(1) as i64
-                    + if alternate {
-                        0
-                    } else {
-                        grid.history_size() as i64
-                    };
-                let z_index = command.i32_value('z');
-                self.placements.retain(|placement| {
-                    let remove = placement.alternate == alternate
-                        && placement_contains(placement, row, col)
-                        && (selector != 'q'
-                            || z_index.is_none_or(|z_index| placement.z_index == z_index));
-                    if remove {
-                        affected_images.insert(placement.image_id);
-                    }
-                    !remove
-                });
-            }
-            'r' => {
-                let first = command.u32_value('x').unwrap_or(0);
-                let last = command.u32_value('y').unwrap_or(u32::MAX);
-                if first > last {
-                    return failure(command, "EINVAL:invalid image id range");
-                }
-                affected_images.extend(
-                    self.images
-                        .keys()
-                        .copied()
-                        .filter(|image_id| (first..=last).contains(image_id)),
-                );
-                self.placements
-                    .retain(|placement| !(first..=last).contains(&placement.image_id));
-            }
-            'x' => {
-                let col = command.u32_value('x').unwrap_or(1).saturating_sub(1) as usize;
-                self.placements.retain(|placement| {
-                    let remove = match placement.location {
-                        PlacementLocation::Direct {
-                            col: placement_col, ..
-                        } => {
-                            placement.alternate == alternate
-                                && col >= placement_col
-                                && col
-                                    < placement_col.saturating_add(placement.occupied_cols as usize)
-                        }
-                        PlacementLocation::Virtual | PlacementLocation::Relative { .. } => false,
-                    };
-                    if remove {
-                        affected_images.insert(placement.image_id);
-                    }
-                    !remove
-                });
-            }
-            'y' => {
-                let row = command.u32_value('y').unwrap_or(1).saturating_sub(1) as i64
-                    + if alternate {
-                        0
-                    } else {
-                        grid.history_size() as i64
-                    };
-                self.placements.retain(|placement| {
-                    let remove = match placement.location {
-                        PlacementLocation::Direct { anchor_line, .. } => {
-                            placement.alternate == alternate
-                                && row >= anchor_line
-                                && row
-                                    < anchor_line.saturating_add(i64::from(placement.occupied_rows))
-                        }
-                        PlacementLocation::Virtual | PlacementLocation::Relative { .. } => false,
-                    };
-                    if remove {
-                        affected_images.insert(placement.image_id);
-                    }
-                    !remove
-                });
-            }
-            'z' => {
-                let z_index = command.i32_value('z').unwrap_or(0);
-                self.placements.retain(|placement| {
-                    let remove = placement.alternate == alternate
-                        && !matches!(placement.location, PlacementLocation::Virtual)
-                        && placement.z_index == z_index;
-                    if remove {
-                        affected_images.insert(placement.image_id);
-                    }
-                    !remove
-                });
-            }
-            _ => return failure(command, "EINVAL:unsupported delete selector"),
-        }
-        self.remove_orphaned_relative_placements();
-        if free_data {
-            for image_id in affected_images {
-                if !self
-                    .placements
-                    .iter()
-                    .any(|placement| placement.image_id == image_id)
-                {
-                    self.remove_image(image_id);
-                }
-            }
-        }
-        if let Some(image_id) = resolved_image_id {
-            success_for_image(command, before != self.placements.len(), image_id)
-        } else {
-            success(command, before != self.placements.len())
-        }
-    }
-
     pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
@@ -888,57 +733,118 @@ impl GraphicsState {
         let offset = i64::try_from(grid.display_offset()).unwrap_or(i64::MAX);
         let rows = i64::try_from(grid.rows()).unwrap_or(i64::MAX);
         let placeholders = self.unicode_placeholders(grid);
-        self.placements
+        let mut result = Vec::new();
+        for placement in self
+            .placements
             .iter()
             .filter(|placement| placement.alternate == alternate)
-            .filter_map(|placement| {
-                let origin = self.resolve_render_origin(placement, &placeholders)?;
-                let image = self.images.get(&placement.image_id)?;
-                let (viewport_row, col) = match origin {
-                    ResolvedOrigin::Buffer { anchor_line, col } => {
-                        let row = if alternate {
-                            anchor_line
-                        } else {
-                            anchor_line.saturating_sub(history).saturating_add(offset)
-                        };
-                        (row, col)
-                    }
-                    ResolvedOrigin::Viewport { row, col } => (row, col),
+        {
+            let Some(image) = self.images.get(&placement.image_id) else {
+                continue;
+            };
+            let mut emit = |viewport_row: i64, col: i64, virtual_cell: Option<(u32, u32)>| {
+                let (occupied_cols, occupied_rows) = if virtual_cell.is_some() {
+                    (1, 1)
+                } else {
+                    (placement.occupied_cols, placement.occupied_rows)
                 };
-                if viewport_row.saturating_add(i64::from(placement.occupied_rows)) <= 0
+                if viewport_row.saturating_add(occupied_rows as i64) <= 0
                     || viewport_row >= rows
-                    || col >= grid.cols()
+                    || col.saturating_add(occupied_cols as i64) <= 0
+                    || col >= grid.cols() as i64
                 {
-                    return None;
+                    return;
                 }
-                Some(GraphicsRenderPlacement {
+                result.push(GraphicsRenderPlacement {
                     placement_serial: placement.serial,
                     image_id: placement.image_id,
                     placement_id: placement.placement_id,
-                    png: image.png.clone(),
+                    image: image.image.clone(),
                     image_width: image.width,
                     image_height: image.height,
                     image_generation: image.generation,
-                    viewport_row: i32::try_from(viewport_row).unwrap_or(if viewport_row < 0 {
-                        i32::MIN
-                    } else {
-                        i32::MAX
-                    }),
-                    col,
+                    animation_deadline: image
+                        .animation
+                        .as_ref()
+                        .and_then(|animation| animation.next_deadline()),
+                    viewport_row: viewport_row.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+                    col: col.max(0) as usize,
+                    col_offset: col.min(0).max(i32::MIN as i64) as i32,
+                    virtual_cell,
                     source_x: placement.source_x,
                     source_y: placement.source_y,
                     source_width: placement.source_width,
                     source_height: placement.source_height,
                     display_cols: placement.display_cols,
                     display_rows: placement.display_rows,
-                    occupied_cols: placement.occupied_cols,
-                    occupied_rows: placement.occupied_rows,
-                    x_offset: placement.x_offset,
-                    y_offset: placement.y_offset,
+                    occupied_cols,
+                    occupied_rows,
+                    clip_top_rows: placement.clip_top_rows,
+                    clip_bottom_rows: placement.clip_bottom_rows,
+                    x_offset: if virtual_cell.is_some() {
+                        0
+                    } else {
+                        placement.x_offset
+                    },
+                    y_offset: if virtual_cell.is_some() {
+                        0
+                    } else {
+                        placement.y_offset
+                    },
                     z_index: placement.z_index,
-                })
-            })
-            .collect()
+                });
+            };
+            if matches!(placement.location, PlacementLocation::Virtual) {
+                for cell in &placeholders {
+                    if cell.image_id != placement.image_id
+                        || (cell.placement_id != 0 && cell.placement_id != placement.placement_id)
+                        || cell.image_col
+                            >= placement.display_cols.unwrap_or(placement.occupied_cols)
+                        || cell.image_row
+                            >= placement.display_rows.unwrap_or(placement.occupied_rows)
+                    {
+                        continue;
+                    }
+                    // A zero underline color selects one prototype, never every placement.
+                    if cell.placement_id == 0
+                        && self
+                            .placements
+                            .iter()
+                            .rev()
+                            .find(|p| {
+                                p.alternate == alternate
+                                    && p.image_id == cell.image_id
+                                    && matches!(p.location, PlacementLocation::Virtual)
+                            })
+                            .is_some_and(|p| p.serial != placement.serial)
+                    {
+                        continue;
+                    }
+                    emit(
+                        cell.viewport_row,
+                        cell.col as i64,
+                        Some((cell.image_col, cell.image_row)),
+                    );
+                }
+            } else if let Some(origin) = self.resolve_render_origin(placement, &placeholders) {
+                let (row, col) = match origin {
+                    ResolvedOrigin::Buffer { anchor_line, col } => (
+                        anchor_line.saturating_sub(history).saturating_add(offset),
+                        col,
+                    ),
+                    ResolvedOrigin::Viewport { row, col } => (row, col),
+                };
+                emit(row, col, None);
+            }
+        }
+        result.sort_by_key(|placement| {
+            (
+                placement.z_index,
+                placement.image_id,
+                placement.placement_serial,
+            )
+        });
+        result
     }
 
     fn rebase_primary_history(&mut self, dropped: usize) -> bool {
@@ -1003,6 +909,7 @@ impl GraphicsState {
         let bottom = i64::try_from(bottom).unwrap_or(i64::MAX);
         let count = i64::try_from(count).unwrap_or(i64::MAX);
         let mut changed = false;
+        let full_screen = top == 0 && bottom + 1 == i64::from(self.viewport_rows);
         self.placements.retain_mut(|placement| {
             if placement.alternate != alternate
                 || !matches!(placement.location, PlacementLocation::Direct { .. })
@@ -1012,14 +919,28 @@ impl GraphicsState {
             let PlacementLocation::Direct { anchor_line, .. } = &mut placement.location else {
                 unreachable!()
             };
-            let row = anchor_line.saturating_sub(base);
-            if row < top || row > bottom {
-                return true;
+            let mut span = crate::GraphicsRowSpan {
+                anchor: anchor_line.saturating_sub(base),
+                rows: placement.occupied_rows,
+                clip_top: placement.clip_top_rows,
+                clip_bottom: placement.clip_bottom_rows,
+            };
+            let moved = if full_screen {
+                span.anchor = span.anchor.saturating_add(-count);
+                span.clip_top = span
+                    .clip_top
+                    .max((-span.anchor).max(0).min(span.rows as i64) as u32);
+                true
+            } else {
+                span.scroll(top, bottom.saturating_add(1), count)
+            };
+            if moved {
+                *anchor_line = base.saturating_add(span.anchor);
+                placement.clip_top_rows = span.clip_top;
+                placement.clip_bottom_rows = span.clip_bottom;
+                changed = true;
             }
-            let new_row = row.saturating_sub(count);
-            *anchor_line = base.saturating_add(new_row);
-            changed = true;
-            new_row.saturating_add(i64::from(placement.occupied_rows)) > top
+            span.visible()
         });
         if changed {
             self.remove_orphaned_relative_placements();
@@ -1047,6 +968,7 @@ impl GraphicsState {
         let bottom = i64::try_from(bottom).unwrap_or(i64::MAX);
         let count = i64::try_from(count).unwrap_or(i64::MAX);
         let mut changed = false;
+        let full_screen = top == 0 && bottom + 1 == i64::from(self.viewport_rows);
         self.placements.retain_mut(|placement| {
             if placement.alternate != alternate
                 || !matches!(placement.location, PlacementLocation::Direct { .. })
@@ -1056,14 +978,30 @@ impl GraphicsState {
             let PlacementLocation::Direct { anchor_line, .. } = &mut placement.location else {
                 unreachable!()
             };
-            let row = anchor_line.saturating_sub(base);
-            if row < top || row > bottom {
-                return true;
+            let mut span = crate::GraphicsRowSpan {
+                anchor: anchor_line.saturating_sub(base),
+                rows: placement.occupied_rows,
+                clip_top: placement.clip_top_rows,
+                clip_bottom: placement.clip_bottom_rows,
+            };
+            let moved = if full_screen {
+                span.anchor = span.anchor.saturating_add(count);
+                span.clip_bottom = span.clip_bottom.max(
+                    (span.anchor + span.rows as i64 - bottom - 1)
+                        .max(0)
+                        .min(span.rows as i64) as u32,
+                );
+                true
+            } else {
+                span.scroll(top, bottom.saturating_add(1), -count)
+            };
+            if moved {
+                *anchor_line = base.saturating_add(span.anchor);
+                placement.clip_top_rows = span.clip_top;
+                placement.clip_bottom_rows = span.clip_bottom;
+                changed = true;
             }
-            let new_row = row.saturating_add(count);
-            *anchor_line = base.saturating_add(new_row);
-            changed = true;
-            new_row <= bottom
+            span.visible()
         });
         if changed {
             self.remove_orphaned_relative_placements();
@@ -1132,11 +1070,11 @@ impl GraphicsState {
             return self.images.contains_key(&image_id).then_some(image_id);
         }
         let image_number = command.u32_value('I').filter(|number| *number != 0)?;
-        self.images
-            .iter()
-            .filter(|(_, image)| image.number == Some(image_number))
-            .max_by_key(|(_, image)| image.generation)
-            .map(|(image_id, _)| *image_id)
+        self.insertion_order.iter().rev().copied().find(|id| {
+            self.images
+                .get(id)
+                .is_some_and(|image| image.number == Some(image_number))
+        })
     }
 
     fn next_anonymous_image_id(&self) -> (u32, u32) {
@@ -1166,7 +1104,7 @@ impl GraphicsState {
         let old_bytes = self
             .images
             .get(&image_id)
-            .map_or(0, |image| image.png.len());
+            .map_or(0, |image| image.byte_len());
         let mut stored_bytes = self
             .stored_bytes
             .saturating_sub(old_bytes)
@@ -1194,7 +1132,7 @@ impl GraphicsState {
             let Some(image) = self.images.get(&candidate) else {
                 continue;
             };
-            stored_bytes = stored_bytes.saturating_sub(image.png.len());
+            stored_bytes = stored_bytes.saturating_sub(image.byte_len());
             image_count = image_count.saturating_sub(1);
             evictions.push(candidate);
         }
@@ -1231,7 +1169,7 @@ impl GraphicsState {
 
     fn remove_image(&mut self, image_id: u32) {
         if let Some(image) = self.images.remove(&image_id) {
-            self.stored_bytes = self.stored_bytes.saturating_sub(image.png.len());
+            self.stored_bytes = self.stored_bytes.saturating_sub(image.byte_len());
         }
         self.placements
             .retain(|placement| placement.image_id != image_id);
@@ -1266,6 +1204,7 @@ fn advance_cursor_after_placement(grid: &mut Grid, cols: u32, rows: u32) {
     }
 }
 
+#[cfg(test)]
 fn placement_contains(placement: &Placement, line: i64, col: usize) -> bool {
     let PlacementLocation::Direct {
         anchor_line,
@@ -1339,135 +1278,6 @@ fn base64_decoded_upper_bound(input: &[u8]) -> usize {
         .count()
         .div_ceil(4)
         .saturating_mul(3)
-}
-
-fn resolve_transmission_data(
-    command: &GraphicsCommand,
-    decoded: Vec<u8>,
-) -> Result<Vec<u8>, String> {
-    match command.char_value('t').unwrap_or('d') {
-        'd' => Ok(decoded),
-        'f' | 't' => {
-            let temporary = command.char_value('t') == Some('t');
-            let path = PathBuf::from(
-                std::str::from_utf8(&decoded).map_err(|_| "EINVAL:file path is not UTF-8")?,
-            );
-            let result = read_regular_file(
-                &path,
-                u64::from(command.u32_value('O').unwrap_or(0)),
-                command
-                    .u32_value('S')
-                    .filter(|size| *size > 0)
-                    .map(u64::from),
-            );
-            if temporary && result.is_ok() && temporary_path_can_be_removed(&path) {
-                let _ = std::fs::remove_file(&path);
-            }
-            result
-        }
-        's' => Err("ENOTSUP:shared-memory transmission is not supported".into()),
-        _ => Err("EINVAL:unsupported transmission medium".into()),
-    }
-}
-
-fn read_regular_file(path: &Path, offset: u64, size: Option<u64>) -> Result<Vec<u8>, String> {
-    // Reject FIFOs and devices before opening: a child controls this path and a
-    // blocking FIFO open would otherwise stall the parser thread indefinitely.
-    let initial_metadata =
-        std::fs::metadata(path).map_err(|_| "ENOENT:unable to open image file".to_string())?;
-    if !initial_metadata.is_file() {
-        return Err("EINVAL:invalid image file".into());
-    }
-    let mut file = open_image_file(path)?;
-    let metadata = file
-        .metadata()
-        .map_err(|_| "EIO:unable to inspect image file".to_string())?;
-    if !metadata.is_file() || offset > metadata.len() {
-        return Err("EINVAL:invalid image file".into());
-    }
-    let length = size
-        .unwrap_or(metadata.len() - offset)
-        .min(metadata.len() - offset);
-    if length > MAX_UPLOAD_BYTES as u64 {
-        return Err("EFBIG:image file exceeds storage limit".into());
-    }
-    file.seek(SeekFrom::Start(offset))
-        .map_err(|_| "EIO:unable to seek image file".to_string())?;
-    let mut output = Vec::with_capacity(length as usize);
-    file.take(length)
-        .read_to_end(&mut output)
-        .map_err(|_| "EIO:unable to read image file".to_string())?;
-    Ok(output)
-}
-
-fn open_image_file(path: &Path) -> Result<File, String> {
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    const NONBLOCK: i32 = 0o4000;
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    const NONBLOCK: i32 = 0x0004;
-
-    #[cfg(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    ))]
-    {
-        use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt};
-
-        OpenOptions::new()
-            .read(true)
-            .custom_flags(NONBLOCK)
-            .open(path)
-            .map_err(|_| "ENOENT:unable to open image file".to_string())
-    }
-
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "android",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    )))]
-    File::open(path).map_err(|_| "ENOENT:unable to open image file".to_string())
-}
-
-fn temporary_path_can_be_removed(path: &Path) -> bool {
-    let Ok(canonical) = path.canonicalize() else {
-        return false;
-    };
-    if !canonical.components().any(|component| {
-        component
-            .as_os_str()
-            .to_string_lossy()
-            .contains("tty-graphics-protocol")
-    }) {
-        return false;
-    }
-    let mut roots = vec![
-        PathBuf::from("/tmp"),
-        PathBuf::from("/private/tmp"),
-        PathBuf::from("/dev/shm"),
-    ];
-    roots.push(std::env::temp_dir());
-    roots.into_iter().any(|root| {
-        root.canonicalize()
-            .is_ok_and(|root| canonical.starts_with(root))
-    })
 }
 
 include!("graphics/image.rs");

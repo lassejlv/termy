@@ -15,7 +15,7 @@ pub(super) const TMUX_TITLE_REFRESH_DEBOUNCE_MS: u64 = 120;
 const CHILD_WORKING_DIR_CACHE_TTL_MS: u64 = 1500;
 pub(super) const SELECTION_BG_ALPHA: f32 = 0.35;
 pub(super) const DIM_TEXT_FACTOR: f32 = 0.66;
-pub(super) const COMMAND_PALETTE_WIDTH: f32 = 560.0;
+pub(super) const COMMAND_PALETTE_WIDTH: f32 = 540.0;
 pub(super) const COMMAND_PALETTE_MIN_WIDTH: f32 = 320.0;
 pub(super) const COMMAND_PALETTE_MAX_ITEMS: usize = 8;
 /// Floor for the row count in short windows; below this the list stops being
@@ -25,29 +25,25 @@ pub(super) const COMMAND_PALETTE_MIN_ITEMS: usize = 3;
 pub(super) const COMMAND_PALETTE_VIEWPORT_MARGIN_X: f32 = 24.0;
 pub(super) const COMMAND_PALETTE_VIEWPORT_MARGIN_Y: f32 = 24.0;
 pub(super) const COMMAND_PALETTE_MIN_TOP_OFFSET: f32 = 12.0;
-pub(super) const COMMAND_PALETTE_TOP_OFFSET_RATIO: f32 = 0.08;
+pub(super) const COMMAND_PALETTE_TOP_OFFSET_RATIO: f32 = 0.12;
 pub(super) const COMMAND_PALETTE_LIST_PADDING_Y: f32 = 6.0;
-pub(super) const COMMAND_PALETTE_ROW_HEIGHT: f32 = 34.0;
+pub(super) const COMMAND_PALETTE_ROW_HEIGHT: f32 = 32.0;
 pub(super) const COMMAND_PALETTE_SCROLLBAR_WIDTH: f32 = 8.0;
 pub(super) const COMMAND_PALETTE_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 18.0;
-pub(super) const COMMAND_PALETTE_INPUT_HEAD_HEIGHT: f32 = 44.0;
-pub(super) const COMMAND_PALETTE_INPUT_TEXT_SIZE: f32 = 14.0;
+pub(super) const COMMAND_PALETTE_INPUT_HEAD_HEIGHT: f32 = 48.0;
+pub(super) const COMMAND_PALETTE_INPUT_TEXT_SIZE: f32 = 16.0;
 pub(super) const COMMAND_PALETTE_ROW_ICON_SIZE: f32 = 14.0;
-pub(super) const COMMAND_PALETTE_ROW_PADDING_X: f32 = 12.0;
+pub(super) const COMMAND_PALETTE_ROW_PADDING_X: f32 = 10.0;
 pub(super) const COMMAND_PALETTE_ROW_CATEGORY_MAX_WIDTH: f32 = 96.0;
-pub(super) const COMMAND_PALETTE_BREADCRUMB_MAX_WIDTH: f32 = 220.0;
 /// Gap between the keycaps of one keystroke, and between keystrokes of a
 /// multi-stroke binding.
 pub(super) const COMMAND_PALETTE_KEYCAP_GAP: f32 = 2.0;
 pub(super) const COMMAND_PALETTE_KEYSTROKE_GAP: f32 = 6.0;
 /// Shown on rows that are unavailable but carry no more specific reason.
 pub(super) const COMMAND_PALETTE_UNAVAILABLE_HINT: &str = "unavailable";
-pub(super) const COMMAND_PALETTE_FOOTER_HEIGHT: f32 = 32.0;
-pub(super) const COMMAND_PALETTE_SELECTED_ACCENT_WIDTH: f32 = 2.0;
-pub(super) const COMMAND_PALETTE_SELECTED_ACCENT_INSET_Y: f32 = 8.0;
+pub(super) const COMMAND_PALETTE_FOOTER_HEIGHT: f32 = 30.0;
 pub(super) const COMMAND_PALETTE_SCRIM_ALPHA: f32 = 0.12;
-pub(super) const COMMAND_PALETTE_DIVIDER_ALPHA: f32 = 0.10;
-pub(super) const COMMAND_PALETTE_TOP_OFFSET: f32 = 60.0;
+pub(super) const COMMAND_PALETTE_TOP_OFFSET: f32 = 76.0;
 pub(super) const TERMINAL_SCROLLBAR_GUTTER_WIDTH: f32 = 12.0;
 pub(super) const TERMINAL_SCROLLBAR_TRACK_WIDTH: f32 = 12.0;
 pub(super) const TERMINAL_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 40.0;
@@ -82,21 +78,6 @@ pub(super) const CHILD_WORKING_DIR_CACHE_TTL: Duration =
     Duration::from_millis(CHILD_WORKING_DIR_CACHE_TTL_MS);
 pub(super) const BENCHMARK_EXIT_GRACE_DURATION: Duration = Duration::from_millis(250);
 pub(super) const OVERLAY_PANEL_ALPHA_FLOOR_RATIO: f32 = 0.72;
-pub(super) const OVERLAY_PRIMARY_TEXT_ALPHA: f32 = 0.95;
-pub(super) const OVERLAY_MUTED_TEXT_ALPHA: f32 = 0.62;
-pub(super) const COMMAND_PALETTE_PANEL_SOLID_ALPHA: f32 = 0.90;
-pub(super) const COMMAND_PALETTE_ROW_SELECTED_BG_ALPHA: f32 = 0.20;
-pub(super) const COMMAND_PALETTE_SELECTED_ACCENT_ALPHA: f32 = 0.95;
-pub(super) const COMMAND_PALETTE_MATCH_TEXT_ALPHA: f32 = 1.0;
-/// Row icons hold one tone regardless of selection, so selection reads from the
-/// row background and accent bar alone.
-pub(super) const COMMAND_PALETTE_ICON_TEXT_ALPHA: f32 = 0.72;
-pub(super) const COMMAND_PALETTE_SHORTCUT_BG_ALPHA: f32 = 0.10;
-pub(super) const COMMAND_PALETTE_SHORTCUT_TEXT_ALPHA: f32 = 0.80;
-pub(super) const COMMAND_PALETTE_PANEL_BG_ALPHA: f32 = 0.98;
-pub(super) const COMMAND_PALETTE_INPUT_SELECTION_ALPHA: f32 = 0.28;
-pub(super) const COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA: f32 = 0.10;
-pub(super) const COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA: f32 = 0.42;
 pub(super) const SEARCH_BAR_BG_ALPHA: f32 = 0.92;
 pub(super) const SEARCH_INPUT_BG_ALPHA: f32 = 0.20;
 pub(super) const SEARCH_COUNTER_TEXT_ALPHA: f32 = 0.72;

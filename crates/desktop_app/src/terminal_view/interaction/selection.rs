@@ -55,25 +55,28 @@ pub(in crate::terminal_view) fn kitty_graphics_placement_bounds(
     cell_width: f32,
     cell_height: f32,
 ) -> KittyGraphicsPlacementBounds {
-    // Prefer explicit cell layout from core (including materialised natural
-    // size). Fall back to the occupied span, then raw source pixels.
-    let width = placement
-        .display_cols
-        .or_else(|| (placement.occupied_cols > 0).then_some(placement.occupied_cols))
-        .map_or(placement.source_width as f32, |cols| {
-            cols as f32 * cell_width
-        });
-    let height = placement
-        .display_rows
-        .or_else(|| (placement.occupied_rows > 0).then_some(placement.occupied_rows))
-        .map_or(placement.source_height as f32, |rows| {
-            rows as f32 * cell_height
-        });
+    let (width, height) = if placement.virtual_cell.is_some() {
+        (cell_width, cell_height)
+    } else {
+        termy_core::graphics_display_size(
+            placement.source_width,
+            placement.source_height,
+            placement.display_cols,
+            placement.display_rows,
+            (cell_width, cell_height),
+            (placement.x_offset, placement.y_offset),
+            false,
+        )
+    };
     KittyGraphicsPlacementBounds {
-        left: placement.col as f32 * cell_width + placement.x_offset as f32,
-        top: placement.viewport_row as f32 * cell_height + placement.y_offset as f32,
+        left: (placement.col as f32 + placement.col_offset as f32) * cell_width
+            + placement.x_offset as f32,
+        top: (placement.viewport_row as f32 + placement.clip_top_rows as f32) * cell_height
+            + placement.y_offset as f32,
         width,
-        height,
+        height: (height
+            - (placement.clip_top_rows as f32 + placement.clip_bottom_rows as f32) * cell_height)
+            .max(0.0),
     }
 }
 
@@ -92,15 +95,22 @@ pub(in crate::terminal_view) fn kitty_graphics_placement_intersects_selection(
         return false;
     }
 
-    let image_start_line = i64::from(placement.viewport_row)
+    let origin_line = i64::from(placement.viewport_row)
         .saturating_sub(i64::try_from(display_offset).unwrap_or(i64::MAX));
-    let image_end_line = image_start_line
+    let image_start_line = origin_line.saturating_add(i64::from(placement.clip_top_rows));
+    let image_end_line = origin_line
         .saturating_add(i64::from(placement.occupied_rows))
+        .saturating_sub(i64::from(placement.clip_bottom_rows))
         .saturating_sub(1);
-    let image_left = placement.col;
-    let image_right = image_left
-        .saturating_add(placement.occupied_cols as usize)
+    let origin_col = (placement.col as i64).saturating_add(i64::from(placement.col_offset));
+    let right_col = origin_col
+        .saturating_add(i64::from(placement.occupied_cols))
         .saturating_sub(1);
+    if right_col < 0 || image_start_line > image_end_line {
+        return false;
+    }
+    let image_left = origin_col.max(0) as usize;
+    let image_right = right_col as usize;
     let start_line = i64::from(start.line);
     let end_line = i64::from(end.line);
 
@@ -225,6 +235,24 @@ fn grid_line_text(
 
 type TerminalLineText = Vec<Option<String>>;
 type TerminalLineTextRows = Vec<(i32, TerminalLineText)>;
+
+fn full_terminal_selection_range(terminal: &Terminal) -> Option<(SelectionPos, SelectionPos)> {
+    // An empty visit reads consistent bounds without traversing the scrollback cells.
+    let range = terminal.for_each_line_cell_range(1, 0, |_, _, _, _| {})?;
+    if range.columns == 0 || range.first_line > range.last_line {
+        return None;
+    }
+    Some((
+        SelectionPos {
+            col: 0,
+            line: range.first_line,
+        },
+        SelectionPos {
+            col: range.columns - 1,
+            line: range.last_line,
+        },
+    ))
+}
 
 fn terminal_line_texts(
     terminal: &Terminal,
@@ -782,6 +810,22 @@ impl TerminalView {
         selected_text_from_terminal(terminal, start, end)
     }
 
+    pub(in super::super) fn select_all_terminal_contents(&mut self) -> bool {
+        let Some((anchor, head)) = self
+            .active_terminal()
+            .and_then(full_terminal_selection_range)
+        else {
+            return false;
+        };
+        self.clear_selection();
+        self.pending_cursor_move_click = None;
+        self.pending_cursor_move_preview = None;
+        self.selection_anchor = Some(anchor);
+        self.selection_head = Some(head);
+        self.selection_moved = true;
+        true
+    }
+
     fn terminal_selection_char_class(c: char) -> TerminalSelectionCharClass {
         if c.is_whitespace() {
             TerminalSelectionCharClass::Whitespace
@@ -976,6 +1020,64 @@ mod tests {
     use termy_core::TerminalSize;
 
     #[test]
+    fn select_all_copies_history_and_viewport_even_while_scrolled() {
+        let size = TerminalSize {
+            cols: 12,
+            rows: 2,
+            ..TerminalSize::default()
+        };
+        for terminal in [
+            Terminal::new_test_display(size),
+            Terminal::new_tmux(size, TerminalOptions::default()),
+        ] {
+            terminal.hydrate_output(b"first\r\nsecond\r\nlast");
+            let (start, end) = full_terminal_selection_range(&terminal).unwrap();
+            assert_eq!(start, SelectionPos { line: -1, col: 0 });
+            assert_eq!(end, SelectionPos { line: 1, col: 11 });
+            assert_eq!(
+                selected_text_from_terminal(&terminal, start, end).as_deref(),
+                Some("first\nsecond\nlast")
+            );
+            assert!(terminal.scroll_display(1));
+            assert_eq!(full_terminal_selection_range(&terminal), Some((start, end)));
+            assert_eq!(
+                selected_text_from_terminal(&terminal, start, end).as_deref(),
+                Some("first\nsecond\nlast")
+            );
+        }
+    }
+
+    #[test]
+    fn select_all_uses_only_the_active_screen() {
+        let size = TerminalSize {
+            cols: 12,
+            rows: 2,
+            ..TerminalSize::default()
+        };
+        for terminal in [
+            Terminal::new_test_display(size),
+            Terminal::new_tmux(size, TerminalOptions::default()),
+        ] {
+            terminal.hydrate_output(b"history\r\nnormal\r\nlast");
+            let normal = full_terminal_selection_range(&terminal).unwrap();
+            terminal.hydrate_output(b"\x1b[?1049h\x1b[2J\x1b[Htop\r\nbottom");
+            let (start, end) = full_terminal_selection_range(&terminal).unwrap();
+            assert_eq!(start, SelectionPos { line: 0, col: 0 });
+            assert_eq!(end, SelectionPos { line: 1, col: 11 });
+            assert_eq!(
+                selected_text_from_terminal(&terminal, start, end).as_deref(),
+                Some("top\nbottom")
+            );
+            terminal.hydrate_output(b"\x1b[?1049l");
+            assert_eq!(full_terminal_selection_range(&terminal), Some(normal));
+            assert_eq!(
+                selected_text_from_terminal(&terminal, normal.0, normal.1).as_deref(),
+                Some("history\nnormal\nlast")
+            );
+        }
+    }
+
+    #[test]
     fn hovered_link_contains_each_cell_in_wrapped_span() {
         let link = HoveredLink {
             start_row: 2,
@@ -1005,12 +1107,19 @@ mod tests {
             placement_serial,
             image_id: 7,
             placement_id: 3,
-            png: Arc::from([placement_serial as u8]),
+            image: Arc::new(termy_core::GraphicsImage::from_rgba(
+                1,
+                1,
+                vec![placement_serial as u8; 4],
+            )),
             image_width: 20,
             image_height: 40,
             image_generation: 11,
+            animation_deadline: None,
             viewport_row,
             col,
+            col_offset: 0,
+            virtual_cell: None,
             source_x: 0,
             source_y: 0,
             source_width: 20,
@@ -1019,6 +1128,8 @@ mod tests {
             display_rows: Some(2),
             occupied_cols,
             occupied_rows,
+            clip_top_rows: 0,
+            clip_bottom_rows: 0,
             x_offset: 3,
             y_offset: 4,
             z_index,
@@ -1029,7 +1140,7 @@ mod tests {
     fn kitty_placement_bounds_and_hit_testing_match_render_geometry() {
         let mut earlier = kitty_placement(1, 2, 1, 2, 2, 4);
         let later = kitty_placement(2, 2, 1, 2, 2, 4);
-        earlier.png = Arc::from([99]);
+        earlier.image = Arc::new(termy_core::GraphicsImage::from_png(1, 1, vec![99]));
         let placements = vec![earlier, later];
 
         let bounds = kitty_graphics_placement_bounds(&placements[0], 10.0, 20.0);
@@ -1038,8 +1149,8 @@ mod tests {
             KittyGraphicsPlacementBounds {
                 left: 13.0,
                 top: 44.0,
-                width: 20.0,
-                height: 40.0,
+                width: 17.0,
+                height: 36.0,
             }
         );
         assert_eq!(
@@ -1177,8 +1288,8 @@ mod tests {
     fn kitty_image_selection_equality_ignores_png_bytes() {
         let mut first = kitty_placement(9, 0, 0, 1, 1, 0);
         let mut second = first.clone();
-        first.png = Arc::from([1, 2, 3]);
-        second.png = Arc::from([9, 8, 7]);
+        first.image = Arc::new(termy_core::GraphicsImage::from_png(1, 1, vec![1, 2, 3]));
+        second.image = Arc::new(termy_core::GraphicsImage::from_png(1, 1, vec![9, 8, 7]));
 
         assert_eq!(
             KittyImageSelection {
@@ -1200,7 +1311,7 @@ mod tests {
             placement: selected_placement.clone(),
         };
         let mut current = selected_placement;
-        current.png = Arc::from([99, 98, 97]);
+        current.image = Arc::new(termy_core::GraphicsImage::from_png(1, 1, vec![99, 98, 97]));
 
         assert!(
             selection

@@ -1,11 +1,12 @@
 fn normalize_image(
     command: &GraphicsCommand,
     data: Vec<u8>,
-) -> Result<(Vec<u8>, u32, u32), String> {
+) -> Result<(GraphicsImage, u32, u32), String> {
     match command.u32_value('f').unwrap_or(32) {
         100 => {
-            let (data, width, height) = sanitize_png(data)?;
-            Ok((data, width, height))
+            let (header, filtered) = read_png(&data)?;
+            let rgba = decode_png_pixels(&data, header, &filtered)?;
+            Ok((GraphicsImage::from_rgba(header.width, header.height, rgba), header.width, header.height))
         }
         format @ (24 | 32) => {
             let width = command.u32_value('s').unwrap_or(0);
@@ -16,7 +17,9 @@ fn normalize_image(
                 return Err("EINVAL:pixel data length does not match dimensions".into());
             }
             Ok((
-                encode_png(width, height, channels as u8, &data),
+                GraphicsImage::from_rgba(width, height, if channels == 4 { data } else {
+                    data.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect()
+                }),
                 width,
                 height,
             ))
@@ -54,6 +57,7 @@ struct PngPass {
     rows: usize,
 }
 
+#[cfg(test)]
 fn sanitize_png(mut data: Vec<u8>) -> Result<(Vec<u8>, u32, u32), String> {
     let (width, height) = validate_png(&data)?;
     let mut read_offset = 8usize;
@@ -85,6 +89,7 @@ fn sanitize_png(mut data: Vec<u8>) -> Result<(Vec<u8>, u32, u32), String> {
     Ok((data, width, height))
 }
 
+#[cfg(test)]
 fn png_itxt_is_compressed(payload: &[u8]) -> Result<bool, String> {
     let Some(keyword_end) = payload.iter().position(|byte| *byte == 0) else {
         return Err("EINVAL:invalid PNG image".into());
@@ -111,7 +116,12 @@ fn png_itxt_is_compressed(payload: &[u8]) -> Result<bool, String> {
     Ok(compression_flag == 1)
 }
 
+#[cfg(test)]
 fn validate_png(data: &[u8]) -> Result<(u32, u32), String> {
+    read_png(data).map(|(header, _)| (header.width, header.height))
+}
+
+fn read_png(data: &[u8]) -> Result<(PngHeader, Vec<u8>), String> {
     if data.len() < 8 || &data[..8] != b"\x89PNG\r\n\x1a\n" {
         return Err("EINVAL:invalid PNG image".into());
     }
@@ -231,7 +241,7 @@ fn validate_png(data: &[u8]) -> Result<(u32, u32), String> {
                 let compressed = png_idat_data(data, idat_bytes)?;
                 let filtered = decompress_png_idat(compressed.as_ref(), expected)?;
                 validate_png_filters(&filtered, &passes[..pass_count])?;
-                return Ok((header.width, header.height));
+                return Ok((header, filtered));
             }
             b"IEND" => return Err("EINVAL:invalid PNG image".into()),
             _ if kind[0].is_ascii_uppercase() => {
@@ -613,3 +623,5 @@ fn decompress_zlib(command: &GraphicsCommand, data: Vec<u8>) -> Result<Vec<u8>, 
         }
     })
 }
+
+include!("png_pixels.rs");

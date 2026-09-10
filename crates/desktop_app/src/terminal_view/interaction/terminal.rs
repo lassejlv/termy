@@ -717,7 +717,7 @@ mod tests {
     }
 
     #[test]
-    fn fullscreen_tui_gets_the_whole_grid_and_restores_shell_padding_on_exit() {
+    fn fullscreen_tui_preserves_configured_padding_on_entry_and_exit() {
         for native in [true, false] {
             let mut pane = test_pane("fullscreen-tui");
             if native {
@@ -725,7 +725,7 @@ mod tests {
             }
             for (sequence, expected_padding, expected_size) in [
                 (b"".as_slice(), (12.0, 8.0), (77, 27)),
-                (b"\x1b[?1049h".as_slice(), (0.0, 0.0), (80, 28)),
+                (b"\x1b[?1049h".as_slice(), (12.0, 8.0), (77, 27)),
                 (b"\x1b[?1049l".as_slice(), (12.0, 8.0), (77, 27)),
             ] {
                 pane.terminal().hydrate_output(sequence);

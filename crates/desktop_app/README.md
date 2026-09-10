@@ -16,7 +16,7 @@ Important internal areas:
 
 Push reusable headless behavior into `termy_core` or a pure domain crate. Push GPUI-adjacent terminal adapter behavior into `termy_terminal_ui` only when it is reusable outside the desktop app shell. Push reusable chrome presentation — surfaces, controls, status affordances — into `termy_ui`, and keep the state and behavior behind it here.
 
-`src/settings_view/` renders its section headers and grouped cards with `termy_ui`. Its colors are published to the kit by `SettingsWindow::sync_ui_tokens`, which maps this window's own translucent chrome colors onto `termy_ui::Tokens`; do not swap that for `Tokens::from_palette`, which is opaque and would drop the window's transparency.
+`src/settings_view/` renders its section headers and grouped cards with `termy_ui`. Settings uses system typography and opaque tokens from `Tokens::for_settings`, following the active terminal theme for backgrounds, text, selection, and accents. Text contrast adapts to light and dark palettes. Terminal fonts are shown in the Appearance preview; opacity adjustments still preview in terminal windows. The sidebar groups App, Terminal, and Personalization, with keyboard navigation in the same order.
 
 ## Kitty graphics
 
@@ -39,6 +39,14 @@ so clients can size placements correctly.
 
 ## Validation
 
+macOS startup resolves an installed terminal font directly before falling back
+to the complete font catalog and fixed-pitch validation. A packaged default icon
+is supplied by macOS; startup only replaces it when the selected icon or a custom
+Finder icon requires that. Config reloads skip reapplying an unchanged icon.
+`TERMY_LAUNCH_PROBE_FILE` records the first usable frame and optional startup-stage
+timings. Measurements and limitations are recorded in
+[`performance-2026-09-11.md`](../../docs/engineering/performance-2026-09-11.md).
+
 ```sh
 cargo test -p termy
 cargo check -p termy
@@ -49,3 +57,14 @@ cargo check -p termy
 - `termy_ffi`
 - native host app packages
 - website packages
+
+## Kitty graphics visual check
+
+Run `python3 crates/desktop_app/examples/kitty_graphics_conformance.py` inside
+Termy. The alternate-screen demo covers natural and cell-based sizes, crops and
+pixel offsets, all three z layers, repeated Unicode placeholders with gaps,
+clipped relative placements, animation, margin scrolling, and final-chunk
+cursor placement. Space switches pages, R redraws, and Q restores the shell.
+Use `--scroll` to start on the scrolling page. Resize the window while viewing
+each page. The test is intentionally synthetic; application-specific behavior
+still needs testing in the relevant application.

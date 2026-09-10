@@ -116,25 +116,34 @@ Lifecycle events for shell prompt, command start, execution, and completion have
 queue priority over discardable noise, so a bounded event queue preserves a
 coherent command cycle under load.
 
-Kitty graphics uploads and inflated image data are capped at 64 MiB per image,
-while stored PNG data is kept under a separate 128 MiB cache quota and a 4,096
-image-record limit. Raw RGB and RGBA uploads are encoded directly into the final
-PNG allocation, avoiding a second full-size filtered or zlib staging buffer.
-The limits still admit a 4096x4096 RGBA image. Command controls stop at 4 KiB and
-64 fields before string conversion. Valid supplied PNGs are compacted in place
-to remove compressed text/color-profile metadata and APNG frames that could
-make a downstream image decoder expand data outside the validated static-image
-bound. DEFLATE decoding also caps the number of blocks, and chunked transfers
-check their remaining decoded capacity before allocating the next chunk. A PNG
-with one IDAT chunk is validated directly from its upload buffer; only split
-IDAT streams need a joined compressed buffer. File
-transfers reject non-regular files before opening them and use nonblocking opens
-on supported Unix targets, so a child-provided FIFO cannot stall parsing.
-Kitty image numbers (`I`) allocate distinct terminal-selected IDs, resolve only
-the newest matching image, and are rejected when combined with an explicit
-image ID. Uppercase deletion frees data only for images affected by that
-selector and only after their final placement is gone. Image-ID range deletion
-is global, while coordinate selectors remain scoped to the active screen.
+Kitty graphics supports RGB/RGBA, PNG, zlib, chunked uploads, local files,
+temporary files, and shared memory. Uploads and inflated images are capped at
+64 MiB each; decoded image and animation storage has a separate 128 MiB quota
+and a 4,096 image limit. Controls stop at 4 KiB and 64 fields. File transfers
+reject non-regular files and use nonblocking opens on supported Unix targets.
+
+Images expose shared RGBA pixels through `GraphicsImage::rgba()`. The PNG
+representation is encoded lazily by `GraphicsImage::png()` for export. PNG
+scanlines, palette transparency, packed samples, 16-bit samples, and Adam7
+passes are decoded inside Tmon with no production Cargo dependencies.
+
+Placement geometry preserves natural pixels and fractional aspect ratios.
+Cell offsets are included inside explicitly requested dimensions. Unicode
+placeholders render individual cells and support gaps and repeated instances;
+relative placements retain signed positions. Images move and clip with page
+margins, and font-size changes update their occupied cells.
+
+Animation frame upload (`a=f`), playback (`a=a`), composition (`a=c`), and frame
+deletion (`d=f/F`) share the renderer-neutral animation implementation with
+core. A visible snapshot provides `animation_deadline`; hosts schedule a wakeup
+at that instant and request a fresh snapshot. Stopped animations and loading
+animations awaiting another frame have no wakeup. Frame generations stay stable
+across loops so textures can be reused.
+
+Image numbers (`I`) allocate distinct IDs and always select the newest upload.
+Deletion frees only matching images after their final placement disappears.
+ID and ID-range deletion is global; coordinate deletion targets the active
+screen. Scrollback placements survive a visible-screen delete.
 
 The Unix PTY captures bytes readable when the direct child exits, then uses a
 short bounded nonblocking drain to retain final output without allowing a live

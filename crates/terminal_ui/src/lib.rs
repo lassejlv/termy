@@ -8,7 +8,8 @@ mod tmux;
 // cross-crate contract for row-level paint-cache invalidation between `termy` and this crate.
 pub use grid::{
     CellRenderInfo, TerminalGrid, TerminalGridPaintCacheHandle, TerminalGridPaintDamage,
-    TerminalGridRow, TerminalGridRows, TerminalUnderline, TerminalUnderlineStyle,
+    TerminalGridPaintPhase, TerminalGridRow, TerminalGridRows, TerminalUnderline,
+    TerminalUnderlineStyle,
 };
 pub use keyboard::keystroke_to_input;
 pub use pane_terminal::PaneTerminal;

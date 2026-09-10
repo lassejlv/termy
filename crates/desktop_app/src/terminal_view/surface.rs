@@ -1,14 +1,38 @@
 use gpui::{Bounds, Hsla, Pixels, Rgba, Size, point, px, size};
 
-/// An opaque TUI background can continue through the window chrome. Keep
-/// translucent cells on the configured surface so their alpha is not applied twice.
+/// Let an opaque viewport majority fill the TUI's padding. A tab, status bar, or
+/// hovered corner must not recolor the entire surface. With no majority, retain
+/// the configured background, including its transparency.
 pub(super) fn tui_surface_background(
     alternate_screen: bool,
-    edge_background: Option<Hsla>,
+    backgrounds: impl Iterator<Item = Hsla> + Clone,
     configured_background: Rgba,
 ) -> Rgba {
-    edge_background
-        .filter(|color| alternate_screen && color.a >= 1.0)
+    if !alternate_screen {
+        return configured_background;
+    }
+
+    // Find a majority candidate without allocating a color histogram on each frame.
+    let mut candidate = None;
+    let mut votes = 0usize;
+    let mut count = 0usize;
+    for color in backgrounds.clone() {
+        count += 1;
+        if votes == 0 {
+            candidate = Some(color);
+            votes = 1;
+        } else if candidate == Some(color) {
+            votes += 1;
+        } else {
+            votes -= 1;
+        }
+    }
+
+    candidate
+        .filter(|color| {
+            color.a >= 1.0
+                && backgrounds.filter(|background| background == color).count() > count / 2
+        })
         .map_or(configured_background, Into::into)
 }
 
@@ -75,15 +99,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opaque_tui_background_reaches_chrome_and_shell_restores_its_theme() {
+    fn opaque_tui_background_fills_terminal_padding_and_shell_restores_its_theme() {
         let theme = gpui::rgb(0x0b1020);
         let tui: Hsla = gpui::rgb(0xfff6ef).into();
-        assert_eq!(tui_surface_background(true, Some(tui), theme), tui.into());
-        assert_eq!(tui_surface_background(false, Some(tui), theme), theme);
-        assert_eq!(tui_surface_background(true, None, theme), theme);
         assert_eq!(
-            tui_surface_background(true, Some(Hsla { a: 0.5, ..tui }), theme),
+            tui_surface_background(true, [tui].into_iter(), theme),
+            tui.into()
+        );
+        assert_eq!(
+            tui_surface_background(false, [tui].into_iter(), theme),
+            theme
+        );
+        assert_eq!(tui_surface_background(true, [].into_iter(), theme), theme);
+        assert_eq!(
+            tui_surface_background(true, [Hsla { a: 0.5, ..tui }].into_iter(), theme),
             theme,
+        );
+    }
+
+    #[test]
+    fn hovering_tui_tabs_does_not_recolor_the_surrounding_background() {
+        let theme = gpui::rgb(0x0b1020);
+        let body: Hsla = gpui::rgb(0x1a1b26).into();
+        let tab: Hsla = gpui::rgb(0x202231).into();
+        let hover: Hsla = gpui::rgb(0x33364d).into();
+        let mut cells = vec![vec![body; 8]; 4];
+        cells[0].fill(tab);
+        let background = |cells: &[Vec<Hsla>]| {
+            tui_surface_background(true, cells.iter().flatten().copied(), theme)
+        };
+        let before_hover = background(&cells);
+        cells[0][..4].fill(hover);
+        assert_eq!(background(&cells), before_hover);
+        cells[0].fill(tab);
+        cells[0][4..].fill(hover);
+        assert_eq!(background(&cells), before_hover);
+        assert_eq!(before_hover, body.into());
+    }
+
+    #[test]
+    fn tui_surface_requires_an_opaque_majority_and_tracks_theme_changes() {
+        let theme = gpui::rgb(0x0b1020);
+        let dark: Hsla = gpui::rgb(0x1a1b26).into();
+        let light: Hsla = gpui::rgb(0xfff6ef).into();
+        let transparent = Hsla { a: 0.5, ..dark };
+
+        for backgrounds in [
+            [dark, light],
+            [transparent, light],
+            [transparent, transparent],
+        ] {
+            assert_eq!(
+                tui_surface_background(true, backgrounds.into_iter(), theme),
+                theme
+            );
+        }
+        assert_eq!(
+            tui_surface_background(true, [dark, dark, light].into_iter(), theme),
+            dark.into()
+        );
+        assert_eq!(
+            tui_surface_background(true, [dark, light, light].into_iter(), theme),
+            light.into()
         );
     }
 

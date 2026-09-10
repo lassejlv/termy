@@ -249,6 +249,13 @@ typedef struct {
   uint32_t x_offset;
   uint32_t y_offset;
   int32_t z_index;
+  int32_t col_offset;
+  bool is_virtual_cell;
+  uint32_t virtual_cell_col;
+  uint32_t virtual_cell_row;
+  uint32_t clip_top_rows;
+  uint32_t clip_bottom_rows;
+  uint64_t next_frame_delay_ms;
 } TermyFfiKittyGraphicsPlacement;
 
 typedef struct {
