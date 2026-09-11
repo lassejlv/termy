@@ -110,8 +110,10 @@ fn padded_bgra(rgba: &[u8], width: u32, height: u32) -> Vec<u8> {
         let row = &mut output[(y + 1) * stride..(y + 2) * stride];
         let source = &rgba[y * width * 4..(y + 1) * width * 4];
         for (source, destination) in source
-            .chunks_exact(4)
-            .zip(row[4..4 + width * 4].chunks_exact_mut(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(row[4..4 + width * 4].as_chunks_mut::<4>().0)
         {
             destination.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
         }
@@ -136,8 +138,10 @@ mod tests {
         assert_eq!(texture.len(), 3 * 3 * 4);
         assert!(
             texture
-                .chunks_exact(4)
-                .all(|pixel| pixel == [50, 160, 240, 255])
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| pixel == &[50, 160, 240, 255])
         );
     }
 

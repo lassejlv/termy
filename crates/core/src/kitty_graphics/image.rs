@@ -28,15 +28,19 @@ pub(super) fn normalize_image(
             let rgba = match info.color_type {
                 png::ColorType::Rgba => pixels,
                 png::ColorType::Rgb => pixels
-                    .chunks_exact(3)
-                    .flat_map(|p| [p[0], p[1], p[2], 255])
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .flat_map(|&[r, g, b]| [r, g, b, 255])
                     .collect(),
                 png::ColorType::Grayscale => {
                     pixels.into_iter().flat_map(|g| [g, g, g, 255]).collect()
                 }
                 png::ColorType::GrayscaleAlpha => pixels
-                    .chunks_exact(2)
-                    .flat_map(|p| [p[0], p[0], p[0], p[1]])
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .flat_map(|&[g, a]| [g, g, g, a])
                     .collect(),
                 png::ColorType::Indexed => return Err("EINVAL:unexpanded PNG palette".into()),
             };
@@ -52,8 +56,10 @@ pub(super) fn normalize_image(
             let rgba = if channels == 4 {
                 data
             } else {
-                data.chunks_exact(3)
-                    .flat_map(|p| [p[0], p[1], p[2], 255])
+                data.as_chunks::<3>()
+                    .0
+                    .iter()
+                    .flat_map(|&[r, g, b]| [r, g, b, 255])
                     .collect()
             };
             (rgba, width, height)

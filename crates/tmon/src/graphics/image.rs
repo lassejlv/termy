@@ -18,7 +18,7 @@ fn normalize_image(
             }
             Ok((
                 GraphicsImage::from_rgba(width, height, if channels == 4 { data } else {
-                    data.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect()
+                    data.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect()
                 }),
                 width,
                 height,

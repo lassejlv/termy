@@ -70,7 +70,7 @@ fn decode_png_pixels(data: &[u8], header: PngHeader, filtered: &[u8]) -> Result<
                     }
                     2 => {
                         let rgb = [sample(i), sample(i+1), sample(i+2)];
-                        let transparent = transparency.len() == 6 && rgb.iter().zip(transparency.chunks_exact(2)).all(|(value, pair)| *value == u16::from_be_bytes([pair[0], pair[1]]));
+                        let transparent = transparency.len() == 6 && rgb.iter().zip(transparency.as_chunks::<2>().0).all(|(value, pair)| *value == u16::from_be_bytes(*pair));
                         [byte(rgb[0]), byte(rgb[1]), byte(rgb[2]), if transparent {0} else {255}]
                     }
                     3 => {
