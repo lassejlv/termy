@@ -406,6 +406,47 @@ fn kitty_graphics_revision_and_visible_placements_are_atomic() {
     assert!(deleted.is_empty());
 }
 
+#[test]
+fn kitty_graphics_delete_does_not_mark_full_grid_damage() {
+    let terminal = graphics_test_terminal(8);
+    terminal.feed_output(b"\x1b[2;1H");
+    let _ = terminal.take_render_damage_snapshot();
+
+    terminal.feed_output(b"\x1b_Ga=T,f=32,s=1,v=1,i=31,c=2,r=1,C=1;AQID/w==\x1b\\");
+    let placed = terminal.take_render_damage_snapshot();
+    assert_ne!(
+        placed.damage,
+        DamageSnapshot::Full,
+        "placing a cursor-stable image must not rebuild the whole grid"
+    );
+    assert_eq!(terminal.kitty_graphics_placements().len(), 1);
+
+    let revision = terminal.kitty_graphics_revision();
+    terminal.feed_output(b"\x1b_Ga=d,d=a,q=1\x1b\\");
+    let deleted = terminal.take_render_damage_snapshot();
+    assert!(terminal.kitty_graphics_placements().is_empty());
+    assert_eq!(terminal.kitty_graphics_revision(), revision.wrapping_add(1));
+    assert_ne!(
+        deleted.damage,
+        DamageSnapshot::Full,
+        "deleting images must update the overlay without flickering the whole grid"
+    );
+}
+
+#[test]
+fn kitty_graphics_screen_clear_still_marks_full_damage() {
+    let terminal = graphics_test_terminal(8);
+    terminal.feed_output(b"\x1b[2;1H\x1b_Ga=T,f=32,s=1,v=1,i=32,c=2,r=1,C=1;AQID/w==\x1b\\");
+    let _ = terminal.take_render_damage_snapshot();
+
+    terminal.feed_output(b"\x1b[2J");
+    assert!(terminal.kitty_graphics_placements().is_empty());
+    assert_eq!(
+        terminal.take_render_damage_snapshot().damage,
+        DamageSnapshot::Full
+    );
+}
+
 fn graphics_test_terminal(scrollback_history: usize) -> Terminal {
     Terminal::new_display(
         Size {

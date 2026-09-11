@@ -382,8 +382,9 @@ impl Parser {
             changed |= self.graphics.apply_grid_effect(effect);
         }
         if changed {
+            // Overlay revision is enough. Text damage for the same effect is already
+            // on the grid; marking full here flickers the whole screen on image updates.
             self.graphics.bump_revision();
-            grid.mark_full_damage();
         }
         changed
     }

@@ -491,10 +491,6 @@ impl Grid {
         self.damage.clear();
     }
 
-    pub(crate) fn mark_full_damage(&mut self) {
-        self.damage.mark_full();
-    }
-
     pub(crate) fn snapshot(&self) -> Snapshot {
         let offset = self.display_offset();
         let rows = self.rows();

@@ -3404,20 +3404,23 @@ impl Render for TerminalView {
                         display_offset: pane_display_offset,
                     };
                     if pane_render_cache.kitty_placements_key != Some(graphics_cache_key) {
-                        let (snapshot_revision, mut placements) = terminal
-                            .try_kitty_graphics_snapshot()
-                            .unwrap_or((graphics_revision, Vec::new()));
-                        placements.sort_by_key(|placement| {
-                            (
-                                placement.z_index,
-                                placement.image_id,
-                                placement.placement_id,
-                                placement.placement_serial,
-                            )
-                        });
-                        graphics_cache_key.graphics_revision = snapshot_revision;
-                        pane_render_cache.kitty_placements = placements;
-                        pane_render_cache.kitty_placements_key = Some(graphics_cache_key);
+                        // Keep the previous overlay if the engine lock is unavailable.
+                        // An empty fallback makes images vanish for a frame and then return.
+                        if let Some((snapshot_revision, mut placements)) =
+                            terminal.try_kitty_graphics_snapshot()
+                        {
+                            placements.sort_by_key(|placement| {
+                                (
+                                    placement.z_index,
+                                    placement.image_id,
+                                    placement.placement_id,
+                                    placement.placement_serial,
+                                )
+                            });
+                            graphics_cache_key.graphics_revision = snapshot_revision;
+                            pane_render_cache.kitty_placements = placements;
+                            pane_render_cache.kitty_placements_key = Some(graphics_cache_key);
+                        }
                     }
                     for deadline in pane_render_cache
                         .kitty_placements
