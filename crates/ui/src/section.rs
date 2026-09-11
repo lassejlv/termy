@@ -11,7 +11,7 @@ use crate::metrics::{
 use crate::theme::tokens;
 
 /// The scrolling column to the right of the sidebar. Children are capped at
-/// 720px; surplus window width becomes breathing room around the controls.
+/// 800px; surplus window width becomes right slack rather than wider controls.
 #[derive(IntoElement)]
 pub struct SettingsContent {
     children: Vec<AnyElement>,
@@ -199,7 +199,6 @@ impl RenderOnce for SettingsGroup {
         let theme = tokens(cx);
 
         let label_line = div()
-            .px(gpui::px(2.0))
             .flex()
             .items_baseline()
             .gap(px(10.0))
@@ -208,8 +207,8 @@ impl RenderOnce for SettingsGroup {
                     .flex_grow()
                     .min_w(px(0.0))
                     .text_size(GROUP_TITLE_SIZE)
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .text_color(theme.text_primary)
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text_muted)
                     .child(self.label),
             )
             .children(self.trailing_label.map(|label| {
@@ -224,12 +223,7 @@ impl RenderOnce for SettingsGroup {
         let card = Card::new().children(self.rows.into_iter().enumerate().map(|(index, row)| {
             let mut wrapper = div().w_full();
             if index > 0 {
-                wrapper = wrapper.child(
-                    div()
-                        .mx(crate::metrics::CARD_ROW_PADDING_X)
-                        .h(px(1.0))
-                        .bg(theme.row_separator),
-                );
+                wrapper = wrapper.border_t_1().border_color(theme.row_separator);
             }
             wrapper.child(row)
         }));

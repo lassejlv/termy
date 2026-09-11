@@ -16,7 +16,7 @@ Important internal areas:
 
 Push reusable headless behavior into `termy_core` or a pure domain crate. Push GPUI-adjacent terminal adapter behavior into `termy_terminal_ui` only when it is reusable outside the desktop app shell. Push reusable chrome presentation — surfaces, controls, status affordances — into `termy_ui`, and keep the state and behavior behind it here.
 
-`src/settings_view/` renders its section headers and grouped cards with `termy_ui`. Settings uses system typography and opaque tokens from `Tokens::for_settings`, following the active terminal theme for backgrounds, text, selection, and accents. Text contrast adapts to light and dark palettes. Terminal fonts are shown in the Appearance preview; opacity adjustments still preview in terminal windows. The sidebar groups App, Terminal, and Personalization, with keyboard navigation in the same order.
+`src/settings_view/` renders its section headers and grouped cards with `termy_ui`. Its colors are published to the kit by `SettingsWindow::sync_ui_tokens`, which maps this window's own translucent chrome colors onto `termy_ui::Tokens`; do not swap that for `Tokens::from_palette`, which is opaque and would drop the window's transparency.
 
 ## Kitty graphics
 

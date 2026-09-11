@@ -9,7 +9,8 @@ use crate::metrics::{
 };
 use crate::theme::tokens;
 
-/// Compact native-style switch with a white thumb in either state.
+/// 38×22 track, 18px knob. On is an accent fill with the knob punched out in
+/// the window background, so the switch reads as lit rather than merely tinted.
 #[derive(IntoElement)]
 pub struct Switch {
     id: ElementId,
@@ -58,16 +59,19 @@ impl RenderOnce for Switch {
 
         let knob_color = if self.checked {
             track = track.justify_end().bg(theme.accent);
-            gpui::rgb(0xffffff)
+            theme.text_on_accent
         } else {
-            track = track.bg(theme.border).border_1().border_color(theme.border);
-            gpui::rgb(0xffffff)
+            track = track
+                .bg(theme.bg_input)
+                .border_1()
+                .border_color(theme.border);
+            theme.text_muted
         };
 
         if self.disabled {
             track = track.opacity(0.45);
         } else {
-            track = track.cursor_pointer().active(|style| style.opacity(0.78));
+            track = track.cursor_pointer();
             if let Some(handler) = self.on_click {
                 track = track.on_click(move |event, window, cx| handler(event, window, cx));
             }

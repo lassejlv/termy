@@ -2,6 +2,7 @@ use crate::APP_ID;
 use crate::config;
 use crate::settings_view::{SettingsSection, SettingsWindow};
 use crate::terminal_view::TerminalView;
+use crate::terminal_view::initial_window_background_appearance;
 use gpui::{App, AppContext, Bounds, WindowBounds, WindowOptions, px, size};
 
 pub(crate) fn open_config_file() -> Result<(), String> {
@@ -154,16 +155,21 @@ fn open_settings_window_with_section(
         return Ok(());
     }
 
-    let initial_window_size = size(px(980.0), px(740.0));
-    let minimum_window_size = size(px(800.0), px(600.0));
+    let initial_window_size = size(px(1080.0), px(675.0));
+    let minimum_window_size = size(px(760.0), px(560.0));
     let bounds = Bounds::centered(None, initial_window_size, cx);
-    let window_background = gpui::WindowBackgroundAppearance::Opaque;
+    let mut settings_config_error = None;
+    let settings_load = config::load_runtime_config(
+        &mut settings_config_error,
+        "Failed to load config for settings window",
+    );
+    let window_background = initial_window_background_appearance(&settings_load.config);
 
     #[cfg(target_os = "macos")]
     let titlebar = Some(gpui::TitlebarOptions {
         title: Some("Settings".into()),
         appears_transparent: true,
-        traffic_light_position: Some(gpui::point(px(16.0), px(18.0))),
+        traffic_light_position: Some(gpui::point(px(12.0), px(10.0))),
     });
     #[cfg(target_os = "windows")]
     let titlebar = Some(gpui::TitlebarOptions {
@@ -194,12 +200,6 @@ fn open_settings_window_with_section(
         |window, cx| {
             #[cfg(target_os = "linux")]
             window.set_window_title("Settings");
-            #[cfg(all(target_os = "macos", not(test)))]
-            if let Err(error) =
-                crate::macos_titlebar_drag::disable_automatic_content_view_window_drag(window)
-            {
-                log::error!("Failed to configure settings content input: {error}");
-            }
             cx.new(|cx| {
                 let mut view = SettingsWindow::new(window, cx);
                 if let Some(section) = section {

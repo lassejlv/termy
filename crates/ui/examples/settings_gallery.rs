@@ -64,11 +64,11 @@ impl Gallery {
 
         Sidebar::new()
             .child(SidebarSearch::new())
-            .child(group("Interface", true))
+            .child(group("INTERFACE", true))
             .children((0..4).map(|index| item(index, self.selected == index, cx)))
-            .child(group("Session", false))
+            .child(group("SESSION", false))
             .children((4..7).map(|index| item(index, self.selected == index, cx)))
-            .child(group("System", false))
+            .child(group("SYSTEM", false))
             .children((7..9).map(|index| item(index, self.selected == index, cx)))
             .footer("Termy v0.2.6")
     }
@@ -112,7 +112,7 @@ impl Gallery {
             contrast_row
         };
 
-        SettingsGroup::new("Theme")
+        SettingsGroup::new("THEME")
             .child(
                 SettingRow::new("Theme Mode")
                     .description("Use a single theme or switch with system appearance")
@@ -131,7 +131,7 @@ impl Gallery {
     }
 
     fn window_group(&self, cx: &mut Context<Self>) -> SettingsGroup {
-        SettingsGroup::new("Window")
+        SettingsGroup::new("WINDOW")
             .child(
                 SettingRow::new("Background Opacity")
                     .description("Live preview while dragging · 5% steps")
@@ -168,7 +168,7 @@ impl Gallery {
     }
 
     fn typography_group(&self, cx: &mut Context<Self>) -> SettingsGroup {
-        SettingsGroup::new("Typography & spacing")
+        SettingsGroup::new("TYPOGRAPHY & SPACING")
             .child(
                 SettingRow::new("Font Family")
                     .description("Monospace family used for the terminal grid")
@@ -234,7 +234,7 @@ impl Render for Gallery {
             .flex_col()
             .size_full()
             .bg(colors.bg_window)
-            .font_family(".SystemUIFont")
+            .font_family("JetBrains Mono")
             .text_color(colors.text_primary)
             .child(
                 // Stand-in for the app's chrome: the real traffic lights are
@@ -250,7 +250,7 @@ impl Render for Gallery {
                     .border_color(colors.row_separator)
                     .text_size(metrics::LABEL_SIZE)
                     .text_color(colors.text_muted)
-                    .child("Settings"),
+                    .child("SETTINGS"),
             )
             .child(
                 div()
@@ -269,7 +269,7 @@ fn main() {
     Application::new()
         .with_assets(termy_ui::Assets)
         .run(|cx: &mut App| {
-            theme::set_tokens(Tokens::for_settings(Default::default()), cx);
+            theme::set_tokens(Tokens::dark(), cx);
 
             let bounds = Bounds {
                 origin: point(px(120.0), px(120.0)),

@@ -79,13 +79,13 @@ mod tests {
             [
                 SettingsSection::Advanced,
                 SettingsSection::Appearance,
-                SettingsSection::Tabs,
-                SettingsSection::Terminal,
-                SettingsSection::Keybindings,
-                SettingsSection::Ssh,
                 SettingsSection::Colors,
                 SettingsSection::ThemeStore,
                 SettingsSection::Plugins,
+                SettingsSection::Terminal,
+                SettingsSection::Ssh,
+                SettingsSection::Tabs,
+                SettingsSection::Keybindings,
             ]
         );
         assert_eq!(
@@ -191,85 +191,6 @@ static SETTINGS_METADATA: LazyLock<Vec<SettingMetadata>> = LazyLock::new(|| {
             "ssh", "remote", "host", "server", "key", "password", "keychain",
         ],
     });
-    // Short, task-oriented labels for the settings UI and its search index.
-    for entry in &mut entries {
-        let text = match entry.key {
-            "working_dir" => Some((
-                "Start new sessions in",
-                "Folder to open when a session starts.",
-            )),
-            "working_dir_fallback" => {
-                Some(("Default folder", "Used when no startup folder is set."))
-            }
-            "native_tab_persistence" => Some((
-                "Restore tabs and splits",
-                "Reopen your workspace when Termy starts.",
-            )),
-            "native_layout_autosave" => Some((
-                "Save layout changes",
-                "Keep the current named layout up to date.",
-            )),
-            "native_buffer_persistence" => Some((
-                "Restore terminal contents",
-                "Include saved scrollback when restoring a layout.",
-            )),
-            "warn_on_quit" => Some((
-                "Always confirm before quitting",
-                "Ask before closing the app.",
-            )),
-            "warn_on_quit_with_running_process" => Some((
-                "Warn about running processes",
-                "Ask before quitting while a command is running.",
-            )),
-            "window_width" => Some(("Width", "Initial window width in pixels.")),
-            "window_height" => Some(("Height", "Initial window height in pixels.")),
-            "auto_update" => Some(("Automatic updates", "Keep Termy up to date.")),
-            "simple_mode" => Some((
-                "Simple mode",
-                "Use the configuration file instead of this settings window.",
-            )),
-            "show_debug_overlay" => Some((
-                "Show performance overlay",
-                "Display rendering statistics for troubleshooting.",
-            )),
-            "font_family" => Some(("Font", "Monospace typeface for terminal text.")),
-            "ui_font_family" => Some((
-                "Terminal interface font",
-                "Typeface for terminal tabs, menus, and other chrome.",
-            )),
-            "font_size" => Some(("Size", "Terminal text size in pixels.")),
-            "line_height" => Some(("Line spacing", "Distance between lines of terminal text.")),
-            "padding_x" => Some(("Horizontal padding", "Space beside the terminal contents.")),
-            "padding_y" => Some((
-                "Vertical padding",
-                "Space above and below the terminal contents.",
-            )),
-            "chrome_contrast" => Some((
-                "Increase interface contrast",
-                "Stronger separation between terminal surfaces.",
-            )),
-            "background_blur" => Some((
-                "Blur background",
-                "Soften content behind transparent terminal windows.",
-            )),
-            "background_opacity" => Some(("Opacity", "Preview changes in your terminal windows.")),
-            "background_opacity_cells" => Some((
-                "Apply opacity to cells",
-                "Use window opacity for cell background colors.",
-            )),
-            "app_icon" => Some(("App icon", "Choose the icon shown in the Dock.")),
-            "cursor_blink" => Some((
-                "Blink cursor",
-                "Blink the cursor while the terminal is focused.",
-            )),
-            "cursor_style" => Some(("Cursor shape", "Shape of the terminal cursor.")),
-            _ => None,
-        };
-        if let Some((title, description)) = text {
-            entry.title = title;
-            entry.description = description;
-        }
-    }
     entries
 });
 
@@ -312,17 +233,6 @@ impl SettingsWindow {
         }
     }
 
-    fn section_icon_color(&self, section: SettingsSection) -> Rgba {
-        match section {
-            SettingsSection::Advanced | SettingsSection::Keybindings => self.colors.ansi[8],
-            SettingsSection::Appearance | SettingsSection::ThemeStore => self.colors.ansi[5],
-            SettingsSection::Tabs | SettingsSection::Plugins => self.colors.ansi[4],
-            SettingsSection::Terminal => self.colors.foreground,
-            SettingsSection::Ssh => self.colors.ansi[6],
-            SettingsSection::Colors => self.colors.ansi[3],
-        }
-    }
-
     pub(super) fn section_icon_path(section: SettingsSection) -> &'static str {
         match section {
             SettingsSection::Appearance => "icons/settings/appearance.svg",
@@ -341,13 +251,13 @@ impl SettingsWindow {
         [
             SettingsSection::Advanced,
             SettingsSection::Appearance,
-            SettingsSection::Tabs,
-            SettingsSection::Terminal,
-            SettingsSection::Keybindings,
-            SettingsSection::Ssh,
             SettingsSection::Colors,
             SettingsSection::ThemeStore,
             SettingsSection::Plugins,
+            SettingsSection::Terminal,
+            SettingsSection::Ssh,
+            SettingsSection::Tabs,
+            SettingsSection::Keybindings,
         ]
     }
 
@@ -737,57 +647,66 @@ impl SettingsWindow {
     }
 
     pub(super) fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_query = !self.sidebar_search_state.text().trim().is_empty();
-        let search = self.render_sidebar_search(cx).into_any_element();
         div()
             .flex_none()
             .w(px(SIDEBAR_WIDTH))
+            .min_w(px(SIDEBAR_WIDTH))
+            .max_w(px(SIDEBAR_WIDTH))
             .h_full()
             .bg(self.bg_secondary())
             .border_r_1()
-            .border_color(self.card_border_color())
+            .border_color(self.border_color())
             .flex()
             .flex_col()
-            .child(div().pt(px(52.0)).px_3().pb(px(20.0)).child(search))
-            .when(!has_query, |sidebar| {
-                sidebar.child(
-                    div()
-                        .id("settings-sidebar-navigation")
-                        .flex()
-                        .flex_col()
-                        .min_h(px(0.0))
-                        .overflow_y_scroll()
-                        .gap(px(SIDEBAR_GROUP_GAP))
-                        .px_2()
-                        .child(self.render_sidebar_group(
-                            "App",
-                            &[
-                                SettingsSection::Advanced,
-                                SettingsSection::Appearance,
-                                SettingsSection::Tabs,
-                            ],
-                            cx,
-                        ))
-                        .child(self.render_sidebar_group(
-                            "Terminal",
-                            &[
-                                SettingsSection::Terminal,
-                                SettingsSection::Keybindings,
-                                SettingsSection::Ssh,
-                            ],
-                            cx,
-                        ))
-                        .child(self.render_sidebar_group(
-                            "Personalization",
-                            &[
-                                SettingsSection::Colors,
-                                SettingsSection::ThemeStore,
-                                SettingsSection::Plugins,
-                            ],
-                            cx,
-                        )),
-                )
-            })
+            .child(
+                div()
+                    .pt_6()
+                    .px_3()
+                    .pb_4()
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.0))
+                    .child(
+                        div()
+                            .px_1()
+                            .text_size(px(18.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_color(self.text_primary())
+                            .child("Settings"),
+                    )
+                    .child(self.render_sidebar_search(cx)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(SIDEBAR_GROUP_GAP))
+                    .px_2()
+                    .child(self.render_sidebar_group(
+                        "App",
+                        &[
+                            SettingsSection::Advanced,
+                            SettingsSection::Appearance,
+                            SettingsSection::Colors,
+                        ],
+                        cx,
+                    ))
+                    .child(self.render_sidebar_group(
+                        "Extensions",
+                        &[SettingsSection::ThemeStore, SettingsSection::Plugins],
+                        cx,
+                    ))
+                    .child(self.render_sidebar_group(
+                        "Workflow",
+                        &[
+                            SettingsSection::Terminal,
+                            SettingsSection::Ssh,
+                            SettingsSection::Tabs,
+                            SettingsSection::Keybindings,
+                        ],
+                        cx,
+                    )),
+            )
             .child(div().flex_1())
             .child(self.render_sidebar_footer(cx))
     }
@@ -822,6 +741,7 @@ impl SettingsWindow {
     pub(super) fn render_sidebar_footer(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let text_muted = self.text_muted();
         let text_primary = self.text_primary();
+        let border_color = self.border_color();
         let button_border = self.accent_with_alpha(0.35);
         let login_bg = self.bg_input();
         let hover_bg = self.bg_hover();
@@ -915,6 +835,8 @@ impl SettingsWindow {
         };
 
         let mut footer = div()
+            .border_t_1()
+            .border_color(border_color)
             .px_4()
             .py_3()
             .flex()
@@ -946,7 +868,7 @@ impl SettingsWindow {
         let text_muted = self.text_muted();
         if is_active {
             let font = Font {
-                family: ".SystemUIFont".into(),
+                family: self.config.ui_font_family.clone().into(),
                 ..gpui::font("")
             };
             return TextInputElement::new(
@@ -971,7 +893,7 @@ impl SettingsWindow {
             div()
                 .text_size(px(SETTINGS_INPUT_TEXT_SIZE))
                 .text_color(text_muted)
-                .child("Search")
+                .child("Search settings...")
                 .into_any_element()
         }
     }
@@ -985,11 +907,10 @@ impl SettingsWindow {
         let bg_input = self.bg_input();
         let border_color = self.border_color();
         let accent = self.accent();
-        let hover_bg = self.bg_hover();
         div()
             .id("settings-sidebar-search-input")
-            .h(px(30.0))
-            .px(px(8.0))
+            .h(px(36.0))
+            .px_3()
             .rounded(px(SETTINGS_BUTTON_RADIUS))
             .bg(bg_input)
             .border_1()
@@ -998,50 +919,13 @@ impl SettingsWindow {
             .cursor_text()
             .flex()
             .items_center()
-            .gap(px(6.0))
-            .child(
-                svg()
-                    .path("icons/settings/search.svg")
-                    .size(px(13.0))
-                    .text_color(self.text_muted()),
-            )
             .child(
                 div()
-                    .flex_1()
-                    .min_w(px(0.0))
+                    .w_full()
                     .h(px(20.0))
                     .overflow_hidden()
                     .child(search_content),
             )
-            .children((!self.sidebar_search_state.text().is_empty()).then(|| {
-                div()
-                    .id("clear-settings-search")
-                    .size(px(16.0))
-                    .flex_none()
-                    .cursor_pointer()
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .hover(move |s| s.bg(hover_bg))
-                    .child(
-                        svg()
-                            .path("icons/close.svg")
-                            .size(px(10.0))
-                            .text_color(self.text_muted()),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|view, _, window, cx| {
-                            cx.stop_propagation();
-                            view.sidebar_search_state = TextInputState::new(String::new());
-                            view.sidebar_search_active = true;
-                            view.refresh_search_navigation(window, cx);
-                            view.focus_handle.focus(window);
-                            cx.notify();
-                        }),
-                    )
-            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|view, event: &MouseDownEvent, window, cx| {
@@ -1115,12 +999,8 @@ impl SettingsWindow {
             format!("{total_results} matches")
         };
 
-        let mut container = div()
-            .id("settings-search-results")
-            .mt(px(14.0))
-            .max_h(px(390.0))
-            .overflow_y_scroll()
-            .child(div().px_1().text_xs().text_color(text_muted).child(summary));
+        let mut container =
+            div().child(div().px_1().text_xs().text_color(text_muted).child(summary));
         if total_results == 0 {
             return container.into_any_element();
         }
@@ -1195,11 +1075,11 @@ impl SettingsWindow {
         let is_active = self.active_section == section;
         let active_bg = self.sidebar_selection_bg();
         let hover_bg = self.bg_hover();
+        let text_primary = self.text_primary();
         let text_secondary = self.text_secondary();
         let icon_path = Self::section_icon_path(section);
-        let selected_text = self.ui_tokens().text_on_accent;
-        let icon_background = self.section_icon_color(section);
-        let icon_tint = self.contrasting_text_for_fill(icon_background, self.bg_secondary());
+        let icon_tint = self.icon_color(is_active);
+        let selection_accent = self.accent_with_alpha(0.95);
 
         div()
             .id(SharedString::from(label))
@@ -1221,24 +1101,26 @@ impl SettingsWindow {
                     a: 0.0,
                 }
             })
-            .hover(move |s| s.bg(if is_active { active_bg } else { hover_bg }))
+            .hover(|s| s.bg(hover_bg))
+            .when(is_active, |s| {
+                s.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top(px(SIDEBAR_SELECTED_ACCENT_INSET_Y))
+                        .w(px(SIDEBAR_SELECTED_ACCENT_WIDTH))
+                        .h(px((SIDEBAR_ITEM_HEIGHT
+                            - (SIDEBAR_SELECTED_ACCENT_INSET_Y * 2.0))
+                            .max(0.0)))
+                        .rounded_full()
+                        .bg(selection_accent),
+                )
+            })
             .child(
-                div()
-                    .size(px(22.0))
-                    .flex_none()
-                    .rounded(px(5.0))
-                    .bg(icon_background)
-                    .border_1()
-                    .border_color(termy_ui::theme::with_alpha(gpui::rgb(0xffffff), 0.18))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        svg()
-                            .path(SharedString::from(icon_path))
-                            .size(px(SIDEBAR_ICON_SIZE))
-                            .text_color(icon_tint),
-                    ),
+                svg()
+                    .path(SharedString::from(icon_path))
+                    .size(px(SIDEBAR_ICON_SIZE))
+                    .text_color(icon_tint),
             )
             .child(
                 div()
@@ -1249,11 +1131,10 @@ impl SettingsWindow {
                         gpui::FontWeight::NORMAL
                     })
                     .text_color(if is_active {
-                        selected_text
+                        text_primary
                     } else {
                         text_secondary
                     })
-                    .whitespace_nowrap()
                     .child(label),
             )
             .on_mouse_down(

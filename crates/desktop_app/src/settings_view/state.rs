@@ -717,8 +717,8 @@ impl SettingsWindow {
         value: &str,
         label: &str,
     ) -> DropdownOption {
-        let _ = setting;
-        DropdownOption::labeled(value.to_string(), label.to_string(), false)
+        let show_raw_value = !matches!(setting, RootSettingId::AppIcon);
+        DropdownOption::labeled(value.to_string(), label.to_string(), show_raw_value)
     }
 
     pub(super) fn normalize_dropdown_query_token(value: &str) -> String {

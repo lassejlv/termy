@@ -124,8 +124,9 @@ impl SettingsWindow {
         }
         let theme_group = self.render_settings_group("Theme", theme_rows);
 
-        let interface_rows = vec![
-            #[cfg(target_os = "macos")]
+        let mut window_rows = Vec::new();
+        #[cfg(target_os = "macos")]
+        window_rows.push(
             self.render_editable_row(
                 "app_icon",
                 EditableField::AppIcon,
@@ -138,6 +139,8 @@ impl SettingsWindow {
                 .to_string(),
                 cx,
             ),
+        );
+        window_rows.extend([
             self.render_root_bool_setting_row(
                 "chrome_contrast",
                 "chrome-contrast-toggle",
@@ -146,17 +149,6 @@ impl SettingsWindow {
                 "Saved",
                 cx,
             ),
-            self.render_editable_row(
-                "ui_font_family",
-                EditableField::UiFontFamily,
-                ui_font_family_meta.title,
-                ui_font_family_meta.description,
-                ui_font_family,
-                cx,
-            ),
-        ];
-        let interface_group = self.render_settings_group("App interface", interface_rows);
-        let window_rows = vec![
             self.render_root_bool_setting_row(
                 "background_blur",
                 "blur-toggle",
@@ -179,8 +171,8 @@ impl SettingsWindow {
                 "Saved",
                 cx,
             ),
-        ];
-        let window_group = self.render_settings_group("Background", window_rows);
+        ]);
+        let window_group = self.render_settings_group("Window", window_rows);
 
         let font_rows = vec![
             self.render_editable_row(
@@ -189,6 +181,14 @@ impl SettingsWindow {
                 font_family_meta.title,
                 font_family_meta.description,
                 font_family,
+                cx,
+            ),
+            self.render_editable_row(
+                "ui_font_family",
+                EditableField::UiFontFamily,
+                ui_font_family_meta.title,
+                ui_font_family_meta.description,
+                ui_font_family,
                 cx,
             ),
             self.render_editable_row(
@@ -207,9 +207,6 @@ impl SettingsWindow {
                 format!("{line_height:.2}"),
                 cx,
             ),
-        ];
-        let typography_group = self.render_settings_group("Text", font_rows);
-        let spacing_rows = vec![
             self.render_editable_row(
                 "padding_x",
                 EditableField::PaddingX,
@@ -227,7 +224,7 @@ impl SettingsWindow {
                 cx,
             ),
         ];
-        let spacing_group = self.render_settings_group("Terminal spacing", spacing_rows);
+        let typography_group = self.render_settings_group("Typography & spacing", font_rows);
 
         div()
             .flex()
@@ -239,66 +236,9 @@ impl SettingsWindow {
                 SettingsSection::Appearance,
                 cx,
             ))
-            .child(self.render_terminal_preview())
             .child(theme_group)
-            .child(typography_group)
             .child(window_group)
-            .child(spacing_group)
-            .child(interface_group)
-    }
-
-    fn render_terminal_preview(&self) -> impl IntoElement {
-        let colors = &self.colors;
-        div()
-            .rounded(px(SETTINGS_CARD_RADIUS))
-            .border_1()
-            .border_color(self.card_border_color())
-            .overflow_hidden()
-            .child(
-                div()
-                    .px(px(18.0))
-                    .py(px(16.0))
-                    .bg(colors.background)
-                    .font_family(self.config.font_family.clone())
-                    .text_size(px(self.config.font_size.clamp(10.0, 24.0)))
-                    .line_height(px(
-                        (self.config.font_size * self.config.line_height).clamp(16.0, 36.0)
-                    ))
-                    .text_color(colors.foreground)
-                    .child(
-                        div()
-                            .flex()
-                            .gap(px(8.0))
-                            .child(div().text_color(colors.ansi[2]).child("❯"))
-                            .child("echo \"Hello, Termy\""),
-                    )
-                    .child("Hello, Termy")
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(div().text_color(colors.ansi[2]).child("❯"))
-                            .child(div().w(px(7.0)).h(px(14.0)).bg(colors.cursor)),
-                    ),
-            )
-            .child(
-                div()
-                    .px(px(14.0))
-                    .py(px(7.0))
-                    .bg(self.bg_card())
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(12.0))
-                    .text_size(px(11.0))
-                    .text_color(self.text_muted())
-                    .child("Terminal preview")
-                    .child(div().text_ellipsis().child(format!(
-                        "{} · {} px",
-                        self.config.font_family, self.config.font_size
-                    ))),
-            )
+            .child(typography_group)
     }
 
     pub(super) fn render_settings_group(
@@ -856,7 +796,7 @@ impl SettingsWindow {
 
         let search_content = if is_search_active {
             let font = Font {
-                family: ".SystemUIFont".into(),
+                family: self.config.ui_font_family.clone().into(),
                 ..gpui::font("")
             };
             TextInputElement::new(
@@ -1501,7 +1441,14 @@ impl SettingsWindow {
         let simple_mode = self.config.simple_mode;
         let window_width = self.config.window_width;
         let window_height = self.config.window_height;
+        let bg_card = self.bg_card();
+        let border_color = self.border_color();
         let text_muted = self.text_muted();
+        let text_secondary = self.text_secondary();
+        let accent = self.accent();
+        let accent_hover = self.accent_with_alpha(0.8);
+        let button_text = self.contrasting_text_for_fill(accent, bg_card);
+        let button_hover_text = self.contrasting_text_for_fill(accent_hover, bg_card);
         let working_dir_meta = Self::setting_metadata_or_fallback("working_dir");
         let working_dir_fallback_meta = Self::setting_metadata_or_fallback("working_dir_fallback");
         let window_width_meta = Self::setting_metadata_or_fallback("window_width");
@@ -1530,9 +1477,6 @@ impl SettingsWindow {
                 working_dir_fallback,
                 cx,
             ),
-        ];
-        let startup_group = self.render_settings_group("Startup", startup_rows);
-        let session_rows = vec![
             self.render_root_bool_setting_row(
                 "native_tab_persistence",
                 "native-tab-persistence-toggle",
@@ -1558,7 +1502,7 @@ impl SettingsWindow {
                 cx,
             ),
         ];
-        let session_group = self.render_settings_group("Session restoration", session_rows);
+        let startup_group = self.render_settings_group("Startup", startup_rows);
 
         let safety_rows = vec![
             self.render_root_bool_setting_row(
@@ -1578,7 +1522,7 @@ impl SettingsWindow {
                 cx,
             ),
         ];
-        let safety_group = self.render_settings_group("When quitting", safety_rows);
+        let safety_group = self.render_settings_group("Safety", safety_rows);
 
         let window_rows = vec![
             self.render_editable_row(
@@ -1630,32 +1574,41 @@ impl SettingsWindow {
         let behavior_group = self.render_settings_group("App behavior", behavior_rows);
 
         let config_file_card = div()
-            .px(px(CARD_ROW_PADDING_X))
-            .py(px(CARD_ROW_PADDING_Y))
+            .py_4()
+            .px_4()
+            .rounded(px(SETTINGS_INPUT_RADIUS))
+            .bg(bg_card)
+            .border_1()
+            .border_color(border_color)
             .flex()
-            .items_center()
-            .gap(px(16.0))
+            .flex_col()
+            .gap_2()
             .child(
                 div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .text_color(self.text_primary())
-                            .child("Configuration file"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(text_muted)
-                            .text_ellipsis()
-                            .child(config_path_display),
-                    ),
+                    .text_sm()
+                    .text_color(text_muted)
+                    .child("Edit the config file directly for settings not shown here:"),
             )
             .child(
-                termy_ui::Button::new("open-config-btn", "Open…")
-                    .size(termy_ui::ButtonSize::Small)
+                div()
+                    .text_xs()
+                    .text_color(text_secondary)
+                    .child(config_path_display),
+            )
+            .child(
+                div()
+                    .id("open-config-btn")
+                    .mt_2()
+                    .px_4()
+                    .py_2()
+                    .rounded(px(SETTINGS_INPUT_RADIUS))
+                    .bg(accent)
+                    .text_sm()
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(button_text)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(accent_hover).text_color(button_hover_text))
+                    .child("Open config file")
                     .on_click(cx.listener(|_view, _, _, cx| {
                         if let Err(error) = crate::config::open_config_file() {
                             log::error!("Failed to open config file from settings: {error}");
@@ -1679,7 +1632,6 @@ impl SettingsWindow {
                 cx,
             ))
             .child(startup_group)
-            .child(session_group)
             .child(safety_group)
             .child(window_group)
             .child(behavior_group)

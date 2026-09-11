@@ -1,8 +1,8 @@
-//! Color tokens derived from the active terminal theme.
+//! Color tokens, derived from the active terminal theme.
 //!
-//! `Tokens::for_settings` keeps the palette while ensuring readable control text.
-//! Surfaces and accents follow the terminal palette, so switching themes
-//! repaints the whole kit.
+//! The ladder mirrors `crates/desktop_app/src/settings_view/style.rs`: nothing
+//! here is a fixed brand color, every value falls out of the terminal palette
+//! so switching themes repaints the whole kit.
 //!
 //! Two representations coexist on purpose:
 //!
@@ -98,50 +98,6 @@ pub struct Tokens {
 }
 
 impl Tokens {
-    /// Opaque settings surfaces in the active theme, with readable labels and
-    /// selection text even when the theme uses a very light or dark accent.
-    pub fn for_settings(palette: Palette) -> Self {
-        let mut tokens = Self::from_palette(palette);
-        let backgrounds = [
-            tokens.bg_window,
-            tokens.bg_panel,
-            tokens.bg_card,
-            tokens.bg_input,
-            tokens.bg_hover,
-            tokens.bg_overlay,
-        ];
-        for text in [
-            &mut tokens.text_primary,
-            &mut tokens.text_secondary,
-            &mut tokens.text_muted,
-        ] {
-            while text.a < 1.0
-                && backgrounds
-                    .iter()
-                    .any(|bg| contrast_ratio(*text, *bg) < 4.5)
-            {
-                text.a = (text.a + 0.02).min(1.0);
-            }
-            if backgrounds
-                .iter()
-                .any(|bg| contrast_ratio(*text, *bg) < 4.5)
-            {
-                *text = contrasting_text(tokens.bg_card);
-            }
-        }
-        tokens.text_on_accent = if contrast_ratio(tokens.text_primary, tokens.accent)
-            > contrast_ratio(tokens.bg_window, tokens.accent)
-        {
-            tokens.text_primary
-        } else {
-            tokens.bg_window
-        };
-        if contrast_ratio(tokens.text_on_accent, tokens.accent) < 4.5 {
-            tokens.text_on_accent = contrasting_text(tokens.accent);
-        }
-        tokens
-    }
-
     pub fn from_palette(palette: Palette) -> Self {
         let bg = palette.background;
         let fg = palette.foreground;
@@ -252,71 +208,9 @@ fn composite(fg: Rgba, bg: Rgba) -> Rgba {
     }
 }
 
-/// Choose a readable foreground for a colored icon tile.
-pub fn contrasting_text(fill: Rgba) -> Rgba {
-    let dark = rgb(0x111114);
-    let light = rgb(0xffffff);
-    if contrast_ratio(dark, fill) >= contrast_ratio(light, fill) {
-        dark
-    } else {
-        light
-    }
-}
-
-fn contrast_ratio(fg: Rgba, bg: Rgba) -> f32 {
-    let luminance = |color: Rgba| {
-        let linear = |v: f32| {
-            if v <= 0.04045 {
-                v / 12.92
-            } else {
-                ((v + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
-    };
-    let a = luminance(composite(fg, bg));
-    let b = luminance(bg);
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn themed_settings_remain_legible_with_light_and_dark_accents() {
-        for palette in [
-            Palette::default(),
-            Palette {
-                background: rgb(0xfafafa),
-                foreground: rgb(0x383a42),
-                cursor: rgb(0x006cde),
-                ..Palette::default()
-            },
-            Palette {
-                cursor: rgb(0x171720),
-                ..Palette::default()
-            },
-            Palette {
-                cursor: rgb(0xb8f5cd),
-                ..Palette::default()
-            },
-        ] {
-            let t = Tokens::for_settings(palette);
-            assert_eq!(t.bg_window, palette.background);
-            assert_eq!(t.accent, palette.cursor);
-            for bg in [t.bg_window, t.bg_panel, t.bg_card, t.bg_input, t.bg_hover] {
-                for fg in [t.text_primary, t.text_secondary, t.text_muted] {
-                    assert!(
-                        contrast_ratio(fg, bg) >= 4.5,
-                        "insufficient settings text contrast: {}",
-                        contrast_ratio(fg, bg)
-                    );
-                }
-            }
-            assert!(contrast_ratio(t.text_on_accent, t.accent) >= 4.5);
-        }
-    }
 
     /// The design boards specify opaque hexes for every surface. The ladder is
     /// a linear blend, so a couple of channels land a step or two off the hand
