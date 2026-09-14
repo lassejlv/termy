@@ -208,7 +208,8 @@ fn keystroke_keycaps(keystroke: &str) -> Vec<String> {
 }
 
 /// Category label for a row, or `None` for rows whose mode already says what
-/// they are.
+/// they are. Task rows appear both in the Tasks browser (where the label is
+/// hidden) and in the mixed Commands root list (where it reads "Tasks").
 pub(super) fn palette_item_category(item: &CommandPaletteItem) -> Option<String> {
     match &item.kind {
         CommandPaletteItemKind::Command(action) => {
@@ -218,6 +219,7 @@ pub(super) fn palette_item_category(item: &CommandPaletteItem) -> Option<String>
         CommandPaletteItemKind::SshHost { .. } | CommandPaletteItemKind::ManageSshHosts => {
             Some("SSH".to_string())
         }
+        CommandPaletteItemKind::Task { .. } => Some("Tasks".to_string()),
         _ => None,
     }
 }
@@ -292,9 +294,12 @@ mod tests {
     fn non_command_rows_have_no_category() {
         let theme = CommandPaletteItem::theme("nord".to_string(), false);
         assert_eq!(palette_item_category(&theme), None);
+    }
 
+    #[test]
+    fn task_rows_carry_a_tasks_category_for_the_mixed_root_list() {
         let task = CommandPaletteItem::task("build", "cargo build", None, None);
-        assert_eq!(palette_item_category(&task), None);
+        assert_eq!(palette_item_category(&task).as_deref(), Some("Tasks"));
     }
 
     #[test]

@@ -4453,7 +4453,14 @@ impl TerminalView {
         }
 
         if self.is_command_palette_open() {
-            self.refresh_command_palette_matches(true, cx);
+            if self.command_palette.mode() == CommandPaletteMode::Commands {
+                // Commands items are static per keystroke (refilter only), so a
+                // config reload must rebuild them to pick up added or removed
+                // tasks and SSH hosts. Other modes already rebuild on refresh.
+                self.refresh_command_palette_items_for_current_mode(cx);
+            } else {
+                self.refresh_command_palette_matches(true, cx);
+            }
         }
 
         true

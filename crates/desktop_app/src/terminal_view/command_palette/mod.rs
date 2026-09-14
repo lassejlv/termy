@@ -253,6 +253,7 @@ impl TerminalView {
                         .map(|host| CommandPaletteItem::ssh_host(host, ssh_enabled)),
                 );
                 items.extend(self.command_palette_plugin_items(cx));
+                items.extend(self.command_palette_visible_task_items());
                 items
             }
             CommandPaletteMode::Themes => self.command_palette_theme_items(),
@@ -419,31 +420,44 @@ impl TerminalView {
         }
     }
 
+    /// Tasks runnable right now: global tasks always, layout-scoped tasks only
+    /// when their layout is loaded. Shared by the Tasks browser and the
+    /// Commands root list so both agree on what can run.
+    fn command_palette_visible_task_items(&self) -> Vec<CommandPaletteItem> {
+        Self::visible_task_items_for_state(&self.tasks, self.current_named_layout.as_deref())
+    }
+
+    fn visible_task_items_for_state(
+        tasks: &[TaskConfig],
+        current_layout: Option<&str>,
+    ) -> Vec<CommandPaletteItem> {
+        tasks
+            .iter()
+            .filter(|task| match (task.layout.as_deref(), current_layout) {
+                (None, _) => true,
+                (Some(task_layout), Some(current_layout)) => {
+                    task_layout.eq_ignore_ascii_case(current_layout)
+                }
+                (Some(_), None) => false,
+            })
+            .map(|task| {
+                CommandPaletteItem::task(
+                    task.name.as_str(),
+                    task.command.as_str(),
+                    task.working_dir.as_deref(),
+                    task.layout.as_deref(),
+                )
+            })
+            .collect()
+    }
+
     fn command_palette_task_items(&self) -> Vec<CommandPaletteItem> {
         let query = self.command_palette.input().text().trim();
         let current_layout = self.current_named_layout.as_deref();
 
         match self.command_palette.task_intent() {
             TaskIntent::Browse => {
-                let mut items = self
-                    .tasks
-                    .iter()
-                    .filter(|task| match (task.layout.as_deref(), current_layout) {
-                        (None, _) => true,
-                        (Some(task_layout), Some(current_layout)) => {
-                            task_layout.eq_ignore_ascii_case(current_layout)
-                        }
-                        (Some(_), None) => false,
-                    })
-                    .map(|task| {
-                        CommandPaletteItem::task(
-                            task.name.as_str(),
-                            task.command.as_str(),
-                            task.working_dir.as_deref(),
-                            task.layout.as_deref(),
-                        )
-                    })
-                    .collect::<Vec<_>>();
+                let mut items = self.command_palette_visible_task_items();
 
                 if query.is_empty() {
                     items.insert(
@@ -2114,5 +2128,72 @@ mod tests {
         assert!(TerminalView::palette_task_name_is_valid("build"));
         assert!(TerminalView::palette_task_name_is_valid(" build "));
         assert!(!TerminalView::palette_task_name_is_valid("build.web"));
+    }
+
+    fn task_config(name: &str, layout: Option<&str>) -> TaskConfig {
+        TaskConfig {
+            name: name.to_string(),
+            command: format!("echo {name}"),
+            layout: layout.map(ToOwned::to_owned),
+            working_dir: None,
+            keybind: None,
+        }
+    }
+
+    fn visible_task_titles(tasks: &[TaskConfig], current_layout: Option<&str>) -> Vec<String> {
+        TerminalView::visible_task_items_for_state(tasks, current_layout)
+            .iter()
+            .map(|item| item.title.clone())
+            .collect()
+    }
+
+    #[test]
+    fn visible_task_items_follow_current_layout() {
+        let tasks = vec![
+            task_config("build", None),
+            task_config("migrate", Some("dashboard")),
+            task_config("seed", Some("backend")),
+        ];
+
+        assert_eq!(
+            visible_task_titles(&tasks, None),
+            vec!["build".to_string()],
+            "without a loaded layout only global tasks are visible"
+        );
+        assert_eq!(
+            visible_task_titles(&tasks, Some("dashboard")),
+            vec!["build".to_string(), "migrate [dashboard]".to_string()],
+            "the loaded layout unlocks its own tasks"
+        );
+        assert_eq!(
+            visible_task_titles(&tasks, Some("DASHBOARD")),
+            vec!["build".to_string(), "migrate [dashboard]".to_string()],
+            "layout matching is case-insensitive"
+        );
+    }
+
+    #[test]
+    fn root_search_finds_tasks_by_name_alongside_commands() {
+        let mut items =
+            TerminalView::command_palette_core_command_items_for_state(test_caps(true, true));
+        items.extend(TerminalView::visible_task_items_for_state(
+            &[task_config("build", None)],
+            None,
+        ));
+
+        let matches = super::state::rank_command_palette_items(
+            &items,
+            "build",
+            &super::recents::CommandPaletteRecents::default(),
+            super::state::CommandPaletteRanking::ByScore,
+        );
+
+        assert!(
+            matches.iter().any(|matched| matches!(
+                items[matched.item_index].kind,
+                CommandPaletteItemKind::Task { .. }
+            )),
+            "task named 'build' should match query 'build' in the root list"
+        );
     }
 }

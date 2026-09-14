@@ -375,7 +375,7 @@ impl CommandPaletteState {
         self.open
     }
 
-    pub(super) fn mode(&self) -> CommandPaletteMode {
+    pub(in super::super) fn mode(&self) -> CommandPaletteMode {
         self.mode
     }
 
@@ -806,7 +806,10 @@ pub(super) fn rank_command_palette_items(
 }
 
 /// Empty-query ordering: recently executed rows first (most recent first),
-/// everything else in its original order.
+/// everything else in its original order. Task rows stay hidden until there
+/// is a query to match, so the untouched root list shows commands, SSH hosts,
+/// and plugins only. (The Tasks browser ranks with `PreserveOrder`, so its
+/// empty-query list still shows every task.)
 fn unfiltered_matches(
     items: &[CommandPaletteItem],
     recents: &CommandPaletteRecents,
@@ -821,6 +824,12 @@ fn unfiltered_matches(
         .collect();
 
     if ranking == CommandPaletteRanking::ByScore {
+        matches.retain(|matched| {
+            !matches!(
+                items[matched.item_index].kind,
+                CommandPaletteItemKind::Task { .. }
+            )
+        });
         matches.sort_by_key(|matched| {
             let item = &items[matched.item_index];
             (
@@ -1469,6 +1478,37 @@ mod tests {
                 label: "CPU",
                 value
             }
+        );
+    }
+
+    #[test]
+    fn empty_query_hides_tasks_in_scored_lists_but_keeps_them_in_browsers() {
+        let items = vec![
+            command_item("New Tab", "tab", CommandAction::NewTab),
+            CommandPaletteItem::task("build", "cargo build", None, None),
+        ];
+        let recents = CommandPaletteRecents::default();
+
+        for query in ["", "   "] {
+            let scored =
+                rank_command_palette_items(&items, query, &recents, CommandPaletteRanking::ByScore);
+            assert_eq!(
+                scored.len(),
+                1,
+                "query {query:?} should hide tasks in the root list"
+            );
+            assert!(matches!(
+                items[scored[0].item_index].kind,
+                CommandPaletteItemKind::Command(_)
+            ));
+        }
+
+        let preserved =
+            rank_command_palette_items(&items, "", &recents, CommandPaletteRanking::PreserveOrder);
+        assert_eq!(
+            preserved.len(),
+            2,
+            "the Tasks browser still lists tasks with an empty query"
         );
     }
 }
