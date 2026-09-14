@@ -290,7 +290,6 @@ impl TerminalView {
                     open_anim_progress: None,
                     hover_progress: self.tab_strip.hover_progress(index, now),
                     progress_state,
-                    suppress_active_indicator: false,
                 },
                 font_family,
                 colors,

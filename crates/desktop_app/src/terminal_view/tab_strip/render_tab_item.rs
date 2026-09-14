@@ -25,9 +25,6 @@ pub(super) struct TabItemRenderInput {
     pub(super) open_anim_progress: Option<f32>,
     pub(super) hover_progress: f32,
     pub(super) progress_state: ProgressState,
-    // While the active indicator slides between tabs the travelling overlay
-    // replaces the static per-tab indicator.
-    pub(super) suppress_active_indicator: bool,
 }
 
 #[cfg(test)]
@@ -131,13 +128,6 @@ impl TerminalView {
         } else {
             TAB_TITLE_FONT_SIZE
         };
-        // The top strip tints the close hover red; the sidebar keeps the
-        // neutral hover.
-        let close_hover_bg = if input.orientation == TabStripOrientation::Horizontal {
-            palette.close_button_danger_hover_bg
-        } else {
-            palette.close_button_hover_bg
-        };
 
         div()
             .flex_none()
@@ -174,7 +164,7 @@ impl TerminalView {
                     ))
                     .hover(move |style| {
                         style
-                            .bg(close_hover_bg)
+                            .bg(palette.close_button_hover_bg)
                             .text_color(palette.close_button_hover_text)
                     })
                     .cursor_pointer()
@@ -234,9 +224,6 @@ impl TerminalView {
             tab_bg = palette.hovered_tab_bg;
             tab_bg.a = (tab_bg.a * 1.8).max(self.scaled_chrome_surface_alpha(0.12));
         }
-        if orientation == TabStripOrientation::Horizontal && input.is_active {
-            tab_bg.a = (tab_bg.a + TAB_ACTIVE_BG_LIFT_HORIZONTAL).min(1.0);
-        }
         tab_bg.a *= anim;
 
         let mut close_text_color = if input.is_active {
@@ -275,15 +262,11 @@ impl TerminalView {
             TabStripOrientation::Horizontal => (input.tab_primary_extent, input.tab_cross_extent),
             TabStripOrientation::Vertical => (input.tab_cross_extent, input.tab_primary_extent),
         };
-        let chip_radius = match orientation {
-            TabStripOrientation::Horizontal => TAB_ITEM_RADIUS_HORIZONTAL,
-            TabStripOrientation::Vertical => TAB_ITEM_RADIUS,
-        };
         let mut tab_shell = div()
             .flex_none()
             .relative()
             .overflow_hidden()
-            .rounded(px(chip_radius))
+            .rounded(px(TAB_ITEM_RADIUS))
             .bg(tab_bg)
             .hover(move |style| style.bg(hover_tab_bg))
             .w(px(shell_width))
@@ -345,7 +328,7 @@ impl TerminalView {
             tab_shell = tab_shell.shadow_md();
         }
 
-        if input.is_active && !input.suppress_active_indicator {
+        if input.is_active {
             let indicator_height = (shell_height - (TAB_ACTIVE_INDICATOR_INSET_Y * 2.0)).max(0.0);
             let mut indicator_color = palette.active_tab_indicator;
             indicator_color.a *= anim;
@@ -577,7 +560,6 @@ mod tests {
             open_anim_progress: None,
             hover_progress: 0.0,
             progress_state: ProgressState::default(),
-            suppress_active_indicator: false,
         }
     }
 

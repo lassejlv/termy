@@ -631,13 +631,6 @@ impl TerminalView {
             RuntimeKind::Native => {}
         };
 
-        self.push_closing_tab_overlay(
-            index,
-            self.session.tabs[index].title.clone(),
-            Self::stable_tab_render_width(self.session.tabs[index].display_width),
-            index == self.session.active_tab,
-            cx,
-        );
         self.session.tabs.remove(index);
         self.session
             .native_pane_zoom_snapshots

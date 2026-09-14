@@ -7,7 +7,6 @@ use gpui::ScrollHandle;
 
 use super::hints::TabSwitchHintState;
 use super::layout::TabStripLayoutSnapshot;
-use super::transitions::TabStripTransitions;
 
 const TAB_TITLE_WIDTH_CACHE_MAX_ENTRIES: usize = 512;
 const TAB_INTERACTION_ANIMATION_DURATION: Duration = Duration::from_millis(200);
@@ -211,7 +210,6 @@ pub(crate) struct TabStripState {
     pub(crate) vertical_layout_last_synced_viewport_height: f32,
     pub(crate) title_width_cache: TabTitleWidthCache,
     pub(crate) titlebar: TabStripTitlebarState,
-    pub(crate) transitions: TabStripTransitions,
 }
 
 impl TabStripState {
@@ -236,7 +234,6 @@ impl TabStripState {
             vertical_layout_last_synced_viewport_height: f32::NAN,
             title_width_cache: TabTitleWidthCache::default(),
             titlebar: TabStripTitlebarState::default(),
-            transitions: TabStripTransitions::default(),
         }
     }
 

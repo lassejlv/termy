@@ -307,13 +307,6 @@ impl TerminalView {
             Self::warn_stale_tmux_tab_index("close", index, self.session.tabs.len());
             return;
         };
-        let closing_overlay = self.session.tabs.get(index).map(|tab| {
-            (
-                tab.title.clone(),
-                Self::stable_tab_render_width(tab.display_width),
-                index == self.session.active_tab,
-            )
-        });
         if !self.run_tmux_action("Failed to close tab", |tmux_client| {
             tmux_client.kill_window(window_id.as_str())
         }) {
@@ -321,16 +314,6 @@ impl TerminalView {
         }
 
         if self.refresh_tmux_snapshot() {
-            // Only animate when the window is actually gone; a failed kill
-            // leaves the tab in place.
-            let window_gone = !self
-                .session
-                .tabs
-                .iter()
-                .any(|tab| tab.window_id == window_id);
-            if let (Some((title, width, was_active)), true) = (closing_overlay, window_gone) {
-                self.push_closing_tab_overlay(index, title, width, was_active, cx);
-            }
             self.reset_tab_rename_state();
             self.reset_tab_drag_state();
             self.clear_selection();
