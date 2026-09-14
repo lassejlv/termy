@@ -13,6 +13,15 @@ pub(crate) const TAB_HORIZONTAL_PADDING: f32 = 6.0;
 pub(crate) const TAB_ITEM_HEIGHT: f32 = 26.0;
 pub(crate) const TAB_ITEM_GAP: f32 = 4.0;
 pub(crate) const TAB_ITEM_RADIUS: f32 = 5.0;
+// Softer chip radius for the horizontal top strip; the vertical sidebar keeps
+// TAB_ITEM_RADIUS.
+pub(crate) const TAB_ITEM_RADIUS_HORIZONTAL: f32 = 8.0;
+// Extra background alpha for the active tab on the horizontal strip, on top of
+// the shared palette value.
+pub(crate) const TAB_ACTIVE_BG_LIFT_HORIZONTAL: f32 = 0.02;
+// Floor for the open-animation grow effect so new tabs visibly expand from a
+// narrow chip instead of starting at full minimum width.
+pub(crate) const TAB_OPEN_ANIM_MIN_WIDTH: f32 = 48.0;
 pub(crate) const TAB_TEXT_PADDING_X: f32 = 10.0;
 // Reserved leading area inside each tab. Stays empty unless the tab reports a
 // progress state, in which case the progress dot renders here; reserving it

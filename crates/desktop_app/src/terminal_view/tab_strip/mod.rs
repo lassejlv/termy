@@ -12,3 +12,4 @@ pub(super) mod render_vertical;
 pub(super) mod render_workspace_sidebar;
 pub(super) mod state;
 pub(super) mod titlebar_drag;
+pub(super) mod transitions;

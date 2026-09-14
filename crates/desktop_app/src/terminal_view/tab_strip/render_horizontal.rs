@@ -4,6 +4,7 @@ use super::render_palette::{TabStripPalette, resolve_branding_text_color};
 use super::render_shared::TabStripRenderState;
 use super::render_tab_item::TabItemRenderInput;
 use super::state::{TabStripOrientation, TabStripOverflowState};
+use super::transitions::ClosingTabOverlaySlot;
 
 impl TerminalView {
     fn render_inset_lane(id: &'static str, width: f32, cx: &mut Context<Self>) -> AnyElement {
@@ -133,14 +134,10 @@ impl TerminalView {
     }
 
     fn horizontal_tab_render_width(display_width: f32, anim_progress: Option<f32>) -> f32 {
-        let stable_width = if display_width.is_finite() {
-            display_width.max(TAB_MIN_WIDTH)
-        } else {
-            TAB_MIN_WIDTH
-        };
+        let stable_width = Self::stable_tab_render_width(display_width);
 
         anim_progress.map_or(stable_width, |progress| {
-            (stable_width * progress.clamp(0.0, 1.0)).max(TAB_MIN_WIDTH)
+            (stable_width * progress.clamp(0.0, 1.0)).max(TAB_OPEN_ANIM_MIN_WIDTH)
         })
     }
 
@@ -157,11 +154,49 @@ impl TerminalView {
     ) -> AnyElement {
         let now = Instant::now();
         let new_tab_anim = self.new_tab_animation_progress(now);
+        let tab_count = self.session.tabs.len();
+        let overlay_slots = self.tab_strip.transitions.overlay_slots(tab_count, now);
+        let mut tab_widths = Vec::with_capacity(tab_count);
+        for index in 0..tab_count {
+            let display_width = self.session.tabs[index].display_width;
+            let anim_progress = new_tab_anim
+                .filter(|(anim_index, _)| *anim_index == index)
+                .map(|(_, progress)| progress);
+            tab_widths.push(Self::horizontal_tab_render_width(
+                display_width,
+                anim_progress,
+            ));
+        }
+        // Detect tab switches before the loop so the newly active tab can
+        // suppress its static indicator while the slide overlay travels.
+        let active_tab_id = self
+            .session
+            .tabs
+            .get(self.session.active_tab)
+            .map(|tab| tab.id);
+        let indicator_slide_x = active_tab_id.and_then(|active_id| {
+            let active_x =
+                Self::content_x_for_tab(self.session.active_tab, &tab_widths, &overlay_slots);
+            let slide_x = self
+                .tab_strip
+                .transitions
+                .sync_slide(active_id, active_x, now);
+            if slide_x.is_some() {
+                self.schedule_tab_transitions_frame(cx);
+            }
+            slide_x
+        });
+        let suppress_active_indicator = indicator_slide_x.is_some();
+        let overlay_extra_width: f32 = overlay_slots
+            .iter()
+            .map(|slot| slot.width + TAB_ITEM_GAP)
+            .sum();
+        let content_width = state.content_width + overlay_extra_width;
         let mut tabs_scroll_content = div()
             .id("tabs-scroll-content")
             .flex_none()
-            .w(px(state.content_width))
-            .min_w(px(state.content_width))
+            .w(px(content_width))
+            .min_w(px(content_width))
             .h(px(TABBAR_HEIGHT))
             .flex()
             .relative()
@@ -179,11 +214,19 @@ impl TerminalView {
                 .h(px(TABBAR_HEIGHT)),
         );
 
-        for index in 0..self.session.tabs.len() {
-            let (display_width, tab_title, pinned, progress_state) = {
+        for (index, &tab_width) in tab_widths.iter().enumerate() {
+            for slot in overlay_slots.iter().filter(|slot| slot.index == index) {
+                tabs_scroll_content = tabs_scroll_content.child(self.render_closing_tab_overlay(
+                    slot,
+                    window,
+                    palette,
+                    font_family,
+                    font_family_key,
+                ));
+            }
+            let (tab_title, pinned, progress_state) = {
                 let tab = &self.session.tabs[index];
                 (
-                    tab.display_width,
                     tab.title.clone(),
                     tab.pinned,
                     tab.aggregate_progress_state(),
@@ -192,7 +235,6 @@ impl TerminalView {
             let anim_progress = new_tab_anim
                 .filter(|(anim_index, _)| *anim_index == index)
                 .map(|(_, p)| p);
-            let tab_width = Self::horizontal_tab_render_width(display_width, anim_progress);
             let is_active = index == self.session.active_tab;
             let is_drag_source = self
                 .tab_strip
@@ -279,6 +321,7 @@ impl TerminalView {
                     open_anim_progress: anim_progress,
                     hover_progress: self.tab_strip.hover_progress(index, now),
                     progress_state,
+                    suppress_active_indicator,
                 },
                 font_family,
                 colors,
@@ -289,7 +332,108 @@ impl TerminalView {
             tabs_scroll_content = tabs_scroll_content.child(tab_item);
         }
 
+        for slot in overlay_slots.iter().filter(|slot| slot.index >= tab_count) {
+            tabs_scroll_content = tabs_scroll_content.child(self.render_closing_tab_overlay(
+                slot,
+                window,
+                palette,
+                font_family,
+                font_family_key,
+            ));
+        }
+
+        if let Some(slide_x) = indicator_slide_x {
+            tabs_scroll_content =
+                tabs_scroll_content.child(Self::render_indicator_slide_overlay(slide_x, palette));
+        }
+
         tabs_scroll_content.into_any_element()
+    }
+
+    /// Non-interactive chip for a just-closed tab. It collapses in place so
+    /// the surviving tabs glide into the freed space instead of jumping.
+    fn render_closing_tab_overlay(
+        &mut self,
+        slot: &ClosingTabOverlaySlot,
+        window: &Window,
+        palette: &TabStripPalette,
+        font_family: &SharedString,
+        font_family_key: &str,
+    ) -> AnyElement {
+        let mut chip_bg = if slot.was_active {
+            palette.active_tab_bg
+        } else {
+            palette.hovered_tab_bg
+        };
+        chip_bg.a *= slot.alpha;
+        let mut text_color = if slot.was_active {
+            palette.active_tab_text
+        } else {
+            palette.inactive_tab_text
+        };
+        text_color.a *= slot.alpha;
+        // Once the chip is too narrow to show text the pill keeps collapsing
+        // on its own.
+        let label = (slot.width >= TAB_OPEN_ANIM_MIN_WIDTH).then(|| {
+            let available_text_px =
+                Self::tab_title_text_area_width(slot.width, TAB_LEADING_SLOT_WIDTH);
+            Self::format_tab_label_for_render_measured(
+                &slot.title,
+                available_text_px,
+                |candidate| {
+                    self.measure_tab_title_width(window, font_family, font_family_key, candidate)
+                },
+            )
+        });
+
+        div()
+            .flex_none()
+            .w(px(slot.width.max(0.0)))
+            .h(px(TABBAR_HEIGHT))
+            .flex()
+            .items_center()
+            .child(
+                div()
+                    .w_full()
+                    .h(px(TAB_ITEM_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .rounded(px(TAB_ITEM_RADIUS_HORIZONTAL))
+                    .bg(chip_bg)
+                    .px(px(TAB_TEXT_PADDING_X))
+                    .children(label.map(|text| {
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .overflow_x_hidden()
+                            .whitespace_nowrap()
+                            .font_family(font_family.clone())
+                            .text_color(text_color)
+                            .text_size(px(TAB_HORIZONTAL_TITLE_FONT_SIZE))
+                            .text_ellipsis()
+                            .child(text)
+                    })),
+            )
+            .into_any_element()
+    }
+
+    /// Travelling active indicator rendered while a tab switch animates. It
+    /// lives inside the scroll content so it tracks horizontal scrolling, and
+    /// matches the static indicator geometry exactly at both endpoints.
+    fn render_indicator_slide_overlay(slide_x: f32, palette: &TabStripPalette) -> AnyElement {
+        let chip_top = (TABBAR_HEIGHT - TAB_ITEM_HEIGHT) / 2.0;
+        div()
+            .absolute()
+            .left(px(slide_x))
+            .top(px(chip_top + TAB_ACTIVE_INDICATOR_INSET_Y))
+            .w(px(TAB_ACTIVE_INDICATOR_WIDTH))
+            .h(px(
+                (TAB_ITEM_HEIGHT - TAB_ACTIVE_INDICATOR_INSET_Y * 2.0).max(0.0)
+            ))
+            .rounded_full()
+            .bg(palette.active_tab_indicator)
+            .into_any_element()
     }
 
     fn render_action_rail(
@@ -333,7 +477,7 @@ impl TerminalView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(TAB_ITEM_RADIUS))
+                    .rounded(px(TAB_ITEM_RADIUS_HORIZONTAL))
                     .bg(button_bg)
                     .text_color(icon_color)
                     .hover(move |style| style.bg(button_hover_bg))
@@ -519,11 +663,11 @@ mod tests {
     fn horizontal_tab_render_width_never_drops_below_minimum() {
         assert_eq!(
             TerminalView::horizontal_tab_render_width(TAB_MAX_WIDTH, Some(0.0)),
-            TAB_MIN_WIDTH
+            TAB_OPEN_ANIM_MIN_WIDTH
         );
         assert_eq!(
             TerminalView::horizontal_tab_render_width(TAB_MAX_WIDTH, Some(0.1)),
-            TAB_MIN_WIDTH
+            TAB_OPEN_ANIM_MIN_WIDTH
         );
         assert_eq!(
             TerminalView::horizontal_tab_render_width(12.0, None),
