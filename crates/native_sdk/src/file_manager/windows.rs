@@ -41,7 +41,7 @@ fn create_key(path: &str) -> Result<windows::Win32::System::Registry::HKEY, Stri
         RegCreateKeyExW(
             HKEY_CURRENT_USER,
             PCWSTR(wide.as_ptr()),
-            0,
+            None,
             None,
             REG_OPTION_NON_VOLATILE,
             KEY_WRITE,
@@ -68,7 +68,7 @@ fn set_sz(
     let bytes = unsafe {
         std::slice::from_raw_parts(wide.as_ptr().cast::<u8>(), wide.len().saturating_mul(2))
     };
-    let status = unsafe { RegSetValueExW(key, name, Some(0), REG_SZ, Some(bytes)) };
+    let status = unsafe { RegSetValueExW(key, name, None, REG_SZ, Some(bytes)) };
     if status != ERROR_SUCCESS {
         return Err(format!("failed to write Explorer verb value: {:?}", status));
     }
