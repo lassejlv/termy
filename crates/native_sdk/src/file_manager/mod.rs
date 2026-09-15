@@ -39,6 +39,7 @@ pub fn register_open_tab_here(
     }
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn quoted_windows_path(path: &Path) -> String {
     format!("\"{}\"", path.display().to_string().replace('"', "\\\""))
 }
@@ -47,6 +48,7 @@ pub(crate) fn posix_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) fn explorer_open_tab_command(executable: &Path) -> String {
     format!(
         "{} --working-directory \"%V\"",

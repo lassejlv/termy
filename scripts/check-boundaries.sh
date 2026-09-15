@@ -57,9 +57,9 @@ forbid_pattern() {
   local path="$2"
   local message="$3"
 
-  if rg -n "$pattern" "$path" >/dev/null; then
+  if rg -n -- "$pattern" "$path" >/dev/null; then
     echo "Boundary check failed: $message" >&2
-    rg -n "$pattern" "$path" >&2
+    rg -n -- "$pattern" "$path" >&2
     exit 1
   fi
 }
@@ -69,7 +69,7 @@ require_pattern() {
   local path="$2"
   local message="$3"
 
-  if ! rg -n "$pattern" "$path" >/dev/null; then
+  if ! rg -n -- "$pattern" "$path" >/dev/null; then
     echo "Boundary check failed: $message" >&2
     exit 1
   fi
@@ -82,7 +82,7 @@ require_issue_url_for_pattern() {
   local matches
   local violations
 
-  matches="$(rg -n "$pattern" "$path" || true)"
+  matches="$(rg -n -- "$pattern" "$path" || true)"
   if [[ -z "$matches" ]]; then
     return
   fi
