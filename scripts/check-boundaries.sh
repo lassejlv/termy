@@ -184,6 +184,44 @@ require_pattern 'pkg-config' \
 require_pattern 'pkg-config' \
   ".github/workflows/release.yml" \
   "release workflow must install pkg-config for Linux desktop builds"
+require_path "scripts/file-manager/termy-open-tab.desktop"
+require_path "scripts/file-manager/termy-open-tab.nemo_action"
+require_path "scripts/file-manager/nautilus-open-tab.sh"
+require_path "scripts/file-manager/macos/Info.plist"
+require_path "scripts/file-manager/macos/document.wflow.in"
+require_pattern 'TermyOpenTab' \
+  "scripts/installer/termy.iss" \
+  "Windows installer must register the Explorer Open new Termy tab here verb"
+require_pattern 'Open new Termy tab here' \
+  "scripts/installer/termy.iss" \
+  "Windows installer Explorer verb must use the Open new Termy tab here label"
+require_pattern '--working-directory ""%V""' \
+  "scripts/installer/termy.iss" \
+  "Windows installer Explorer verb must pass the selected folder as --working-directory"
+require_pattern 'MimeType=inode/directory;x-scheme-handler/termy;' \
+  "scripts/aur/termy.desktop" \
+  "Linux desktop file must advertise directory and termy:// handlers"
+require_pattern 'Actions=open-tab-here' \
+  "scripts/aur/termy.desktop" \
+  "Linux desktop file must expose the Open new Termy tab here action"
+require_pattern 'Name=Open new Termy tab here' \
+  "scripts/aur/termy.desktop" \
+  "Linux desktop action must use the Open new Termy tab here label"
+require_pattern 'install_linux_file_manager_share' \
+  "scripts/build-linux.sh" \
+  "Linux packages must install file-manager Open new Termy tab here entries"
+require_pattern 'scripts/aur/\$\{APP_NAME_LOWER\}\.desktop' \
+  "scripts/build-linux.sh" \
+  "Linux AppImage packaging must use the shared desktop file"
+require_pattern 'ensure_folder_document_type' \
+  "scripts/build-dmg.sh" \
+  "macOS DMG packaging must register folders for Open With"
+require_pattern 'public.folder' \
+  "scripts/build-dmg.sh" \
+  "macOS DMG packaging must declare public.folder document support"
+require_pattern 'Open new Termy tab here' \
+  "scripts/build-dmg.sh" \
+  "macOS DMG packaging must install the Finder Open new Termy tab here service"
 require_pattern './scripts/check-platform-builds\.sh --native' \
   ".github/workflows/architecture-checks.yml" \
   "architecture checks must run the shared native platform verifier"
@@ -223,6 +261,9 @@ require_pattern 'grep -Eo.*\|\| true' \
 require_pattern 'grep -Ev.*x86_64.*aarch64' \
   "scripts/install-linux.sh" \
   "Linux install helper generic fallback must not install an asset for the wrong architecture"
+require_pattern 'file-manager' \
+  "scripts/install-linux.sh" \
+  "Linux install helper must install file-manager Open new Termy tab here entries"
 check_forbidden_dep "termy_command_core" "gpui"
 check_forbidden_dep "termy_command_core" "termy_config_core"
 check_forbidden_dep "termy_config_core" "termy_themes"

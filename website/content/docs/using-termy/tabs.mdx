@@ -13,3 +13,20 @@ description: Open, switch, rename, and organize tabs.
 | `rename_tab` | bind manually |
 
 Tab titles: [Tabs and titlebar](/docs/customize/tabs-titlebar).
+
+## Open a tab from your file manager
+
+After Termy is installed, file managers expose **Open new Termy tab here**:
+
+| Platform | Where it appears |
+| --- | --- |
+| Windows | Explorer folder, folder background, and drive context menus |
+| macOS | Finder Services, and Open With on a folder |
+| Linux | Nautilus/Caja Scripts, Nemo actions, KDE/Dolphin folder menus, and Open With |
+
+If Termy is already running, the action adds a tab in that folder instead of starting a second window. You can also do this from a shell:
+
+```bash
+termy /path/to/project
+termy --working-directory /path/to/project
+```

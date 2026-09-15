@@ -29,8 +29,18 @@ package() {
   install -Dm755 "termy-bin" "$pkgdir/usr/bin/termy-bin"
   install -Dm755 "termy-cli" "$pkgdir/usr/bin/termy-cli"
 
-  # Install desktop file and icon
+  # Install desktop file, icon, and file-manager context actions
   install -Dm644 "$srcdir/termy.desktop" "$pkgdir/usr/share/applications/termy.desktop"
   install -Dm644 "$srcdir/termy_icon.png" "$pkgdir/usr/share/pixmaps/termy.png"
   install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$srcdir/termy/file-manager/termy-open-tab.desktop" \
+    "$pkgdir/usr/share/kio/servicemenus/termy-open-tab.desktop"
+  install -Dm644 "$srcdir/termy/file-manager/termy-open-tab.desktop" \
+    "$pkgdir/usr/share/kservices5/ServiceMenus/termy-open-tab.desktop"
+  install -Dm644 "$srcdir/termy/file-manager/termy-open-tab.nemo_action" \
+    "$pkgdir/usr/share/nemo/actions/termy-open-tab.nemo_action"
+  install -Dm755 "$srcdir/termy/file-manager/nautilus-open-tab.sh" \
+    "$pkgdir/usr/share/nautilus/scripts/Open new Termy tab here"
+  install -Dm755 "$srcdir/termy/file-manager/nautilus-open-tab.sh" \
+    "$pkgdir/usr/share/caja/scripts/Open new Termy tab here"
 }

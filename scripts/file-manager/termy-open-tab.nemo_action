@@ -1,0 +1,8 @@
+[Nemo Action]
+Name=Open new Termy tab here
+Comment=Open a new Termy tab in this folder
+Exec=termy --working-directory %F
+Icon-Name=termy
+Selection=any
+Extensions=dir;
+Quote=double

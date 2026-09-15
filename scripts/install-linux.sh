@@ -136,6 +136,31 @@ exec "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/termy-bin" "$@"
 LAUNCHER
 chmod +x "$INSTALL_DIR/termy" "$INSTALL_DIR/termy-bin" "$INSTALL_DIR/termy-cli"
 
+if [[ -d "$TEMP_DIR/termy/file-manager" ]]; then
+  SHARE_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+  mkdir -p \
+    "$SHARE_HOME/applications" \
+    "$SHARE_HOME/kio/servicemenus" \
+    "$SHARE_HOME/kservices5/ServiceMenus" \
+    "$SHARE_HOME/nemo/actions" \
+    "$SHARE_HOME/nautilus/scripts" \
+    "$SHARE_HOME/caja/scripts"
+  if [[ -f "$TEMP_DIR/termy/file-manager/termy.desktop" ]]; then
+    cp "$TEMP_DIR/termy/file-manager/termy.desktop" "$SHARE_HOME/applications/termy.desktop"
+  fi
+  if [[ -f "$TEMP_DIR/termy/file-manager/termy-open-tab.desktop" ]]; then
+    cp "$TEMP_DIR/termy/file-manager/termy-open-tab.desktop" "$SHARE_HOME/kio/servicemenus/termy-open-tab.desktop"
+    cp "$TEMP_DIR/termy/file-manager/termy-open-tab.desktop" "$SHARE_HOME/kservices5/ServiceMenus/termy-open-tab.desktop"
+  fi
+  if [[ -f "$TEMP_DIR/termy/file-manager/termy-open-tab.nemo_action" ]]; then
+    cp "$TEMP_DIR/termy/file-manager/termy-open-tab.nemo_action" "$SHARE_HOME/nemo/actions/termy-open-tab.nemo_action"
+  fi
+  if [[ -f "$TEMP_DIR/termy/file-manager/nautilus-open-tab.sh" ]]; then
+    install -m 755 "$TEMP_DIR/termy/file-manager/nautilus-open-tab.sh" "$SHARE_HOME/nautilus/scripts/Open new Termy tab here"
+    install -m 755 "$TEMP_DIR/termy/file-manager/nautilus-open-tab.sh" "$SHARE_HOME/caja/scripts/Open new Termy tab here"
+  fi
+fi
+
 log "Termy $TAG installed successfully!"
 
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then

@@ -18,4 +18,4 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAc
 objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false, features = ["UTType"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging"] }

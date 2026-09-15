@@ -4,6 +4,9 @@ pub fn run() {
     println!("  termy /path/to/project");
     println!("  termy --working-directory /path/to/project");
     println!();
+    println!("If Termy is already running, those commands open a new tab.");
+    println!("File managers use the same path via Open new Termy tab here.");
+    println!();
     println!("Available commands:");
     println!();
     println!("  plugin            Install and manage plugins");

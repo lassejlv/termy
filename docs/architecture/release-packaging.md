@@ -40,6 +40,7 @@ Use `scripts/build-dmg-signed.sh` when a Developer ID signing identity is requir
 - Keep generated artifacts out of the repo and under `dist/` or `target/dist/`.
 - Keep release CI aligned with the script outputs.
 - Keep platform-specific installer definitions under `scripts/installer/` unless a platform needs a larger packaging tree.
+- File-manager context-menu payloads belong in `scripts/file-manager/` and must be copied by `scripts/build-linux.sh`, `scripts/build-dmg.sh`, and `scripts/installer/termy.iss`. Do not add a parallel `packaging/` tree for those files.
 
 ## Validation
 
