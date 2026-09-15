@@ -44,6 +44,7 @@ pub(crate) fn quoted_windows_path(path: &Path) -> String {
     format!("\"{}\"", path.display().to_string().replace('"', "\\\""))
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 pub(crate) fn posix_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
