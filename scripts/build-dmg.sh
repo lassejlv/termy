@@ -109,6 +109,11 @@ ensure_folder_document_type() {
   "$plist_buddy" -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes array" "$plist_path"
   "$plist_buddy" -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes:0 string public.folder" "$plist_path"
   "$plist_buddy" -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes:1 string public.directory" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:1 dict" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:1:CFBundleTypeRole string Shell" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:1:LSHandlerRank string Alternate" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes array" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes:0 string public.unix-executable" "$plist_path"
   /usr/bin/plutil -lint "$plist_path" >/dev/null
 }
 
@@ -118,17 +123,16 @@ install_finder_open_tab_service() {
   local service_root="$app_path/Contents/Library/Services/Open new Termy tab here.workflow"
   local service_contents="$service_root/Contents"
   local info_source="$REPO_ROOT/scripts/file-manager/macos/Info.plist"
-  local workflow_template="$REPO_ROOT/scripts/file-manager/macos/document.wflow.in"
+  local workflow_source="$REPO_ROOT/scripts/file-manager/macos/document.wflow"
 
   [[ -x "$exe_path" ]] || die "App binary not found at $exe_path"
   [[ -f "$info_source" ]] || die "Finder service Info.plist not found at $info_source"
-  [[ -f "$workflow_template" ]] || die "Finder service workflow template not found at $workflow_template"
+  [[ -f "$workflow_source" ]] || die "Finder service workflow not found at $workflow_source"
 
   mkdir -p "$service_contents"
   cp "$info_source" "$service_contents/Info.plist"
-  local quoted_exe
-  quoted_exe="$(printf "%q" "$exe_path")"
-  sed "s|@TERMY_EXECUTABLE@|$quoted_exe|g" "$workflow_template" > "$service_contents/document.wflow"
+  cp "$workflow_source" "$service_contents/document.wflow"
+  /usr/bin/plutil -lint "$service_contents/Info.plist" "$service_contents/document.wflow" >/dev/null
 }
 
 ensure_app_icon() {

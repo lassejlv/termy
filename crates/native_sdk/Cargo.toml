@@ -6,6 +6,9 @@ edition = "2024"
 [lints]
 workspace = true
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [target.'cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))'.dependencies]
 clipboard-rs = { version = "0.3.5", features = ["wayland"] }
 url = { workspace = true }

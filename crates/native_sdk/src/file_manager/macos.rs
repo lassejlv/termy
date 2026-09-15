@@ -1,151 +1,108 @@
-use super::{OPEN_TAB_HERE_LABEL, posix_single_quote};
+use super::OPEN_TAB_HERE_LABEL;
 use std::path::{Path, PathBuf};
 
+// Use the same relocatable service for DMG packaging and startup registration.
+const SERVICE_INFO: &str = include_str!("../../../../scripts/file-manager/macos/Info.plist");
+const SERVICE_WORKFLOW: &str =
+    include_str!("../../../../scripts/file-manager/macos/document.wflow");
+
 pub(super) fn register(
-    executable: &Path,
+    _executable: &Path,
     _on_open_directory: impl Fn(PathBuf) + Send + Sync + 'static,
 ) -> Result<(), String> {
-    install_user_service(executable)
-}
-
-fn install_user_service(executable: &Path) -> Result<(), String> {
     let home = std::env::var_os("HOME").ok_or_else(|| "HOME is not set".to_string())?;
     let service_dir = PathBuf::from(home)
         .join("Library/Services")
         .join(format!("{OPEN_TAB_HERE_LABEL}.workflow"))
         .join("Contents");
-    std::fs::create_dir_all(&service_dir)
-        .map_err(|error| format!("failed to create Finder service: {error}"))?;
-    std::fs::write(service_dir.join("Info.plist"), service_info_plist())
-        .map_err(|error| format!("failed to write Finder service Info.plist: {error}"))?;
-    std::fs::write(
-        service_dir.join("document.wflow"),
-        service_workflow(executable),
-    )
-    .map_err(|error| format!("failed to write Finder service workflow: {error}"))?;
-    let _ = std::process::Command::new("/System/Library/CoreServices/pbs")
-        .arg("-flush")
-        .status();
+    // Overwrite the old absolute-path workflow on the first launch after updating.
+    install_user_service(&service_dir)?;
+    let status = std::process::Command::new("/System/Library/CoreServices/pbs")
+        .arg("-update")
+        .status()
+        .map_err(|error| format!("failed to refresh Finder services: {error}"))?;
+    if !status.success() {
+        return Err(format!("failed to refresh Finder services: {status}"));
+    }
     Ok(())
 }
 
-fn service_info_plist() -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>NSServices</key>
-	<array>
-		<dict>
-			<key>NSMenuItem</key>
-			<dict>
-				<key>default</key>
-				<string>{OPEN_TAB_HERE_LABEL}</string>
-			</dict>
-			<key>NSMessage</key>
-			<string>runWorkflowAsService</string>
-			<key>NSRequiredContext</key>
-			<dict>
-				<key>NSApplicationIdentifier</key>
-				<string>com.apple.finder</string>
-			</dict>
-			<key>NSSendFileTypes</key>
-			<array>
-				<string>public.folder</string>
-				<string>public.directory</string>
-			</array>
-		</dict>
-	</array>
-</dict>
-</plist>
-"#
-    )
-}
-
-fn service_workflow(executable: &Path) -> String {
-    let exe = posix_single_quote(&executable.to_string_lossy());
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-	<key>AMApplicationBuild</key>
-	<string>523</string>
-	<key>AMApplicationVersion</key>
-	<string>2.10</string>
-	<key>AMDocumentVersion</key>
-	<string>2</string>
-	<key>actions</key>
-	<array>
-		<dict>
-			<key>action</key>
-			<dict>
-				<key>AMAccepts</key>
-				<dict>
-					<key>Container</key>
-					<string>List</string>
-					<key>Optional</key>
-					<true/>
-					<key>Types</key>
-					<array>
-						<string>com.apple.cocoa.path</string>
-					</array>
-				</dict>
-				<key>ActionBundlePath</key>
-				<string>/System/Library/Automator/Run Shell Script.action</string>
-				<key>ActionName</key>
-				<string>Run Shell Script</string>
-				<key>ActionParameters</key>
-				<dict>
-					<key>COMMAND_STRING</key>
-					<string>for f in "$@"; do
-  if [ -f "$f" ]; then f="$(dirname "$f")"; fi
-  {exe} --working-directory "$f" &amp;
-done</string>
-					<key>CheckedForDataType</key>
-					<true/>
-					<key>inputMethod</key>
-					<integer>1</integer>
-					<key>shell</key>
-					<string>/bin/bash</string>
-					<key>source</key>
-					<string></string>
-				</dict>
-				<key>BundleIdentifier</key>
-				<string>com.apple.RunShellScript</string>
-				<key>CFBundleVersion</key>
-				<string>1.0.2</string>
-				<key>Class Name</key>
-				<string>RunShellScriptAction</string>
-				<key>InputUUID</key>
-				<string>7c3d1a2e-4b5f-4a6c-9d0e-1f2a3b4c5d6e</string>
-				<key>OutputUUID</key>
-				<string>8d4e2b3f-5c6a-4b7d-ae1f-2a3b4c5d6e7f</string>
-				<key>UUID</key>
-				<string>9e5f3c4a-6d7b-4c8e-bf20-3b4c5d6e7f80</string>
-			</dict>
-		</dict>
-	</array>
-	<key>connectors</key>
-	<dict/>
-	<key>workflowTypeIdentifier</key>
-	<string>com.apple.Automator.servicesMenu</string>
-</dict>
-</plist>
-"#
-    )
+fn install_user_service(service_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(service_dir)
+        .map_err(|error| format!("failed to create Finder service: {error}"))?;
+    std::fs::write(service_dir.join("Info.plist"), SERVICE_INFO)
+        .map_err(|error| format!("failed to write Finder service Info.plist: {error}"))?;
+    std::fs::write(service_dir.join("document.wflow"), SERVICE_WORKFLOW)
+        .map_err(|error| format!("failed to write Finder service workflow: {error}"))?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::service_workflow;
-    use std::path::Path;
+    use super::*;
+    use crate::file_manager::posix_single_quote;
+    use std::process::Command;
 
     #[test]
-    fn workflow_runs_termy_with_working_directory() {
-        let workflow = service_workflow(Path::new("/Applications/Termy.app/Contents/MacOS/Termy"));
-        assert!(workflow.contains("--working-directory"));
-        assert!(workflow.contains("/Applications/Termy.app/Contents/MacOS/Termy"));
+    fn finder_service_upgrade_replaces_stale_executable_and_preserves_folder_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        let service_dir = temp.path().join("service/Contents");
+        std::fs::create_dir_all(&service_dir).unwrap();
+        let workflow = service_dir.join("document.wflow");
+        std::fs::write(&workflow, "/old/build/Termy.app/Contents/MacOS/Termy").unwrap();
+        install_user_service(&service_dir).unwrap();
+
+        let extracted = Command::new("/usr/bin/plutil")
+            .args([
+                "-extract",
+                "actions.0.action.ActionParameters.COMMAND_STRING",
+                "raw",
+                "-o",
+                "-",
+            ])
+            .arg(&workflow)
+            .output()
+            .unwrap();
+        assert!(extracted.status.success());
+        let script = String::from_utf8(extracted.stdout).unwrap();
+
+        // Exercise the shipped shell script, replacing only the OS launch command
+        // so this test cannot launch apps or change the user's Services registry.
+        let capture = temp.path().join("arguments");
+        let stub = temp.path().join("capture-open.sh");
+        std::fs::write(&stub, "printf '%s\\0' \"$@\" >> \"$TERMY_TEST_ARGUMENTS\"\nexit \"$TERMY_TEST_OPEN_STATUS\"\n").unwrap();
+        let script = script.replace(
+            "/usr/bin/open",
+            &format!("/bin/bash {}", posix_single_quote(&stub.to_string_lossy())),
+        );
+        let folder = temp.path().join("it's a folder & $(echo nope)");
+        std::fs::create_dir(&folder).unwrap();
+        let file = folder.join("a file.txt");
+        std::fs::write(&file, "").unwrap();
+        let status = Command::new("/bin/bash")
+            .args(["-c", &script, "finder-service"])
+            .arg(&folder)
+            .arg(&file)
+            .env("TERMY_TEST_ARGUMENTS", &capture)
+            .env("TERMY_TEST_OPEN_STATUS", "0")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let args = std::fs::read(&capture).unwrap();
+        let expected = format!("-b\0com.lassevestergaard.termy\0{}\0", folder.display()).repeat(2);
+        assert_eq!(args, expected.as_bytes());
+
+        let status = Command::new("/bin/bash")
+            .args(["-c", &script, "finder-service"])
+            .arg(&folder)
+            .env("TERMY_TEST_ARGUMENTS", &capture)
+            .env("TERMY_TEST_OPEN_STATUS", "7")
+            .status()
+            .unwrap();
+        assert_eq!(
+            status.code(),
+            Some(7),
+            "launch failures must reach Automator"
+        );
     }
 }

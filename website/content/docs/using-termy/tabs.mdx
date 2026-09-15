@@ -16,7 +16,18 @@ Tab titles: [Tabs and titlebar](/docs/customize/tabs-titlebar).
 
 ## Open a tab from your file manager
 
+On macOS, go to **Settings → General → System integration → Default terminal**
+and click **Set as default**. This sets Termy as the system's terminal handler.
+Run the installed `Termy.app` to use this option. Apps with their own external
+terminal preference must be configured separately. Finder's **Open new Termy tab
+here** service remains available; opening a file in Termy opens its containing
+folder without running the file.
+
 After Termy is installed, file managers expose **Open new Termy tab here**:
+
+On macOS, launch Termy once after updating to refresh the Finder service.
+The action finds the installed app by its identifier, so it continues to work
+after the app bundle is replaced or moved.
 
 | Platform | Where it appears |
 | --- | --- |

@@ -6622,12 +6622,13 @@ dependencies = [
 
 [[package]]
 name = "termy"
-version = "0.2.60"
+version = "0.2.61"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
  "bincode",
  "cocoa 0.26.0",
+ "core-foundation 0.10.0",
  "core-text",
  "dirs 6.0.0",
  "env_logger",
@@ -6685,7 +6686,7 @@ dependencies = [
 
 [[package]]
 name = "termy_cli"
-version = "0.2.60"
+version = "0.2.61"
 dependencies = [
  "clap",
  "core-foundation 0.10.0",
@@ -6784,6 +6785,7 @@ dependencies = [
  "objc2-app-kit",
  "objc2-foundation",
  "objc2-uniform-type-identifiers",
+ "tempfile",
  "url",
  "windows 0.61.3",
 ]

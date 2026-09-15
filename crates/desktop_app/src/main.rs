@@ -10,6 +10,8 @@ mod commands;
 mod config;
 mod crash_log;
 mod deeplink;
+#[cfg(target_os = "macos")]
+mod default_terminal;
 mod font_families;
 mod instance;
 mod keybindings;
@@ -911,6 +913,38 @@ mod tests {
                 }))
             )]
         );
+    }
+
+    #[gpui::test]
+    fn finder_service_reuses_open_window_for_selected_folders(cx: &mut TestAppContext) {
+        let handled = RefCell::new(Vec::new());
+        let directory = "/tmp/it's a folder & another";
+        let url = url::Url::from_directory_path(directory)
+            .unwrap()
+            .to_string();
+
+        cx.update(|app| {
+            open_test_window(app);
+            handle_open_urls_with_main_window::<ReopenTestView>(
+                app,
+                &[url.clone(), url],
+                |_| panic!("Finder should reuse the existing main window"),
+                |_, route, argument| {
+                    handled.borrow_mut().push((route, argument));
+                    Ok(())
+                },
+            );
+        });
+
+        assert_eq!(cx.windows().len(), 1);
+        let expected = (
+            DeepLinkRoute::NewTab,
+            Some(DeepLinkArgument::NewTab(NewTabDeepLink {
+                command: None,
+                dir: Some(format!("{directory}/")),
+            })),
+        );
+        assert_eq!(*handled.borrow(), vec![expected.clone(), expected]);
     }
 
     #[gpui::test]

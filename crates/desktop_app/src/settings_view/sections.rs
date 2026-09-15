@@ -1635,6 +1635,16 @@ impl SettingsWindow {
             .child(safety_group)
             .child(window_group)
             .child(behavior_group)
+            .children({
+                #[cfg(target_os = "macos")]
+                {
+                    Some(self.render_default_terminal_group(cx))
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    None::<AnyElement>
+                }
+            })
             .child(config_group)
     }
 }

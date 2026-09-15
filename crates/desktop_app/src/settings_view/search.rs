@@ -72,6 +72,25 @@ mod tests {
         assert!(score.is_none());
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_terminal_search_points_to_general() {
+        let settings = SettingsWindow::build_searchable_settings();
+        let setting = settings
+            .iter()
+            .find(|setting| setting.metadata.key == "default_terminal")
+            .expect("default terminal should be searchable");
+        assert_eq!(setting.metadata.section, SettingsSection::Advanced);
+        assert!(
+            SettingsWindow::setting_search_score(
+                setting,
+                "default terminal",
+                &["default", "terminal"]
+            )
+            .is_some()
+        );
+    }
+
     #[test]
     fn settings_navigation_order_matches_the_grouped_sidebar() {
         assert_eq!(
@@ -167,6 +186,15 @@ static SETTINGS_METADATA: LazyLock<Vec<SettingMetadata>> = LazyLock::new(|| {
         description: spec.description,
         keywords: spec.keywords,
     }));
+
+    #[cfg(target_os = "macos")]
+    entries.push(SettingMetadata {
+        key: "default_terminal",
+        section: SettingsSection::Advanced,
+        title: "Default terminal",
+        description: "Use Termy when macOS requests the default terminal.",
+        keywords: &["default", "terminal", "macos", "system"],
+    });
 
     entries.push(SettingMetadata {
         key: "theme_store",

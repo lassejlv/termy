@@ -28,6 +28,8 @@ use termy_plugin_runtime::{InstalledPlugin, PluginRuntime, PluginSettingState};
 
 mod colors;
 mod components;
+#[cfg(target_os = "macos")]
+mod default_terminal;
 mod input_mode;
 mod keybinds;
 mod plugins;
@@ -128,6 +130,10 @@ pub struct SettingsWindow {
     content_scroll_handle: ScrollHandle,
     setting_scroll_anchors: HashMap<&'static str, ScrollAnchor>,
     searchable_settings: Vec<SearchableSetting>,
+    #[cfg(target_os = "macos")]
+    default_terminal_state: Option<Result<bool, String>>,
+    #[cfg(target_os = "macos")]
+    default_terminal_busy: bool,
     searchable_setting_indices: HashMap<&'static str, usize>,
     sidebar_search_state: TextInputState,
     sidebar_search_active: bool,
@@ -228,6 +234,10 @@ impl SettingsWindow {
             content_scroll_handle,
             setting_scroll_anchors,
             searchable_settings,
+            #[cfg(target_os = "macos")]
+            default_terminal_state: None,
+            #[cfg(target_os = "macos")]
+            default_terminal_busy: false,
             searchable_setting_indices,
             sidebar_search_state: TextInputState::new(String::new()),
             sidebar_search_active: true,

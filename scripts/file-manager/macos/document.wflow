@@ -33,7 +33,7 @@
 					<key>COMMAND_STRING</key>
 					<string>for f in "$@"; do
   if [ -f "$f" ]; then f="$(dirname "$f")"; fi
-  @TERMY_EXECUTABLE@ --working-directory "$f" &amp;
+  /usr/bin/open -b com.lassevestergaard.termy "$f" || exit $?
 done</string>
 					<key>CheckedForDataType</key>
 					<true/>

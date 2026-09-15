@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 /// Register a file-manager action that opens a Termy tab in the selected folder.
 ///
 /// Windows writes per-user Explorer verbs. Linux installs Nautilus/Nemo/Caja
-/// scripts and KDE service menus. macOS registers a Finder service provider
-/// for the running app and installs a user Services wrapper for cold launches.
+/// scripts and KDE service menus. macOS installs a Finder service that resolves
+/// the installed app by bundle identifier for both running and cold launches.
 pub fn register_open_tab_here(
     executable: &Path,
     on_open_directory: impl Fn(PathBuf) + Send + Sync + 'static,
@@ -44,7 +44,7 @@ pub(crate) fn quoted_windows_path(path: &Path) -> String {
     format!("\"{}\"", path.display().to_string().replace('"', "\\\""))
 }
 
-#[cfg_attr(target_os = "windows", allow(dead_code))]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn posix_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }

@@ -188,7 +188,7 @@ require_path "scripts/file-manager/termy-open-tab.desktop"
 require_path "scripts/file-manager/termy-open-tab.nemo_action"
 require_path "scripts/file-manager/nautilus-open-tab.sh"
 require_path "scripts/file-manager/macos/Info.plist"
-require_path "scripts/file-manager/macos/document.wflow.in"
+require_path "scripts/file-manager/macos/document.wflow"
 require_pattern 'TermyOpenTab' \
   "scripts/installer/termy.iss" \
   "Windows installer must register the Explorer Open new Termy tab here verb"

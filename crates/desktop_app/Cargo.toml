@@ -1,6 +1,6 @@
 [package]
 name = "termy"
-version = "0.2.60"
+version = "0.2.61"
 edition = "2024"
 
 [package.metadata.bundle]
@@ -74,6 +74,7 @@ font-kit = { package = "zed-font-kit", version = "0.14.1-zed", features = ["sour
 [target.'cfg(target_os = "macos")'.dependencies]
 # Pin core-text to 21.0.0 to avoid core-graphics version conflict on macOS.
 core-text = "=21.0.0"
+core-foundation = "0.10"
 cocoa = "=0.26.0"
 objc = "0.2"
 raw-window-handle = "0.6"
