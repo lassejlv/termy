@@ -1,5 +1,6 @@
 use crate::StartupArguments;
 use crate::deeplink::new_tab_deeplink_for_dir;
+use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -30,7 +31,8 @@ pub(crate) struct InstanceGuard {
 impl Drop for InstanceGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(self.home.join("instance.json"));
-        let _ = fs::remove_file(self.home.join("instance.lock"));
+        // Keep the lock file: other launchers may already have it open. The OS
+        // releases our lock when the handle closes, including on process exit.
     }
 }
 
@@ -54,39 +56,30 @@ pub(crate) fn claim_or_forward_in(home: &Path, urls: &[String]) -> io::Result<In
     fs::create_dir_all(home)?;
     let lock_path = home.join("instance.lock");
 
-    match fs::OpenOptions::new()
+    let lock = fs::OpenOptions::new()
+        .read(true)
         .write(true)
-        .create_new(true)
-        .open(&lock_path)
-    {
-        Ok(lock) => occupy_primary(home.to_path_buf(), lock),
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            if forward_to_existing(home, urls)? {
-                Ok(InstanceClaim::Forwarded)
-            } else {
-                let _ = fs::remove_file(&lock_path);
-                let _ = fs::remove_file(home.join("instance.json"));
-                match fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&lock_path)
-                {
-                    Ok(lock) => occupy_primary(home.to_path_buf(), lock),
-                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                        if forward_to_existing(home, urls)? {
-                            Ok(InstanceClaim::Forwarded)
-                        } else {
-                            Err(io::Error::other(
-                                "another Termy instance is starting; try again",
-                            ))
-                        }
-                    }
-                    Err(error) => Err(error),
-                }
-            }
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+
+    for _ in 0..CONNECT_ATTEMPTS {
+        let owns_lock = lock.try_lock_exclusive()?;
+        // Also check once after acquiring the lock so launches still forward to
+        // v0.2.61, which published an endpoint without holding an OS file lock.
+        if forward_to_existing(home, urls)? {
+            return Ok(InstanceClaim::Forwarded);
         }
-        Err(error) => Err(error),
+        if owns_lock {
+            return occupy_primary(home.to_path_buf(), lock);
+        }
+        // Only wait while another process actually owns the lock. Retrying the
+        // lock also recovers promptly if that process exits during startup.
+        std::thread::sleep(CONNECT_WAIT);
     }
+    Err(io::Error::other(
+        "another Termy instance is starting; try again",
+    ))
 }
 
 pub(crate) fn spawn_listener(guard: InstanceGuard, tx: flume::Sender<Vec<String>>) {
@@ -99,35 +92,10 @@ pub(crate) fn spawn_listener(guard: InstanceGuard, tx: flume::Sender<Vec<String>
 }
 
 fn occupy_primary(home: PathBuf, lock: File) -> io::Result<InstanceClaim> {
-    let listener = match TcpListener::bind("127.0.0.1:0") {
-        Ok(listener) => listener,
-        Err(error) => {
-            drop(lock);
-            let _ = fs::remove_file(home.join("instance.lock"));
-            return Err(error);
-        }
-    };
-    let port = match listener.local_addr() {
-        Ok(addr) => addr.port(),
-        Err(error) => {
-            drop(lock);
-            let _ = fs::remove_file(home.join("instance.lock"));
-            return Err(error);
-        }
-    };
-    let payload = match serde_json::to_vec(&Endpoint { port }) {
-        Ok(payload) => payload,
-        Err(error) => {
-            drop(lock);
-            let _ = fs::remove_file(home.join("instance.lock"));
-            return Err(io::Error::other(error.to_string()));
-        }
-    };
-    if let Err(error) = fs::write(home.join("instance.json"), payload) {
-        drop(lock);
-        let _ = fs::remove_file(home.join("instance.lock"));
-        return Err(error);
-    }
+    let listener = TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    let payload = serde_json::to_vec(&Endpoint { port }).map_err(io::Error::other)?;
+    fs::write(home.join("instance.json"), payload)?;
     Ok(InstanceClaim::Primary(InstanceGuard {
         listener,
         home,
@@ -152,18 +120,11 @@ fn listen_for_handoffs(guard: InstanceGuard, tx: flume::Sender<Vec<String>>) {
 }
 
 fn forward_to_existing(home: &Path, urls: &[String]) -> io::Result<bool> {
-    for _ in 0..CONNECT_ATTEMPTS {
-        if let Some(port) = read_port(home) {
-            let address = SocketAddr::from(([127, 0, 0, 1], port));
-            match TcpStream::connect_timeout(&address, Duration::from_millis(150)) {
-                Ok(mut stream) => {
-                    write_forwarded_urls(&mut stream, urls)?;
-                    return Ok(true);
-                }
-                Err(_) => std::thread::sleep(CONNECT_WAIT),
-            }
-        } else {
-            std::thread::sleep(CONNECT_WAIT);
+    if let Some(port) = read_port(home) {
+        let address = SocketAddr::from(([127, 0, 0, 1], port));
+        if let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(150)) {
+            write_forwarded_urls(&mut stream, urls)?;
+            return Ok(true);
         }
     }
     Ok(false)
@@ -227,7 +188,81 @@ mod tests {
         urls_to_forward,
     };
     use crate::StartupArguments;
-    use std::time::Duration;
+    use fs4::fs_std::FileExt;
+    use std::fs;
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn stale_instance_files_do_not_delay_startup() {
+        for has_endpoint in [false, true] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let home = temp.path();
+            fs::write(home.join("instance.lock"), "").expect("stale lock");
+            if has_endpoint {
+                let listener = TcpListener::bind("127.0.0.1:0").expect("unused port");
+                let port = listener.local_addr().expect("listener address").port();
+                fs::write(home.join("instance.json"), format!("{{\"port\":{port}}}"))
+                    .expect("stale endpoint");
+                drop(listener);
+            }
+
+            let started = Instant::now();
+            let claim = claim_or_forward_in(home, &["termy://".to_string()])
+                .expect("stale files should not prevent a primary claim");
+            assert!(matches!(claim, InstanceClaim::Primary(_)));
+            assert!(
+                started.elapsed() < Duration::from_millis(500),
+                "stale instance files delayed startup by {:?} (endpoint: {has_endpoint})",
+                started.elapsed()
+            );
+        }
+    }
+
+    #[test]
+    fn primary_cleanup_keeps_waiters_on_the_same_lock_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path();
+        let first = claim_or_forward_in(home, &[]).expect("first primary");
+        assert!(matches!(first, InstanceClaim::Primary(_)));
+        let waiter = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(home.join("instance.lock"))
+            .expect("waiter lock handle");
+        assert!(!waiter.try_lock_exclusive().expect("primary holds lock"));
+
+        drop(first);
+        assert!(home.join("instance.lock").exists());
+        assert!(!home.join("instance.json").exists());
+        let second = claim_or_forward_in(home, &[]).expect("replacement primary");
+        assert!(matches!(second, InstanceClaim::Primary(_)));
+        assert!(
+            !waiter.try_lock_exclusive().expect("replacement holds lock"),
+            "a waiter must not acquire a separate, unlinked lock file"
+        );
+    }
+
+    #[test]
+    fn secondary_forwards_to_legacy_primary_without_os_lock() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path();
+        fs::write(home.join("instance.lock"), "").expect("legacy marker");
+        let listener = TcpListener::bind("127.0.0.1:0").expect("legacy listener");
+        let port = listener.local_addr().expect("listener address").port();
+        fs::write(home.join("instance.json"), format!("{{\"port\":{port}}}"))
+            .expect("legacy endpoint");
+
+        let urls = vec!["termy://new?dir=%2Ftmp%2Fdemo".to_string()];
+        let claim = claim_or_forward_in(home, &urls).expect("secondary claim");
+        assert!(matches!(claim, InstanceClaim::Forwarded));
+        let (stream, _) = listener.accept().expect("forwarded connection");
+        assert_eq!(
+            super::read_forwarded_urls(stream).expect("forwarded URLs"),
+            urls
+        );
+        assert_eq!(super::read_port(home), Some(port));
+    }
 
     #[test]
     fn encodes_and_decodes_forwarded_urls() {

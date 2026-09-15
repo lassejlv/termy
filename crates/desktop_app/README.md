@@ -6,6 +6,11 @@ Main desktop application.
 
 This crate owns the GPUI app shell, windows, titlebar/chrome, menus, settings, onboarding, command execution, and user-visible desktop workflows. Single-instance handoff lives in `src/instance.rs`: a second launch forwards `--working-directory` and `termy://` requests into a new tab of the running window. File-manager verbs are registered at startup through `termy_native_sdk::register_open_tab_here`.
 
+Single-instance ownership uses an OS file lock that is released on process exit.
+The lock file stays in place so concurrent launches share the same lock; leftover
+files from a previous run do not trigger the startup retry delay. Launches also
+forward to an already-running v0.2.61 instance, which used a marker file instead.
+
 Important internal areas:
 
 - `src/terminal_view/`: terminal surface, tabs, panes, search, command palette, input, rendering, persistence, and runtime coordination. `session.rs` owns coherent tab/workspace/pane state; `backend.rs` owns the core-native/tmux facade and the source-specific cell presentation policy.
