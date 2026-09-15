@@ -11,6 +11,7 @@ mod config;
 mod crash_log;
 mod deeplink;
 mod font_families;
+mod instance;
 mod keybindings;
 mod launch_probe;
 #[cfg(target_os = "macos")]
@@ -53,7 +54,7 @@ const WINDOWS_DEFAULT_WINDOW_WIDTH: f32 = 1280.0;
 const WINDOWS_DEFAULT_WINDOW_HEIGHT: f32 = 820.0;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-struct StartupArguments {
+pub(crate) struct StartupArguments {
     working_dir: Option<String>,
     deeplinks: Vec<String>,
 }
@@ -89,6 +90,51 @@ where
 fn non_empty_arg_value(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_string())
+}
+
+fn fold_startup_new_tab_into_working_dir(startup: &mut StartupArguments) {
+    if startup.working_dir.is_some() {
+        return;
+    }
+    if startup.deeplinks.len() != 1 {
+        return;
+    }
+    let Ok((DeepLinkRoute::NewTab, argument)) = DeepLinkRoute::parse(&startup.deeplinks[0]) else {
+        return;
+    };
+    let Some(DeepLinkArgument::NewTab(payload)) = argument else {
+        return;
+    };
+    let Some(dir) = payload.dir else {
+        return;
+    };
+    startup.working_dir = Some(dir);
+    startup.deeplinks.clear();
+}
+
+fn absorb_pending_open_urls(startup: &mut StartupArguments, urls: Vec<String>) {
+    for raw_url in urls {
+        if let Some(dir) = deeplink::directory_from_open_target(&raw_url) {
+            if startup.working_dir.is_none() {
+                startup.working_dir = Some(dir);
+            } else {
+                startup
+                    .deeplinks
+                    .push(deeplink::new_tab_deeplink_for_dir(&dir));
+            }
+            continue;
+        }
+        if raw_url.starts_with("termy://") {
+            startup.deeplinks.push(raw_url);
+        }
+    }
+    fold_startup_new_tab_into_working_dir(startup);
+}
+
+fn current_executable() -> Option<std::path::PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .map(|path| path.canonicalize().unwrap_or(path))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -460,6 +506,19 @@ fn handle_open_urls_with_main_window<V: 'static>(
     mut dispatch: impl FnMut(&mut App, DeepLinkRoute, Option<DeepLinkArgument>) -> Result<(), String>,
 ) {
     for raw_url in urls {
+        if let Some(dir) = deeplink::directory_from_open_target(raw_url) {
+            log::info!("Handling folder open: {raw_url}");
+            let argument = Some(DeepLinkArgument::NewTab(deeplink::NewTabDeepLink {
+                command: None,
+                dir: Some(dir),
+            }));
+            let _ = focus_or_open_main_window::<V>(cx, &mut open_window);
+            if let Err(error) = dispatch(cx, DeepLinkRoute::NewTab, argument) {
+                log::error!("Failed to open folder {raw_url}: {error}");
+                crate::ui::toast::error(error);
+            }
+            continue;
+        }
         match DeepLinkRoute::parse(raw_url) {
             Ok((route, route_argument)) => {
                 log::info!("Handling deeplink: {raw_url}");
@@ -508,29 +567,41 @@ fn main() {
     env_logger::init();
     crash_log::install_panic_hook();
 
-    let startup_arguments = parse_startup_arguments(cli_args);
+    let mut startup_arguments = parse_startup_arguments(cli_args);
     let (deeplink_tx, deeplink_rx) = flume::unbounded::<Vec<String>>();
+    match instance::claim_or_forward(&instance::urls_to_forward(&startup_arguments)) {
+        Ok(instance::InstanceClaim::Forwarded) => std::process::exit(0),
+        Ok(instance::InstanceClaim::Primary(guard)) => {
+            instance::spawn_listener(guard, deeplink_tx.clone());
+        }
+        Err(error) => log::warn!("Termy instance handoff unavailable: {error}"),
+    }
+
     let application = Application::new().with_assets(crate::asset_source::EmbeddedAssets);
     launch_probe::record_stage("platform_created");
-
-    if !startup_arguments.deeplinks.is_empty()
-        && let Err(error) = deeplink_tx.send(startup_arguments.deeplinks.clone())
-    {
-        log::error!("Failed to enqueue argv deeplink: {error}");
-    }
 
     application.on_reopen(|cx| {
         let _ = reopen_if_no_windows(cx, reopen_main_window);
     });
-    application.on_open_urls(move |urls| {
-        if let Err(error) = deeplink_tx.send(urls) {
-            log::error!("Failed to enqueue deeplink event: {error}");
+    application.on_open_urls({
+        let deeplink_tx_urls = deeplink_tx.clone();
+        move |urls| {
+            if let Err(error) = deeplink_tx_urls.send(urls) {
+                log::error!("Failed to enqueue deeplink event: {error}");
+            }
         }
     });
 
     application.run(move |cx: &mut App| {
         launch_probe::record_stage("application_running");
-        spawn_deeplink_listener(cx, deeplink_rx);
+
+        let mut pending_urls = Vec::new();
+        while let Ok(urls) = deeplink_rx.try_recv() {
+            pending_urls.extend(urls);
+        }
+        absorb_pending_open_urls(&mut startup_arguments, pending_urls);
+        fold_startup_new_tab_into_working_dir(&mut startup_arguments);
+        let leftover_deeplinks = startup_arguments.deeplinks.clone();
 
         cx.on_action(|_: &OpenConfig, _cx| {
             if let Err(error) = app_actions::open_config_file() {
@@ -573,15 +644,36 @@ fn main() {
             log::error!("{error}");
             StartupBlocker::MainWindowOpen(error).present_alert_and_exit();
         }
+
+        if !leftover_deeplinks.is_empty()
+            && let Err(error) = deeplink_tx.send(leftover_deeplinks)
+        {
+            log::error!("Failed to enqueue leftover startup deeplink: {error}");
+        }
+        spawn_deeplink_listener(cx, deeplink_rx);
+        if let Some(executable) = current_executable() {
+            let open_tab_tx = deeplink_tx.clone();
+            if let Err(error) =
+                termy_native_sdk::register_open_tab_here(&executable, move |directory| {
+                    let url = deeplink::new_tab_deeplink_for_dir(&directory.to_string_lossy());
+                    if let Err(error) = open_tab_tx.send(vec![url]) {
+                        log::error!("Failed to enqueue Finder/file-manager tab: {error}");
+                    }
+                })
+            {
+                log::warn!("File manager integration was not registered: {error}");
+            }
+        }
     });
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        DeepLinkArgument, DeepLinkRoute, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH,
-        focus_or_open_main_window, guard_tmux_startup, handle_open_urls_with_main_window,
-        normalized_startup_window_size, parse_startup_arguments, reopen_if_no_windows,
+        DeepLinkArgument, DeepLinkRoute, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH, StartupArguments,
+        absorb_pending_open_urls, focus_or_open_main_window, fold_startup_new_tab_into_working_dir,
+        guard_tmux_startup, handle_open_urls_with_main_window, normalized_startup_window_size,
+        parse_startup_arguments, reopen_if_no_windows,
     };
     #[cfg(target_os = "windows")]
     use super::{
@@ -630,6 +722,40 @@ mod tests {
         let parsed = parse_startup_arguments(["termy://new?dir=%2Ftmp%2Fproject"]);
         assert_eq!(parsed.working_dir, None);
         assert_eq!(parsed.deeplinks, vec!["termy://new?dir=%2Ftmp%2Fproject"]);
+    }
+
+    #[test]
+    fn fold_single_new_tab_deeplink_into_first_window_working_dir() {
+        let mut startup = parse_startup_arguments(["termy://new?dir=%2Ftmp%2Fproject"]);
+        fold_startup_new_tab_into_working_dir(&mut startup);
+        assert_eq!(startup.working_dir.as_deref(), Some("/tmp/project"));
+        assert!(startup.deeplinks.is_empty());
+    }
+
+    #[test]
+    fn fold_leaves_settings_deeplinks_for_later_dispatch() {
+        let mut startup = parse_startup_arguments(["termy://settings"]);
+        fold_startup_new_tab_into_working_dir(&mut startup);
+        assert_eq!(startup.working_dir, None);
+        assert_eq!(startup.deeplinks, vec!["termy://settings"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absorb_open_urls_uses_the_first_folder_as_working_dir() {
+        let mut startup = StartupArguments::default();
+        absorb_pending_open_urls(
+            &mut startup,
+            vec![
+                "file:///tmp/first".to_string(),
+                "file:///tmp/second".to_string(),
+            ],
+        );
+        assert_eq!(startup.working_dir.as_deref(), Some("/tmp/first"));
+        assert_eq!(
+            startup.deeplinks,
+            vec!["termy://new?dir=%2Ftmp%2Fsecond".to_string()]
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -755,6 +881,36 @@ mod tests {
 
         assert_eq!(cx.windows().len(), 1);
         assert_eq!(*handled.borrow(), vec![(DeepLinkRoute::Activate, None)]);
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn folder_open_target_dispatches_a_new_tab(cx: &mut TestAppContext) {
+        let handled = RefCell::new(Vec::new());
+
+        cx.update(|app| {
+            handle_open_urls_with_main_window::<ReopenTestView>(
+                app,
+                &[String::from("file:///tmp/demo")],
+                open_test_window,
+                |_, route, route_argument| {
+                    handled.borrow_mut().push((route, route_argument));
+                    Ok(())
+                },
+            );
+        });
+
+        assert_eq!(cx.windows().len(), 1);
+        assert_eq!(
+            *handled.borrow(),
+            vec![(
+                DeepLinkRoute::NewTab,
+                Some(DeepLinkArgument::NewTab(NewTabDeepLink {
+                    command: None,
+                    dir: Some("/tmp/demo".to_string()),
+                }))
+            )]
+        );
     }
 
     #[gpui::test]

@@ -1,3 +1,7 @@
+mod file_manager;
+
+pub use file_manager::{OPEN_TAB_HERE_LABEL, register_open_tab_here};
+
 #[cfg(target_os = "macos")]
 use dispatch2::run_on_main;
 #[cfg(target_os = "macos")]

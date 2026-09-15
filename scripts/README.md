@@ -9,6 +9,7 @@ This directory owns local and CI packaging entrypoints plus repository maintenan
 - `build-setup.ps1`: builds the Windows installer into `target/dist/`.
 - `build-linux.sh`: builds Linux tarballs and AppImages into `target/dist/`.
 - `installer/termy.iss`: Inno Setup definition for the Windows installer.
+- `file-manager/`: Explorer/Finder/Nautilus/Nemo/KDE "Open new Termy tab here" payloads copied into release packages.
 - `install-linux.sh`: user-facing Linux install helper.
 
 See `docs/architecture/release-packaging.md` for artifact names and release workflow ownership.

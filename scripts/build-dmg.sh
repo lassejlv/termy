@@ -93,6 +93,44 @@ ensure_termy_url_scheme() {
   /usr/bin/plutil -lint "$plist_path" >/dev/null
 }
 
+ensure_folder_document_type() {
+  local plist_path="$1/Contents/Info.plist"
+  local plist_buddy="/usr/libexec/PlistBuddy"
+
+  [[ -f "$plist_path" ]] || die "App bundle Info.plist not found at $plist_path"
+  [[ -x "$plist_buddy" ]] || die "PlistBuddy is required to patch $plist_path"
+
+  "$plist_buddy" -c "Delete :CFBundleDocumentTypes" "$plist_path" >/dev/null 2>&1 || true
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes array" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:0 dict" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:0:CFBundleTypeName string Folder" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Viewer" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:0:LSHandlerRank string Alternate" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes array" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes:0 string public.folder" "$plist_path"
+  "$plist_buddy" -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes:1 string public.directory" "$plist_path"
+  /usr/bin/plutil -lint "$plist_path" >/dev/null
+}
+
+install_finder_open_tab_service() {
+  local app_path="$1"
+  local exe_path="$app_path/Contents/MacOS/$APP_NAME"
+  local service_root="$app_path/Contents/Library/Services/Open new Termy tab here.workflow"
+  local service_contents="$service_root/Contents"
+  local info_source="$REPO_ROOT/scripts/file-manager/macos/Info.plist"
+  local workflow_template="$REPO_ROOT/scripts/file-manager/macos/document.wflow.in"
+
+  [[ -x "$exe_path" ]] || die "App binary not found at $exe_path"
+  [[ -f "$info_source" ]] || die "Finder service Info.plist not found at $info_source"
+  [[ -f "$workflow_template" ]] || die "Finder service workflow template not found at $workflow_template"
+
+  mkdir -p "$service_contents"
+  cp "$info_source" "$service_contents/Info.plist"
+  local quoted_exe
+  quoted_exe="$(printf "%q" "$exe_path")"
+  sed "s|@TERMY_EXECUTABLE@|$quoted_exe|g" "$workflow_template" > "$service_contents/document.wflow"
+}
+
 ensure_app_icon() {
   local app_path="$1"
   local plist_path="$app_path/Contents/Info.plist"
@@ -254,6 +292,12 @@ chmod +x "$APP_PATH/Contents/MacOS/termy-cli"
 
 log "Registering termy:// URL scheme in app bundle"
 ensure_termy_url_scheme "$APP_PATH"
+
+log "Registering folder Open With support in app bundle"
+ensure_folder_document_type "$APP_PATH"
+
+log "Installing Finder Open new Termy tab here service"
+install_finder_open_tab_service "$APP_PATH"
 
 log "Embedding app icon in bundle"
 ensure_app_icon "$APP_PATH"

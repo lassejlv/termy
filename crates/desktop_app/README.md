@@ -4,7 +4,7 @@ Main desktop application.
 
 ## Owner
 
-This crate owns the GPUI app shell, windows, titlebar/chrome, menus, settings, onboarding, command execution, and user-visible desktop workflows.
+This crate owns the GPUI app shell, windows, titlebar/chrome, menus, settings, onboarding, command execution, and user-visible desktop workflows. Single-instance handoff lives in `src/instance.rs`: a second launch forwards `--working-directory` and `termy://` requests into a new tab of the running window. File-manager verbs are registered at startup through `termy_native_sdk::register_open_tab_here`.
 
 Important internal areas:
 

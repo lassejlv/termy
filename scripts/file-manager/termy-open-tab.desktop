@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Service
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+MimeType=inode/directory;
+Actions=openTabHere;
+X-KDE-Priority=TopLevel
+
+[Desktop Action openTabHere]
+Name=Open new Termy tab here
+Icon=termy
+Exec=termy --working-directory %f
