@@ -211,8 +211,11 @@ fn instance_home() -> io::Result<PathBuf> {
     if let Ok(path) = std::env::var("TERMY_INSTANCE_HOME") {
         return Ok(PathBuf::from(path));
     }
-    let base = dirs::runtime_dir()
-        .or_else(dirs::data_local_dir)
+    // Prefer the per-user data dir so GUI launches (file managers) and
+    // terminal launches share the same instance lock. XDG_RUNTIME_DIR is
+    // often unset when Explorer/Nemo/Finder spawn Termy.
+    let base = dirs::data_local_dir()
+        .or_else(dirs::runtime_dir)
         .ok_or_else(|| io::Error::other("could not resolve Termy instance directory"))?;
     Ok(base.join("termy").join("instance"))
 }
