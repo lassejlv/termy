@@ -207,7 +207,6 @@ impl TerminalView {
         };
         if self.attach_tmux_runtime(launch, cx) {
             self.close_command_palette(cx);
-            crate::ui::toast::success(format!("Attached tmux session \"{session_name}\""));
             self.notify_overlay(cx);
         }
     }
@@ -313,11 +312,6 @@ impl TerminalView {
         self.command_palette
             .set_tmux_session_intent(TmuxSessionIntent::RenameSelect);
         self.command_palette.input_mut().clear();
-        crate::ui::toast::success(format!(
-            "Renamed tmux session \"{}\" to \"{}\"",
-            current_session_name,
-            next_session_name.trim()
-        ));
         self.refresh_tmux_session_palette_after_lifecycle_action(cx);
     }
 
@@ -379,7 +373,6 @@ impl TerminalView {
                         return;
                     }
 
-                    crate::ui::toast::success(format!("Killed tmux session \"{session_name}\""));
                     view.refresh_tmux_session_palette_after_lifecycle_action(cx);
                 })
             });

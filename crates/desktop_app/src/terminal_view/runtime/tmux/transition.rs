@@ -248,7 +248,6 @@ impl TerminalView {
         match tmux_detach_transition_decision(true, shutdown_result.is_ok()) {
             TmuxDetachTransitionDecision::CommitNativeTransition => {
                 self.commit_tmux_runtime_to_native(native_tab, cx);
-                crate::ui::toast::success("Detached tmux session");
                 true
             }
             TmuxDetachTransitionDecision::AbortTmuxShutdown => {

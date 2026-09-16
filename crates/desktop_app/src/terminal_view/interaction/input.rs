@@ -182,12 +182,14 @@ fn overlay_owns_terminal_input_state(
     search_open: bool,
     renaming_tab: Option<usize>,
     renaming_workspace: Option<usize>,
+    release_notes_open: bool,
 ) -> bool {
     command_palette_open
         || plugin_ui_open
         || search_open
         || renaming_tab.is_some()
         || renaming_workspace.is_some()
+        || release_notes_open
 }
 
 fn terminal_modifier_transition_events(
@@ -241,6 +243,7 @@ impl TerminalView {
             self.search_open,
             self.renaming_tab,
             self.renaming_workspace,
+            self.release_notes_open(),
         )
     }
 
@@ -798,6 +801,14 @@ impl TerminalView {
         self.maybe_suppress_tab_switch_hint_for_key_down(key, event.keystroke.modifiers, cx);
 
         if self.overlay_owns_terminal_input() {
+            if self.release_notes_open() {
+                if key.eq_ignore_ascii_case("escape") {
+                    self.close_release_notes(cx);
+                    self.remember_consumed_key_release(key);
+                }
+                return;
+            }
+
             if self.is_command_palette_open() {
                 if self.handle_command_palette_key_down(key, event.keystroke.modifiers, window, cx)
                 {

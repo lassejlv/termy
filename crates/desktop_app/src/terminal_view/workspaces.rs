@@ -507,6 +507,7 @@ impl TerminalView {
         self.clear_selection();
         self.clear_hovered_link();
         self.clear_terminal_scrollbar_marker_cache();
+        self.refresh_search_if_open(cx);
         self.mark_tab_strip_layout_dirty();
         self.sync_tab_strip_for_active_tab();
         self.sync_plugin_lifecycle_state(false, cx);

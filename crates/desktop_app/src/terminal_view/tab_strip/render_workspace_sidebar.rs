@@ -99,20 +99,23 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let sidebar_width = self.workspace_sidebar_width;
-        div()
-            .id("workspace-sidebar-overlay")
-            .absolute()
-            .left_0()
-            .top_0()
-            .bottom_0()
-            .w(px(sidebar_width))
-            .opacity(0.96)
-            .shadow_lg()
-            .on_hover(cx.listener(|this, hovering: &bool, _window, cx| {
-                this.set_workspace_sidebar_peek_visible(*hovering, cx);
-            }))
-            .child(self.render_workspace_sidebar(colors, font_family, sidebar_bg, cx))
-            .into_any_element()
+        crate::ui::motion::enter_from_left(
+            div()
+                .id("workspace-sidebar-overlay")
+                .absolute()
+                .left_0()
+                .top_0()
+                .bottom_0()
+                .w(px(sidebar_width))
+                .opacity(0.96)
+                .shadow_lg()
+                .on_hover(cx.listener(|this, hovering: &bool, _window, cx| {
+                    this.set_workspace_sidebar_peek_visible(*hovering, cx);
+                }))
+                .child(self.render_workspace_sidebar(colors, font_family, sidebar_bg, cx)),
+            "workspace-sidebar-overlay-enter",
+            sidebar_width,
+        )
     }
 
     /// Bell / search / new-workspace actions rendered inside the tab strip's
@@ -141,9 +144,7 @@ impl TerminalView {
                 "icons/sidebar/bell.svg",
                 palette,
                 cx,
-                |_this, _cx| {
-                    crate::ui::toast::info("No notifications");
-                },
+                |_this, _cx| {},
             ))
             .child(self.workspace_sidebar_icon_button(
                 "workspace-sidebar-search-button",
@@ -184,9 +185,7 @@ impl TerminalView {
                 "icons/sidebar/bell.svg",
                 palette,
                 cx,
-                |_this, _cx| {
-                    crate::ui::toast::info("No notifications");
-                },
+                |_this, _cx| {},
             ))
             .child(self.workspace_sidebar_icon_button(
                 "workspace-sidebar-search-button",

@@ -275,10 +275,28 @@ impl TerminalView {
         true
     }
 
-    fn pane_resize_hit_test(&self, position: gpui::Point<Pixels>) -> Option<PaneResizeDragState> {
+    fn finish_pane_resize_drag(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.pane_resize_drag.take().is_none() {
+            return false;
+        }
+        self.pane_resize_blocked = false;
+        self.last_terminal_resize_signature = None;
+        self.last_resize_applied_at = None;
+        if self.runtime_kind() == RuntimeKind::Native {
+            self.schedule_persist_native_workspace(cx);
+        }
+        true
+    }
+
+    fn pane_resize_hit_test(
+        &self,
+        position: gpui::Point<Pixels>,
+        window: &Window,
+    ) -> Option<PaneResizeDragState> {
         let tab = self.session.tabs.get(self.session.active_tab)?;
+        let content_bounds = self.terminal_content_bounds(window)?;
         let (x, y) = self.terminal_content_position(position);
-        self.native_pane_dividers(tab)
+        self.native_pane_dividers(tab, content_bounds)
             .into_iter()
             .filter_map(|divider| {
                 divider
@@ -938,6 +956,11 @@ impl TerminalView {
             return true;
         }
 
+        if event.button == MouseButton::Left && self.finish_pane_resize_drag(cx) {
+            cx.notify();
+            return true;
+        }
+
         if event.button == MouseButton::Left && self.tab_strip.drag.is_some() {
             self.commit_tab_drag(cx);
             return true;
@@ -1025,7 +1048,7 @@ impl TerminalView {
             return;
         }
 
-        if let Some(drag) = self.pane_resize_hit_test(event.position) {
+        if let Some(drag) = self.pane_resize_hit_test(event.position, window) {
             self.pane_resize_drag = Some(drag);
             cx.stop_propagation();
             return;
@@ -1179,11 +1202,7 @@ impl TerminalView {
                 if self.apply_pane_resize_drag(event.position) {
                     cx.notify();
                 }
-            } else if self.pane_resize_drag.take().is_some() {
-                self.pane_resize_blocked = false;
-                if self.runtime_kind() == RuntimeKind::Native {
-                    self.schedule_persist_native_workspace(cx);
-                }
+            } else if self.finish_pane_resize_drag(cx) {
                 cx.notify();
             }
             cx.stop_propagation();
@@ -1192,7 +1211,7 @@ impl TerminalView {
 
         // Track pane divider hover state for cursor feedback
         if !event.dragging() {
-            let hit = self.pane_resize_hit_test(event.position);
+            let hit = self.pane_resize_hit_test(event.position, window);
             let next_hover = hit.map(|h| HoveredPaneDivider {
                 pane_id: h.pane_id,
                 axis: h.axis,
@@ -1267,11 +1286,7 @@ impl TerminalView {
             cx.stop_propagation();
             return;
         }
-        if event.button == MouseButton::Left && self.pane_resize_drag.take().is_some() {
-            self.pane_resize_blocked = false;
-            if self.runtime_kind() == RuntimeKind::Native {
-                self.schedule_persist_native_workspace(cx);
-            }
+        if event.button == MouseButton::Left && self.finish_pane_resize_drag(cx) {
             cx.stop_propagation();
             cx.notify();
             return;

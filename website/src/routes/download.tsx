@@ -20,6 +20,27 @@ import {
   type PlatformAssetGroup,
 } from '@/lib/github-release';
 
+const AUR_PACKAGE_URL = 'https://aur.archlinux.org/packages/termy-bin';
+
+/**
+ * The AUR package is published independently of the GitHub release assets, so
+ * the Linux section renders even when a release attaches no Linux binaries —
+ * or when the release could not be loaded at all.
+ */
+function withLinuxGroup(groups: PlatformAssetGroup[]): PlatformAssetGroup[] {
+  if (groups.some((group) => group.id === 'linux')) return groups;
+
+  // Keep the macOS / Linux / Windows order groupReleaseAssets produces.
+  const next = [...groups];
+  const windows = next.findIndex((group) => group.id === 'windows');
+  next.splice(windows === -1 ? next.length : windows, 0, {
+    id: 'linux',
+    title: 'Linux',
+    assets: [],
+  });
+  return next;
+}
+
 const loadDownloadReleases = createServerFn({ method: 'GET' }).handler(
   async () => {
     try {
@@ -51,7 +72,9 @@ function DownloadPage() {
     url: string;
   } | null>(null);
 
-  const groups = release ? groupReleaseAssets(release.assets) : [];
+  const groups = withLinuxGroup(
+    release ? groupReleaseAssets(release.assets) : [],
+  );
   const githubUrl =
     release?.htmlUrl ?? 'https://github.com/lassejlv/termy/releases';
 
@@ -224,116 +247,114 @@ function AssetPanel({
   githubUrl: string;
   onMacDownload: (name: string, url: string) => void;
 }) {
-  if (error) {
-    return (
-      <p className="py-8 font-mono text-sm text-fd-muted-foreground">
-        <span className="text-fd-error">error:</span> could not reach GitHub.{' '}
-        <a
-          href="https://github.com/lassejlv/termy/releases/latest"
-          target="_blank"
-          rel="noreferrer"
-          className={marketingLinkClass}
-        >
-          Download from GitHub →
-        </a>
-      </p>
-    );
-  }
-
-  if (!release) {
-    return (
-      <p className="py-8 font-mono text-sm text-fd-muted-foreground">
-        No release published yet.{' '}
-        <a
-          href={githubUrl}
-          target="_blank"
-          rel="noreferrer"
-          className={marketingLinkClass}
-        >
-          View on GitHub →
-        </a>
-      </p>
-    );
-  }
-
-  if (groups.length === 0) {
-    return (
-      <p className="py-8 font-mono text-sm text-fd-muted-foreground">
-        No binaries for this release yet.{' '}
-        <a
-          href={githubUrl}
-          target="_blank"
-          rel="noreferrer"
-          className={marketingLinkClass}
-        >
-          View on GitHub →
-        </a>
-      </p>
-    );
-  }
+  // The sections still render underneath a notice, because the Arch Linux
+  // install command does not depend on the release having loaded.
+  const notice = error ? (
+    <p className="pb-8 font-mono text-sm text-fd-muted-foreground">
+      <span className="text-fd-error">error:</span> could not reach GitHub.{' '}
+      <a
+        href="https://github.com/lassejlv/termy/releases/latest"
+        target="_blank"
+        rel="noreferrer"
+        className={marketingLinkClass}
+      >
+        Download from GitHub →
+      </a>
+    </p>
+  ) : !release ? (
+    <p className="pb-8 font-mono text-sm text-fd-muted-foreground">
+      No release published yet.{' '}
+      <a
+        href={githubUrl}
+        target="_blank"
+        rel="noreferrer"
+        className={marketingLinkClass}
+      >
+        View on GitHub →
+      </a>
+    </p>
+  ) : groups.every((group) => group.assets.length === 0) ? (
+    <p className="pb-8 font-mono text-sm text-fd-muted-foreground">
+      No binaries for this release yet.{' '}
+      <a
+        href={githubUrl}
+        target="_blank"
+        rel="noreferrer"
+        className={marketingLinkClass}
+      >
+        View on GitHub →
+      </a>
+    </p>
+  ) : null;
 
   return (
-    <div className="divide-y divide-white/[0.08]">
-      {groups.map((group) => (
-        <section key={group.id} className="py-7 first:pt-2 last:pb-2">
-          <h2
-            className="text-[11px] font-medium tracking-[0.12em] text-[#565f89] uppercase"
-            style={{ fontFamily: marketingMono }}
-          >
-            {group.title}
-          </h2>
-          <ul className="mt-3">
-            {group.assets.map((asset) => {
-              const arch = assetArch(asset.name);
-              return (
-                <li key={asset.id}>
-                  <a
-                    href={asset.downloadUrl}
-                    title={asset.name}
-                    onClick={(event) => {
-                      if (
-                        group.id === 'macos' &&
-                        (arch === 'arm64' || arch === 'x64')
-                      ) {
-                        event.preventDefault();
-                        onMacDownload(asset.name, asset.downloadUrl);
-                      }
-                    }}
-                    className="group flex items-center gap-4 py-3 transition-colors hover:text-white"
-                  >
-                    <span className="min-w-0 flex-1 text-[15px] font-medium text-[#c0caf5] transition-colors group-hover:text-white">
-                      {assetLabel(asset.name)}
-                    </span>
-                    {arch && (
-                      <span
-                        className="hidden w-12 shrink-0 text-xs text-[#565f89] sm:block"
-                        style={{ fontFamily: marketingMono }}
+    <>
+      {notice}
+      <div className="divide-y divide-white/[0.08]">
+        {groups.map((group) => (
+          <section key={group.id} className="py-7 first:pt-2 last:pb-2">
+            <h2
+              className="text-[11px] font-medium tracking-[0.12em] text-[#565f89] uppercase"
+              style={{ fontFamily: marketingMono }}
+            >
+              {group.title}
+            </h2>
+            {group.assets.length > 0 && (
+              <ul className="mt-3">
+                {group.assets.map((asset) => {
+                  const arch = assetArch(asset.name);
+                  return (
+                    <li key={asset.id}>
+                      <a
+                        href={asset.downloadUrl}
+                        title={asset.name}
+                        onClick={(event) => {
+                          if (
+                            group.id === 'macos' &&
+                            (arch === 'arm64' || arch === 'x64')
+                          ) {
+                            event.preventDefault();
+                            onMacDownload(asset.name, asset.downloadUrl);
+                          }
+                        }}
+                        className="group flex items-center gap-4 py-3 transition-colors hover:text-white"
                       >
-                        {arch}
-                      </span>
-                    )}
-                    <span
-                      className="w-14 shrink-0 text-right text-xs text-[#787c99] tabular-nums"
-                      style={{ fontFamily: marketingMono }}
-                    >
-                      {formatBytes(asset.size)}
-                    </span>
-                  </a>
-                </li>
-              );
-            })}
-          </ul>
-          {group.id === 'linux' && <LinuxInstallHints assets={group.assets} />}
-        </section>
-      ))}
-    </div>
+                        <span className="min-w-0 flex-1 text-[15px] font-medium text-[#c0caf5] transition-colors group-hover:text-white">
+                          {assetLabel(asset.name)}
+                        </span>
+                        {arch && (
+                          <span
+                            className="hidden w-12 shrink-0 text-xs text-[#565f89] sm:block"
+                            style={{ fontFamily: marketingMono }}
+                          >
+                            {arch}
+                          </span>
+                        )}
+                        <span
+                          className="w-14 shrink-0 text-right text-xs text-[#787c99] tabular-nums"
+                          style={{ fontFamily: marketingMono }}
+                        >
+                          {formatBytes(asset.size)}
+                        </span>
+                      </a>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {group.id === 'linux' && (
+              <LinuxInstallHints assets={group.assets} />
+            )}
+          </section>
+        ))}
+      </div>
+    </>
   );
 }
 
 function LinuxInstallHints({ assets }: { assets: GitHubReleaseAsset[] }) {
   const deb = assets.find((asset) => asset.name.toLowerCase().endsWith('.deb'));
   const rpm = assets.find((asset) => asset.name.toLowerCase().endsWith('.rpm'));
-  if (!deb && !rpm) return null;
 
   return (
     <div className="mt-4 flex flex-col gap-3">
@@ -349,19 +370,45 @@ function LinuxInstallHints({ assets }: { assets: GitHubReleaseAsset[] }) {
           command={`sudo dnf install ./${rpm.name}`}
         />
       )}
+      {/* Packaged in the AUR rather than attached to the release. */}
+      <InstallCommand
+        label="Arch Linux (AUR)"
+        command="yay -S termy-bin"
+        href={AUR_PACKAGE_URL}
+      />
     </div>
   );
 }
 
-function InstallCommand({ label, command }: { label: string; command: string }) {
+function InstallCommand({
+  label,
+  command,
+  href,
+}: {
+  label: string;
+  command: string;
+  href?: string;
+}) {
   return (
     <div>
-      <p
-        className="text-[10px] text-[#565f89]"
-        style={{ fontFamily: marketingMono }}
-      >
-        {label}
-      </p>
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-block text-[10px] text-[#565f89] transition-colors hover:text-[#7aa2f7]"
+          style={{ fontFamily: marketingMono }}
+        >
+          {label} ↗
+        </a>
+      ) : (
+        <p
+          className="text-[10px] text-[#565f89]"
+          style={{ fontFamily: marketingMono }}
+        >
+          {label}
+        </p>
+      )}
       <pre
         className="mt-1 overflow-x-auto rounded-xl border border-white/[0.08] bg-[#0d0f17] px-4 py-3 text-xs leading-relaxed text-[#9ece6a]"
         style={{ fontFamily: marketingMono }}

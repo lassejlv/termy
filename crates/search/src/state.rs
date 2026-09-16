@@ -32,6 +32,11 @@ impl SearchState {
         self.is_active = true;
     }
 
+    pub fn hide(&mut self) {
+        self.is_active = false;
+        self.clear_results_preserving_query();
+    }
+
     pub fn close(&mut self) {
         self.is_active = false;
         self.clear();
@@ -138,6 +143,10 @@ impl SearchState {
         self.results.jump_to_first();
     }
 
+    pub fn restore_current_match(&mut self, line: i32, start_col: usize) -> bool {
+        self.results.jump_to_match(line, start_col)
+    }
+
     pub fn jump_to_last(&mut self) {
         self.results.jump_to_last();
     }
@@ -181,6 +190,21 @@ mod tests {
         state.jump_to_nearest(10);
 
         assert_eq!(state.results_revision(), revision);
+    }
+
+    #[test]
+    fn hide_keeps_query_and_clears_results() {
+        let mut state = SearchState::new();
+        state.open();
+        state.set_query("match");
+        state.search(0, 0, |_| Some("match"));
+        assert!(!state.results().is_empty());
+
+        state.hide();
+        assert!(!state.is_active());
+        assert_eq!(state.query(), "match");
+        assert!(state.results().is_empty());
+        assert!(state.has_valid_pattern());
     }
 
     #[test]

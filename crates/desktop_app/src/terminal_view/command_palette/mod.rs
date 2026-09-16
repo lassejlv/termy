@@ -1339,7 +1339,7 @@ impl TerminalView {
         task_name: &str,
         command: &str,
         working_dir: Option<&str>,
-        layout_name: Option<&str>,
+        _layout_name: Option<&str>,
         cx: &mut Context<Self>,
     ) {
         let command = command.trim();
@@ -1374,12 +1374,6 @@ impl TerminalView {
         };
         terminal.write_input(command_input.as_bytes());
         cx.notify();
-        match layout_name {
-            Some(layout_name) => crate::ui::toast::success(format!(
-                "Started task \"{task_name}\" for layout \"{layout_name}\""
-            )),
-            None => crate::ui::toast::success(format!("Started task \"{task_name}\"")),
-        }
         self.notify_overlay(cx);
     }
 
@@ -1453,18 +1447,11 @@ impl TerminalView {
             keybind: None,
         };
 
-        match config::upsert_task(task.clone()) {
+        match config::upsert_task(task) {
             Ok(()) => {
                 self.command_palette.set_task_intent(TaskIntent::Browse);
                 self.close_command_palette(cx);
                 self.reload_config(cx);
-                match task.layout.as_deref() {
-                    Some(layout_name) => crate::ui::toast::success(format!(
-                        "Saved task \"{}\" for layout \"{}\"",
-                        task.name, layout_name
-                    )),
-                    None => crate::ui::toast::success(format!("Saved task \"{}\"", task.name)),
-                }
                 self.notify_overlay(cx);
             }
             Err(error) => {
@@ -1523,7 +1510,6 @@ impl TerminalView {
         match self.save_current_workspace_as_named_layout(layout_name) {
             Ok(()) => {
                 self.close_command_palette(cx);
-                crate::ui::toast::success(format!("Saved layout \"{}\"", layout_name.trim()));
                 self.notify_overlay(cx);
             }
             Err(error) => {
@@ -1537,7 +1523,6 @@ impl TerminalView {
         match self.load_named_layout(layout_name, cx) {
             Ok(()) => {
                 self.close_command_palette(cx);
-                crate::ui::toast::success(format!("Loaded layout \"{layout_name}\""));
                 self.notify_overlay(cx);
             }
             Err(error) => {
@@ -1587,11 +1572,6 @@ impl TerminalView {
         match self.rename_named_layout(current_layout_name, next_layout_name) {
             Ok(()) => {
                 self.close_command_palette(cx);
-                crate::ui::toast::success(format!(
-                    "Renamed layout \"{}\" to \"{}\"",
-                    current_layout_name,
-                    next_layout_name.trim()
-                ));
                 self.notify_overlay(cx);
             }
             Err(error) => {
@@ -1616,7 +1596,6 @@ impl TerminalView {
         match self.delete_named_layout(layout_name) {
             Ok(()) => {
                 self.close_command_palette(cx);
-                crate::ui::toast::success(format!("Deleted layout \"{layout_name}\""));
                 self.notify_overlay(cx);
             }
             Err(error) => {
@@ -1648,12 +1627,10 @@ impl TerminalView {
         match self.persist_theme_selection(theme_id, cx) {
             Ok(true) => {
                 self.close_command_palette(cx);
-                crate::ui::toast::success(format!("Theme set to {}", self.theme_id));
                 self.notify_overlay(cx);
             }
             Ok(false) => {
                 self.close_command_palette(cx);
-                crate::ui::toast::info(format!("Theme already set to {theme_id}"));
                 self.notify_overlay(cx);
             }
             Err(error) => {
@@ -1693,82 +1670,6 @@ impl TerminalView {
         }
 
         self.execute_command_action(action, false, window, cx);
-
-        if keep_open {
-            return;
-        }
-
-        match action {
-            CommandAction::OpenConfig => {
-                crate::ui::toast::info("Opened settings file");
-                self.notify_overlay(cx);
-            }
-            CommandAction::PrettifyConfig => {
-                crate::ui::toast::success("Prettified settings file");
-                self.notify_overlay(cx);
-            }
-            CommandAction::NewTab => crate::ui::toast::success("Opened new tab"),
-            CommandAction::CloseTab => crate::ui::toast::info("Closed active tab"),
-            CommandAction::ClosePaneOrTab => crate::ui::toast::info("Closed active pane or tab"),
-            CommandAction::ZoomIn => crate::ui::toast::info("Zoomed in"),
-            CommandAction::ZoomOut => crate::ui::toast::info("Zoomed out"),
-            CommandAction::ZoomReset => crate::ui::toast::info("Zoom reset"),
-            CommandAction::ImportColors => {}
-            CommandAction::Quit
-            | CommandAction::SwitchTheme
-            | CommandAction::ManageTmuxSessions
-            | CommandAction::ManageSavedLayouts
-            | CommandAction::RunTask
-            | CommandAction::AppInfo
-            | CommandAction::RestartApp
-            | CommandAction::RenameTab
-            | CommandAction::MoveTabLeft
-            | CommandAction::MoveTabRight
-            | CommandAction::SwitchTabLeft
-            | CommandAction::SwitchTabRight
-            | CommandAction::CycleTabs
-            | CommandAction::SwitchToTab1
-            | CommandAction::SwitchToTab2
-            | CommandAction::SwitchToTab3
-            | CommandAction::SwitchToTab4
-            | CommandAction::SwitchToTab5
-            | CommandAction::SwitchToTab6
-            | CommandAction::SwitchToTab7
-            | CommandAction::SwitchToTab8
-            | CommandAction::SwitchToTab9
-            | CommandAction::SplitPaneVertical
-            | CommandAction::SplitPaneHorizontal
-            | CommandAction::ClosePane
-            | CommandAction::FocusPaneLeft
-            | CommandAction::FocusPaneRight
-            | CommandAction::FocusPaneUp
-            | CommandAction::FocusPaneDown
-            | CommandAction::FocusPaneNext
-            | CommandAction::FocusPanePrevious
-            | CommandAction::ResizePaneLeft
-            | CommandAction::ResizePaneRight
-            | CommandAction::ResizePaneUp
-            | CommandAction::ResizePaneDown
-            | CommandAction::TogglePaneZoom
-            | CommandAction::CheckForUpdates
-            | CommandAction::ToggleCommandPalette
-            | CommandAction::Copy
-            | CommandAction::Paste
-            | CommandAction::SelectAll
-            | CommandAction::ClearScreen
-            | CommandAction::OpenSearch
-            | CommandAction::CloseSearch
-            | CommandAction::SearchNext
-            | CommandAction::SearchPrevious
-            | CommandAction::ToggleSearchCaseSensitive
-            | CommandAction::ToggleSearchRegex
-            | CommandAction::OpenSettings
-            | CommandAction::MinimizeWindow
-            | CommandAction::InstallCli
-            | CommandAction::ToggleTabBarVisibility
-            | CommandAction::ToggleWorkspaceSidebar
-            | CommandAction::ToggleInspector => {}
-        }
     }
 
     fn command_palette_should_stay_open(action: CommandAction) -> bool {

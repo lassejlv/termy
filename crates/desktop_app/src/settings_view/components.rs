@@ -1,4 +1,5 @@
 use super::*;
+use gpui::AnimationExt as _;
 
 impl SettingsWindow {
     fn masked_secret_value(text: &str) -> String {
@@ -96,7 +97,15 @@ impl SettingsWindow {
         // Title and subtitle come from the design system; the reset affordance
         // keeps its hover, tooltip, and confirmation flow here because that is
         // app behavior, not presentation.
-        let mut header = termy_ui::SectionHeader::new(title).subtitle(subtitle);
+        let mut header = termy_ui::SectionHeader::new(title)
+            .subtitle(subtitle)
+            .leading(self.render_section_tile(
+                section,
+                SECTION_ICON_TILE_SIZE,
+                SECTION_ICON_TILE_RADIUS,
+                SECTION_ICON_SIZE,
+                true,
+            ));
         if let Some(reset_button) = reset_button {
             header = header.action(reset_button);
         }
@@ -256,7 +265,6 @@ impl SettingsWindow {
         toggle_id: &'static str,
         setting: RootSettingId,
         checked: bool,
-        success_message: &'static str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let metadata = Self::setting_metadata_or_fallback(setting_key);
@@ -272,7 +280,6 @@ impl SettingsWindow {
                 match config::set_root_setting(setting, &next.to_string()) {
                     Ok(()) => {
                         let _ = view.reload_config_if_changed(cx);
-                        crate::ui::toast::success(success_message);
                         if setting == RootSettingId::SimpleMode && next {
                             window.remove_window();
                         }
@@ -291,41 +298,68 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
         on_toggle: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> impl IntoElement {
+        let id: SharedString = id.into();
         let accent = self.accent_with_alpha(0.95);
         let mut bg_off = self.colors.foreground;
-        bg_off.a = 0.28;
+        bg_off.a = 0.22;
         let track_color = if checked { accent } else { bg_off };
         let knob_color = self.contrasting_text_for_fill(track_color, self.bg_card());
         let knob_top = (SETTINGS_SWITCH_HEIGHT - SETTINGS_SWITCH_KNOB_SIZE) * 0.5;
-        let knob_left = if checked {
-            SETTINGS_SWITCH_WIDTH - SETTINGS_SWITCH_KNOB_SIZE - knob_top
+        let knob_off_left = knob_top;
+        let knob_on_left = SETTINGS_SWITCH_WIDTH - SETTINGS_SWITCH_KNOB_SIZE - knob_top;
+        let knob_left_for = move |on_progress: f32| {
+            knob_off_left + (knob_on_left - knob_off_left) * on_progress.clamp(0.0, 1.0)
+        };
+        let resting_left = knob_left_for(if checked { 1.0 } else { 0.0 });
+
+        let knob = div()
+            .absolute()
+            .top(px(knob_top))
+            .left(px(resting_left))
+            .w(px(SETTINGS_SWITCH_KNOB_SIZE))
+            .h(px(SETTINGS_SWITCH_KNOB_SIZE))
+            .rounded_full()
+            .bg(knob_color)
+            .shadow_sm();
+
+        // Only the switch that was just flipped animates; every other knob
+        // renders at rest so the window never sweeps all of them on open.
+        let animation_window = std::time::Duration::from_millis(SETTINGS_SWITCH_ANIMATION_MS);
+        let is_animating = self
+            .switch_animation
+            .as_ref()
+            .is_some_and(|(anim_id, started)| {
+                *anim_id == id && started.elapsed() < animation_window
+            });
+        let knob: AnyElement = if is_animating {
+            knob.with_animation(
+                SharedString::from(format!("{id}-knob-{checked}")),
+                gpui::Animation::new(animation_window).with_easing(gpui::ease_out_quint()),
+                move |knob, delta| {
+                    let on_progress = if checked { delta } else { 1.0 - delta };
+                    knob.left(px(knob_left_for(on_progress)))
+                },
+            )
+            .into_any_element()
         } else {
-            knob_top
+            knob.into_any_element()
         };
 
+        let anim_id = id.clone();
         div()
-            .id(id.into())
+            .id(id)
             .w(px(SETTINGS_SWITCH_WIDTH))
             .h(px(SETTINGS_SWITCH_HEIGHT))
             .rounded(px(SETTINGS_SWITCH_RADIUS))
             .bg(track_color)
             .cursor_pointer()
             .relative()
-            .child(
-                div()
-                    .absolute()
-                    .top(px(knob_top))
-                    .left(px(knob_left))
-                    .w(px(SETTINGS_SWITCH_KNOB_SIZE))
-                    .h(px(SETTINGS_SWITCH_KNOB_SIZE))
-                    .rounded_full()
-                    .bg(knob_color)
-                    .shadow_sm(),
-            )
+            .child(knob)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _event: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
+                    view.switch_animation = Some((anim_id.clone(), std::time::Instant::now()));
                     on_toggle(view, window, cx);
                     cx.notify();
                 }),
@@ -394,7 +428,7 @@ impl SettingsWindow {
         let mut dropdown_bg = self.colors.background;
         dropdown_bg.a = 1.0;
         Some(
-            deferred(
+            deferred(crate::ui::motion::enter_from_above(
                 div()
                     .id(SharedString::from(format!(
                         "dropdown-suggestions-{field:?}"
@@ -427,7 +461,8 @@ impl SettingsWindow {
                         },
                     ))
                     .child(list),
-            )
+                SharedString::from(format!("dropdown-enter-{field:?}")),
+            ))
             .with_priority(10)
             .into_any_element(),
         )
@@ -740,6 +775,7 @@ impl SettingsWindow {
         let border_color = self.border_color();
         let idle_border = self.card_border_color();
         let accent = self.accent();
+        let focus_ring = self.input_focus_ring();
         let bg_card = self.bg_card();
         let text_primary = self.text_primary();
         let text_muted = self.text_muted();
@@ -862,6 +898,9 @@ impl SettingsWindow {
                                     .bg(input_bg)
                                     .border_1()
                                     .border_color(if is_active { accent } else { idle_border })
+                                    .when(is_active, |s| {
+                                        s.shadow(vec![Self::focus_ring_shadow(focus_ring)])
+                                    })
                                     .overflow_hidden()
                                     .child(value_element),
                             )
@@ -1023,8 +1062,7 @@ impl SettingsWindow {
             .child(label)
             .on_click(cx.listener(move |view, _, _, cx| {
                 match view.step_background_opacity(delta) {
-                    Ok(true) => crate::ui::toast::success("Saved"),
-                    Ok(false) => {}
+                    Ok(_) => {}
                     Err(error) => crate::ui::toast::error(error),
                 }
                 cx.notify();
@@ -1075,8 +1113,7 @@ impl SettingsWindow {
                 cx.listener(|view, _event: &MouseUpEvent, _window, cx| {
                     cx.stop_propagation();
                     match view.finish_background_opacity_drag() {
-                        Ok(true) => crate::ui::toast::success("Saved"),
-                        Ok(false) => {}
+                        Ok(_) => {}
                         Err(error) => crate::ui::toast::error(error),
                     }
                     cx.notify();
@@ -1090,8 +1127,7 @@ impl SettingsWindow {
                     }
                     cx.stop_propagation();
                     match view.finish_background_opacity_drag() {
-                        Ok(true) => crate::ui::toast::success("Saved"),
-                        Ok(false) => {}
+                        Ok(_) => {}
                         Err(error) => crate::ui::toast::error(error),
                     }
                     cx.notify();

@@ -69,14 +69,6 @@ impl SettingsWindow {
         c
     }
 
-    pub(super) fn icon_color(&self, active: bool) -> Rgba {
-        if active {
-            self.accent()
-        } else {
-            self.text_secondary()
-        }
-    }
-
     pub(super) fn bg_elevated(&self) -> Rgba {
         let mut c = self.colors.foreground;
         c.a = self.scaled_chrome_surface_alpha(0.045);
@@ -152,6 +144,81 @@ impl SettingsWindow {
         let mut c = self.colors.cursor;
         c.a = self.scaled_chrome_accent_alpha(alpha);
         c
+    }
+
+    /// Soft halo drawn around a focused text field or search box.
+    pub(super) fn input_focus_ring(&self) -> Rgba {
+        let mut c = self.colors.cursor;
+        c.a = self.chrome_contrast_profile().accent_alpha(0.22);
+        c
+    }
+
+    /// Zero-blur spread shadow that reads as a focus ring around a control.
+    pub(super) fn focus_ring_shadow(color: Rgba) -> gpui::BoxShadow {
+        gpui::BoxShadow {
+            color: color.into(),
+            offset: point(px(0.0), px(0.0)),
+            blur_radius: px(0.0),
+            spread_radius: px(SETTINGS_INPUT_FOCUS_RING_WIDTH),
+        }
+    }
+
+    /// Colour that identifies a section across the sidebar and its header.
+    /// Pulled from the active theme's ANSI palette so every theme keeps the
+    /// tiles readable; the two neutral sections use the foreground instead.
+    pub(super) fn section_tint(&self, section: SettingsSection) -> Rgba {
+        let mut c = match section {
+            SettingsSection::Advanced | SettingsSection::Keybindings => self.colors.foreground,
+            SettingsSection::Appearance => self.colors.ansi[4],
+            SettingsSection::Colors => self.colors.ansi[1],
+            SettingsSection::ThemeStore => self.colors.ansi[5],
+            SettingsSection::Plugins => self.colors.ansi[3],
+            SettingsSection::Terminal => self.colors.cursor,
+            SettingsSection::Ssh => self.colors.ansi[2],
+            SettingsSection::Tabs => self.colors.ansi[6],
+        };
+        c.a = 1.0;
+        c
+    }
+
+    pub(super) fn section_tile_bg(&self, section: SettingsSection, emphasized: bool) -> Rgba {
+        let mut c = self.section_tint(section);
+        let base = if emphasized { 0.26 } else { 0.16 };
+        c.a = self.chrome_contrast_profile().accent_alpha(base);
+        c
+    }
+
+    pub(super) fn section_tile_icon(&self, section: SettingsSection) -> Rgba {
+        match section {
+            SettingsSection::Advanced | SettingsSection::Keybindings => self.text_secondary(),
+            _ => self.section_tint(section),
+        }
+    }
+
+    /// Rounded, tinted square holding a section glyph.
+    pub(super) fn render_section_tile(
+        &self,
+        section: SettingsSection,
+        tile_size: f32,
+        tile_radius: f32,
+        icon_size: f32,
+        emphasized: bool,
+    ) -> gpui::Div {
+        div()
+            .flex_none()
+            .w(px(tile_size))
+            .h(px(tile_size))
+            .rounded(px(tile_radius))
+            .bg(self.section_tile_bg(section, emphasized))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                svg()
+                    .path(SharedString::from(Self::section_icon_path(section)))
+                    .size(px(icon_size))
+                    .text_color(self.section_tile_icon(section)),
+            )
     }
 
     /// Projects this window's live chrome colors onto the shared design-system

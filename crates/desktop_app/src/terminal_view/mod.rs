@@ -17,8 +17,8 @@ use gpui::{
     AnyElement, App, AsyncApp, Bounds, ClipboardEntry, ClipboardItem, Context, DragMoveEvent,
     Element, Entity, ExternalPaths, FocusHandle, Focusable, Font, FontWeight, InteractiveElement,
     IntoElement, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollWheelEvent, SharedString,
-    Size, StatefulInteractiveElement, Styled, TouchPhase, WeakEntity, Window,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Render, ScrollHandle, ScrollWheelEvent,
+    SharedString, Size, StatefulInteractiveElement, Styled, TouchPhase, WeakEntity, Window,
     WindowBackgroundAppearance, div, point, px, relative,
 };
 #[cfg(target_os = "macos")]
@@ -83,6 +83,7 @@ mod surface;
 pub(crate) mod tab_strip;
 mod tabs;
 mod titles;
+mod update_overlay;
 mod update_toasts;
 mod workspaces;
 
@@ -292,6 +293,36 @@ impl TerminalContentRect {
 
     fn bottom(self) -> f32 {
         self.origin_y + self.height
+    }
+}
+
+impl TerminalView {
+    fn stretch_pane_frame_to_content_bounds(
+        mut frame: TerminalContentRect,
+        content_bounds: TerminalContentRect,
+        extends_right_edge: bool,
+        extends_bottom_edge: bool,
+    ) -> TerminalContentRect {
+        if extends_right_edge {
+            frame.width = (content_bounds.right() - frame.origin_x).max(0.0);
+        }
+        if extends_bottom_edge {
+            frame.height = (content_bounds.bottom() - frame.origin_y).max(0.0);
+        }
+        frame
+    }
+
+    fn inset_pane_content_frame(
+        frame: TerminalContentRect,
+        pad_x: f32,
+        pad_y: f32,
+    ) -> Option<TerminalContentRect> {
+        TerminalContentRect::new(
+            frame.origin_x + pad_x,
+            frame.origin_y + pad_y,
+            (frame.width - (pad_x * 2.0)).max(0.0),
+            (frame.height - (pad_y * 2.0)).max(0.0),
+        )
     }
 }
 
@@ -1142,10 +1173,6 @@ impl TerminalPane {
     fn terminal(&self) -> &Terminal {
         &self.terminal
     }
-
-    fn terminal_mut(&mut self) -> &mut Terminal {
-        &mut self.terminal
-    }
 }
 
 struct TerminalTab {
@@ -1440,6 +1467,7 @@ pub struct TerminalView {
     command_palette_scrollbar_drag: Option<TerminalScrollbarDragState>,
     command_palette_scrollbar_lane_bounds: Option<Bounds<Pixels>>,
     pane_resize_drag: Option<PaneResizeDragState>,
+    native_split_generation: u64,
     pane_move_drag: Option<PaneMoveDragState>,
     hovered_pane_divider: Option<HoveredPaneDivider>,
     pane_resize_blocked: bool,
@@ -1451,6 +1479,7 @@ pub struct TerminalView {
     search_input: InlineInputState,
     search_state: SearchState,
     search_debounce_token: u64,
+    search_scan_incomplete: bool,
     // IME composing state for terminal mode
     ime_marked_text: Option<String>,
     ime_selected_range: Option<Range<usize>>,
@@ -1464,6 +1493,9 @@ pub struct TerminalView {
     show_update_banner: bool,
     last_notified_update_state: Option<UpdateState>,
     update_check_toast_id: Option<u64>,
+    release_notes: Option<update_overlay::ReleaseNotesDialog>,
+    release_notes_generation: u64,
+    release_notes_scroll: ScrollHandle,
     #[cfg(target_os = "macos")]
     native_file_drop_enabled: bool,
 }
@@ -2693,7 +2725,10 @@ impl TerminalView {
     }
 
     fn tab_switch_hints_blocked(&self) -> bool {
-        self.is_command_palette_open() || self.plugin_ui.is_some() || self.search_open
+        self.is_command_palette_open()
+            || self.plugin_ui.is_some()
+            || self.search_open
+            || self.release_notes_open()
     }
 
     pub(crate) fn tab_switch_hint_progress(&self, now: Instant) -> f32 {
@@ -3181,7 +3216,11 @@ impl TerminalView {
         gaps
     }
 
-    fn native_pane_dividers(&self, tab: &TerminalTab) -> Vec<TerminalPaneDivider> {
+    fn native_pane_dividers(
+        &self,
+        tab: &TerminalTab,
+        content_bounds: TerminalContentRect,
+    ) -> Vec<TerminalPaneDivider> {
         if tab.panes.len() <= 1 {
             return Vec::new();
         }
@@ -3209,7 +3248,7 @@ impl TerminalView {
         let mut dividers = Vec::new();
 
         for pane in &tab.panes {
-            let Some(frame) = TerminalContentRect::new(
+            let Some(cell_frame) = TerminalContentRect::new(
                 outer_padding_x + (f32::from(pane.left) * layout_cell_width),
                 outer_padding_y + (f32::from(pane.top) * layout_cell_height),
                 f32::from(pane.width) * layout_cell_width,
@@ -3221,6 +3260,12 @@ impl TerminalView {
             let gaps = Self::pane_neighbor_gaps(pane, &tab.panes);
             let pane_right = u32::from(pane.left).saturating_add(u32::from(pane.width));
             let pane_bottom = u32::from(pane.top).saturating_add(u32::from(pane.height));
+            let frame = Self::stretch_pane_frame_to_content_bounds(
+                cell_frame,
+                content_bounds,
+                pane_right == max_right,
+                pane_bottom == max_bottom,
+            );
 
             if pane_right < max_right
                 && let Some(gap_cells) = gaps.right_cells
@@ -3315,29 +3360,6 @@ impl TerminalView {
 
         let (outer_padding_x, outer_padding_y) = self.effective_terminal_padding();
         let (content_padding_x, content_padding_y) = self.native_split_content_padding();
-        let frame = TerminalContentRect::new(
-            outer_padding_x + (f32::from(pane.left) * layout_cell_width),
-            outer_padding_y + (f32::from(pane.top) * layout_cell_height),
-            f32::from(pane.width) * layout_cell_width,
-            f32::from(pane.height) * layout_cell_height,
-        )?;
-        let terminal_size = pane.terminal().size();
-        if terminal_size.cols == 0 || terminal_size.rows == 0 {
-            return None;
-        }
-        let cell_width: f32 = terminal_size.cell_width;
-        let cell_height: f32 = terminal_size.cell_height;
-        if cell_width <= f32::EPSILON || cell_height <= f32::EPSILON {
-            return None;
-        }
-        let content_width = f32::from(terminal_size.cols) * cell_width;
-        let content_height = f32::from(terminal_size.rows) * cell_height;
-        let content_frame = TerminalContentRect::new(
-            frame.origin_x + content_padding_x,
-            frame.origin_y + content_padding_y,
-            content_width,
-            content_height,
-        )?;
         let gaps = Self::pane_neighbor_gaps(pane, &tab.panes);
         let pane_right = u32::from(pane.left).saturating_add(u32::from(pane.width));
         let pane_bottom = u32::from(pane.top).saturating_add(u32::from(pane.height));
@@ -3356,6 +3378,29 @@ impl TerminalView {
         let multi_pane = tab.panes.len() > 1;
         let extends_right_edge = !multi_pane || pane_right == max_right;
         let extends_bottom_edge = !multi_pane || pane_bottom == max_bottom;
+        let cell_frame = TerminalContentRect::new(
+            outer_padding_x + (f32::from(pane.left) * layout_cell_width),
+            outer_padding_y + (f32::from(pane.top) * layout_cell_height),
+            f32::from(pane.width) * layout_cell_width,
+            f32::from(pane.height) * layout_cell_height,
+        )?;
+        let frame = Self::stretch_pane_frame_to_content_bounds(
+            cell_frame,
+            content_bounds,
+            extends_right_edge,
+            extends_bottom_edge,
+        );
+        let terminal_size = pane.terminal().size();
+        if terminal_size.cols == 0
+            || terminal_size.rows == 0
+            || terminal_size.cell_width <= f32::EPSILON
+            || terminal_size.cell_height <= f32::EPSILON
+        {
+            return None;
+        }
+        let content_frame =
+            Self::inset_pane_content_frame(frame, content_padding_x, content_padding_y)
+                .unwrap_or(frame);
         let scrollbar_surface = TerminalScrollbarSurfaceGeometry::new(
             if multi_pane {
                 frame.origin_x
@@ -3367,17 +3412,13 @@ impl TerminalView {
             } else {
                 content_bounds.origin_y
             },
-            if multi_pane && !extends_right_edge {
+            if multi_pane {
                 frame.width
-            } else if multi_pane {
-                (content_bounds.right() - frame.origin_x).max(0.0)
             } else {
                 content_bounds.width
             },
-            if multi_pane && !extends_bottom_edge {
+            if multi_pane {
                 frame.height
-            } else if multi_pane {
-                (content_bounds.bottom() - frame.origin_y).max(0.0)
             } else {
                 content_bounds.height
             },
@@ -3973,6 +4014,7 @@ impl TerminalView {
             command_palette_scrollbar_drag: None,
             command_palette_scrollbar_lane_bounds: None,
             pane_resize_drag: None,
+            native_split_generation: 0,
             pane_move_drag: None,
             hovered_pane_divider: None,
             pane_resize_blocked: false,
@@ -3982,6 +4024,7 @@ impl TerminalView {
             search_input: InlineInputState::new(String::new()),
             search_state: SearchState::new(),
             search_debounce_token: 0,
+            search_scan_incomplete: false,
             ime_marked_text: None,
             ime_selected_range: None,
             pending_clipboard: None,
@@ -3993,6 +4036,9 @@ impl TerminalView {
             show_update_banner: false,
             last_notified_update_state: None,
             update_check_toast_id: None,
+            release_notes: None,
+            release_notes_generation: 0,
+            release_notes_scroll: ScrollHandle::new(),
             #[cfg(target_os = "macos")]
             native_file_drop_enabled: false,
         };
@@ -5091,9 +5137,10 @@ mod tests {
 
     #[test]
     fn toast_geometry_uses_rounded_corners() {
-        assert_eq!(TOAST_GEOMETRY.panel_radius, 10.0);
-        assert_eq!(TOAST_GEOMETRY.input_radius, 6.0);
-        assert_eq!(TOAST_GEOMETRY.control_radius, 6.0);
+        assert_eq!(TOAST_GEOMETRY.panel_radius, 12.0);
+        assert_eq!(TOAST_GEOMETRY.input_radius, 7.0);
+        assert_eq!(TOAST_GEOMETRY.control_radius, 7.0);
+        assert_eq!(TOAST_TOP_INSET, 12.0);
     }
 
     #[test]
@@ -5959,6 +6006,39 @@ mod tests {
 
         assert_eq!(rect.right(), 672.0);
         assert_eq!(rect.bottom(), 468.0);
+    }
+
+    #[test]
+    fn stretch_pane_frame_fills_bottom_and_right_content_edges() {
+        let cell_frame = TerminalContentRect::new(0.0, 0.0, 640.0, 400.0).expect("cell frame");
+        let bounds = TerminalContentRect::new(0.0, 0.0, 655.0, 418.0).expect("bounds");
+        let stretched =
+            TerminalView::stretch_pane_frame_to_content_bounds(cell_frame, bounds, true, true);
+
+        assert_eq!(stretched.width, 655.0);
+        assert_eq!(stretched.height, 418.0);
+    }
+
+    #[test]
+    fn stretch_pane_frame_keeps_interior_pane_cell_size() {
+        let cell_frame = TerminalContentRect::new(0.0, 0.0, 320.0, 200.0).expect("cell frame");
+        let bounds = TerminalContentRect::new(0.0, 0.0, 655.0, 418.0).expect("bounds");
+        let stretched =
+            TerminalView::stretch_pane_frame_to_content_bounds(cell_frame, bounds, false, false);
+
+        assert_eq!(stretched.width, 320.0);
+        assert_eq!(stretched.height, 200.0);
+    }
+
+    #[test]
+    fn inset_pane_content_frame_keeps_padding_inside_stretched_frame() {
+        let frame = TerminalContentRect::new(0.0, 0.0, 655.0, 418.0).expect("frame");
+        let content = TerminalView::inset_pane_content_frame(frame, 12.0, 8.0).expect("content");
+
+        assert_eq!(content.origin_x, 12.0);
+        assert_eq!(content.origin_y, 8.0);
+        assert_eq!(content.width, 631.0);
+        assert_eq!(content.height, 402.0);
     }
 
     #[test]
