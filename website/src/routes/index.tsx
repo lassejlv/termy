@@ -252,6 +252,9 @@ function SiteNav() {
           <Link to="/releases" className={navLinkClass}>
             Releases
           </Link>
+          <Link to="/sponsors" className={navLinkClass}>
+            Sponsors
+          </Link>
           <a
             href="https://github.com/lassejlv/termy"
             target="_blank"
@@ -676,6 +679,12 @@ function FeatureStrip() {
             <p className="mt-1 text-[10px] text-[#565f89]">
               {sponsors.length} {sponsors.length === 1 ? 'supporter' : 'supporters'}
             </p>
+            <Link
+              to="/sponsors"
+              className="mt-2 inline-block text-[10px] text-[#7aa2f7] transition-colors hover:text-white"
+            >
+              View all →
+            </Link>
           </div>
           <div className="grid border-t border-white/[0.08] sm:grid-cols-2 sm:divide-x sm:divide-white/[0.08] md:border-t-0">
             {sponsors.map((sponsor) => (

@@ -86,6 +86,9 @@ function MarketingNav() {
           <Link to="/releases" className={navLinkClass}>
             Releases
           </Link>
+          <Link to="/sponsors" className={navLinkClass}>
+            Sponsors
+          </Link>
           <a
             href="https://github.com/lassejlv/termy"
             target="_blank"

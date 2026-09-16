@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as SponsorsRouteImport } from './routes/sponsors'
 import { Route as LlmsDottxtRouteImport } from './routes/llms[.]txt'
 import { Route as LlmsFullDottxtRouteImport } from './routes/llms-full[.]txt'
 import { Route as DownloadRouteImport } from './routes/download'
@@ -19,6 +20,11 @@ import { Route as DocsChar123Char125DotmdRouteImport } from './routes/docs/{$}[.
 import { Route as DocsSplatRouteImport } from './routes/docs/$'
 import { Route as ApiSearchDotjsonRouteImport } from './routes/api/search[.]json'
 
+const SponsorsRoute = SponsorsRouteImport.update({
+  id: '/sponsors',
+  path: '/sponsors',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LlmsDottxtRoute = LlmsDottxtRouteImport.update({
   id: '/llms.txt',
   path: '/llms.txt',
@@ -70,6 +76,7 @@ export interface FileRoutesByFullPath {
   '/download': typeof DownloadRoute
   '/llms-full.txt': typeof LlmsFullDottxtRoute
   '/llms.txt': typeof LlmsDottxtRoute
+  '/sponsors': typeof SponsorsRoute
   '/api/search.json': typeof ApiSearchDotjsonRoute
   '/docs/$': typeof DocsSplatRoute
   '/docs/{$}.md': typeof DocsChar123Char125DotmdRoute
@@ -81,6 +88,7 @@ export interface FileRoutesByTo {
   '/download': typeof DownloadRoute
   '/llms-full.txt': typeof LlmsFullDottxtRoute
   '/llms.txt': typeof LlmsDottxtRoute
+  '/sponsors': typeof SponsorsRoute
   '/api/search.json': typeof ApiSearchDotjsonRoute
   '/docs/$': typeof DocsSplatRoute
   '/docs/{$}.md': typeof DocsChar123Char125DotmdRoute
@@ -93,6 +101,7 @@ export interface FileRoutesById {
   '/download': typeof DownloadRoute
   '/llms-full.txt': typeof LlmsFullDottxtRoute
   '/llms.txt': typeof LlmsDottxtRoute
+  '/sponsors': typeof SponsorsRoute
   '/api/search.json': typeof ApiSearchDotjsonRoute
   '/docs/$': typeof DocsSplatRoute
   '/docs/{$}.md': typeof DocsChar123Char125DotmdRoute
@@ -106,6 +115,7 @@ export interface FileRouteTypes {
     | '/download'
     | '/llms-full.txt'
     | '/llms.txt'
+    | '/sponsors'
     | '/api/search.json'
     | '/docs/$'
     | '/docs/{$}.md'
@@ -117,6 +127,7 @@ export interface FileRouteTypes {
     | '/download'
     | '/llms-full.txt'
     | '/llms.txt'
+    | '/sponsors'
     | '/api/search.json'
     | '/docs/$'
     | '/docs/{$}.md'
@@ -128,6 +139,7 @@ export interface FileRouteTypes {
     | '/download'
     | '/llms-full.txt'
     | '/llms.txt'
+    | '/sponsors'
     | '/api/search.json'
     | '/docs/$'
     | '/docs/{$}.md'
@@ -140,6 +152,7 @@ export interface RootRouteChildren {
   DownloadRoute: typeof DownloadRoute
   LlmsFullDottxtRoute: typeof LlmsFullDottxtRoute
   LlmsDottxtRoute: typeof LlmsDottxtRoute
+  SponsorsRoute: typeof SponsorsRoute
   ApiSearchDotjsonRoute: typeof ApiSearchDotjsonRoute
   DocsSplatRoute: typeof DocsSplatRoute
   DocsChar123Char125DotmdRoute: typeof DocsChar123Char125DotmdRoute
@@ -149,6 +162,13 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/sponsors': {
+      id: '/sponsors'
+      path: '/sponsors'
+      fullPath: '/sponsors'
+      preLoaderRoute: typeof SponsorsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/llms.txt': {
       id: '/llms.txt'
       path: '/llms.txt'
@@ -220,6 +240,7 @@ const rootRouteChildren: RootRouteChildren = {
   DownloadRoute: DownloadRoute,
   LlmsFullDottxtRoute: LlmsFullDottxtRoute,
   LlmsDottxtRoute: LlmsDottxtRoute,
+  SponsorsRoute: SponsorsRoute,
   ApiSearchDotjsonRoute: ApiSearchDotjsonRoute,
   DocsSplatRoute: DocsSplatRoute,
   DocsChar123Char125DotmdRoute: DocsChar123Char125DotmdRoute,

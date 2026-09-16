@@ -43,6 +43,10 @@ export function baseOptions(): BaseLayoutProps {
         text: 'Releases',
         url: '/releases',
       },
+      {
+        text: 'Sponsors',
+        url: '/sponsors',
+      },
     ],
     githubUrl: `https://github.com/${gitConfig.user}/${gitConfig.repo}`,
     themeSwitch: { mode: 'light-dark' },
