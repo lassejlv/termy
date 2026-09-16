@@ -127,6 +127,11 @@ impl SearchEngine {
 
         for line_idx in start_line..=end_line {
             if let Some(text) = line_provider(line_idx) {
+                if self.config.mode == SearchMode::Literal
+                    && literal_line_can_skip(text, &self.pattern)
+                {
+                    continue;
+                }
                 let line_matches = self.search_line(line_idx, text);
                 matches.extend(line_matches);
             }
@@ -137,6 +142,10 @@ impl SearchEngine {
         matches.reverse();
         SearchResults::from_matches(matches)
     }
+}
+
+fn literal_line_can_skip(text: &str, pattern: &str) -> bool {
+    pattern.bytes().any(|byte| byte != b' ') && text.bytes().all(|byte| byte == b' ')
 }
 
 fn compute_cell_columns(text: &str) -> (Vec<usize>, Vec<usize>) {
@@ -281,6 +290,33 @@ mod tests {
         assert!(!engine.has_pattern());
         let results = engine.search(0, 10, |_| Some("test"));
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn literal_search_skips_empty_lines() {
+        let mut engine = SearchEngine::new(SearchConfig::default());
+        engine.set_pattern("x").unwrap();
+        let results = engine.search(0, 2, |idx| match idx {
+            0 => Some(""),
+            1 => Some("x"),
+            2 => Some("    "),
+            _ => None,
+        });
+        assert_eq!(results.count(), 1);
+        assert_eq!(results.current().unwrap().line, 1);
+    }
+
+    #[test]
+    fn literal_search_keeps_blank_lines_when_query_is_spaces() {
+        let mut engine = SearchEngine::new(SearchConfig::default());
+        engine.set_pattern("  ").unwrap();
+        let results = engine.search(0, 1, |idx| match idx {
+            0 => Some("  "),
+            1 => Some("x"),
+            _ => None,
+        });
+        assert_eq!(results.count(), 1);
+        assert_eq!(results.current().unwrap().line, 0);
     }
 
     #[test]

@@ -1548,246 +1548,6 @@ impl TerminalView {
         )
     }
 
-    fn render_update_banner(
-        &mut self,
-        state: &UpdateState,
-        colors: &TerminalColors,
-        cx: &mut Context<Self>,
-    ) -> Option<AnyElement> {
-        let model = crate::ui::update_banner::UpdateBannerModel::from_state(state)?;
-        let updater_weak = self.auto_updater.as_ref().map(|e| e.downgrade());
-        let overlay_style = self.overlay_style();
-
-        let banner_bg = overlay_style.chrome_panel_background_with_floor(0.92, 0.86);
-        let border_color = overlay_style.chrome_panel_neutral(0.18);
-        let primary_text = overlay_style.panel_foreground(0.94);
-        let muted_text = overlay_style.panel_foreground(0.62);
-
-        let (tone_bg, tone_fg) = match model.tone {
-            crate::ui::update_banner::UpdateBannerTone::Info => {
-                let mut bg = colors.cursor;
-                bg.a = 0.18;
-                (bg, colors.cursor)
-            }
-            crate::ui::update_banner::UpdateBannerTone::Success => {
-                let success = gpui::Rgba {
-                    r: 0.42,
-                    g: 0.78,
-                    b: 0.55,
-                    a: 1.0,
-                };
-                let mut bg = success;
-                bg.a = 0.18;
-                (bg, success)
-            }
-            crate::ui::update_banner::UpdateBannerTone::Error => {
-                let error = gpui::Rgba {
-                    r: 0.92,
-                    g: 0.45,
-                    b: 0.48,
-                    a: 1.0,
-                };
-                let mut bg = error;
-                bg.a = 0.18;
-                (bg, error)
-            }
-        };
-
-        let icon_path = match model.tone {
-            crate::ui::update_banner::UpdateBannerTone::Info => {
-                "icons/command_palette/check-update.svg"
-            }
-            crate::ui::update_banner::UpdateBannerTone::Success => "icons/command_palette/info.svg",
-            crate::ui::update_banner::UpdateBannerTone::Error => "icons/command_palette/info.svg",
-        };
-
-        let mut actions = div().flex().items_center().gap(px(6.0));
-        for button in model.buttons {
-            let action = button.action;
-            let updater_weak = updater_weak.clone();
-            let is_primary = matches!(
-                button.style,
-                crate::ui::update_banner::UpdateButtonStyle::Primary
-            );
-            let primary_bg = colors.cursor;
-            let primary_label_color = colors.background;
-            let mut secondary_bg = colors.foreground;
-            secondary_bg.a = 0.08;
-            let mut secondary_hover_bg = colors.foreground;
-            secondary_hover_bg.a = 0.14;
-
-            let mut primary_hover_bg = colors.cursor;
-            primary_hover_bg.a = 0.85;
-
-            let (button_bg, hover_bg, button_text) = if is_primary {
-                (primary_bg, primary_hover_bg, primary_label_color)
-            } else {
-                (secondary_bg, secondary_hover_bg, primary_text)
-            };
-
-            actions = actions.child(
-                div()
-                    .id(gpui::ElementId::from(gpui::SharedString::from(format!(
-                        "update-banner-btn-{action:?}"
-                    ))))
-                    .h(px(26.0))
-                    .px(px(12.0))
-                    .rounded(px(TERMINAL_OVERLAY_GEOMETRY.control_radius))
-                    .bg(button_bg)
-                    .text_size(px(11.5))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(button_text)
-                    .cursor_pointer()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .hover(move |s| s.bg(hover_bg))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _event, _window, cx| match action {
-                            crate::ui::update_banner::UpdateBannerAction::Install => {
-                                if let Some(ref weak) = updater_weak
-                                    && let Some(entity) = weak.upgrade()
-                                {
-                                    AutoUpdater::install(entity.downgrade(), cx);
-                                    crate::ui::toast::info("Downloading update...");
-                                    this.notify_overlay(cx);
-                                }
-                            }
-                            crate::ui::update_banner::UpdateBannerAction::Restart => {
-                                match this.restart_application_with_persist() {
-                                    Ok(()) => {
-                                        this.allow_quit_without_prompt = true;
-                                        cx.quit();
-                                    }
-                                    Err(error) => {
-                                        crate::ui::toast::error(format!("Restart failed: {error}"));
-                                        this.notify_overlay(cx);
-                                    }
-                                }
-                            }
-                            crate::ui::update_banner::UpdateBannerAction::Dismiss => {
-                                if let Some(ref weak) = updater_weak
-                                    && let Some(entity) = weak.upgrade()
-                                {
-                                    entity.update(cx, |updater, cx| updater.dismiss(cx));
-                                }
-                            }
-                        }),
-                    )
-                    .child(button.label),
-            );
-        }
-
-        let progress_element = model.progress_percent.map(|progress| {
-            let mut progress_track = colors.foreground;
-            progress_track.a = 0.12;
-            let progress_width = 220.0;
-            let fill_width = (f32::from(progress) / 100.0) * progress_width;
-
-            div()
-                .mt(px(6.0))
-                .w(px(progress_width))
-                .h(px(3.0))
-                .rounded_full()
-                .bg(progress_track)
-                .child(
-                    div()
-                        .h_full()
-                        .w(px(fill_width.max(0.0)))
-                        .rounded_full()
-                        .bg(colors.cursor),
-                )
-                .into_any()
-        });
-
-        Some(
-            div()
-                .id("update-dialog")
-                .w_full()
-                .max_w(px(380.0))
-                .flex_none()
-                .bg(banner_bg)
-                .border_1()
-                .border_color(border_color)
-                .rounded(px(8.0))
-                .shadow_md()
-                .child(
-                    div()
-                        .w_full()
-                        .p(px(12.0))
-                        .flex()
-                        .items_start()
-                        .justify_between()
-                        .gap(px(10.0))
-                        .child(
-                            div()
-                                .flex()
-                                .items_start()
-                                .gap(px(10.0))
-                                .min_w(px(0.0))
-                                .flex_1()
-                                .child(
-                                    div()
-                                        .w(px(30.0))
-                                        .h(px(30.0))
-                                        .flex_none()
-                                        .rounded(px(TERMINAL_OVERLAY_GEOMETRY.control_radius))
-                                        .bg(tone_bg)
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(
-                                            gpui::svg()
-                                                .path(gpui::SharedString::from(icon_path))
-                                                .size(px(15.0))
-                                                .text_color(tone_fg),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .min_w(px(0.0))
-                                        .gap(px(1.0))
-                                        .child(
-                                            div()
-                                                .flex()
-                                                .items_center()
-                                                .gap(px(8.0))
-                                                .child(
-                                                    div()
-                                                        .text_size(px(13.0))
-                                                        .font_weight(FontWeight::SEMIBOLD)
-                                                        .text_color(primary_text)
-                                                        .overflow_hidden()
-                                                        .child(model.message),
-                                                )
-                                                .child(
-                                                    div()
-                                                        .text_size(px(10.0))
-                                                        .font_weight(FontWeight::MEDIUM)
-                                                        .text_color(tone_fg)
-                                                        .child(model.badge),
-                                                ),
-                                        )
-                                        .children(model.detail.map(|detail| {
-                                            div()
-                                                .text_size(px(11.0))
-                                                .text_color(muted_text)
-                                                .line_height(px(15.0))
-                                                .child(detail)
-                                                .into_any()
-                                        }))
-                                        .children(progress_element),
-                                ),
-                        )
-                        .child(actions),
-                )
-                .into_any(),
-        )
-    }
-
     fn render_toast_overlay(
         &mut self,
         colors: &TerminalColors,
@@ -1797,7 +1557,7 @@ impl TerminalView {
             return None;
         }
 
-        let mut container = div().flex().flex_col().gap(px(6.0));
+        let mut container = div().flex().flex_col().items_center().gap(px(8.0));
         for toast in self.toast_manager.active() {
             let toast_id = toast.id;
             let toast_message = toast.message.clone();
@@ -1807,82 +1567,33 @@ impl TerminalView {
                 .copied_toast_feedback
                 .is_some_and(|(id, _)| id == toast_id);
 
-            // Animation values
             let opacity = toast.opacity();
             let slide_offset = toast.slide_offset();
 
-            // Clean, minimal icons and subtle accent colors
-            let (icon, accent, _is_loading) = match toast.kind {
-                crate::ui::toast::ToastKind::Info => (
-                    "\u{2139}", // ℹ info symbol
-                    gpui::Rgba {
-                        r: 0.53,
-                        g: 0.70,
-                        b: 0.92,
-                        a: opacity,
-                    },
-                    false,
-                ),
-                crate::ui::toast::ToastKind::Success => (
-                    "\u{2713}", // ✓ checkmark
-                    gpui::Rgba {
-                        r: 0.42,
-                        g: 0.78,
-                        b: 0.55,
-                        a: opacity,
-                    },
-                    false,
-                ),
-                crate::ui::toast::ToastKind::Warning => (
-                    "\u{26A0}", // ⚠ warning
-                    gpui::Rgba {
-                        r: 0.94,
-                        g: 0.76,
-                        b: 0.38,
-                        a: opacity,
-                    },
-                    false,
-                ),
-                crate::ui::toast::ToastKind::Error => (
-                    "\u{2715}", // ✕ x mark
-                    gpui::Rgba {
-                        r: 0.92,
-                        g: 0.45,
-                        b: 0.45,
-                        a: opacity,
-                    },
-                    false,
-                ),
-                crate::ui::toast::ToastKind::Loading => {
-                    // Animated spinner using braille characters
-                    const SPINNER_FRAMES: &[&str] =
-                        &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                    let elapsed_ms = toast.created_at.elapsed().as_millis() as usize;
-                    let frame_index = (elapsed_ms / 80) % SPINNER_FRAMES.len();
-                    (
-                        SPINNER_FRAMES[frame_index],
-                        gpui::Rgba {
-                            r: 0.53,
-                            g: 0.70,
-                            b: 0.92,
-                            a: opacity,
-                        },
-                        true,
-                    )
-                }
+            let mut accent = match toast.kind {
+                crate::ui::toast::ToastKind::Info => colors.ansi[4],
+                crate::ui::toast::ToastKind::Success => colors.ansi[2],
+                crate::ui::toast::ToastKind::Warning => colors.ansi[3],
+                crate::ui::toast::ToastKind::Error => colors.ansi[1],
+                crate::ui::toast::ToastKind::Loading => colors.cursor,
             };
+            accent.a = opacity;
 
-            // Solid background so toasts remain readable over transparent terminals
+            let spinner_frame = (toast.kind == crate::ui::toast::ToastKind::Loading).then(|| {
+                const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+                let elapsed_ms = toast.created_at.elapsed().as_millis() as usize;
+                SPINNER_FRAMES[(elapsed_ms / 80) % SPINNER_FRAMES.len()]
+            });
+
+            // Opaque panel so toasts stay readable over a transparent terminal.
             let mut bg = colors.background;
-            bg.a = 1.0 * opacity;
-            let mut border = colors.foreground;
-            border.a = 0.08 * opacity;
+            bg.a = opacity;
+            let mut border = accent;
+            border.a = 0.22 * opacity;
             let mut text = colors.foreground;
-            text.a = 0.92 * opacity;
-
-            // Icon background with subtle accent tint
+            text.a = 0.94 * opacity;
             let mut icon_bg = accent;
-            icon_bg.a = 0.12 * opacity;
+            icon_bg.a = 0.16 * opacity;
 
             container = container.child(
                 div()
@@ -1896,12 +1607,11 @@ impl TerminalView {
                     .shadow_lg()
                     .child(
                         div()
-                            .px(px(14.0))
-                            .py(px(12.0))
+                            .px(px(12.0))
+                            .py(px(10.0))
                             .flex()
-                            .items_start()
+                            .items_center()
                             .gap(px(10.0))
-                            // Icon with rounded background
                             .child(
                                 div()
                                     .flex_shrink_0()
@@ -1912,14 +1622,24 @@ impl TerminalView {
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .text_size(px(13.0))
+                                    .text_size(px(12.0))
                                     .text_color(accent)
-                                    .child(icon),
+                                    .children(spinner_frame.map(|frame| {
+                                        div().child(frame).into_any_element()
+                                    }))
+                                    .children(toast.kind.icon_path().map(|path| {
+                                        gpui::svg()
+                                            .path(gpui::SharedString::from(path))
+                                            .size(px(13.0))
+                                            .text_color(accent)
+                                            .into_any_element()
+                                    })),
                             )
                             .child(
                                 div()
                                     .max_w(px(340.0))
                                     .text_size(px(13.0))
+                                    .font_weight(FontWeight::MEDIUM)
                                     .text_color(text)
                                     .child(toast_message.clone()),
                             )
@@ -2053,10 +1773,9 @@ impl TerminalView {
                         .size_full()
                         .flex()
                         .flex_col()
-                        .items_end()
-                        .justify_end()
-                        .pr(px(20.0))
-                        .pb(px(20.0))
+                        .items_center()
+                        .justify_start()
+                        .pt(px(self.terminal_content_top_inset() + TOAST_TOP_INSET))
                         .on_mouse_move(cx.listener(|this, _event, _window, cx| {
                             if this.hovered_toast.is_some() {
                                 this.hovered_toast = None;
@@ -2099,7 +1818,7 @@ impl TerminalView {
             url.clone()
         };
 
-        Some(
+        Some(crate::ui::motion::fade_in(
             div()
                 .id("link-preview-overlay")
                 .absolute()
@@ -2115,9 +1834,9 @@ impl TerminalView {
                 .shadow_sm()
                 .text_size(px(11.5))
                 .text_color(overlay_style.panel_foreground(0.90))
-                .child(display_url)
-                .into_any_element(),
-        )
+                .child(display_url),
+            "link-preview-enter",
+        ))
     }
 
     fn schedule_progress_indicator_animation(&mut self, cx: &mut Context<Self>) {
@@ -2412,7 +2131,7 @@ impl TerminalView {
                             cx.stop_propagation();
                         }),
                     )
-                    .child(
+                    .child(crate::ui::motion::enter_from_above(
                         div()
                             .id("terminal-context-menu-panel")
                             .absolute()
@@ -2470,7 +2189,8 @@ impl TerminalView {
                                 )
                             })
                             .children(plugin_commands.into_iter().map(plugin_command_item)),
-                    )
+                        "terminal-context-menu-enter",
+                    ))
                     .into_any_element(),
             )
         }
@@ -2636,7 +2356,10 @@ impl TerminalView {
                         cx.stop_propagation();
                     }),
                 )
-                .child(panel)
+                .child(crate::ui::motion::enter_from_above(
+                    panel,
+                    "new-tab-menu-enter",
+                ))
                 .into_any_element(),
         )
     }
@@ -2751,7 +2474,7 @@ impl TerminalView {
                             cx.stop_propagation();
                         }),
                     )
-                    .child(
+                    .child(crate::ui::motion::enter_from_above(
                         div()
                             .id("tab-context-menu-panel")
                             .absolute()
@@ -2872,7 +2595,8 @@ impl TerminalView {
                                     )
                                     .child("Close Tab")
                             }),
-                    )
+                        "tab-context-menu-enter",
+                    ))
                     .into_any_element(),
             )
         }
@@ -2942,27 +2666,25 @@ impl TerminalView {
             None
         };
         let chrome_height = self.terminal_content_top_inset();
-        let terminal_overlay = (command_palette_overlay.is_some()
-            || plugin_ui_overlay.is_some()
-            || search_overlay.is_some())
-        .then(|| {
-            div()
-                .id("terminal-scoped-overlay")
-                .absolute()
-                .top(px(chrome_height))
-                .left_0()
-                .right_0()
-                .bottom_0()
-                .children(command_palette_overlay)
-                .children(plugin_ui_overlay)
-                .children(search_overlay)
-                .into_any_element()
-        });
+        let terminal_overlay = (command_palette_overlay.is_some() || plugin_ui_overlay.is_some())
+            .then(|| {
+                div()
+                    .id("terminal-scoped-overlay")
+                    .absolute()
+                    .top(px(chrome_height))
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .children(command_palette_overlay)
+                    .children(plugin_ui_overlay)
+                    .into_any_element()
+            });
         let context_menu_overlay = self.render_terminal_context_menu_overlay(cx);
         let tab_context_menu_overlay = self.render_tab_context_menu_overlay(cx);
         let new_tab_menu_overlay = self.render_new_tab_menu_overlay(cx);
         let toast_overlay = self.render_toast_overlay(&colors, cx);
         let link_preview_overlay = self.render_link_preview_overlay();
+        let release_notes_overlay = self.render_release_notes_dialog(window, &colors, cx);
         let resize_overlay = self
             .resize_indicator_visible_until
             .zip(self.resize_indicator_dims)
@@ -2978,7 +2700,7 @@ impl TerminalView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(
+                    .child(crate::ui::motion::fade_in(
                         div()
                             .px(px(12.0))
                             .py(px(5.0))
@@ -2991,7 +2713,8 @@ impl TerminalView {
                             .font_weight(FontWeight::NORMAL)
                             .text_color(overlay_style.panel_foreground(0.82))
                             .child(format!("{cols} x {rows}")),
-                    )
+                        "window-resize-indicator",
+                    ))
                     .into_any_element()
             });
         let debug_overlay = self.show_debug_overlay.then(|| {
@@ -3089,7 +2812,7 @@ impl TerminalView {
                         .top(px(layout.overlay_top))
                         .left(px(layout.overlay_left))
                         .right_0()
-                        .px(px(10.0))
+                        .px(px(14.0))
                         .flex()
                         .justify_end()
                         .child(banner)
@@ -3106,6 +2829,7 @@ impl TerminalView {
             .left_0()
             .size_full()
             .children(banner_overlay)
+            .children(search_overlay)
             .children(terminal_overlay)
             .children(context_menu_overlay)
             .children(tab_context_menu_overlay)
@@ -3114,6 +2838,7 @@ impl TerminalView {
             .children(debug_overlay)
             .children(toast_overlay)
             .children(link_preview_overlay)
+            .children(release_notes_overlay)
             .into_any_element()
     }
 }
@@ -3162,10 +2887,13 @@ impl Render for TerminalView {
         let pane_focus_config = self.pane_focus_config();
         let command_palette_open = self.is_command_palette_open();
         let plugin_ui_open = self.plugin_ui.is_some();
+        let release_notes_open = self.release_notes_open();
         let palette_backdrop_transform =
-            (command_palette_open || plugin_ui_open).then(command_palette_backdrop_transform);
+            (command_palette_open || plugin_ui_open || release_notes_open)
+                .then(command_palette_backdrop_transform);
         let terminal_cursor_active = !command_palette_open
             && !plugin_ui_open
+            && !release_notes_open
             && self.renaming_tab.is_none()
             && self.renaming_workspace.is_none()
             && !self.search_open;
@@ -3218,7 +2946,7 @@ impl Render for TerminalView {
                 && !command_palette_open
                 && !plugin_ui_open;
             let pane_divider_layouts = if multi_pane {
-                self.native_pane_dividers(active_tab)
+                self.native_pane_dividers(active_tab, content_bounds)
             } else {
                 Vec::new()
             };
@@ -3510,6 +3238,20 @@ impl Render for TerminalView {
                     );
                 }
 
+                if multi_pane {
+                    let pane_frame_bg: gpui::Hsla = pane_surface_bg.into();
+                    pane_layers.push(
+                        div()
+                            .absolute()
+                            .left(px(pane_frame_left))
+                            .top(px(pane_frame_top))
+                            .w(px(pane_frame_width))
+                            .h(px(pane_frame_height))
+                            .bg(pane_frame_bg)
+                            .into_any_element(),
+                    );
+                }
+
                 let link_hovered = is_active_pane && self.hovered_link.is_some();
                 let pane_progress_loader = self.pane_progress_loader_element(pane.progress_state);
                 pane_layers.push(
@@ -3753,15 +3495,7 @@ impl Render for TerminalView {
                     l: 0.58,
                     a: 0.96,
                 };
-                let track_thickness = if is_dragging && self.pane_resize_blocked {
-                    4.0
-                } else if is_dragging {
-                    3.0
-                } else if is_hovered {
-                    2.0
-                } else {
-                    1.0
-                };
+                let track_thickness = if is_dragging || is_hovered { 2.0 } else { 1.0 };
                 let track_color = if is_dragging && self.pane_resize_blocked {
                     blocked_color
                 } else if is_dragging || is_hovered {

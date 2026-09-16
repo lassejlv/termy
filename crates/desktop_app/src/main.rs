@@ -572,7 +572,10 @@ fn main() {
     let mut startup_arguments = parse_startup_arguments(cli_args);
     let (deeplink_tx, deeplink_rx) = flume::unbounded::<Vec<String>>();
     match instance::claim_or_forward(&instance::urls_to_forward(&startup_arguments)) {
-        Ok(instance::InstanceClaim::Forwarded) => std::process::exit(0),
+        Ok(instance::InstanceClaim::Forwarded) => {
+            eprintln!("Termy is already running; activating the existing window.");
+            std::process::exit(0);
+        }
         Ok(instance::InstanceClaim::Primary(guard)) => {
             instance::spawn_listener(guard, deeplink_tx.clone());
         }

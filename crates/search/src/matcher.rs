@@ -129,6 +129,16 @@ impl SearchResults {
         }
     }
 
+    pub fn jump_to_match(&mut self, line: i32, start_col: usize) -> bool {
+        let Some(index) = self.matches.iter().position(|search_match| {
+            search_match.line == line && search_match.start_col == start_col
+        }) else {
+            return false;
+        };
+        self.current_index = Some(index);
+        true
+    }
+
     pub fn jump_to_first(&mut self) -> Option<&SearchMatch> {
         self.jump_to(0)
     }
@@ -304,5 +314,19 @@ mod tests {
 
         results.jump_to_first();
         assert_eq!(results.current().unwrap().line, -10);
+    }
+
+    #[test]
+    fn jump_to_match_restores_the_same_hit() {
+        let matches = vec![
+            SearchMatch::new(0, 0, 5),
+            SearchMatch::new(2, 4, 8),
+            SearchMatch::new(2, 10, 12),
+        ];
+        let mut results = SearchResults::from_matches(matches);
+        assert!(results.jump_to_match(2, 10));
+        assert_eq!(results.position(), Some((3, 3)));
+        assert!(!results.jump_to_match(9, 0));
+        assert_eq!(results.position(), Some((3, 3)));
     }
 }

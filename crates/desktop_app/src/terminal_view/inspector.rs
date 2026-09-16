@@ -795,6 +795,8 @@ impl TerminalView {
     ) -> AnyElement {
         let active_overlay = if self.is_command_palette_open() {
             "command palette"
+        } else if self.release_notes_open() {
+            "release notes"
         } else if self.search_open {
             "search"
         } else if self.renaming_tab.is_some() {

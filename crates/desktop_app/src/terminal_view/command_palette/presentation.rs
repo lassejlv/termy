@@ -224,6 +224,44 @@ pub(super) fn palette_item_category(item: &CommandPaletteItem) -> Option<String>
     }
 }
 
+/// Colour-coding key for a row's icon tile. Always present, even in modes
+/// that hide the category label, so every list still gets the same tiles.
+pub(super) fn palette_item_tint_category(item: &CommandPaletteItem) -> &'static str {
+    match &item.kind {
+        CommandPaletteItemKind::Command(action) => command_category(action.to_command_id()),
+        CommandPaletteItemKind::PluginCommand { .. }
+        | CommandPaletteItemKind::PluginInputSubmit { .. }
+        | CommandPaletteItemKind::PluginInputOption { .. } => "Plugins",
+        CommandPaletteItemKind::Theme(_) => "Appearance",
+        CommandPaletteItemKind::SshHost { .. } | CommandPaletteItemKind::ManageSshHosts => "SSH",
+        CommandPaletteItemKind::TmuxSessionAttachOrSwitch { .. }
+        | CommandPaletteItemKind::TmuxSessionCreateAndAttach { .. }
+        | CommandPaletteItemKind::TmuxSessionDetachCurrent
+        | CommandPaletteItemKind::TmuxSessionOpenRenameMode
+        | CommandPaletteItemKind::TmuxSessionOpenKillMode
+        | CommandPaletteItemKind::TmuxSessionRenameSelect { .. }
+        | CommandPaletteItemKind::TmuxSessionRenameApply { .. }
+        | CommandPaletteItemKind::TmuxSessionKill { .. } => "Sessions",
+        CommandPaletteItemKind::SavedLayoutOpen { .. }
+        | CommandPaletteItemKind::SavedLayoutOpenTasksMode { .. }
+        | CommandPaletteItemKind::SavedLayoutOpenSaveMode
+        | CommandPaletteItemKind::SavedLayoutSaveAs { .. }
+        | CommandPaletteItemKind::SavedLayoutOpenRenameMode
+        | CommandPaletteItemKind::SavedLayoutRenameSelect { .. }
+        | CommandPaletteItemKind::SavedLayoutRenameApply { .. }
+        | CommandPaletteItemKind::SavedLayoutOpenDeleteMode
+        | CommandPaletteItemKind::SavedLayoutDelete { .. } => "Sessions",
+        CommandPaletteItemKind::TaskOpenCreateGlobalMode
+        | CommandPaletteItemKind::TaskOpenCreateLayoutMode { .. }
+        | CommandPaletteItemKind::TaskOpenSaveCurrentCommandGlobalMode
+        | CommandPaletteItemKind::TaskOpenSaveCurrentCommandLayoutMode { .. }
+        | CommandPaletteItemKind::TaskCreate { .. }
+        | CommandPaletteItemKind::Task { .. } => "Tasks",
+        CommandPaletteItemKind::AppInfoEntry { .. }
+        | CommandPaletteItemKind::AppInfoCopyAll { .. } => "App",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,6 +326,30 @@ mod tests {
         };
 
         assert_eq!(palette_item_category(&item).as_deref(), Some("acme"));
+        assert_eq!(palette_item_tint_category(&item), "Plugins");
+    }
+
+    #[test]
+    fn every_command_has_a_known_tile_tint() {
+        for id in CommandId::all() {
+            let category = command_category(id);
+            assert!(
+                matches!(
+                    category,
+                    "App"
+                        | "Appearance"
+                        | "Edit"
+                        | "Panes"
+                        | "Search"
+                        | "Sessions"
+                        | "Settings"
+                        | "Tabs"
+                        | "Window"
+                ),
+                "unexpected tint category {category} for {}",
+                id.config_name()
+            );
+        }
     }
 
     #[test]

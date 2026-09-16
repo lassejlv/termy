@@ -459,6 +459,13 @@ impl TerminalView {
             return;
         }
 
+        // Pane-divider drags already mutate cell geometry. Re-fitting the
+        // layout tree and sending SIGWINCH on every cell step fights the
+        // drag and flickers the grid; apply the PTY resize once on mouse-up.
+        if self.pane_resize_drag.is_some() {
+            return;
+        }
+
         let (padding_x, padding_y) = self.effective_terminal_padding();
         let (cols, rows) = Self::terminal_grid_size_for_pane_count(
             active_pane_count,

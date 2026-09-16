@@ -49,6 +49,7 @@ enum InlineInputTarget {
 enum InlineInputNotifyTarget {
     Parent,
     Overlay,
+    ParentAndOverlay,
 }
 
 #[derive(Clone, Debug)]
@@ -977,9 +978,10 @@ impl TerminalView {
     fn inline_input_notify_target_for_target(target: InlineInputTarget) -> InlineInputNotifyTarget {
         match target {
             InlineInputTarget::CommandPalette => InlineInputNotifyTarget::Overlay,
-            InlineInputTarget::RenameTab
-            | InlineInputTarget::RenameWorkspace
-            | InlineInputTarget::Search => InlineInputNotifyTarget::Parent,
+            InlineInputTarget::Search => InlineInputNotifyTarget::ParentAndOverlay,
+            InlineInputTarget::RenameTab | InlineInputTarget::RenameWorkspace => {
+                InlineInputNotifyTarget::Parent
+            }
         }
     }
 
@@ -991,6 +993,10 @@ impl TerminalView {
         match Self::inline_input_notify_target_for_target(target) {
             InlineInputNotifyTarget::Parent => cx.notify(),
             InlineInputNotifyTarget::Overlay => self.notify_overlay(cx),
+            InlineInputNotifyTarget::ParentAndOverlay => {
+                self.notify_overlay(cx);
+                cx.notify();
+            }
         }
     }
 
@@ -1649,7 +1655,7 @@ mod tests {
         );
         assert_eq!(
             TerminalView::inline_input_notify_target_for_target(InlineInputTarget::Search),
-            InlineInputNotifyTarget::Parent
+            InlineInputNotifyTarget::ParentAndOverlay
         );
         assert_eq!(
             TerminalView::inline_input_notify_target_for_target(InlineInputTarget::RenameTab),

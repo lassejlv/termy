@@ -55,6 +55,7 @@ const SETTINGS_ICONS: &[(&str, &[u8])] = &[
     settings_icon!("keybindings"),
     settings_icon!("advanced"),
     settings_icon!("search"),
+    settings_icon!("more"),
     settings_icon!("chevron-down"),
     settings_icon!("chevron-up"),
     settings_icon!("reset"),
@@ -145,6 +146,16 @@ mod tests {
             EmbeddedAssets
                 .load("icons/settings/plugins.svg")
                 .expect("load embedded plugin icon")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn search_more_icon_is_embedded() {
+        assert!(
+            EmbeddedAssets
+                .load("icons/settings/more.svg")
+                .expect("load embedded search more icon")
                 .is_some()
         );
     }

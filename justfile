@@ -4,8 +4,9 @@ set shell := ["bash", "-cu"]
 @default:
     just --list
 
+# Checkout-local instance lock so this does not silently attach to Termy.app.
 run:
-    cargo run -p termy --release
+    TERMY_INSTANCE_HOME="${TERMY_INSTANCE_HOME:-{{ justfile_directory() }}/target/termy-dev-instance}" cargo run -p termy --release
 
 # Compare the terminal engines, enforce Tmon's snapshot baseline, and write a text report.
 benchmark-tmon:
@@ -91,7 +92,7 @@ validate: check fmt-check test-workspace check-boundaries
     cargo clippy --workspace --all-targets -- -D warnings
 
 dev:
-    cargo watch -x "run -p termy --release"
+    TERMY_INSTANCE_HOME="${TERMY_INSTANCE_HOME:-{{ justfile_directory() }}/target/termy-dev-instance}" cargo watch -x "run -p termy --release"
 
 build:
     cargo build -p termy --release

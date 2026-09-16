@@ -146,7 +146,6 @@ impl SettingsWindow {
                 "chrome-contrast-toggle",
                 RootSettingId::ChromeContrast,
                 chrome_contrast,
-                "Saved",
                 cx,
             ),
             self.render_root_bool_setting_row(
@@ -154,7 +153,6 @@ impl SettingsWindow {
                 "blur-toggle",
                 RootSettingId::BackgroundBlur,
                 background_blur,
-                "Saved",
                 cx,
             ),
             self.render_background_opacity_row(
@@ -168,7 +166,6 @@ impl SettingsWindow {
                 "background-opacity-cells-toggle",
                 RootSettingId::BackgroundOpacityCells,
                 background_opacity_cells,
-                "Saved",
                 cx,
             ),
         ]);
@@ -289,7 +286,6 @@ impl SettingsWindow {
                 "cursor_blink-toggle",
                 RootSettingId::CursorBlink,
                 cursor_blink,
-                "Saved",
                 cx,
             ),
             self.render_editable_row(
@@ -312,7 +308,6 @@ impl SettingsWindow {
             "macos_option_as_alt-toggle",
             RootSettingId::MacosOptionAsAlt,
             macos_option_as_alt,
-            "Saved",
             cx,
         )];
         self.render_settings_group("Keyboard", rows)
@@ -398,7 +393,6 @@ impl SettingsWindow {
             "tmux_enabled-toggle",
             RootSettingId::TmuxEnabled,
             tmux_enabled,
-            "Saved. Use Tmux Sessions to switch runtime now.",
             cx,
         )];
 
@@ -408,7 +402,6 @@ impl SettingsWindow {
                 "tmux_persistence-toggle",
                 RootSettingId::TmuxPersistence,
                 tmux_persistence,
-                "Saved",
                 cx,
             ));
             rows.push(self.render_root_bool_setting_row(
@@ -416,7 +409,6 @@ impl SettingsWindow {
                 "tmux_exclusive-toggle",
                 RootSettingId::TmuxExclusive,
                 tmux_exclusive,
-                "Saved",
                 cx,
             ));
             rows.push(self.render_root_bool_setting_row(
@@ -424,7 +416,6 @@ impl SettingsWindow {
                 "tmux_show_active_pane_border-toggle",
                 RootSettingId::TmuxShowActivePaneBorder,
                 tmux_show_active_pane_border,
-                "Saved",
                 cx,
             ));
             rows.push(self.render_editable_row(
@@ -514,7 +505,6 @@ impl SettingsWindow {
                 "copy_on_select-toggle",
                 RootSettingId::CopyOnSelect,
                 copy_on_select,
-                "Saved",
                 cx,
             ),
             self.render_root_bool_setting_row(
@@ -522,7 +512,6 @@ impl SettingsWindow {
                 "copy_on_select_toast-toggle",
                 RootSettingId::CopyOnSelectToast,
                 copy_on_select_toast,
-                "Saved",
                 cx,
             ),
         ];
@@ -557,7 +546,6 @@ impl SettingsWindow {
                 "command_palette_show_keybinds-toggle",
                 RootSettingId::CommandPaletteShowKeybinds,
                 command_palette_show_keybinds,
-                "Saved",
                 cx,
             ),
         ];
@@ -634,7 +622,6 @@ impl SettingsWindow {
                 "tab_title_shell_integration-toggle",
                 RootSettingId::TabTitleShellIntegration,
                 shell_integration,
-                "Saved",
                 cx,
             ),
             self.render_editable_row(
@@ -721,7 +708,6 @@ impl SettingsWindow {
                 "tab_switch_modifier_hints-toggle",
                 RootSettingId::TabSwitchModifierHints,
                 show_switch_hints,
-                "Saved",
                 cx,
             ),
         ];
@@ -731,7 +717,6 @@ impl SettingsWindow {
             "auto_hide_tabbar-toggle",
             RootSettingId::AutoHideTabbar,
             auto_hide_tabbar,
-            "Saved",
             cx,
         ));
 
@@ -748,7 +733,6 @@ impl SettingsWindow {
                 "sidebar_enabled-toggle",
                 RootSettingId::SidebarEnabled,
                 sidebar_enabled,
-                "Saved",
                 cx,
             ),
             self.render_editable_row(
@@ -771,7 +755,6 @@ impl SettingsWindow {
             "show_termy_in_titlebar-toggle",
             RootSettingId::ShowTermyInTitlebar,
             show_termy,
-            "Saved",
             cx,
         )];
 
@@ -1482,7 +1465,6 @@ impl SettingsWindow {
                 "native-tab-persistence-toggle",
                 RootSettingId::NativeTabPersistence,
                 native_tab_persistence,
-                "Saved",
                 cx,
             ),
             self.render_root_bool_setting_row(
@@ -1490,7 +1472,6 @@ impl SettingsWindow {
                 "native-layout-autosave-toggle",
                 RootSettingId::NativeLayoutAutosave,
                 native_layout_autosave,
-                "Saved",
                 cx,
             ),
             self.render_root_bool_setting_row(
@@ -1498,7 +1479,6 @@ impl SettingsWindow {
                 "native-buffer-persistence-toggle",
                 RootSettingId::NativeBufferPersistence,
                 native_buffer_persistence,
-                "Saved",
                 cx,
             ),
         ];
@@ -1510,7 +1490,6 @@ impl SettingsWindow {
                 "warn_on_quit-toggle",
                 RootSettingId::WarnOnQuit,
                 always_warn_on_quit,
-                "Saved",
                 cx,
             ),
             self.render_root_bool_setting_row(
@@ -1518,7 +1497,6 @@ impl SettingsWindow {
                 "warn_on_quit_with_running_process-toggle",
                 RootSettingId::WarnOnQuitWithRunningProcess,
                 warn_on_quit_with_running_process,
-                "Saved",
                 cx,
             ),
         ];
@@ -1551,7 +1529,6 @@ impl SettingsWindow {
                 "auto_update-toggle",
                 RootSettingId::AutoUpdate,
                 auto_update,
-                "Saved",
                 cx,
             ),
             self.render_root_bool_setting_row(
@@ -1559,7 +1536,6 @@ impl SettingsWindow {
                 "simple_mode-toggle",
                 RootSettingId::SimpleMode,
                 simple_mode,
-                "Saved",
                 cx,
             ),
             self.render_root_bool_setting_row(
@@ -1567,7 +1543,6 @@ impl SettingsWindow {
                 "show_debug_overlay-toggle",
                 RootSettingId::ShowDebugOverlay,
                 show_debug_overlay,
-                "Saved",
                 cx,
             ),
         ];

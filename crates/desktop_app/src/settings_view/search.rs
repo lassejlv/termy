@@ -683,7 +683,7 @@ impl SettingsWindow {
             .h_full()
             .bg(self.bg_secondary())
             .border_r_1()
-            .border_color(self.border_color())
+            .border_color(self.card_border_color())
             .flex()
             .flex_col()
             .child(
@@ -697,8 +697,8 @@ impl SettingsWindow {
                     .child(
                         div()
                             .px_1()
-                            .text_size(px(18.0))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .text_size(px(19.0))
+                            .font_weight(gpui::FontWeight::BOLD)
                             .text_color(self.text_primary())
                             .child("Settings"),
                     )
@@ -933,16 +933,20 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let bg_input = self.bg_input();
-        let border_color = self.border_color();
+        let border_color = self.card_border_color();
         let accent = self.accent();
+        let focus_ring = self.input_focus_ring();
         div()
             .id("settings-sidebar-search-input")
-            .h(px(36.0))
+            .h(px(34.0))
             .px_3()
-            .rounded(px(SETTINGS_BUTTON_RADIUS))
+            .rounded(px(SETTINGS_INPUT_RADIUS))
             .bg(bg_input)
             .border_1()
             .border_color(if is_active { accent } else { border_color })
+            .when(is_active, |s| {
+                s.shadow(vec![Self::focus_ring_shadow(focus_ring)])
+            })
             .overflow_hidden()
             .cursor_text()
             .flex()
@@ -1105,8 +1109,6 @@ impl SettingsWindow {
         let hover_bg = self.bg_hover();
         let text_primary = self.text_primary();
         let text_secondary = self.text_secondary();
-        let icon_path = Self::section_icon_path(section);
-        let icon_tint = self.icon_color(is_active);
         let selection_accent = self.accent_with_alpha(0.95);
 
         div()
@@ -1129,7 +1131,7 @@ impl SettingsWindow {
                     a: 0.0,
                 }
             })
-            .hover(|s| s.bg(hover_bg))
+            .when(!is_active, |s| s.hover(|s| s.bg(hover_bg)))
             .when(is_active, |s| {
                 s.child(
                     div()
@@ -1144,12 +1146,13 @@ impl SettingsWindow {
                         .bg(selection_accent),
                 )
             })
-            .child(
-                svg()
-                    .path(SharedString::from(icon_path))
-                    .size(px(SIDEBAR_ICON_SIZE))
-                    .text_color(icon_tint),
-            )
+            .child(self.render_section_tile(
+                section,
+                SIDEBAR_ICON_TILE_SIZE,
+                SIDEBAR_ICON_TILE_RADIUS,
+                SIDEBAR_ICON_SIZE,
+                is_active,
+            ))
             .child(
                 div()
                     .text_sm()

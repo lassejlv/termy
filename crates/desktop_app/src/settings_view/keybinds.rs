@@ -106,7 +106,6 @@ impl SettingsWindow {
 
         self.config.keybind_lines.clear();
         self.capturing_action = None;
-        crate::ui::toast::success("Saved");
         cx.notify();
     }
 
@@ -118,7 +117,6 @@ impl SettingsWindow {
             return;
         }
         self.capturing_action = None;
-        crate::ui::toast::success("Saved");
         cx.notify();
     }
 
@@ -132,7 +130,6 @@ impl SettingsWindow {
         }
 
         self.capturing_action = None;
-        crate::ui::toast::success("Saved");
         cx.notify();
     }
 

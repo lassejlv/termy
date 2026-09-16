@@ -128,6 +128,13 @@ impl TerminalView {
         } else {
             TAB_TITLE_FONT_SIZE
         };
+        // The top strip tints the close hover red; the sidebar keeps the
+        // neutral hover.
+        let close_hover_bg = if input.orientation == TabStripOrientation::Horizontal {
+            palette.close_button_danger_hover_bg
+        } else {
+            palette.close_button_hover_bg
+        };
 
         div()
             .flex_none()
@@ -164,7 +171,7 @@ impl TerminalView {
                     ))
                     .hover(move |style| {
                         style
-                            .bg(palette.close_button_hover_bg)
+                            .bg(close_hover_bg)
                             .text_color(palette.close_button_hover_text)
                     })
                     .cursor_pointer()
@@ -224,6 +231,9 @@ impl TerminalView {
             tab_bg = palette.hovered_tab_bg;
             tab_bg.a = (tab_bg.a * 1.8).max(self.scaled_chrome_surface_alpha(0.12));
         }
+        if orientation == TabStripOrientation::Horizontal && input.is_active {
+            tab_bg.a = (tab_bg.a + TAB_ACTIVE_BG_LIFT_HORIZONTAL).min(1.0);
+        }
         tab_bg.a *= anim;
 
         let mut close_text_color = if input.is_active {
@@ -262,11 +272,15 @@ impl TerminalView {
             TabStripOrientation::Horizontal => (input.tab_primary_extent, input.tab_cross_extent),
             TabStripOrientation::Vertical => (input.tab_cross_extent, input.tab_primary_extent),
         };
+        let chip_radius = match orientation {
+            TabStripOrientation::Horizontal => TAB_ITEM_RADIUS_HORIZONTAL,
+            TabStripOrientation::Vertical => TAB_ITEM_RADIUS,
+        };
         let mut tab_shell = div()
             .flex_none()
             .relative()
             .overflow_hidden()
-            .rounded(px(TAB_ITEM_RADIUS))
+            .rounded(px(chip_radius))
             .bg(tab_bg)
             .hover(move |style| style.bg(hover_tab_bg))
             .w(px(shell_width))
@@ -326,22 +340,6 @@ impl TerminalView {
 
         if input.is_drag_source {
             tab_shell = tab_shell.shadow_md();
-        }
-
-        if input.is_active {
-            let indicator_height = (shell_height - (TAB_ACTIVE_INDICATOR_INSET_Y * 2.0)).max(0.0);
-            let mut indicator_color = palette.active_tab_indicator;
-            indicator_color.a *= anim;
-            tab_shell = tab_shell.child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(TAB_ACTIVE_INDICATOR_INSET_Y))
-                    .w(px(TAB_ACTIVE_INDICATOR_WIDTH))
-                    .h(px(indicator_height))
-                    .rounded_full()
-                    .bg(indicator_color),
-            );
         }
 
         let drop_marker = input.drop_marker_side.map(|side| match orientation {
@@ -447,6 +445,11 @@ impl TerminalView {
                             .overflow_x_hidden()
                             .whitespace_nowrap()
                             .font_family(font_family.clone())
+                            .font_weight(if input.is_active {
+                                FontWeight::MEDIUM
+                            } else {
+                                FontWeight::NORMAL
+                            })
                             .text_color(rename_text_color)
                             .text_size(px(title_font_size))
                             .text_ellipsis();

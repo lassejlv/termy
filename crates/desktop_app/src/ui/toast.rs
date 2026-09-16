@@ -21,10 +21,38 @@ pub enum ToastKind {
     Loading,
 }
 
+impl ToastKind {
+    pub fn icon_path(self) -> Option<&'static str> {
+        match self {
+            Self::Info => Some("icons/command_palette/info.svg"),
+            Self::Success => Some("icons/check.svg"),
+            Self::Warning => Some("icons/alert.svg"),
+            Self::Error => Some("icons/close.svg"),
+            Self::Loading => None,
+        }
+    }
+}
+
 /// Duration of the fade-in animation in milliseconds
-pub const TOAST_FADE_IN_MS: u64 = 180;
+pub const TOAST_FADE_IN_MS: u64 = 140;
 /// Duration of the fade-out animation in milliseconds
-pub const TOAST_FADE_OUT_MS: u64 = 220;
+pub const TOAST_FADE_OUT_MS: u64 = 180;
+/// How far a toast drops from above on enter / exits upward. Keep this small —
+/// toasts are high-frequency and a long travel feels like a banner, not a chip.
+pub const TOAST_SLIDE_PX: f32 = 14.0;
+/// Approximate stacked-toast slot used to ease existing toasts down when a
+/// newer one appears at the top of the stack.
+pub const TOAST_STACK_SLOT_PX: f32 = 54.0;
+
+fn ease_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+fn ease_in_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * t
+}
 
 #[derive(Clone, Debug)]
 pub struct Toast {
@@ -36,6 +64,8 @@ pub struct Toast {
     pub paused_at: Option<Instant>,
     pub paused_total: Duration,
     pub duration: Duration,
+    stack_shift_from: f32,
+    stack_shift_started_at: Option<Instant>,
 }
 
 impl Toast {
@@ -55,34 +85,61 @@ impl Toast {
         let elapsed = self.elapsed();
         let elapsed_ms = elapsed.as_millis() as u64;
 
-        // Fade in
         if elapsed_ms < TOAST_FADE_IN_MS {
-            return elapsed_ms as f32 / TOAST_FADE_IN_MS as f32;
+            return ease_out_cubic(elapsed_ms as f32 / TOAST_FADE_IN_MS as f32);
         }
 
-        // Fade out (last FADE_OUT_MS of the duration)
         let remaining = self.duration.saturating_sub(elapsed);
         let remaining_ms = remaining.as_millis() as u64;
 
         if remaining_ms < TOAST_FADE_OUT_MS {
-            return remaining_ms as f32 / TOAST_FADE_OUT_MS as f32;
+            return 1.0 - ease_in_cubic(1.0 - remaining_ms as f32 / TOAST_FADE_OUT_MS as f32);
         }
 
         1.0
     }
 
-    /// Returns vertical offset for slide-in animation (0.0 = final position)
+    /// Vertical offset for the stacked top-center layout.
+    /// Negative values move the toast up: enter from above, exit upward, and
+    /// existing toasts start one slot higher so they ease down for a new one.
     pub fn slide_offset(&self) -> f32 {
-        let elapsed_ms = self.elapsed().as_millis() as u64;
+        self.edge_slide_offset() + self.stack_shift_offset()
+    }
+
+    fn edge_slide_offset(&self) -> f32 {
+        let elapsed = self.elapsed();
+        let elapsed_ms = elapsed.as_millis() as u64;
 
         if elapsed_ms < TOAST_FADE_IN_MS {
             let progress = elapsed_ms as f32 / TOAST_FADE_IN_MS as f32;
-            // Ease out quart for smoother deceleration
-            let eased = 1.0 - (1.0 - progress).powi(4);
-            return 24.0 * (1.0 - eased);
+            return -TOAST_SLIDE_PX * (1.0 - ease_out_cubic(progress));
+        }
+
+        let remaining_ms = self.duration.saturating_sub(elapsed).as_millis() as u64;
+        if remaining_ms < TOAST_FADE_OUT_MS {
+            let exit_progress = 1.0 - remaining_ms as f32 / TOAST_FADE_OUT_MS as f32;
+            return -TOAST_SLIDE_PX * ease_in_cubic(exit_progress);
         }
 
         0.0
+    }
+
+    fn stack_shift_offset(&self) -> f32 {
+        let Some(started_at) = self.stack_shift_started_at else {
+            return 0.0;
+        };
+        let elapsed_ms = started_at.elapsed().as_millis() as u64;
+        if elapsed_ms >= TOAST_FADE_IN_MS {
+            return 0.0;
+        }
+        let progress = elapsed_ms as f32 / TOAST_FADE_IN_MS as f32;
+        self.stack_shift_from * (1.0 - ease_out_cubic(progress))
+    }
+
+    fn is_stack_shifting(&self) -> bool {
+        self.stack_shift_started_at.is_some_and(|started_at| {
+            started_at.elapsed().as_millis() < u128::from(TOAST_FADE_IN_MS)
+        })
     }
 }
 
@@ -109,7 +166,7 @@ impl ToastManager {
 
     pub fn push(&mut self, request: ToastRequest) -> u64 {
         let id = next_toast_id();
-        self.active.push(Toast {
+        self.insert_newest(Toast {
             id,
             kind: request.kind,
             message: request.message,
@@ -118,8 +175,20 @@ impl ToastManager {
             paused_at: None,
             paused_total: Duration::ZERO,
             duration: request.duration,
+            stack_shift_from: 0.0,
+            stack_shift_started_at: None,
         });
         id
+    }
+
+    fn insert_newest(&mut self, toast: Toast) {
+        let now = Instant::now();
+        for existing in &mut self.active {
+            let current = existing.stack_shift_offset();
+            existing.stack_shift_from = current - TOAST_STACK_SLOT_PX;
+            existing.stack_shift_started_at = Some(now);
+        }
+        self.active.insert(0, toast);
     }
 
     pub fn dismiss(&mut self, id: u64) {
@@ -165,7 +234,7 @@ impl ToastManager {
     }
 
     pub fn push_with_id(&mut self, request: ToastRequestWithId) {
-        self.active.push(Toast {
+        self.insert_newest(Toast {
             id: request.id,
             kind: request.kind,
             message: request.message,
@@ -174,6 +243,8 @@ impl ToastManager {
             paused_at: None,
             paused_total: Duration::ZERO,
             duration: request.duration,
+            stack_shift_from: 0.0,
+            stack_shift_started_at: None,
         });
     }
 
@@ -192,11 +263,10 @@ impl ToastManager {
         }
     }
 
-    /// Returns true if any toast is currently animating (fade in, fade out, or loading spinner)
+    /// Returns true if any toast is currently animating (fade in, fade out, stack, or spinner)
     pub fn is_animating(&self) -> bool {
         self.active.iter().any(|toast| {
-            // Loading toasts are always animating (spinner)
-            if toast.kind == ToastKind::Loading {
+            if toast.kind == ToastKind::Loading || toast.is_stack_shifting() {
                 return true;
             }
 
@@ -204,7 +274,6 @@ impl ToastManager {
             let elapsed_ms = elapsed.as_millis() as u64;
             let remaining_ms = toast.duration.saturating_sub(elapsed).as_millis() as u64;
 
-            // Animating if in fade-in or fade-out period
             elapsed_ms < TOAST_FADE_IN_MS || remaining_ms < TOAST_FADE_OUT_MS
         })
     }
@@ -381,5 +450,80 @@ mod tests {
 
         assert_eq!(manager.active().len(), 1);
         assert_eq!(manager.active()[0].message, "Plugin finished");
+    }
+
+    fn test_toast(created_at: Instant, duration: Duration) -> Toast {
+        Toast {
+            id: 1,
+            kind: ToastKind::Info,
+            message: String::from("hello"),
+            action_label: None,
+            created_at,
+            paused_at: None,
+            paused_total: Duration::ZERO,
+            duration,
+            stack_shift_from: 0.0,
+            stack_shift_started_at: None,
+        }
+    }
+
+    #[test]
+    fn slide_offset_enters_from_above() {
+        let toast = test_toast(Instant::now(), DEFAULT_TOAST_DURATION);
+        let offset = toast.slide_offset();
+        assert!(offset <= 0.0);
+        assert!(offset >= -TOAST_SLIDE_PX);
+    }
+
+    #[test]
+    fn slide_offset_settles_after_fade_in() {
+        let toast = test_toast(
+            Instant::now() - Duration::from_millis(TOAST_FADE_IN_MS + 16),
+            DEFAULT_TOAST_DURATION,
+        );
+        assert_eq!(toast.slide_offset(), 0.0);
+    }
+
+    #[test]
+    fn slide_offset_exits_upward() {
+        let created_at = Instant::now()
+            - (DEFAULT_TOAST_DURATION - Duration::from_millis(TOAST_FADE_OUT_MS / 2));
+        let toast = test_toast(created_at, DEFAULT_TOAST_DURATION);
+        let offset = toast.slide_offset();
+        assert!(offset < 0.0);
+        assert!(offset >= -TOAST_SLIDE_PX);
+    }
+
+    #[test]
+    fn newest_toast_stacks_at_the_top_and_shifts_existing_down() {
+        let mut manager = ToastManager::new();
+        manager.push(ToastRequest {
+            kind: ToastKind::Info,
+            message: String::from("first"),
+            duration: DEFAULT_TOAST_DURATION,
+        });
+        manager.push(ToastRequest {
+            kind: ToastKind::Info,
+            message: String::from("second"),
+            duration: DEFAULT_TOAST_DURATION,
+        });
+
+        assert_eq!(manager.active()[0].message, "second");
+        assert_eq!(manager.active()[1].message, "first");
+        assert!(manager.active()[1].stack_shift_offset() < 0.0);
+        assert!(manager.active()[1].stack_shift_offset() >= -TOAST_STACK_SLOT_PX);
+        assert!(manager.is_animating());
+    }
+
+    #[test]
+    fn kind_icons_cover_every_non_loading_variant() {
+        assert_eq!(
+            ToastKind::Info.icon_path(),
+            Some("icons/command_palette/info.svg")
+        );
+        assert_eq!(ToastKind::Success.icon_path(), Some("icons/check.svg"));
+        assert_eq!(ToastKind::Warning.icon_path(), Some("icons/alert.svg"));
+        assert_eq!(ToastKind::Error.icon_path(), Some("icons/close.svg"));
+        assert_eq!(ToastKind::Loading.icon_path(), None);
     }
 }

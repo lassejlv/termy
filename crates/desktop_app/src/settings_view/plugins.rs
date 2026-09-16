@@ -98,9 +98,8 @@ impl SettingsWindow {
             let _ = cx.update(|cx| {
                 this.update(cx, |view, cx| {
                     view.apply_plugin_settings_snapshot(snapshot);
-                    match result {
-                        Ok(()) => crate::ui::toast::success("Plugin setting saved"),
-                        Err(error) => crate::ui::toast::error(error),
+                    if let Err(error) = result {
+                        crate::ui::toast::error(error);
                     }
                     cx.notify();
                 })
@@ -133,9 +132,8 @@ impl SettingsWindow {
             let _ = cx.update(|cx| {
                 this.update(cx, |view, cx| {
                     view.apply_plugin_settings_snapshot(snapshot);
-                    match result {
-                        Ok(()) => crate::ui::toast::success("Plugin setting reset"),
-                        Err(error) => crate::ui::toast::error(error),
+                    if let Err(error) = result {
+                        crate::ui::toast::error(error);
                     }
                     cx.notify();
                 })

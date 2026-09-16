@@ -57,11 +57,13 @@ impl RenderOnce for SettingsContent {
     }
 }
 
-/// Title, subtitle, and an optional trailing action (usually Reset section).
+/// Title, subtitle, an optional leading glyph, and an optional trailing action
+/// (usually Reset section).
 #[derive(IntoElement)]
 pub struct SectionHeader {
     title: SharedString,
     subtitle: Option<SharedString>,
+    leading: Option<AnyElement>,
     action: Option<AnyElement>,
 }
 
@@ -70,12 +72,19 @@ impl SectionHeader {
         Self {
             title: title.into(),
             subtitle: None,
+            leading: None,
             action: None,
         }
     }
 
     pub fn subtitle(mut self, subtitle: impl Into<SharedString>) -> Self {
         self.subtitle = Some(subtitle.into());
+        self
+    }
+
+    /// Icon tile or similar drawn before the title block.
+    pub fn leading(mut self, leading: impl IntoElement) -> Self {
+        self.leading = Some(leading.into_any_element());
         self
     }
 
@@ -91,30 +100,38 @@ impl RenderOnce for SectionHeader {
 
         div()
             .flex()
-            .items_end()
+            .items_center()
             .justify_between()
             .gap(px(16.0))
             .child(
                 div()
                     .flex()
-                    .flex_col()
-                    .gap(px(4.0))
+                    .items_center()
+                    .gap(px(12.0))
                     .flex_grow()
                     .min_w(px(0.0))
+                    .children(self.leading)
                     .child(
                         div()
-                            .text_size(SECTION_TITLE_SIZE)
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .text_color(theme.text_primary)
-                            .child(self.title),
-                    )
-                    .children(self.subtitle.map(|subtitle| {
-                        div()
-                            .text_size(SECTION_SUBTITLE_SIZE)
-                            .line_height(px(20.0))
-                            .text_color(theme.text_muted)
-                            .child(subtitle)
-                    })),
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .min_w(px(0.0))
+                            .child(
+                                div()
+                                    .text_size(SECTION_TITLE_SIZE)
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .text_color(theme.text_primary)
+                                    .child(self.title),
+                            )
+                            .children(self.subtitle.map(|subtitle| {
+                                div()
+                                    .text_size(SECTION_SUBTITLE_SIZE)
+                                    .line_height(px(20.0))
+                                    .text_color(theme.text_muted)
+                                    .child(subtitle)
+                            })),
+                    ),
             )
             .children(self.action)
     }
