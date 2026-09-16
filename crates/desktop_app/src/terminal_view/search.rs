@@ -200,6 +200,7 @@ impl TerminalView {
         self.search_open = false;
         self.search_state.hide();
         self.search_scan_incomplete = false;
+        self.search_options_open = false;
         self.search_debounce_token = self.search_debounce_token.wrapping_add(1);
         self.clear_terminal_scrollbar_marker_cache();
         self.notify_search_ui(cx);
@@ -217,6 +218,11 @@ impl TerminalView {
     fn notify_search_ui(&mut self, cx: &mut Context<Self>) {
         self.notify_overlay(cx);
         cx.notify();
+    }
+
+    fn toggle_search_options(&mut self, cx: &mut Context<Self>) {
+        self.search_options_open = !self.search_options_open;
+        self.notify_search_ui(cx);
     }
 
     /// Navigate to the next match in the result list. Since results are ordered
@@ -539,9 +545,8 @@ impl TerminalView {
             div()
                 .id("search-bar-host")
                 .absolute()
-                .top(px(self.terminal_content_top_inset() + 10.0))
-                .left(relative(0.5))
-                .ml(px(-SEARCH_BAR_WIDTH / 2.0))
+                .top(px(self.terminal_content_top_inset() + SEARCH_BAR_INSET))
+                .right(px(SEARCH_BAR_INSET))
                 .w(px(SEARCH_BAR_WIDTH))
                 .child(
                     div()
@@ -567,112 +572,117 @@ impl TerminalView {
                         )
                         .child(
                             div()
-                                .h(px(30.0))
-                                .w_full()
-                                .relative()
-                                .overflow_hidden()
-                                .rounded(px(SEARCH_OVERLAY_GEOMETRY.input_radius))
-                                .bg(input_bg)
-                                .border_1()
-                                .border_color(if has_error { error_color } else { input_border })
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .left(px(10.0))
-                                        .top_0()
-                                        .bottom_0()
-                                        .w(px(14.0))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .child(
-                                            gpui::svg()
-                                                .path(gpui::SharedString::from(
-                                                    "icons/settings/search.svg",
-                                                ))
-                                                .size(px(13.0))
-                                                .text_color(button_text),
-                                        ),
-                                )
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .left(px(32.0))
-                                        .right(px(if status_label.is_some() {
-                                            132.0
-                                        } else {
-                                            10.0
-                                        }))
-                                        .top_0()
-                                        .bottom_0()
-                                        .overflow_hidden()
-                                        .when(query_empty, |el| {
-                                            el.child(
-                                                div()
-                                                    .absolute()
-                                                    .left_0()
-                                                    .top_0()
-                                                    .bottom_0()
-                                                    .flex()
-                                                    .items_center()
-                                                    .text_size(px(13.0))
-                                                    .text_color(muted_text)
-                                                    .child("Find in terminal"),
-                                            )
-                                        })
-                                        .child(
-                                            div().relative().size_full().child(
-                                                self.render_inline_input_layer(
-                                                    Font {
-                                                        family: self.ui_font_family.clone(),
-                                                        ..gpui::font("")
-                                                    },
-                                                    px(13.0),
-                                                    strong_text.into(),
-                                                    overlay_style
-                                                        .chrome_panel_cursor(
-                                                            SEARCH_INPUT_SELECTION_ALPHA,
-                                                        )
-                                                        .into(),
-                                                    InlineInputAlignment::Left,
-                                                    cx,
-                                                ),
-                                            ),
-                                        ),
-                                )
-                                .children(status_label.map(|label| {
-                                    div()
-                                        .absolute()
-                                        .right(px(6.0))
-                                        .top(px(4.0))
-                                        .bottom(px(4.0))
-                                        .px(px(8.0))
-                                        .rounded(px(6.0))
-                                        .bg(if has_error {
-                                            let mut bg = error_color;
-                                            bg.a = 0.14;
-                                            bg
-                                        } else {
-                                            overlay_style.panel_foreground(0.06)
-                                        })
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .text_size(px(11.0))
-                                        .text_color(if has_error {
-                                            error_color
-                                        } else {
-                                            counter_text
-                                        })
-                                        .child(label)
-                                })),
-                        )
-                        .child(
-                            div()
                                 .w_full()
                                 .flex()
                                 .items_center()
                                 .gap(px(4.0))
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .h(px(30.0))
+                                        .relative()
+                                        .overflow_hidden()
+                                        .rounded(px(SEARCH_OVERLAY_GEOMETRY.input_radius))
+                                        .bg(input_bg)
+                                        .border_1()
+                                        .border_color(if has_error {
+                                            error_color
+                                        } else {
+                                            input_border
+                                        })
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .left(px(10.0))
+                                                .top_0()
+                                                .bottom_0()
+                                                .w(px(14.0))
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .child(
+                                                    gpui::svg()
+                                                        .path(gpui::SharedString::from(
+                                                            "icons/settings/search.svg",
+                                                        ))
+                                                        .size(px(13.0))
+                                                        .text_color(button_text),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .absolute()
+                                                .left(px(32.0))
+                                                .right(px(if status_label.is_some() {
+                                                    132.0
+                                                } else {
+                                                    10.0
+                                                }))
+                                                .top_0()
+                                                .bottom_0()
+                                                .overflow_hidden()
+                                                .when(query_empty, |el| {
+                                                    el.child(
+                                                        div()
+                                                            .absolute()
+                                                            .left_0()
+                                                            .top_0()
+                                                            .bottom_0()
+                                                            .flex()
+                                                            .items_center()
+                                                            .text_size(px(13.0))
+                                                            .text_color(muted_text)
+                                                            .child("Find in terminal"),
+                                                    )
+                                                })
+                                                .child(
+                                                    div().relative().size_full().child(
+                                                        self.render_inline_input_layer(
+                                                            Font {
+                                                                family: self.ui_font_family.clone(),
+                                                                ..gpui::font("")
+                                                            },
+                                                            px(13.0),
+                                                            strong_text.into(),
+                                                            overlay_style
+                                                                .chrome_panel_cursor(
+                                                                    SEARCH_INPUT_SELECTION_ALPHA,
+                                                                )
+                                                                .into(),
+                                                            InlineInputAlignment::Left,
+                                                            cx,
+                                                        ),
+                                                    ),
+                                                ),
+                                        )
+                                        .children(status_label.map(|label| {
+                                            div()
+                                                .absolute()
+                                                .right(px(6.0))
+                                                .top(px(4.0))
+                                                .bottom(px(4.0))
+                                                .px(px(8.0))
+                                                .rounded(px(6.0))
+                                                .bg(if has_error {
+                                                    let mut bg = error_color;
+                                                    bg.a = 0.14;
+                                                    bg
+                                                } else {
+                                                    overlay_style.panel_foreground(0.06)
+                                                })
+                                                .flex()
+                                                .items_center()
+                                                .justify_center()
+                                                .text_size(px(11.0))
+                                                .text_color(if has_error {
+                                                    error_color
+                                                } else {
+                                                    counter_text
+                                                })
+                                                .child(label)
+                                        })),
+                                )
                                 .child(nav_button(
                                     "search-prev",
                                     "icons/settings/chevron-up.svg",
@@ -685,31 +695,64 @@ impl TerminalView {
                                     false,
                                     cx,
                                 ))
-                                .child(mode_chip(
-                                    "search-case-sensitive",
-                                    "Case",
-                                    case_sensitive,
-                                    CommandAction::ToggleSearchCaseSensitive,
-                                    cx,
-                                ))
-                                .child(mode_chip(
-                                    "search-regex",
-                                    "Regex",
-                                    regex_mode,
-                                    CommandAction::ToggleSearchRegex,
-                                    cx,
-                                ))
                                 .child(
                                     div()
-                                        .flex_1()
-                                        .min_w(px(0.0))
+                                        .id("search-options")
+                                        .w(px(26.0))
+                                        .h(px(26.0))
+                                        .rounded(px(radius))
                                         .flex()
                                         .items_center()
-                                        .justify_end()
-                                        .pr(px(6.0))
-                                        .text_size(px(10.0))
-                                        .text_color(muted_text)
-                                        .child("↵ next  ·  ⇧↵ prev  ·  esc"),
+                                        .justify_center()
+                                        .text_color(
+                                            if self.search_options_open
+                                                || case_sensitive
+                                                || regex_mode
+                                            {
+                                                strong_text
+                                            } else {
+                                                button_text
+                                            },
+                                        )
+                                        .bg(if self.search_options_open {
+                                            button_active_bg
+                                        } else if case_sensitive || regex_mode {
+                                            overlay_style.panel_foreground(0.08)
+                                        } else {
+                                            gpui::Rgba {
+                                                r: 0.0,
+                                                g: 0.0,
+                                                b: 0.0,
+                                                a: 0.0,
+                                            }
+                                        })
+                                        .hover(|style| style.bg(button_hover_bg))
+                                        .active(move |style| style.bg(button_pressed_bg))
+                                        .cursor_pointer()
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _event, _window, cx| {
+                                                this.toggle_search_options(cx);
+                                                cx.stop_propagation();
+                                            }),
+                                        )
+                                        .child(
+                                            gpui::svg()
+                                                .path(gpui::SharedString::from(
+                                                    "icons/settings/more.svg",
+                                                ))
+                                                .size(px(14.0))
+                                                .text_color(
+                                                    if self.search_options_open
+                                                        || case_sensitive
+                                                        || regex_mode
+                                                    {
+                                                        strong_text
+                                                    } else {
+                                                        button_text
+                                                    },
+                                                ),
+                                        ),
                                 )
                                 .child(
                                     div()
@@ -740,7 +783,42 @@ impl TerminalView {
                                                 .text_color(button_text),
                                         ),
                                 ),
-                        ),
+                        )
+                        .when(self.search_options_open, |bar| {
+                            bar.child(
+                                div()
+                                    .w_full()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(4.0))
+                                    .child(mode_chip(
+                                        "search-case-sensitive",
+                                        "Case",
+                                        case_sensitive,
+                                        CommandAction::ToggleSearchCaseSensitive,
+                                        cx,
+                                    ))
+                                    .child(mode_chip(
+                                        "search-regex",
+                                        "Regex",
+                                        regex_mode,
+                                        CommandAction::ToggleSearchRegex,
+                                        cx,
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w(px(0.0))
+                                            .flex()
+                                            .items_center()
+                                            .justify_end()
+                                            .pr(px(4.0))
+                                            .text_size(px(10.0))
+                                            .text_color(muted_text)
+                                            .child("↵ next  ·  ⇧↵ prev  ·  esc"),
+                                    ),
+                            )
+                        }),
                 ),
             "search-bar-enter",
         )

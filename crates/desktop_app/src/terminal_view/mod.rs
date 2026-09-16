@@ -1480,6 +1480,7 @@ pub struct TerminalView {
     search_state: SearchState,
     search_debounce_token: u64,
     search_scan_incomplete: bool,
+    search_options_open: bool,
     // IME composing state for terminal mode
     ime_marked_text: Option<String>,
     ime_selected_range: Option<Range<usize>>,
@@ -4025,6 +4026,7 @@ impl TerminalView {
             search_state: SearchState::new(),
             search_debounce_token: 0,
             search_scan_incomplete: false,
+            search_options_open: false,
             ime_marked_text: None,
             ime_selected_range: None,
             pending_clipboard: None,
