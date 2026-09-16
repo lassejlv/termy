@@ -32,6 +32,11 @@ function RootComponent() {
     <html suppressHydrationWarning>
       <head>
         <HeadContent />
+        <script
+          defer
+          src="https://usedatix.com/tracker.js"
+          data-site="6ff1413d-87a7-498f-9fc7-22171764b7f8"
+        />
       </head>
       <body className="flex flex-col min-h-screen">
         <RootProvider
