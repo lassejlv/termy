@@ -397,6 +397,14 @@ impl Backend {
         }
     }
 
+    pub(super) fn render_read_with_screen(&self, force_full: bool) -> (TerminalRenderRead, bool) {
+        match self {
+            Self::Alacritty(backend) => backend.render_read_with_screen(force_full),
+            Self::Tmon(backend) => backend.render_read_with_screen(force_full),
+            Self::Remote(backend) => backend.render_read_with_screen(force_full),
+        }
+    }
+
     pub(super) fn visit_viewport_cells(
         &self,
         visitor: impl FnMut(usize, i32, usize, &crate::TerminalRenderCell),

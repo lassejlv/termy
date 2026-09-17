@@ -2438,6 +2438,10 @@ impl Terminal {
         self.backend.take_render_damage_snapshot()
     }
 
+    pub(crate) fn render_read_with_screen(&self, force_full: bool) -> (TerminalRenderRead, bool) {
+        self.backend.render_read_with_screen(force_full)
+    }
+
     pub fn render_read(&self, force_full: bool) -> TerminalRenderRead {
         self.backend.render_read(force_full)
     }
@@ -2803,6 +2807,43 @@ mod tests {
         let _ = terminal.drain_events(&mut reply_host);
         terminal.feed_output(b"c");
         assert_eq!(notifications.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn remote_screen_identity_matches_cells_during_concurrent_output() {
+        for terminal in [
+            Terminal::new_display(test_terminal_size(), None),
+            Terminal::new_alacritty_display_for_test(test_terminal_size(), None),
+        ] {
+            terminal.feed_output(b"MAIN");
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    for _ in 0..2_000 {
+                        terminal.feed_output(b"\x1b[?1049h\x1b[2J\x1b[HALT");
+                        terminal.feed_output(b"\x1b[?1049l");
+                    }
+                });
+                for _ in 0..2_000 {
+                    let state = crate::remote::RemoteState::capture(&terminal);
+                    let text: String = state
+                        .render
+                        .cells
+                        .iter()
+                        .map(|cell| cell.text.as_str())
+                        .collect();
+                    let expected = if state.alternate_screen {
+                        "ALT"
+                    } else {
+                        "MAIN"
+                    };
+                    assert!(
+                        text.starts_with(expected),
+                        "screen={}, text={text:?}",
+                        state.alternate_screen
+                    );
+                }
+            });
+        }
     }
 
     #[test]

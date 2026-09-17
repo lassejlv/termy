@@ -311,16 +311,20 @@ impl TmonBackend {
     }
 
     pub(super) fn render_read(&self, force_full: bool) -> TerminalRenderRead {
+        self.render_read_with_screen(force_full).0
+    }
+
+    pub(super) fn render_read_with_screen(&self, force_full: bool) -> (TerminalRenderRead, bool) {
         let mut cells = Vec::new();
-        let update = self
-            .terminal
-            .visit_render_read(force_full, |_, _, _, cell, combining| {
-                cells.push(render_cell(cell, combining));
-            });
+        let (update, alternate_screen) =
+            self.terminal
+                .visit_render_read_with_screen(force_full, |_, _, _, cell, combining| {
+                    cells.push(render_cell(cell, combining));
+                });
         let palette = terminal_palette(&update.palette);
         let mut render_update = render_damage(update.render, palette.revision);
         render_update.damage = self.damage_with_cursor(render_update.damage, update.viewport);
-        TerminalRenderRead {
+        let read = TerminalRenderRead {
             metadata: TerminalViewportMetadata {
                 cols: update.viewport.cols,
                 rows: update.viewport.rows,
@@ -333,7 +337,8 @@ impl TmonBackend {
             palette,
             cells,
             update: render_update,
-        }
+        };
+        (read, alternate_screen)
     }
 
     pub(super) fn visit_viewport_cells(

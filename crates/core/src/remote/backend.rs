@@ -219,10 +219,13 @@ impl RemoteBackend {
         self.take_render_damage_snapshot().damage
     }
     pub(crate) fn render_read(&self, force_full: bool) -> TerminalRenderRead {
+        self.render_read_with_screen(force_full).0
+    }
+    pub(crate) fn render_read_with_screen(&self, force_full: bool) -> (TerminalRenderRead, bool) {
         let state = self.transport.state();
         let mut read = state.render.clone();
         read.update = self.damage(&state, force_full);
-        read
+        (read, state.alternate_screen)
     }
 
     pub(crate) fn visit_viewport_cells(

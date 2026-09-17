@@ -79,7 +79,7 @@ impl Drop for Host {
 fn agent_commands_control_a_persistent_terminal_across_processes() {
     let host = Host(tempfile::tempdir().unwrap());
     let shell = if cfg!(windows) {
-        "powershell.exe -NoLogo -NoProfile"
+        "powershell.exe"
     } else {
         "/bin/sh"
     };

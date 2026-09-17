@@ -587,6 +587,10 @@ impl AlacrittyBackend {
 
     /// Capture a coherent rich viewport read without exposing engine types.
     pub fn render_read(&self, force_full: bool) -> TerminalRenderRead {
+        self.render_read_with_screen(force_full).0
+    }
+
+    pub(super) fn render_read_with_screen(&self, force_full: bool) -> (TerminalRenderRead, bool) {
         let mut term = self.term.lock();
         self.refresh_palette_revision(&term);
         let damage = if force_full {
@@ -598,7 +602,7 @@ impl AlacrittyBackend {
         let generation = self.render_generation.load(Ordering::Relaxed);
         let cells = backend::visible_render_cells(&term);
         let (display_offset, history_size) = backend::scroll_state(&term);
-        TerminalRenderRead {
+        let read = TerminalRenderRead {
             metadata: TerminalViewportMetadata {
                 cols: self.size.cols,
                 rows: self.size.rows,
@@ -616,7 +620,8 @@ impl AlacrittyBackend {
                 generation,
                 palette_revision: self.palette_revision.load(Ordering::Relaxed),
             },
-        }
+        };
+        (read, backend::alternate_screen_mode(&term))
     }
 
     /// Visit visible rich cells and return coherent viewport metadata.

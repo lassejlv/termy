@@ -29,15 +29,18 @@ pub struct RemoteState {
 impl RemoteState {
     pub fn capture(terminal: &Terminal) -> Self {
         let (graphics_revision, graphics) = terminal.kitty_graphics_snapshot();
+        // Capture screen identity under the same engine lock as its cells.
+        // A PTY update may switch screens between independent reads.
+        let (render, alternate_screen) = terminal.render_read_with_screen(true);
         Self {
-            render: terminal.render_read(true),
+            render,
             size: terminal.size(),
             child_pid: terminal.child_pid(),
             cursor_position: terminal.cursor_position(),
             mouse_mode: terminal.mouse_mode(),
             keyboard_mode: terminal.keyboard_mode(),
             bracketed_paste: terminal.bracketed_paste_mode(),
-            alternate_screen: terminal.alternate_screen_mode(),
+            alternate_screen,
             clipboard_paste_events: terminal.kitty_clipboard_paste_events_enabled(),
             graphics_revision,
             graphics_deadline: graphics

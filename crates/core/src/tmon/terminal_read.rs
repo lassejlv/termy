@@ -64,8 +64,16 @@ impl Terminal {
     pub fn visit_render_read(
         &self,
         force_full: bool,
-        mut visitor: impl FnMut(usize, i32, usize, &Cell, Option<Combining<'_>>),
+        visitor: impl FnMut(usize, i32, usize, &Cell, Option<Combining<'_>>),
     ) -> FrameUpdate {
+        self.visit_render_read_with_screen(force_full, visitor).0
+    }
+
+    pub(crate) fn visit_render_read_with_screen(
+        &self,
+        force_full: bool,
+        mut visitor: impl FnMut(usize, i32, usize, &Cell, Option<Combining<'_>>),
+    ) -> (FrameUpdate, bool) {
         let mut engine = self
             .engine
             .lock()
@@ -77,7 +85,7 @@ impl Terminal {
         };
         let viewport = engine.grid.visit_viewport_cells(&mut visitor);
         engine.grid.clear_damage();
-        FrameUpdate {
+        let read = FrameUpdate {
             render: RenderDamageSnapshot {
                 damage,
                 scrolls,
@@ -88,7 +96,8 @@ impl Terminal {
             palette: engine.grid.palette(),
             graphics_revision: engine.parser.graphics_revision(),
             graphics_placements: engine.parser.graphics_placements(&engine.grid),
-        }
+        };
+        (read, engine.grid.alternate_screen_mode())
     }
 
     /// Capture the visible snapshot and palette under one engine lock.
