@@ -153,6 +153,28 @@ fn agent_commands_control_a_persistent_terminal_across_processes() {
     ]);
     host.ok(&["wait", id, "RUNNING_NOW"]);
     host.ok(&["key", id, "c", "--control"]);
+    if cfg!(windows) {
+        // PowerShell can discard queued input while cancelling a pipeline.
+        // Require a fresh prompt after RUNNING_NOW before the next command.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let output = host.ok(&["capture", id]);
+            let text = output["text"].as_str().unwrap();
+            if text
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .is_some_and(|line| line.starts_with("PS "))
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Ctrl+C did not restore the PowerShell prompt: {text}"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
     host.ok(&[
         "send",
         id,

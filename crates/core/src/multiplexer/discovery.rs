@@ -127,7 +127,10 @@ pub fn connect_or_start(root: &Path, executable: &Path) -> anyhow::Result<Sessio
     {
         use std::os::windows::process::CommandExt;
         prevent_standard_handle_inheritance()?;
-        command.creation_flags(0x0000_0008 | 0x0000_0200); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        // Detaching already isolates the host from the caller's console.
+        // CREATE_NEW_PROCESS_GROUP would also disable Ctrl+C in the host
+        // and its descendants, including shells attached to ConPTY.
+        command.creation_flags(0x0000_0008); // DETACHED_PROCESS
     }
     let mut child = command.spawn().context("start background terminal host")?;
     let deadline = Instant::now() + Duration::from_secs(5);
