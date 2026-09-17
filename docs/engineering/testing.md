@@ -52,6 +52,21 @@ native titlebars update without restarting Termy. The desktop's frame theme
 remains in charge; changing Termy's terminal colors must not override it.
 Native Wayland decorations remain compositor-controlled.
 
+## New-tab working directory (#388)
+
+The desktop regression tests launch a real native PTY and an isolated tmux
+server. Each changes the shell directory, starts a foreground process, creates a
+new tab, and checks its actual directory. The tmux case also leaves stale prompt
+metadata in place and verifies explicit directory overrides.
+
+```sh
+cargo test -p termy --bin termy working_dir_tests -- --include-ignored --nocapture
+```
+
+The tmux case requires tmux >= 3.3 and runs in `just test-tmux-integration`. For a manual check, change into a project,
+start lazygit, and create a tab with `secondary-t`; `pwd` in the new tab should
+show that project. Repeat with tmux enabled and disabled.
+
 ## Ignored tests
 
 - `crates/terminal_ui/tests/tmux_split_integration.rs` — requires **tmux ≥ 3.3** locally.
@@ -59,7 +74,7 @@ Native Wayland decorations remain compositor-controlled.
 - CI: macOS `architecture-checks` job (when tmux available).
 
 Every `#[ignore]` must reference a tracking issue in a comment.
-`just check-boundaries` enforces that the repo stays at or below 10 ignored tests.
+`just check-boundaries` enforces that the repo stays at or below 11 ignored tests.
 
 ## Before opening a PR
 

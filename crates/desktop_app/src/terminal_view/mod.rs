@@ -58,6 +58,9 @@ use termy_terminal_ui::{
     keystroke_to_input,
 };
 
+#[cfg(all(test, unix))]
+mod working_dir_tests;
+
 mod appearance;
 mod backend;
 mod benchmark;
@@ -1311,12 +1314,6 @@ enum ExplicitTitlePayload {
     Title(String),
 }
 
-#[derive(Clone, Debug)]
-struct ChildWorkingDirCacheEntry {
-    value: Option<String>,
-    resolved_at: Instant,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) enum TabBarVisibility {
     #[default]
@@ -1375,8 +1372,6 @@ pub struct TerminalView {
     progress_indicator_enabled: bool,
     progress_indicator_animation_scheduled: bool,
     configured_working_dir: Option<String>,
-    child_working_dir_cache: HashMap<u32, ChildWorkingDirCacheEntry>,
-    child_working_dir_lookup_pending: HashSet<u32>,
     terminal_runtime: TerminalRuntimeConfig,
     runtime: RuntimeState,
     tmux_enabled_config: bool,
@@ -2447,75 +2442,6 @@ impl TerminalView {
         }
     }
 
-    fn complete_child_working_dir_lookup(&mut self, pid: u32, value: Option<String>) {
-        self.child_working_dir_lookup_pending.remove(&pid);
-        self.child_working_dir_cache.insert(
-            pid,
-            ChildWorkingDirCacheEntry {
-                value,
-                resolved_at: Instant::now(),
-            },
-        );
-    }
-
-    fn schedule_child_working_dir_lookup(&mut self, pid: u32, cx: &mut Context<Self>) {
-        if !self.child_working_dir_lookup_pending.insert(pid) {
-            return;
-        }
-
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let value = smol::unblock(move || Self::working_dir_for_child_pid_blocking(pid)).await;
-            let _ = cx.update(|cx| {
-                this.update(cx, |view, _cx| {
-                    view.complete_child_working_dir_lookup(pid, value);
-                })
-            });
-        })
-        .detach();
-    }
-
-    fn cached_child_working_dir_for_pid(
-        &mut self,
-        pid: u32,
-        cx: &mut Context<Self>,
-    ) -> Option<Option<String>> {
-        let (cached_value, resolved_at) = self
-            .child_working_dir_cache
-            .get(&pid)
-            .map(|entry| (entry.value.clone(), entry.resolved_at))?;
-        let is_fresh =
-            Instant::now().saturating_duration_since(resolved_at) <= CHILD_WORKING_DIR_CACHE_TTL;
-        if !is_fresh {
-            self.schedule_child_working_dir_lookup(pid, cx);
-        }
-        Some(cached_value)
-    }
-
-    fn immediate_process_cwd_for_session_creation(
-        cached_value: Option<&str>,
-        pid: u32,
-    ) -> Option<String> {
-        normalize_working_directory_candidate(cached_value)
-            .or_else(|| Self::working_dir_for_child_pid_blocking(pid))
-    }
-
-    pub(in crate::terminal_view) fn cached_or_resolved_working_dir_for_child_pid(
-        &mut self,
-        pid: u32,
-        cx: &mut Context<Self>,
-    ) -> Option<String> {
-        if let Some(cached_value) = self.cached_child_working_dir_for_pid(pid, cx) {
-            return cached_value;
-        }
-
-        let value = Self::immediate_process_cwd_for_session_creation(None, pid);
-        self.complete_child_working_dir_lookup(pid, value.clone());
-        if value.is_none() {
-            self.schedule_child_working_dir_lookup(pid, cx);
-        }
-        value
-    }
-
     fn inherited_working_dir_candidate(candidate: Option<&str>) -> Option<String> {
         // Session-derived cwds (prompt/process/title) can name paths from another
         // filesystem namespace — a shell inside WSL or over SSH reports its remote
@@ -2557,8 +2483,26 @@ impl TerminalView {
     fn preferred_working_dir_for_new_session(
         &mut self,
         explicit_working_dir: Option<&str>,
-        cx: &mut Context<Self>,
+        _cx: &mut Context<Self>,
     ) -> Option<String> {
+        if let Some(explicit) = normalize_working_directory_candidate(explicit_working_dir) {
+            return Some(explicit);
+        }
+        // A full-screen application may replace shell titles or never emit OSC 7.
+        // Ask tmux for the selected pane's current path at creation time. The path
+        // belongs to the tmux server, which may be remote, so do not validate it
+        // against the local filesystem.
+        if let Some(runtime) = self.runtime.as_tmux()
+            && let Some(pane_id) = self
+                .session
+                .tabs
+                .get(self.session.active_tab)
+                .and_then(TerminalTab::active_pane_id)
+            && let Ok(snapshot) = runtime.client.refresh_snapshot()
+            && let Some(cwd) = Self::tmux_pane_working_dir(&snapshot, pane_id)
+        {
+            return Some(cwd);
+        }
         let active_tab = self.session.active_tab;
         let prompt_cwd = self
             .session
@@ -2571,7 +2515,9 @@ impl TerminalView {
             .get(active_tab)
             .and_then(TerminalTab::active_terminal)
             .and_then(Terminal::child_pid)
-            .and_then(|pid| self.cached_or_resolved_working_dir_for_child_pid(pid, cx));
+            // Cwd must be fresh: a shell can cd and start an app between tab
+            // creations, even while a previous cache entry would still be valid.
+            .and_then(Self::working_dir_for_child_pid_blocking);
         let title_cwd = self
             .session
             .tabs
@@ -3977,8 +3923,6 @@ impl TerminalView {
             progress_indicator_enabled: config.progress_indicator_enabled,
             progress_indicator_animation_scheduled: false,
             configured_working_dir,
-            child_working_dir_cache: HashMap::new(),
-            child_working_dir_lookup_pending: HashSet::new(),
             terminal_runtime,
             runtime,
             tmux_enabled_config: config.tmux_enabled,
@@ -5739,24 +5683,6 @@ mod tests {
             RuntimeWorkingDirFallback::Home,
         );
         assert_eq!(cwd.as_deref(), Some(configured.to_string_lossy().as_ref()));
-    }
-
-    #[test]
-    fn immediate_process_cwd_for_session_creation_prefers_cached_value() {
-        let cwd = TerminalView::immediate_process_cwd_for_session_creation(Some("/cached"), 0);
-        assert_eq!(cwd.as_deref(), Some("/cached"));
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
-    #[test]
-    fn immediate_process_cwd_for_session_creation_resolves_on_cache_miss() {
-        let expected = std::env::current_dir()
-            .expect("current dir")
-            .to_string_lossy()
-            .into_owned();
-        let cwd =
-            TerminalView::immediate_process_cwd_for_session_creation(None, std::process::id());
-        assert_eq!(cwd.as_deref(), Some(expected.as_str()));
     }
 
     #[test]

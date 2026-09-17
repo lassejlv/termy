@@ -96,7 +96,8 @@ require_issue_url_for_pattern() {
 }
 
 require_ignored_test_budget() {
-  local max_ignored_tests=10
+  # #388 adds a desktop tmux cwd regression, run by test-tmux-integration in CI.
+  local max_ignored_tests=11
   local ignored_count
 
   ignored_count="$(rg -n '#\[ignore' crates | wc -l | tr -d ' ')"

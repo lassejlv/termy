@@ -178,9 +178,10 @@ test-tmux-integration:
       "termy_terminal_ui|integration|tmux_split_integration|repeated_reconnect_does_not_increase_client_count"
       "termy_tmux_control_core|lib||session::tests::launches_and_drives_control_mode"
       "termy_ffi|integration|tmux_control_ffi|ffi_control_open_poll_send_close"
+      "termy|bin|termy|terminal_view::working_dir_tests::new_tmux_tab_inherits_live_pane_cwd_with_foreground_app"
     )
-    if (( ${#tmux_tests[@]} != 10 )); then
-      echo "Tmux integration configuration error: expected 10 tests, got ${#tmux_tests[@]}" >&2
+    if (( ${#tmux_tests[@]} != 11 )); then
+      echo "Tmux integration configuration error: expected 11 tests, got ${#tmux_tests[@]}" >&2
       exit 1
     fi
     unique_count=$(
@@ -196,6 +197,7 @@ test-tmux-integration:
       cargo_args=(test --locked -p "$package")
       case "$target_kind" in
         lib) cargo_args+=(--lib) ;;
+        bin) cargo_args+=(--bin "$target_name") ;;
         integration) cargo_args+=(--test "$target_name") ;;
       esac
       cargo "${cargo_args[@]}" "$test_name" -- \
@@ -210,6 +212,7 @@ _validate-exact-tmux-test test_spec:
     cargo_args=(test --locked -p "$package")
     case "$target_kind" in
       lib) cargo_args+=(--lib) ;;
+      bin) cargo_args+=(--bin "$target_name") ;;
       integration) cargo_args+=(--test "$target_name") ;;
       *)
         echo "Tmux integration configuration error: invalid target kind '$target_kind'" >&2

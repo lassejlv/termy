@@ -12,6 +12,11 @@ description: Open, switch, rename, and organize tabs.
 | `move_tab_left` / `move_tab_right` | bind manually |
 | `rename_tab` | bind manually |
 
+New tabs inherit the active pane's working directory, including while an app
+such as lazygit is running. Native tabs use the shell-reported directory or a
+fresh lookup of the shell process; tmux tabs query the selected pane directly.
+An explicitly requested directory takes precedence.
+
 Tab titles: [Tabs and titlebar](/docs/customize/tabs-titlebar).
 
 ## Open a tab from your file manager

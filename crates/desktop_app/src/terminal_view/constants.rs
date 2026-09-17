@@ -12,7 +12,6 @@ pub(super) const DEFAULT_TAB_TITLE: &str = "Terminal";
 pub(super) const COMMAND_TITLE_DELAY_MS: u64 = 250;
 pub(super) const CURSOR_BLINK_INTERVAL_MS: u64 = 530;
 pub(super) const TMUX_TITLE_REFRESH_DEBOUNCE_MS: u64 = 120;
-const CHILD_WORKING_DIR_CACHE_TTL_MS: u64 = 1500;
 pub(super) const SELECTION_BG_ALPHA: f32 = 0.35;
 pub(super) const DIM_TEXT_FACTOR: f32 = 0.66;
 pub(super) const COMMAND_PALETTE_WIDTH: f32 = 560.0;
@@ -84,8 +83,6 @@ pub(super) const TOAST_TOP_INSET: f32 = 12.0;
 pub(super) const WINDOW_RESIZE_INDICATOR_MS: u64 = 850;
 pub(super) const RESIZE_THROTTLE_MS: u64 = 16;
 pub(super) const INACTIVE_RESIZE_DEBOUNCE_MS: u64 = 120;
-pub(super) const CHILD_WORKING_DIR_CACHE_TTL: Duration =
-    Duration::from_millis(CHILD_WORKING_DIR_CACHE_TTL_MS);
 pub(super) const BENCHMARK_EXIT_GRACE_DURATION: Duration = Duration::from_millis(250);
 pub(super) const OVERLAY_PANEL_ALPHA_FLOOR_RATIO: f32 = 0.72;
 pub(super) const OVERLAY_PRIMARY_TEXT_ALPHA: f32 = 0.95;

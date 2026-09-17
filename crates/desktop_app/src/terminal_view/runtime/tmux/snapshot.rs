@@ -38,6 +38,18 @@ impl TmuxRuntime {
 }
 
 impl TerminalView {
+    pub(in crate::terminal_view) fn tmux_pane_working_dir(
+        snapshot: &TmuxSnapshot,
+        pane_id: &str,
+    ) -> Option<String> {
+        snapshot
+            .windows
+            .iter()
+            .flat_map(|window| &window.panes)
+            .find(|pane| pane.id == pane_id)
+            .and_then(|pane| normalize_working_directory_candidate(Some(&pane.current_path)))
+    }
+
     fn hydration_capture_scrollback_history(
         active_scrollback_history: usize,
         inactive_tab_scrollback: Option<usize>,
@@ -482,6 +494,13 @@ mod tests {
             snapshot_preferred_cwd(&snapshot).as_deref(),
             Some("/active")
         );
+        // Target the UI-selected pane, not whichever pane a snapshot marks active.
+        // Remote tmux paths need not exist on the client filesystem.
+        assert_eq!(
+            TerminalView::tmux_pane_working_dir(&snapshot, "%1").as_deref(),
+            Some("/inactive")
+        );
+        assert!(TerminalView::tmux_pane_working_dir(&snapshot, "%missing").is_none());
     }
 
     #[test]
