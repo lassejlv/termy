@@ -50,6 +50,8 @@ macro_rules! termy_command_catalog {
             (ZoomReset, "zoom_reset"),
             (OpenSearch, "open_search"),
             (CheckForUpdates, "check_for_updates"),
+            (ViewReleaseNotes, "view_release_notes"),
+            (BrowseReleaseNotes, "browse_release_notes"),
             (Quit, "quit"),
             (ToggleCommandPalette, "toggle_command_palette"),
             (Copy, "copy"),

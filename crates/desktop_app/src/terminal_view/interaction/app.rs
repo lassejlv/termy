@@ -31,6 +31,10 @@ impl TerminalView {
                 self.check_for_updates_action(cx);
                 true
             }
+            CommandAction::ViewReleaseNotes => {
+                self.view_release_notes_action(cx);
+                true
+            }
             _ => false,
         }
     }
@@ -128,5 +132,17 @@ impl TerminalView {
         AutoUpdater::check(updater.downgrade(), cx);
         self.update_check_toast_id = Some(crate::ui::toast::loading("Checking for updates"));
         self.notify_overlay(cx);
+    }
+
+    fn view_release_notes_action(&mut self, cx: &mut Context<Self>) {
+        self.open_release_notes(crate::APP_VERSION.to_string(), cx);
+    }
+
+    pub(in super::super) fn browse_release_notes_action(&mut self, cx: &mut Context<Self>) {
+        if self.simple_mode {
+            self.open_release_notes(crate::APP_VERSION.to_string(), cx);
+            return;
+        }
+        self.open_command_palette_in_mode(CommandPaletteMode::Releases, cx);
     }
 }

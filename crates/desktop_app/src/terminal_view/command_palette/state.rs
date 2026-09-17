@@ -23,6 +23,15 @@ pub(in super::super) enum CommandPaletteMode {
     Tasks,
     PluginInputs,
     AppInfo,
+    Releases,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ReleaseListState {
+    Idle,
+    Loading,
+    Ready(Vec<crate::ui::release_notes::ReleaseListRow>),
+    Failed(String),
 }
 
 impl CommandPaletteMode {
@@ -32,9 +41,11 @@ impl CommandPaletteMode {
     fn ranking(self) -> CommandPaletteRanking {
         match self {
             Self::Commands | Self::Themes | Self::AppInfo => CommandPaletteRanking::ByScore,
-            Self::TmuxSessions | Self::Layouts | Self::Tasks | Self::PluginInputs => {
-                CommandPaletteRanking::PreserveOrder
-            }
+            Self::TmuxSessions
+            | Self::Layouts
+            | Self::Tasks
+            | Self::PluginInputs
+            | Self::Releases => CommandPaletteRanking::PreserveOrder,
         }
     }
 }
@@ -149,6 +160,9 @@ pub(super) enum CommandPaletteItemKind {
     AppInfoCopyAll {
         payload: String,
     },
+    ReleaseNotes {
+        tag: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -235,6 +249,17 @@ impl CommandPaletteItem {
             status_hint: Some("Copy".to_string()),
             tmux_status_hint: None,
             kind: CommandPaletteItemKind::AppInfoCopyAll { payload },
+        }
+    }
+
+    pub(super) fn release_notes(row: crate::ui::release_notes::ReleaseListRow) -> Self {
+        Self {
+            title: row.title,
+            keywords: row.keywords,
+            enabled: true,
+            status_hint: row.status_hint,
+            tmux_status_hint: None,
+            kind: CommandPaletteItemKind::ReleaseNotes { tag: row.tag },
         }
     }
 
@@ -333,6 +358,8 @@ pub(in super::super) struct CommandPaletteState {
     pub(super) saved_layout_live_name: Option<String>,
     pub(super) saved_layout_autosave_enabled: bool,
     pub(super) plugin_input_session: Option<PluginInputSession>,
+    pub(super) release_list: ReleaseListState,
+    pub(super) release_list_generation: u64,
 }
 
 impl CommandPaletteState {
@@ -368,6 +395,8 @@ impl CommandPaletteState {
             saved_layout_live_name: None,
             saved_layout_autosave_enabled: false,
             plugin_input_session: None,
+            release_list: ReleaseListState::Idle,
+            release_list_generation: 0,
         }
     }
 
@@ -705,6 +734,7 @@ impl CommandPaletteState {
         if self.mode != CommandPaletteMode::PluginInputs {
             self.plugin_input_session = None;
         }
+        self.release_list = ReleaseListState::Idle;
     }
 }
 

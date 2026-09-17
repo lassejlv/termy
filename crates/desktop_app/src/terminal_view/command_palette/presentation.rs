@@ -49,6 +49,7 @@ pub(super) fn command_icon_path(id: CommandId) -> &'static str {
         | ToggleSearchCaseSensitive
         | ToggleSearchRegex => "icons/settings/search.svg",
         CheckForUpdates => "icons/command_palette/check-update.svg",
+        ViewReleaseNotes | BrowseReleaseNotes => "icons/command_palette/info.svg",
         Quit => "icons/command_palette/power.svg",
         ToggleCommandPalette => "icons/command_palette/command.svg",
         Copy | Paste | SelectAll => "icons/command_palette/clipboard.svg",
@@ -97,6 +98,7 @@ pub(super) fn palette_item_icon_path(item: &CommandPaletteItem) -> &'static str 
         | CommandPaletteItemKind::Task { .. } => "icons/command_palette/play.svg",
         CommandPaletteItemKind::AppInfoEntry { .. } => "icons/command_palette/info.svg",
         CommandPaletteItemKind::AppInfoCopyAll { .. } => "icons/command_palette/clipboard.svg",
+        CommandPaletteItemKind::ReleaseNotes { .. } => "icons/command_palette/info.svg",
     }
 }
 
@@ -139,9 +141,8 @@ pub(super) fn command_category(id: CommandId) -> &'static str {
         Copy | Paste | SelectAll | ClearScreen => "Edit",
         SwitchTheme | ImportColors | ZoomIn | ZoomOut | ZoomReset => "Appearance",
         OpenConfig | PrettifyConfig | OpenSettings | InstallCli => "Settings",
-        AppInfo | RestartApp | CheckForUpdates | Quit | ToggleCommandPalette | ToggleInspector => {
-            "App"
-        }
+        AppInfo | RestartApp | CheckForUpdates | ViewReleaseNotes | BrowseReleaseNotes | Quit
+        | ToggleCommandPalette | ToggleInspector => "App",
     }
 }
 
@@ -258,7 +259,8 @@ pub(super) fn palette_item_tint_category(item: &CommandPaletteItem) -> &'static 
         | CommandPaletteItemKind::TaskCreate { .. }
         | CommandPaletteItemKind::Task { .. } => "Tasks",
         CommandPaletteItemKind::AppInfoEntry { .. }
-        | CommandPaletteItemKind::AppInfoCopyAll { .. } => "App",
+        | CommandPaletteItemKind::AppInfoCopyAll { .. }
+        | CommandPaletteItemKind::ReleaseNotes { .. } => "App",
     }
 }
 

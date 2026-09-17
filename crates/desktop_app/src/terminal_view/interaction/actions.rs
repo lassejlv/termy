@@ -15,6 +15,7 @@ impl TerminalView {
             CommandAction::ManageTmuxSessions => Some(CommandPaletteMode::TmuxSessions),
             CommandAction::ManageSavedLayouts => Some(CommandPaletteMode::Layouts),
             CommandAction::RunTask => Some(CommandPaletteMode::Tasks),
+            CommandAction::BrowseReleaseNotes => Some(CommandPaletteMode::Releases),
             _ => None,
         }
     }
@@ -149,6 +150,9 @@ impl TerminalView {
             CommandAction::RunTask => {
                 self.open_tasks_palette(cx);
             }
+            CommandAction::BrowseReleaseNotes => {
+                self.browse_release_notes_action(cx);
+            }
             CommandAction::Quit => {
                 self.execute_quit_command_action(action, window, cx);
             }
@@ -174,7 +178,8 @@ impl TerminalView {
             | CommandAction::ImportColors
             | CommandAction::AppInfo
             | CommandAction::OpenSettings
-            | CommandAction::CheckForUpdates => {
+            | CommandAction::CheckForUpdates
+            | CommandAction::ViewReleaseNotes => {
                 self.execute_app_system_command_action(action, cx);
             }
             CommandAction::RestartApp => {
@@ -314,6 +319,24 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.execute_command_action(CommandAction::CheckForUpdates, true, window, cx);
+    }
+
+    pub(in super::super) fn handle_view_release_notes_action(
+        &mut self,
+        _: &commands::ViewReleaseNotes,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ViewReleaseNotes, true, window, cx);
+    }
+
+    pub(in super::super) fn handle_browse_release_notes_action(
+        &mut self,
+        _: &commands::BrowseReleaseNotes,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::BrowseReleaseNotes, true, window, cx);
     }
 
     pub(in super::super) fn handle_toggle_tab_bar_visibility_action(
@@ -900,6 +923,10 @@ mod tests {
         assert_eq!(
             TerminalView::command_palette_mode_for_action(CommandAction::RunTask),
             Some(CommandPaletteMode::Tasks)
+        );
+        assert_eq!(
+            TerminalView::command_palette_mode_for_action(CommandAction::BrowseReleaseNotes),
+            Some(CommandPaletteMode::Releases)
         );
         assert_eq!(
             TerminalView::command_palette_mode_for_action(CommandAction::OpenConfig),

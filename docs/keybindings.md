@@ -249,6 +249,8 @@ Related UI option:
 - `zoom_reset`
 - `open_search`
 - `check_for_updates`
+- `view_release_notes`
+- `browse_release_notes`
 - `quit`
 - `toggle_command_palette`
 - `copy`

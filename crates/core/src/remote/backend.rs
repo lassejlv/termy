@@ -1,10 +1,26 @@
 use super::*;
 use std::sync::Mutex;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct GraphicsCacheKey {
+    revision: u64,
+    generation: u64,
+    cols: u16,
+    rows: u16,
+    display_offset: usize,
+    history_size: usize,
+    alternate_screen: bool,
+}
+
+struct GraphicsCache {
+    key: Option<GraphicsCacheKey>,
+    snapshot: (u64, Vec<KittyGraphicsRenderPlacement>),
+}
+
 pub(crate) struct RemoteBackend {
     transport: Arc<dyn RemoteTransport>,
     last_render: Mutex<Option<Arc<RemoteState>>>,
-    graphics: Mutex<(u64, Vec<KittyGraphicsRenderPlacement>)>,
+    graphics: Mutex<GraphicsCache>,
 }
 
 impl RemoteBackend {
@@ -12,7 +28,10 @@ impl RemoteBackend {
         Self {
             transport,
             last_render: Mutex::new(None),
-            graphics: Mutex::new((u64::MAX, Vec::new())),
+            graphics: Mutex::new(GraphicsCache {
+                key: None,
+                snapshot: (u64::MAX, Vec::new()),
+            }),
         }
     }
 
@@ -126,15 +145,30 @@ impl RemoteBackend {
         self.transport.state().graphics_revision
     }
     pub(crate) fn kitty_graphics_snapshot(&self) -> (u64, Vec<KittyGraphicsRenderPlacement>) {
-        let revision = self.kitty_graphics_revision();
+        let state = self.transport.state();
+        let metadata = state.render.metadata;
+        // Placements are viewport-relative. History scrolling and Unicode
+        // placeholder redraws can move them without changing image storage.
+        let key = GraphicsCacheKey {
+            revision: state.graphics_revision,
+            generation: metadata.generation,
+            cols: metadata.cols,
+            rows: metadata.rows,
+            display_offset: metadata.display_offset,
+            history_size: metadata.history_size,
+            alternate_screen: state.alternate_screen,
+        };
         let mut cached = self.graphics.lock().unwrap();
-        if cached.0 != revision
+        if cached.key != Some(key)
             && let Some(RemoteReply::Graphics(revision, placements)) =
                 self.request(RemoteCommand::Graphics)
         {
-            *cached = (revision, placements);
+            // Tag the reply with the state that prompted the request. If a
+            // newer frame arrives during the RPC, its key must trigger a refresh.
+            cached.key = Some(key);
+            cached.snapshot = (revision, placements);
         }
-        cached.clone()
+        cached.snapshot.clone()
     }
     pub(crate) fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
         self.kitty_graphics_snapshot().1

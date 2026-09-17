@@ -1,207 +1,185 @@
-//! Fetch GitHub release notes with `gh`, falling back to `curl`.
+//! Fetch GitHub release notes over HTTP and remember which version was shown.
 
-use serde::Deserialize;
-use std::io;
-use std::process::{Command, Output, Stdio};
+use std::fs;
+use std::io::{self, Read};
+use std::path::{Path, PathBuf};
 
-pub const GITHUB_REPO: &str = "lassejlv/termy";
+use image::RgbaImage;
+use termy_core::release_core::{self, ReleaseNotes, ReleaseSummary};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReleaseNotes {
+const GITHUB_USER_AGENT: &str = "Termy-Updater/1.0";
+const SEEN_RELEASE_NOTES_ENV: &str = "TERMY_SEEN_RELEASE_NOTES_PATH";
+const MAX_MARKDOWN_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhatsNewAction {
+    None,
+    Seed { version: String },
+    Open { version: String },
+}
+
+pub fn fetch_release_notes(version: &str) -> Result<ReleaseNotes, String> {
+    release_core::fetch_release_notes(version).map_err(user_facing_error)
+}
+
+pub fn fetch_release_list() -> Result<Vec<ReleaseSummary>, String> {
+    release_core::fetch_release_list().map_err(user_facing_error)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseListRow {
     pub tag: String,
     pub title: String,
-    pub markdown: String,
+    pub keywords: String,
+    pub status_hint: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FetchError {
-    MissingTools,
-    Failed(String),
-}
+pub fn release_list_rows(
+    releases: &[ReleaseSummary],
+    current_version: &str,
+) -> Vec<ReleaseListRow> {
+    let current = canonical_release_version(current_version);
+    let latest_tag = releases
+        .iter()
+        .find(|release| !release.prerelease)
+        .map(|release| canonical_release_version(&release.tag));
 
-impl FetchError {
-    pub fn user_message(&self) -> String {
-        match self {
-            Self::MissingTools => {
-                "Install GitHub CLI (`gh`) or `curl` to load release notes.".to_string()
+    releases
+        .iter()
+        .map(|release| {
+            let canonical = canonical_release_version(&release.tag);
+            let is_latest = latest_tag.as_deref() == Some(canonical.as_str());
+            let is_installed = !current.is_empty() && canonical == current;
+            let status_hint = release_status_hint(is_latest, is_installed, release.prerelease);
+            let mut keywords = format!("release notes changelog {} {}", release.title, release.tag);
+            if is_latest {
+                keywords.push_str(" latest");
             }
-            Self::Failed(message) => message.clone(),
-        }
+            if is_installed {
+                keywords.push_str(" installed current");
+            }
+            if release.prerelease {
+                keywords.push_str(" prerelease pre-release");
+            } else if !is_latest {
+                keywords.push_str(" past");
+            }
+            ReleaseListRow {
+                tag: release.tag.clone(),
+                title: release.title.clone(),
+                keywords,
+                status_hint,
+            }
+        })
+        .collect()
+}
+
+fn release_status_hint(is_latest: bool, is_installed: bool, prerelease: bool) -> Option<String> {
+    let mut parts = Vec::new();
+    if is_latest {
+        parts.push("Latest");
     }
-}
-
-pub(crate) trait CommandRunner {
-    fn output(&self, program: &str, args: &[&str]) -> Result<String, FetchError>;
-}
-
-pub(crate) struct SystemCommandRunner;
-
-impl CommandRunner for SystemCommandRunner {
-    fn output(&self, program: &str, args: &[&str]) -> Result<String, FetchError> {
-        let mut command = Command::new(program);
-        command
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
-
-        match command.output() {
-            Ok(output) if output.status.success() => decode_stdout(output),
-            Ok(output) => Err(FetchError::Failed(command_failure_message(
-                program, &output,
-            ))),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Err(FetchError::MissingTools),
-            Err(error) => Err(FetchError::Failed(format!(
-                "Could not run {program}: {error}"
-            ))),
-        }
+    if is_installed {
+        parts.push("Installed");
     }
-}
-
-pub fn fetch_release_notes(version: &str) -> Result<ReleaseNotes, FetchError> {
-    fetch_release_notes_from(GITHUB_REPO, version, &SystemCommandRunner)
-}
-
-pub(crate) fn fetch_release_notes_from(
-    repo: &str,
-    version: &str,
-    runner: &impl CommandRunner,
-) -> Result<ReleaseNotes, FetchError> {
-    let tags = release_tag_candidates(version);
-    match fetch_with_gh(repo, &tags, runner) {
-        Ok(notes) => Ok(notes),
-        Err(FetchError::MissingTools) => fetch_with_curl(repo, &tags, runner),
-        Err(gh_error) => match fetch_with_curl(repo, &tags, runner) {
-            Ok(notes) => Ok(notes),
-            Err(FetchError::MissingTools) => Err(gh_error),
-            Err(curl_error) => Err(curl_error),
-        },
+    if prerelease {
+        parts.push("Pre-release");
     }
-}
-
-pub(crate) fn release_tag_candidates(version: &str) -> Vec<String> {
-    let trimmed = version.trim();
-    let stripped = trimmed.trim_start_matches(['v', 'V']).trim().to_string();
-    let with_v = format!("v{stripped}");
-    let mut tags = Vec::new();
-    if trimmed.starts_with('v') || trimmed.starts_with('V') {
-        push_unique(&mut tags, trimmed.to_string());
-        push_unique(&mut tags, stripped);
+    if parts.is_empty() {
+        None
     } else {
-        push_unique(&mut tags, with_v);
-        push_unique(&mut tags, stripped);
+        Some(parts.join(" · "))
     }
-    tags
 }
 
-fn fetch_with_gh(
-    repo: &str,
-    tags: &[String],
-    runner: &impl CommandRunner,
-) -> Result<ReleaseNotes, FetchError> {
-    let mut last_error = FetchError::Failed("GitHub CLI could not load this release.".to_string());
-    for tag in tags {
-        match runner.output(
-            "gh",
-            &[
-                "release",
-                "view",
-                tag,
-                "--repo",
-                repo,
-                "--json",
-                "body,name,tagName",
-            ],
-        ) {
-            Ok(stdout) => return parse_release_json(&stdout, tag),
-            Err(FetchError::MissingTools) => return Err(FetchError::MissingTools),
-            Err(error) => last_error = error,
-        }
+pub fn canonical_release_version(version: &str) -> String {
+    version
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .trim()
+        .to_string()
+}
+
+pub fn whats_new_on_launch(current: &str, seen: Option<&str>) -> WhatsNewAction {
+    let current = canonical_release_version(current);
+    if current.is_empty() {
+        return WhatsNewAction::None;
     }
-    Err(last_error)
-}
-
-fn fetch_with_curl(
-    repo: &str,
-    tags: &[String],
-    runner: &impl CommandRunner,
-) -> Result<ReleaseNotes, FetchError> {
-    let mut last_error = FetchError::Failed("curl could not load this release.".to_string());
-    for tag in tags {
-        let url = format!("https://api.github.com/repos/{repo}/releases/tags/{tag}");
-        match runner.output(
-            "curl",
-            &[
-                "-fsSL",
-                "-A",
-                "Termy",
-                "-H",
-                "Accept: application/vnd.github+json",
-                "-H",
-                "X-GitHub-Api-Version: 2022-11-28",
-                &url,
-            ],
-        ) {
-            Ok(stdout) => return parse_release_json(&stdout, tag),
-            Err(FetchError::MissingTools) => return Err(FetchError::MissingTools),
-            Err(error) => last_error = error,
-        }
+    match seen.map(str::trim).filter(|seen| !seen.is_empty()) {
+        None => WhatsNewAction::Seed { version: current },
+        Some(seen) if canonical_release_version(seen) == current => WhatsNewAction::None,
+        Some(_) => WhatsNewAction::Open { version: current },
     }
-    Err(last_error)
 }
 
-#[derive(Debug, Deserialize)]
-struct GithubReleasePayload {
-    body: Option<String>,
-    name: Option<String>,
-    #[serde(alias = "tagName")]
-    tag_name: Option<String>,
+#[cfg(not(test))]
+pub fn load_seen_release_notes_version() -> Option<String> {
+    load_seen_version_from(&seen_release_notes_path()?)
 }
 
-fn parse_release_json(stdout: &str, fallback_tag: &str) -> Result<ReleaseNotes, FetchError> {
-    let payload: GithubReleasePayload = serde_json::from_str(stdout.trim()).map_err(|_| {
-        FetchError::Failed("GitHub returned a response that was not release JSON.".to_string())
-    })?;
-    let tag = payload
-        .tag_name
-        .filter(|tag| !tag.trim().is_empty())
-        .unwrap_or_else(|| fallback_tag.to_string());
-    let title = payload
-        .name
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| tag.clone());
-    Ok(ReleaseNotes {
-        tag,
-        title,
-        markdown: payload.body.unwrap_or_default(),
-    })
-}
-
-fn decode_stdout(output: Output) -> Result<String, FetchError> {
-    String::from_utf8(output.stdout)
-        .map_err(|_| FetchError::Failed("Release notes were not valid UTF-8.".to_string()))
-}
-
-fn command_failure_message(program: &str, output: &Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let detail = stderr.trim();
-    let detail = if detail.is_empty() {
-        stdout.trim()
-    } else {
-        detail
+#[cfg(not(test))]
+pub fn store_seen_release_notes_version(version: &str) {
+    let Some(path) = seen_release_notes_path() else {
+        return;
     };
-    if detail.is_empty() {
-        format!("{program} could not load this GitHub release.")
-    } else {
-        truncate_message(detail)
+    let _ = store_seen_version_to(&path, version);
+}
+
+pub fn fetch_markdown_image_rgba(url: &str) -> Result<RgbaImage, String> {
+    if !crate::ui::markdown::is_http_url(url) {
+        return Err("Only http(s) images can be loaded.".to_string());
     }
+
+    let response = ureq::get(url)
+        .set("User-Agent", GITHUB_USER_AGENT)
+        .call()
+        .map_err(user_facing_error)?;
+    let mut reader = response.into_reader().take(MAX_MARKDOWN_IMAGE_BYTES + 1);
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Could not read image: {error}"))?;
+    if bytes.len() as u64 > MAX_MARKDOWN_IMAGE_BYTES {
+        return Err("Image is larger than 5 MB.".to_string());
+    }
+    image::load_from_memory(&bytes)
+        .map(|decoded| decoded.to_rgba8())
+        .map_err(|error| format!("Could not decode image: {error}"))
+}
+
+fn user_facing_error(error: impl std::fmt::Display) -> String {
+    truncate_message(&error.to_string())
+}
+
+#[cfg(not(test))]
+fn seen_release_notes_path() -> Option<PathBuf> {
+    seen_release_notes_path_with(|name| std::env::var(name).ok(), dirs::data_local_dir())
+}
+
+fn seen_release_notes_path_with(
+    get_var: impl Fn(&str) -> Option<String>,
+    data_local_dir: Option<PathBuf>,
+) -> Option<PathBuf> {
+    if let Some(path) = get_var(SEEN_RELEASE_NOTES_ENV).filter(|path| !path.trim().is_empty()) {
+        return Some(PathBuf::from(path));
+    }
+    Some(
+        data_local_dir?
+            .join("termy")
+            .join("seen_release_notes_version"),
+    )
+}
+
+fn load_seen_version_from(path: &Path) -> Option<String> {
+    let value = fs::read_to_string(path).ok()?;
+    let trimmed = value.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn store_seen_version_to(path: &Path, version: &str) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, format!("{}\n", canonical_release_version(version)))
 }
 
 fn truncate_message(message: &str) -> String {
@@ -213,100 +191,97 @@ fn truncate_message(message: &str) -> String {
     }
 }
 
-fn push_unique(tags: &mut Vec<String>, tag: String) {
-    if !tag.is_empty() && !tags.iter().any(|existing| existing == &tag) {
-        tags.push(tag);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
 
-    struct ScriptedRunner {
-        available: Vec<&'static str>,
-        calls: RefCell<Vec<(String, Vec<String>)>>,
-        responses: Vec<(String, Result<String, FetchError>)>,
-    }
-
-    impl CommandRunner for ScriptedRunner {
-        fn output(&self, program: &str, args: &[&str]) -> Result<String, FetchError> {
-            self.calls.borrow_mut().push((
-                program.to_string(),
-                args.iter().map(|arg| (*arg).to_string()).collect(),
-            ));
-            if !self.available.contains(&program) {
-                return Err(FetchError::MissingTools);
+    #[test]
+    fn first_launch_seeds_without_opening() {
+        assert_eq!(
+            whats_new_on_launch("0.2.71", None),
+            WhatsNewAction::Seed {
+                version: "0.2.71".to_string()
             }
-            self.responses
-                .iter()
-                .find(|(name, _)| name == program)
-                .map(|(_, result)| result.clone())
-                .unwrap_or(Err(FetchError::Failed(format!(
-                    "no scripted response for {program}"
-                ))))
-        }
-    }
-
-    #[test]
-    fn prefers_gh_when_it_is_installed() {
-        let runner = ScriptedRunner {
-            available: vec!["gh", "curl"],
-            calls: RefCell::new(Vec::new()),
-            responses: vec![(
-                "gh".to_string(),
-                Ok(r#"{"tagName":"v1.2.3","name":"1.2.3","body":"hello"}"#.to_string()),
-            )],
-        };
-
-        let notes = fetch_release_notes_from("lassejlv/termy", "1.2.3", &runner).expect("notes");
-        assert_eq!(notes.markdown, "hello");
-        assert_eq!(notes.title, "1.2.3");
-        let programs: Vec<_> = runner
-            .calls
-            .borrow()
-            .iter()
-            .map(|(program, _)| program.clone())
-            .collect();
-        assert_eq!(programs, vec!["gh".to_string()]);
-    }
-
-    #[test]
-    fn falls_back_to_curl_when_gh_is_missing() {
-        let runner = ScriptedRunner {
-            available: vec!["curl"],
-            calls: RefCell::new(Vec::new()),
-            responses: vec![(
-                "curl".to_string(),
-                Ok(
-                    r##"{"tag_name":"v1.2.3","name":"Termy 1.2.3","body":"hello from curl"}"##
-                        .to_string(),
-                ),
-            )],
-        };
-
-        let notes = fetch_release_notes_from("lassejlv/termy", "v1.2.3", &runner).expect("notes");
-        assert_eq!(notes.markdown, "hello from curl");
-        assert_eq!(notes.tag, "v1.2.3");
-        let programs: Vec<_> = runner
-            .calls
-            .borrow()
-            .iter()
-            .map(|(program, _)| program.clone())
-            .collect();
-        assert_eq!(programs, vec!["gh".to_string(), "curl".to_string()]);
-    }
-
-    #[test]
-    fn release_tag_candidates_try_v_prefix_first() {
-        assert_eq!(
-            release_tag_candidates("1.2.3"),
-            vec!["v1.2.3".to_string(), "1.2.3".to_string()]
         );
+    }
+
+    #[test]
+    fn matching_seen_version_stays_quiet() {
         assert_eq!(
-            release_tag_candidates("v1.2.3"),
-            vec!["v1.2.3".to_string(), "1.2.3".to_string()]
+            whats_new_on_launch("v0.2.71", Some("0.2.71")),
+            WhatsNewAction::None
         );
+    }
+
+    #[test]
+    fn upgraded_version_opens_notes() {
+        assert_eq!(
+            whats_new_on_launch("0.2.72", Some("0.2.71")),
+            WhatsNewAction::Open {
+                version: "0.2.72".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn seen_release_notes_path_prefers_env_override() {
+        let path = seen_release_notes_path_with(
+            |name| (name == SEEN_RELEASE_NOTES_ENV).then(|| "/tmp/seen".to_string()),
+            Some(PathBuf::from("/tmp/data")),
+        );
+        assert_eq!(path, Some(PathBuf::from("/tmp/seen")));
+    }
+
+    #[test]
+    fn stores_and_loads_seen_version() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("seen");
+        store_seen_version_to(&path, "v1.2.3").expect("store");
+        assert_eq!(load_seen_version_from(&path).as_deref(), Some("1.2.3"));
+    }
+
+    #[test]
+    fn release_list_rows_mark_latest_installed_and_prerelease() {
+        let rows = release_list_rows(
+            &[
+                ReleaseSummary {
+                    tag: "v1.3.0-rc.1".to_string(),
+                    title: "1.3.0-rc.1".to_string(),
+                    prerelease: true,
+                },
+                ReleaseSummary {
+                    tag: "v1.2.3".to_string(),
+                    title: "Termy 1.2.3".to_string(),
+                    prerelease: false,
+                },
+                ReleaseSummary {
+                    tag: "v1.2.2".to_string(),
+                    title: "1.2.2".to_string(),
+                    prerelease: false,
+                },
+            ],
+            "1.2.2",
+        );
+
+        assert_eq!(rows[0].status_hint.as_deref(), Some("Pre-release"));
+        assert_eq!(rows[1].title, "Termy 1.2.3");
+        assert_eq!(rows[1].status_hint.as_deref(), Some("Latest"));
+        assert_eq!(rows[2].status_hint.as_deref(), Some("Installed"));
+        assert!(rows[1].keywords.contains("latest"));
+        assert!(rows[2].keywords.contains("past"));
+        assert!(!rows[1].keywords.contains("past"));
+    }
+
+    #[test]
+    fn release_list_rows_combine_latest_and_installed() {
+        let rows = release_list_rows(
+            &[ReleaseSummary {
+                tag: "v0.2.71".to_string(),
+                title: "0.2.71".to_string(),
+                prerelease: false,
+            }],
+            "v0.2.71",
+        );
+        assert_eq!(rows[0].status_hint.as_deref(), Some("Latest · Installed"));
     }
 }

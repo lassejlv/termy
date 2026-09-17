@@ -1522,6 +1522,7 @@ pub struct TerminalView {
     release_notes: Option<update_overlay::ReleaseNotesDialog>,
     release_notes_generation: u64,
     release_notes_scroll: ScrollHandle,
+    release_notes_images: HashMap<String, update_overlay::MarkdownImageState>,
     #[cfg(target_os = "macos")]
     native_file_drop_enabled: bool,
 }
@@ -3438,6 +3439,7 @@ impl TerminalView {
             release_notes: None,
             release_notes_generation: 0,
             release_notes_scroll: ScrollHandle::new(),
+            release_notes_images: HashMap::new(),
             #[cfg(target_os = "macos")]
             native_file_drop_enabled: false,
         };
@@ -3614,7 +3616,12 @@ impl TerminalView {
         }
 
         #[cfg(not(test))]
-        view.schedule_initial_plugin_refresh(cx);
+        {
+            view.schedule_initial_plugin_refresh(cx);
+            if owns_persisted_session && !empty && view.benchmark_session.is_none() {
+                view.schedule_whats_new_on_launch(cx);
+            }
+        }
         view.sync_native_terminal_wakeup_interest();
         view.appearance_subscription =
             Some(cx.observe_window_appearance(window, |view, window, cx| {

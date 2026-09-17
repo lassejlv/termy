@@ -48,6 +48,69 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
 }
 
 #[test]
+fn kitty_images_follow_pty_scrolling_through_the_session_host() {
+    let host = Host::new();
+    // Wait for input between frames so the client caches each placement before
+    // the next scroll. The image revision need not change when history grows.
+    let script = r#"
+stty raw -echo
+printf '\033[2J\033[3;1H\033_Ga=T,i=1,f=32,s=1,v=1,c=2,r=2,C=1,q=2;AQID/w==\033\\'
+printf '\033[1;1HA'
+dd bs=1 count=1 >/dev/null 2>/dev/null
+printf '\033[6;1H\r\nB'
+dd bs=1 count=1 >/dev/null 2>/dev/null
+printf '\r\n\r\n\r\n\r\nC'
+dd bs=1 count=1 >/dev/null 2>/dev/null
+"#;
+    let (id, terminal) = host
+        .client
+        .create(
+            PaneLaunch {
+                size: TerminalSize {
+                    cols: 20,
+                    rows: 6,
+                    cell_width: 10.0,
+                    cell_height: 20.0,
+                },
+                working_directory: None,
+                shell_integration: None,
+                config: TerminalRuntimeConfig::default(),
+                launch: Some(TerminalLaunch::Program {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), script.into()],
+                }),
+            },
+            None,
+        )
+        .unwrap();
+    let has_marker = |marker| {
+        terminal
+            .render_read(true)
+            .cells
+            .iter()
+            .any(|cell| cell.text == marker)
+    };
+    wait_until(|| has_marker("A"));
+    assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 2);
+    terminal.write(b"x");
+    wait_until(|| has_marker("B"));
+    assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 1);
+    terminal.write(b"x");
+    wait_until(|| has_marker("C"));
+    assert!(terminal.kitty_graphics_placements().is_empty());
+
+    assert!(terminal.scroll_display(4));
+    wait_until(|| terminal.scroll_state().0 == 4);
+    assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 1);
+    assert!(terminal.scroll_to_bottom());
+    wait_until(|| terminal.scroll_state().0 == 0);
+    assert!(terminal.kitty_graphics_placements().is_empty());
+
+    drop(terminal);
+    host.client.close(&id).unwrap();
+}
+
+#[test]
 fn authentication_and_pre_authentication_message_limit() {
     use std::os::unix::fs::PermissionsExt;
     let host = Host::new();

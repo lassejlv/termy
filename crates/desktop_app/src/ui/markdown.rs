@@ -1,4 +1,4 @@
-//! Small GitHub-flavored markdown subset for overlay dialogs.
+//! GitHub-flavored markdown subset for overlay dialogs.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Inline {
@@ -7,6 +7,14 @@ pub enum Inline {
     Emphasis(String),
     Code(String),
     Link { label: String, url: String },
+    Image { alt: String, url: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListItem {
+    pub task: Option<bool>,
+    pub children: Vec<Inline>,
+    pub nested: Vec<Block>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -18,12 +26,16 @@ pub enum Block {
     Paragraph(Vec<Inline>),
     List {
         ordered: bool,
-        items: Vec<Vec<Inline>>,
+        items: Vec<ListItem>,
     },
     Quote(Vec<Inline>),
     Code {
         language: Option<String>,
         code: String,
+    },
+    Table {
+        headers: Vec<Vec<Inline>>,
+        rows: Vec<Vec<Vec<Inline>>>,
     },
     Rule,
 }
@@ -79,6 +91,12 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
             continue;
         }
 
+        if let Some((table, next_index)) = try_parse_table(&lines, index) {
+            blocks.push(table);
+            index = next_index;
+            continue;
+        }
+
         if let Some(text) = trimmed.strip_prefix("> ") {
             let mut combined = text.to_string();
             index += 1;
@@ -96,20 +114,8 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
             continue;
         }
 
-        if let Some((ordered, item)) = parse_list_item(trimmed) {
-            let mut items = vec![parse_inlines(item)];
-            index += 1;
-            while index < lines.len() {
-                let next = lines[index].trim();
-                match parse_list_item(next) {
-                    Some((next_ordered, next_item)) if next_ordered == ordered => {
-                        items.push(parse_inlines(next_item));
-                        index += 1;
-                    }
-                    _ => break,
-                }
-            }
-            blocks.push(Block::List { ordered, items });
+        if parse_list_marker(line).is_some() {
+            blocks.push(parse_list(&lines, &mut index));
             continue;
         }
 
@@ -122,7 +128,8 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
                 || is_rule(next)
                 || parse_heading(next).is_some()
                 || next.starts_with("> ")
-                || parse_list_item(next).is_some()
+                || parse_list_marker(lines[index]).is_some()
+                || try_parse_table(&lines, index).is_some()
             {
                 break;
             }
@@ -134,6 +141,56 @@ pub fn parse_markdown(source: &str) -> Vec<Block> {
     }
 
     blocks
+}
+
+pub fn markdown_image_urls(source: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    collect_image_urls_from_blocks(&parse_markdown(source), &mut urls);
+    urls
+}
+
+fn collect_image_urls_from_blocks(blocks: &[Block], urls: &mut Vec<String>) {
+    for block in blocks {
+        match block {
+            Block::Heading { children, .. }
+            | Block::Paragraph(children)
+            | Block::Quote(children) => collect_image_urls_from_inlines(children, urls),
+            Block::List { items, .. } => {
+                for item in items {
+                    collect_image_urls_from_inlines(&item.children, urls);
+                    collect_image_urls_from_blocks(&item.nested, urls);
+                }
+            }
+            Block::Table { headers, rows } => {
+                for cell in headers {
+                    collect_image_urls_from_inlines(cell, urls);
+                }
+                for row in rows {
+                    for cell in row {
+                        collect_image_urls_from_inlines(cell, urls);
+                    }
+                }
+            }
+            Block::Code { .. } | Block::Rule => {}
+        }
+    }
+}
+
+fn collect_image_urls_from_inlines(inlines: &[Inline], urls: &mut Vec<String>) {
+    for inline in inlines {
+        if let Inline::Image { url, .. } = inline
+            && is_http_url(url)
+            && !urls.iter().any(|existing| existing == url)
+        {
+            urls.push(url.clone());
+        }
+    }
+}
+
+pub fn is_http_url(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .is_some_and(|parsed| matches!(parsed.scheme(), "http" | "https"))
 }
 
 fn strip_html_comments(source: &str) -> String {
@@ -173,26 +230,205 @@ fn parse_heading(line: &str) -> Option<(u8, &str)> {
     Some((level as u8, line[level + 1..].trim()))
 }
 
-fn parse_list_item(line: &str) -> Option<(bool, &str)> {
+struct ListMarker {
+    indent: usize,
+    ordered: bool,
+    task: Option<bool>,
+    text: String,
+}
+
+fn leading_indent(line: &str) -> usize {
+    let mut indent = 0usize;
+    for ch in line.chars() {
+        match ch {
+            ' ' => indent += 1,
+            '\t' => indent += 4,
+            _ => break,
+        }
+    }
+    indent
+}
+
+fn parse_task_prefix(rest: &str) -> (Option<bool>, &str) {
+    if rest == "[ ]" {
+        return (Some(false), "");
+    }
+    if rest == "[x]" || rest == "[X]" {
+        return (Some(true), "");
+    }
+    if let Some(text) = rest.strip_prefix("[ ] ") {
+        return (Some(false), text);
+    }
+    if let Some(text) = rest
+        .strip_prefix("[x] ")
+        .or_else(|| rest.strip_prefix("[X] "))
+    {
+        return (Some(true), text);
+    }
+    (None, rest)
+}
+
+fn parse_list_marker(line: &str) -> Option<ListMarker> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    let indent = leading_indent(line);
     let trimmed = line.trim_start();
-    if let Some(rest) = trimmed
+    let (ordered, rest) = if let Some(rest) = trimmed
         .strip_prefix("- ")
         .or_else(|| trimmed.strip_prefix("* "))
     {
-        return Some((false, rest.trim()));
+        (false, rest)
+    } else {
+        let bytes = trimmed.as_bytes();
+        let mut digits = 0usize;
+        while digits < bytes.len() && bytes[digits].is_ascii_digit() {
+            digits += 1;
+        }
+        if digits == 0 || digits + 1 >= bytes.len() {
+            return None;
+        }
+        if (bytes[digits] == b'.' || bytes[digits] == b')') && bytes[digits + 1] == b' ' {
+            (true, trimmed[digits + 2..].trim())
+        } else {
+            return None;
+        }
+    };
+    let (task, text) = parse_task_prefix(rest.trim());
+    Some(ListMarker {
+        indent,
+        ordered,
+        task,
+        text: text.to_string(),
+    })
+}
+
+fn parse_list(lines: &[&str], index: &mut usize) -> Block {
+    let first = parse_list_marker(lines[*index]).expect("list marker");
+    let ordered = first.ordered;
+    let base_indent = first.indent;
+    let mut items: Vec<ListItem> = Vec::new();
+
+    while *index < lines.len() {
+        let line = lines[*index];
+        if line.trim().is_empty() {
+            let nested_after_blank = lines
+                .get(*index + 1)
+                .copied()
+                .and_then(parse_list_marker)
+                .is_some_and(|marker| marker.indent >= base_indent);
+            if nested_after_blank {
+                *index += 1;
+                continue;
+            }
+            break;
+        }
+
+        if let Some(marker) = parse_list_marker(line) {
+            if marker.indent < base_indent || marker.ordered != ordered {
+                break;
+            }
+            if marker.indent > base_indent {
+                if let Some(last) = items.last_mut() {
+                    last.nested.push(parse_list(lines, index));
+                    continue;
+                }
+                break;
+            }
+
+            *index += 1;
+            let mut text = marker.text;
+            while *index < lines.len() {
+                let continuation = lines[*index];
+                if continuation.trim().is_empty() || parse_list_marker(continuation).is_some() {
+                    break;
+                }
+                if leading_indent(continuation) > base_indent {
+                    text.push(' ');
+                    text.push_str(continuation.trim());
+                    *index += 1;
+                } else {
+                    break;
+                }
+            }
+            items.push(ListItem {
+                task: marker.task,
+                children: parse_inlines(&text),
+                nested: Vec::new(),
+            });
+            continue;
+        }
+
+        break;
     }
-    let bytes = trimmed.as_bytes();
-    let mut digits = 0usize;
-    while digits < bytes.len() && bytes[digits].is_ascii_digit() {
-        digits += 1;
+
+    Block::List { ordered, items }
+}
+
+fn looks_like_table_row(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with('|') && trimmed.chars().filter(|ch| *ch == '|').count() >= 2
+}
+
+fn split_table_row(line: &str) -> Vec<String> {
+    let trimmed = line.trim();
+    let without_edges = trimmed
+        .strip_prefix('|')
+        .unwrap_or(trimmed)
+        .strip_suffix('|')
+        .unwrap_or(trimmed.strip_prefix('|').unwrap_or(trimmed));
+    without_edges
+        .split('|')
+        .map(|cell| cell.trim().to_string())
+        .collect()
+}
+
+fn is_table_separator(line: &str) -> bool {
+    if !looks_like_table_row(line) {
+        return false;
     }
-    if digits == 0 || digits + 1 >= bytes.len() {
+    let cells = split_table_row(line);
+    !cells.is_empty()
+        && cells.iter().all(|cell| {
+            let trimmed = cell.trim().trim_matches(':').trim();
+            !trimmed.is_empty() && trimmed.chars().all(|ch| ch == '-')
+        })
+}
+
+fn try_parse_table(lines: &[&str], index: usize) -> Option<(Block, usize)> {
+    let header_line = lines.get(index)?;
+    let separator_line = lines.get(index + 1)?;
+    if !looks_like_table_row(header_line) || !is_table_separator(separator_line) {
         return None;
     }
-    if (bytes[digits] == b'.' || bytes[digits] == b')') && bytes[digits + 1] == b' ' {
-        return Some((true, trimmed[digits + 2..].trim()));
+    let headers = split_table_row(header_line);
+    if headers.is_empty() {
+        return None;
     }
-    None
+    let column_count = headers.len();
+    let mut rows = Vec::new();
+    let mut next = index + 2;
+    while next < lines.len() {
+        let line = lines[next];
+        if !looks_like_table_row(line) {
+            break;
+        }
+        let mut cells = split_table_row(line);
+        cells.resize(column_count, String::new());
+        cells.truncate(column_count);
+        rows.push(cells.into_iter().map(|cell| parse_inlines(&cell)).collect());
+        next += 1;
+    }
+    Some((
+        Block::Table {
+            headers: headers
+                .into_iter()
+                .map(|cell| parse_inlines(&cell))
+                .collect(),
+            rows,
+        },
+        next,
+    ))
 }
 
 pub fn parse_inlines(input: &str) -> Vec<Inline> {
@@ -231,6 +467,16 @@ pub fn parse_inlines(input: &str) -> Vec<Inline> {
         {
             flush_text(&mut text, &mut inlines);
             inlines.push(Inline::Emphasis(content));
+            index = end;
+            continue;
+        }
+
+        if chars[index] == '!'
+            && chars.get(index + 1) == Some(&'[')
+            && let Some((alt, url, end)) = parse_markdown_link(&chars, index + 1)
+        {
+            flush_text(&mut text, &mut inlines);
+            inlines.push(Inline::Image { alt, url });
             index = end;
             continue;
         }
@@ -309,7 +555,7 @@ fn parse_markdown_link(chars: &[char], start: usize) -> Option<(String, String, 
         return None;
     }
     let url: String = chars[url_start..index].iter().collect();
-    if label.is_empty() || url.is_empty() {
+    if url.is_empty() {
         return None;
     }
     Some((label, url, index + 1))
@@ -395,13 +641,17 @@ mod tests {
                 },
                 Block::List {
                     ordered: false,
-                    items: vec![vec![
-                        Inline::Text("feat: tabs by @dev in ".to_string()),
-                        Inline::Link {
-                            label: "https://example.com/pull/1".to_string(),
-                            url: "https://example.com/pull/1".to_string(),
-                        },
-                    ]],
+                    items: vec![ListItem {
+                        task: None,
+                        children: vec![
+                            Inline::Text("feat: tabs by @dev in ".to_string()),
+                            Inline::Link {
+                                label: "https://example.com/pull/1".to_string(),
+                                url: "https://example.com/pull/1".to_string(),
+                            },
+                        ],
+                        nested: Vec::new(),
+                    }],
                 },
                 Block::Paragraph(vec![
                     Inline::Strong("Full Changelog".to_string()),
@@ -431,6 +681,66 @@ mod tests {
                     code: "gh release view".to_string(),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn parses_nested_lists_task_lists_tables_and_images() {
+        let blocks = parse_markdown(
+            "- parent\n  - child\n- [x] done\n- [ ] todo\n\n| Feature | Status |\n| --- | --- |\n| Tabs | shipped |\n\n![Hero](https://example.com/hero.png)\n",
+        );
+
+        assert_eq!(
+            blocks,
+            vec![
+                Block::List {
+                    ordered: false,
+                    items: vec![
+                        ListItem {
+                            task: None,
+                            children: vec![Inline::Text("parent".to_string())],
+                            nested: vec![Block::List {
+                                ordered: false,
+                                items: vec![ListItem {
+                                    task: None,
+                                    children: vec![Inline::Text("child".to_string())],
+                                    nested: Vec::new(),
+                                }],
+                            }],
+                        },
+                        ListItem {
+                            task: Some(true),
+                            children: vec![Inline::Text("done".to_string())],
+                            nested: Vec::new(),
+                        },
+                        ListItem {
+                            task: Some(false),
+                            children: vec![Inline::Text("todo".to_string())],
+                            nested: Vec::new(),
+                        },
+                    ],
+                },
+                Block::Table {
+                    headers: vec![
+                        vec![Inline::Text("Feature".to_string())],
+                        vec![Inline::Text("Status".to_string())],
+                    ],
+                    rows: vec![vec![
+                        vec![Inline::Text("Tabs".to_string())],
+                        vec![Inline::Text("shipped".to_string())],
+                    ]],
+                },
+                Block::Paragraph(vec![Inline::Image {
+                    alt: "Hero".to_string(),
+                    url: "https://example.com/hero.png".to_string(),
+                }]),
+            ]
+        );
+        assert_eq!(
+            markdown_image_urls(
+                "![Hero](https://example.com/hero.png)\n![skip](file:///tmp/x.png)"
+            ),
+            vec!["https://example.com/hero.png".to_string()]
         );
     }
 }

@@ -4,8 +4,8 @@ use gpui::Modifiers;
 use gpui::point;
 use state::{
     CommandPaletteCommandIntent, CommandPaletteItem, CommandPaletteItemKind,
-    CommandPaletteScrollDirection, command_palette_next_scroll_y, command_palette_target_scroll_y,
-    ordered_theme_ids_for_palette,
+    CommandPaletteScrollDirection, ReleaseListState, command_palette_next_scroll_y,
+    command_palette_target_scroll_y, ordered_theme_ids_for_palette,
 };
 use termy_core::command_core::{
     CommandAvailability, CommandCapabilities, CommandUnavailableReason,
@@ -278,6 +278,20 @@ impl TerminalView {
                 self.command_palette_plugin_input_items()
             }
             CommandPaletteMode::AppInfo => self.command_palette_app_info_items(),
+            CommandPaletteMode::Releases => self.command_palette_release_items(),
+        }
+    }
+
+    fn command_palette_release_items(&self) -> Vec<CommandPaletteItem> {
+        match &self.command_palette.release_list {
+            ReleaseListState::Ready(rows) => rows
+                .iter()
+                .cloned()
+                .map(CommandPaletteItem::release_notes)
+                .collect(),
+            ReleaseListState::Idle | ReleaseListState::Loading | ReleaseListState::Failed(_) => {
+                Vec::new()
+            }
         }
     }
 
@@ -636,6 +650,9 @@ impl TerminalView {
         if mode == CommandPaletteMode::Commands {
             self.reload_saved_ssh_hosts();
         }
+        if mode == CommandPaletteMode::Releases {
+            self.schedule_release_list_fetch(cx);
+        }
         let items = self.command_palette_items_for_mode(mode, cx);
         if mode == CommandPaletteMode::PluginInputs && self.plugin_input_uses_free_text() {
             self.command_palette.set_items_unfiltered(items);
@@ -653,6 +670,44 @@ impl TerminalView {
 
         self.reset_cursor_blink_phase();
         self.notify_for_command_palette_event(notify_event, cx);
+    }
+
+    fn schedule_release_list_fetch(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.command_palette.release_list, ReleaseListState::Idle) {
+            return;
+        }
+
+        self.command_palette.release_list_generation =
+            self.command_palette.release_list_generation.wrapping_add(1);
+        let generation = self.command_palette.release_list_generation;
+        self.command_palette.release_list = ReleaseListState::Loading;
+
+        let bg = cx
+            .background_executor()
+            .spawn(async { crate::ui::release_notes::fetch_release_list() });
+        cx.spawn(async move |this, cx| {
+            let result = bg.await;
+            let _ = cx.update(|cx| {
+                this.update(cx, |view, cx| {
+                    if view.command_palette.mode() != CommandPaletteMode::Releases
+                        || view.command_palette.release_list_generation != generation
+                    {
+                        return;
+                    }
+                    view.command_palette.release_list = match result {
+                        Ok(releases) => {
+                            ReleaseListState::Ready(crate::ui::release_notes::release_list_rows(
+                                &releases,
+                                crate::APP_VERSION,
+                            ))
+                        }
+                        Err(message) => ReleaseListState::Failed(message),
+                    };
+                    view.refresh_command_palette_items_for_current_mode(cx);
+                })
+            });
+        })
+        .detach();
     }
 
     pub(super) fn set_command_palette_mode(
@@ -1095,6 +1150,7 @@ impl TerminalView {
             CommandPaletteMode::Tasks => CommandPaletteEscapeAction::BackToCommands,
             CommandPaletteMode::PluginInputs => CommandPaletteEscapeAction::BackFromPluginInput,
             CommandPaletteMode::AppInfo => CommandPaletteEscapeAction::BackToCommands,
+            CommandPaletteMode::Releases => CommandPaletteEscapeAction::BackToCommands,
         }
     }
 
@@ -1332,6 +1388,10 @@ impl TerminalView {
                 crate::ui::toast::success("Copied app info to clipboard");
                 self.close_command_palette(cx);
                 self.notify_overlay(cx);
+            }
+            CommandPaletteItemKind::ReleaseNotes { tag } => {
+                self.close_command_palette(cx);
+                self.open_release_notes(tag, cx);
             }
         }
     }
@@ -1681,6 +1741,7 @@ impl TerminalView {
                 | CommandAction::ManageTmuxSessions
                 | CommandAction::ManageSavedLayouts
                 | CommandAction::RunTask
+                | CommandAction::BrowseReleaseNotes
         )
     }
 }
@@ -1740,6 +1801,16 @@ mod tests {
                 TaskIntent::CreateGlobalInput,
             ),
             CommandPaletteEscapeAction::BackToTaskBrowse
+        );
+        assert_eq!(
+            TerminalView::command_palette_escape_action(
+                CommandPaletteMode::Releases,
+                TmuxSessionIntent::AttachOrSwitch,
+                CommandPaletteCommandIntent::Browse,
+                SavedLayoutIntent::Browse,
+                TaskIntent::Browse,
+            ),
+            CommandPaletteEscapeAction::BackToCommands
         );
     }
 
@@ -1847,6 +1918,9 @@ mod tests {
         ));
         assert!(TerminalView::command_palette_should_stay_open(
             CommandAction::RunTask
+        ));
+        assert!(TerminalView::command_palette_should_stay_open(
+            CommandAction::BrowseReleaseNotes
         ));
         assert!(!TerminalView::command_palette_should_stay_open(
             CommandAction::NewTab

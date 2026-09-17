@@ -67,6 +67,23 @@ The tmux case requires tmux >= 3.3 and runs in `just test-tmux-integration`. For
 start lazygit, and create a tab with `secondary-t`; `pwd` in the new tab should
 show that project. Repeat with tmux enabled and disabled.
 
+## Kitty images in persistent sessions
+
+The remote graphics regressions compare local and multiplexed placements while
+output scrolls, the viewport moves through history, and Unicode placeholders
+are moved or erased. Run them against both terminal engines:
+
+```sh
+TERMY_CORE_TEST_BACKEND=alacritty cargo test -p termy_core --test remote_graphics
+TERMY_CORE_TEST_BACKEND=tmon cargo test -p termy_core --test remote_graphics
+cargo test -p termy_core --test ipc kitty_images_follow_pty_scrolling
+```
+
+The IPC test uses an isolated session host and a real PTY. It checks that images
+move with text, disappear above the viewport, and return when scrolling
+back. Remote placements must refresh on viewport changes even when the image
+revision stays unchanged.
+
 ## Ignored tests
 
 - `crates/desktop_app/tests/tmux_split_integration.rs` — requires **tmux ≥ 3.3** locally.

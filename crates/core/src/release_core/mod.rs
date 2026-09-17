@@ -1,3 +1,4 @@
+pub mod notes;
 pub mod policy;
 pub mod service;
 pub mod source;
@@ -5,6 +6,10 @@ pub mod transport;
 
 pub const DEFAULT_GITHUB_REPO: &str = "lassejlv/termy";
 
+pub use notes::{
+    ReleaseNotes, ReleaseSummary, fetch_release_list, fetch_release_list_for_repo,
+    fetch_release_notes, fetch_release_notes_for_repo, release_tag_candidates,
+};
 pub use policy::{PlatformKind, VersionComparison, compare_versions};
 pub use service::{
     ReleaseInfo, UpdateCheck, check_for_updates, check_for_updates_for_repo,

@@ -1,10 +1,17 @@
 use super::*;
-use crate::ui::markdown::{Block, Inline, parse_markdown};
+use crate::ui::markdown::{Block, Inline, ListItem, parse_markdown};
+#[cfg(not(test))]
+use crate::ui::release_notes::WhatsNewAction;
 use crate::ui::update_banner::{
     UpdateBannerAction, UpdateBannerButton, UpdateBannerTone, UpdateButtonStyle, UpdateProgress,
 };
 use gpui::prelude::FluentBuilder;
-use gpui::{Animation, AnimationExt as _, FontWeight, bounce, ease_in_out, relative};
+use gpui::{
+    Animation, AnimationExt as _, FontStyle, FontWeight, HighlightStyle, ImageSource,
+    InteractiveText, ObjectFit, RenderImage, StyledImage, StyledText, UnderlineStyle, bounce,
+    ease_in_out, relative,
+};
+use std::ops::Range;
 use std::time::Duration;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +27,12 @@ pub(super) enum ReleaseNotesStatus {
     Error { message: String },
 }
 
+pub(super) enum MarkdownImageState {
+    Loading,
+    Ready(ImageSource),
+    Failed,
+}
+
 struct BannerTone {
     accent: gpui::Rgba,
     tile_bg: gpui::Rgba,
@@ -33,6 +46,7 @@ impl TerminalView {
 
     pub(super) fn close_release_notes(&mut self, cx: &mut Context<Self>) {
         if self.release_notes.take().is_some() {
+            self.clear_release_notes_images(cx);
             self.notify_overlay(cx);
             cx.notify();
         }
@@ -53,6 +67,39 @@ impl TerminalView {
         self.start_release_notes_fetch(version, cx);
     }
 
+    #[cfg(not(test))]
+    pub(super) fn schedule_whats_new_on_launch(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            smol::Timer::after(Duration::from_millis(600)).await;
+            let _ = cx.update(|cx| {
+                this.update(cx, |view, cx| {
+                    view.maybe_open_whats_new(cx);
+                })
+            });
+        })
+        .detach();
+    }
+
+    #[cfg(not(test))]
+    fn maybe_open_whats_new(&mut self, cx: &mut Context<Self>) {
+        if self.release_notes_open() {
+            return;
+        }
+        match crate::ui::release_notes::whats_new_on_launch(
+            crate::APP_VERSION,
+            crate::ui::release_notes::load_seen_release_notes_version().as_deref(),
+        ) {
+            WhatsNewAction::None => {}
+            WhatsNewAction::Seed { version } => {
+                crate::ui::release_notes::store_seen_release_notes_version(&version);
+            }
+            WhatsNewAction::Open { version } => {
+                crate::ui::release_notes::store_seen_release_notes_version(&version);
+                self.open_release_notes(version, cx);
+            }
+        }
+    }
+
     fn retry_release_notes(&mut self, cx: &mut Context<Self>) {
         let Some(version) = self
             .release_notes
@@ -68,6 +115,7 @@ impl TerminalView {
         self.release_notes_generation = self.release_notes_generation.wrapping_add(1);
         let generation = self.release_notes_generation;
         self.release_notes_scroll = gpui::ScrollHandle::new();
+        self.clear_release_notes_images(cx);
         self.release_notes = Some(ReleaseNotesDialog {
             version: version.clone(),
             status: ReleaseNotesStatus::Loading,
@@ -85,16 +133,25 @@ impl TerminalView {
                     if view.release_notes_generation != generation {
                         return;
                     }
-                    if let Some(dialog) = view.release_notes.as_mut() {
-                        dialog.status = match result {
-                            Ok(notes) => ReleaseNotesStatus::Ready {
-                                title: notes.title,
-                                markdown: notes.markdown,
-                            },
-                            Err(error) => ReleaseNotesStatus::Error {
-                                message: error.user_message(),
-                            },
-                        };
+                    let markdown = match result {
+                        Ok(notes) => {
+                            if let Some(dialog) = view.release_notes.as_mut() {
+                                dialog.status = ReleaseNotesStatus::Ready {
+                                    title: notes.title,
+                                    markdown: notes.markdown.clone(),
+                                };
+                            }
+                            Some(notes.markdown)
+                        }
+                        Err(error) => {
+                            if let Some(dialog) = view.release_notes.as_mut() {
+                                dialog.status = ReleaseNotesStatus::Error { message: error };
+                            }
+                            None
+                        }
+                    };
+                    if let Some(markdown) = markdown {
+                        view.prefetch_release_notes_images(&markdown, cx);
                     }
                     view.notify_overlay(cx);
                     cx.notify();
@@ -102,6 +159,50 @@ impl TerminalView {
             });
         })
         .detach();
+    }
+
+    fn clear_release_notes_images(&mut self, cx: &mut Context<Self>) {
+        for (_, state) in self.release_notes_images.drain() {
+            if let MarkdownImageState::Ready(ImageSource::Render(image)) = state {
+                cx.drop_image(image, None);
+            }
+        }
+    }
+
+    fn prefetch_release_notes_images(&mut self, markdown: &str, cx: &mut Context<Self>) {
+        for url in crate::ui::markdown::markdown_image_urls(markdown) {
+            if self.release_notes_images.contains_key(&url) {
+                continue;
+            }
+            self.release_notes_images
+                .insert(url.clone(), MarkdownImageState::Loading);
+            let generation = self.release_notes_generation;
+            let fetch_url = url.clone();
+            let bg = cx.background_executor().spawn(async move {
+                crate::ui::release_notes::fetch_markdown_image_rgba(&fetch_url)
+            });
+            cx.spawn(async move |this, cx| {
+                let result = bg.await;
+                let _ = cx.update(|cx| {
+                    this.update(cx, |view, cx| {
+                        if view.release_notes_generation != generation {
+                            return;
+                        }
+                        let state = match result {
+                            Ok(buffer) => {
+                                MarkdownImageState::Ready(ImageSource::Render(std::sync::Arc::new(
+                                    RenderImage::new(vec![image::Frame::new(buffer)]),
+                                )))
+                            }
+                            Err(_) => MarkdownImageState::Failed,
+                        };
+                        view.release_notes_images.insert(url, state);
+                        cx.notify();
+                    })
+                });
+            })
+            .detach();
+        }
     }
 
     pub(super) fn render_update_banner(
@@ -388,6 +489,8 @@ impl TerminalView {
                 .gap(px(12.0))
                 .child(
                     div()
+                        .w_full()
+                        .min_w(px(0.0))
                         .text_size(px(13.0))
                         .text_color(primary_text)
                         .child(message.clone()),
@@ -524,9 +627,11 @@ impl TerminalView {
                 div()
                     .id("release-notes-body")
                     .w_full()
+                    .min_w(px(0.0))
                     .min_h(px(0.0))
                     .flex_1()
                     .overflow_y_scroll()
+                    .overflow_x_hidden()
                     .track_scroll(&self.release_notes_scroll)
                     .px(px(18.0))
                     .py(px(16.0))
@@ -576,7 +681,12 @@ impl TerminalView {
             code_bg,
             mono_font: self.font_family.clone(),
         };
-        let mut column = div().w_full().flex().flex_col().gap(px(12.0));
+        let mut column = div()
+            .w_full()
+            .min_w(px(0.0))
+            .flex()
+            .flex_col()
+            .gap(px(12.0));
         for (index, block) in parse_markdown(markdown).into_iter().enumerate() {
             column = column.child(self.render_markdown_block(index, block, &style, cx));
         }
@@ -607,13 +717,18 @@ impl TerminalView {
                     .child(self.render_markdown_inlines(&children, style, cx))
                     .into_any_element()
             }
-            Block::Paragraph(children) => div()
-                .w_full()
-                .text_size(px(13.0))
-                .line_height(px(19.0))
-                .text_color(style.primary_text)
-                .child(self.render_markdown_inlines(&children, style, cx))
-                .into_any_element(),
+            Block::Paragraph(children) => {
+                if matches!(children.as_slice(), [Inline::Image { .. }]) {
+                    return self.render_markdown_inlines(&children, style, cx);
+                }
+                div()
+                    .w_full()
+                    .text_size(px(13.0))
+                    .line_height(px(19.0))
+                    .text_color(style.primary_text)
+                    .child(self.render_markdown_inlines(&children, style, cx))
+                    .into_any_element()
+            }
             Block::Quote(children) => div()
                 .w_full()
                 .pl(px(10.0))
@@ -623,41 +738,8 @@ impl TerminalView {
                 .text_color(style.muted_text)
                 .child(self.render_markdown_inlines(&children, style, cx))
                 .into_any_element(),
-            Block::List { ordered, items } => {
-                let mut list = div().w_full().flex().flex_col().gap(px(6.0));
-                for (item_index, item) in items.into_iter().enumerate() {
-                    let marker = if ordered {
-                        format!("{}.", item_index + 1)
-                    } else {
-                        "•".to_string()
-                    };
-                    list = list.child(
-                        div()
-                            .w_full()
-                            .flex()
-                            .items_start()
-                            .gap(px(8.0))
-                            .child(
-                                div()
-                                    .w(px(16.0))
-                                    .flex_none()
-                                    .text_size(px(13.0))
-                                    .text_color(style.muted_text)
-                                    .child(marker),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w(px(0.0))
-                                    .text_size(px(13.0))
-                                    .line_height(px(19.0))
-                                    .text_color(style.primary_text)
-                                    .child(self.render_markdown_inlines(&item, style, cx)),
-                            ),
-                    );
-                }
-                list.into_any_element()
-            }
+            Block::List { ordered, items } => self.render_markdown_list(ordered, items, style, cx),
+            Block::Table { headers, rows } => self.render_markdown_table(headers, rows, style, cx),
             Block::Code { code, .. } => div()
                 .w_full()
                 .px(px(10.0))
@@ -677,65 +759,228 @@ impl TerminalView {
         }
     }
 
+    fn render_markdown_list(
+        &mut self,
+        ordered: bool,
+        items: Vec<ListItem>,
+        style: &MarkdownStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut list = div().w_full().flex().flex_col().gap(px(6.0));
+        for (item_index, item) in items.into_iter().enumerate() {
+            let marker = if item.task.is_some() {
+                None
+            } else if ordered {
+                Some(format!("{}.", item_index + 1))
+            } else {
+                Some("•".to_string())
+            };
+            let nested = item.nested;
+            let children = self.render_markdown_inlines(&item.children, style, cx);
+            let nested_blocks = nested
+                .into_iter()
+                .enumerate()
+                .map(|(nested_index, block)| {
+                    div().pl(px(8.0)).child(self.render_markdown_block(
+                        nested_index,
+                        block,
+                        style,
+                        cx,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            list = list.child(
+                div()
+                    .w_full()
+                    .flex()
+                    .items_start()
+                    .gap(px(8.0))
+                    .children(item.task.map(|checked| {
+                        let mut box_bg = style.accent;
+                        box_bg.a = if checked { 1.0 } else { 0.0 };
+                        div()
+                            .mt(px(3.0))
+                            .w(px(12.0))
+                            .h(px(12.0))
+                            .flex_none()
+                            .rounded(px(3.0))
+                            .border_1()
+                            .border_color(style.accent)
+                            .bg(box_bg)
+                            .into_any_element()
+                    }))
+                    .children(marker.map(|marker| {
+                        div()
+                            .w(px(20.0))
+                            .flex_none()
+                            .text_size(px(13.0))
+                            .text_color(style.muted_text)
+                            .child(marker)
+                            .into_any_element()
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .text_size(px(13.0))
+                            .line_height(px(19.0))
+                            .text_color(style.primary_text)
+                            .child(children)
+                            .children(nested_blocks),
+                    ),
+            );
+        }
+        list.into_any_element()
+    }
+
+    fn render_markdown_table(
+        &mut self,
+        headers: Vec<Vec<Inline>>,
+        rows: Vec<Vec<Vec<Inline>>>,
+        style: &MarkdownStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut border = style.muted_text;
+        border.a = 0.18;
+        let mut table = div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .border_1()
+            .border_color(border)
+            .rounded(px(8.0))
+            .overflow_hidden();
+        table = table.child(self.render_markdown_table_row(headers, true, style, cx));
+        for row in rows {
+            table = table.child(self.render_markdown_table_row(row, false, style, cx));
+        }
+        table.into_any_element()
+    }
+
+    fn render_markdown_table_row(
+        &mut self,
+        cells: Vec<Vec<Inline>>,
+        header: bool,
+        style: &MarkdownStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let mut border = style.muted_text;
+        border.a = 0.18;
+        let mut row = div().w_full().flex().border_b_1().border_color(border);
+        for cell in cells {
+            row = row.child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .px(px(8.0))
+                    .py(px(6.0))
+                    .text_size(px(12.0))
+                    .line_height(px(16.0))
+                    .font_weight(if header {
+                        FontWeight::SEMIBOLD
+                    } else {
+                        FontWeight::NORMAL
+                    })
+                    .text_color(style.primary_text)
+                    .child(self.render_markdown_inlines(&cell, style, cx)),
+            );
+        }
+        row.into_any_element()
+    }
+
     fn render_markdown_inlines(
         &mut self,
         inlines: &[Inline],
         style: &MarkdownStyle,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let mut row = div().flex().flex_wrap().items_baseline();
-        for (index, inline) in inlines.iter().enumerate() {
-            row = row.child(self.render_markdown_inline(index, inline, style, cx));
+        if inlines.is_empty() {
+            return div().into_any_element();
         }
-        row.into_any_element()
+        if let [Inline::Image { alt, url }] = inlines {
+            return self.render_markdown_image(0, alt, url, style, cx);
+        }
+
+        let mut column = div().w_full().min_w(px(0.0)).flex().flex_col().gap(px(8.0));
+        let mut text_run = Vec::new();
+        let mut image_index = 0;
+        for inline in inlines {
+            if let Inline::Image { alt, url } = inline {
+                if !text_run.is_empty() {
+                    column = column.child(render_wrapping_markdown_text(&text_run, style));
+                    text_run.clear();
+                }
+                column = column.child(self.render_markdown_image(image_index, alt, url, style, cx));
+                image_index += 1;
+            } else {
+                text_run.push(inline.clone());
+            }
+        }
+        if !text_run.is_empty() {
+            column = column.child(render_wrapping_markdown_text(&text_run, style));
+        }
+        column.into_any_element()
     }
 
-    fn render_markdown_inline(
+    fn render_markdown_link(
         &mut self,
         index: usize,
-        inline: &Inline,
+        label: &str,
+        url: &str,
         style: &MarkdownStyle,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        match inline {
-            Inline::Text(text) => div().child(text.clone()).into_any_element(),
-            Inline::Strong(text) => div()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(text.clone())
+        let url = url.to_string();
+        let mut hover = style.accent;
+        hover.a = 0.16;
+        div()
+            .id(gpui::ElementId::from(gpui::SharedString::from(format!(
+                "release-notes-link-{index}-{label}"
+            ))))
+            .text_color(style.accent)
+            .underline()
+            .cursor_pointer()
+            .hover(move |this| this.bg(hover))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |_this, _event, _window, cx| {
+                    if webbrowser::open(&url).is_err() {
+                        crate::ui::toast::error("Could not open link");
+                    }
+                    cx.stop_propagation();
+                }),
+            )
+            .child(label.to_string())
+            .into_any_element()
+    }
+
+    fn render_markdown_image(
+        &mut self,
+        index: usize,
+        alt: &str,
+        url: &str,
+        style: &MarkdownStyle,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let fallback = if alt.trim().is_empty() { "Image" } else { alt };
+        match self.release_notes_images.get(url) {
+            Some(MarkdownImageState::Ready(source)) => gpui::img(source.clone())
+                .id(gpui::ElementId::from(gpui::SharedString::from(format!(
+                    "release-notes-image-{index}"
+                ))))
+                .w_full()
+                .max_h(px(240.0))
+                .object_fit(ObjectFit::Contain)
                 .into_any_element(),
-            Inline::Emphasis(text) => div().italic().child(text.clone()).into_any_element(),
-            Inline::Code(text) => div()
-                .px(px(4.0))
-                .rounded(px(4.0))
-                .bg(style.code_bg)
-                .font_family(style.mono_font.clone())
+            Some(MarkdownImageState::Loading) => div()
                 .text_size(px(12.0))
-                .child(text.clone())
+                .text_color(style.muted_text)
+                .child(format!("Loading {fallback}…"))
                 .into_any_element(),
-            Inline::Link { label, url } => {
-                let url = url.clone();
-                let mut hover = style.accent;
-                hover.a = 0.16;
-                div()
-                    .id(gpui::ElementId::from(gpui::SharedString::from(format!(
-                        "release-notes-link-{index}-{label}"
-                    ))))
-                    .text_color(style.accent)
-                    .underline()
-                    .cursor_pointer()
-                    .hover(move |this| this.bg(hover))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |_this, _event, _window, cx| {
-                            if webbrowser::open(&url).is_err() {
-                                crate::ui::toast::error("Could not open link");
-                            }
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .child(label.clone())
-                    .into_any_element()
-            }
+            _ => self.render_markdown_link(index, fallback, url, style, cx),
         }
     }
 }
@@ -746,6 +991,110 @@ struct MarkdownStyle {
     accent: gpui::Rgba,
     code_bg: gpui::Rgba,
     mono_font: gpui::SharedString,
+}
+
+fn render_wrapping_markdown_text(inlines: &[Inline], style: &MarkdownStyle) -> AnyElement {
+    let mut text = String::new();
+    let mut highlights: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
+    let mut links: Vec<(Range<usize>, String)> = Vec::new();
+
+    for inline in inlines {
+        let start = text.len();
+        match inline {
+            Inline::Text(value) => text.push_str(value),
+            Inline::Strong(value) => {
+                text.push_str(value);
+                highlights.push((
+                    start..text.len(),
+                    HighlightStyle {
+                        font_weight: Some(FontWeight::SEMIBOLD),
+                        ..Default::default()
+                    },
+                ));
+            }
+            Inline::Emphasis(value) => {
+                text.push_str(value);
+                highlights.push((
+                    start..text.len(),
+                    HighlightStyle {
+                        font_style: Some(FontStyle::Italic),
+                        ..Default::default()
+                    },
+                ));
+            }
+            Inline::Code(value) => {
+                text.push_str(value);
+                highlights.push((
+                    start..text.len(),
+                    HighlightStyle {
+                        background_color: Some(style.code_bg.into()),
+                        ..Default::default()
+                    },
+                ));
+            }
+            Inline::Link { label, url } => {
+                text.push_str(label);
+                highlights.push((
+                    start..text.len(),
+                    HighlightStyle {
+                        color: Some(style.accent.into()),
+                        underline: Some(UnderlineStyle {
+                            thickness: px(1.0),
+                            color: Some(style.accent.into()),
+                            wavy: false,
+                        }),
+                        ..Default::default()
+                    },
+                ));
+                links.push((start..text.len(), url.clone()));
+            }
+            Inline::Image { alt, url } => {
+                if alt.trim().is_empty() {
+                    text.push_str(url);
+                } else {
+                    text.push_str(alt);
+                }
+            }
+        }
+    }
+
+    if text.is_empty() {
+        return div().into_any_element();
+    }
+
+    let styled = StyledText::new(text.clone()).with_highlights(highlights);
+    let wrapped = if links.is_empty() {
+        styled.into_any_element()
+    } else {
+        let ranges = links
+            .iter()
+            .map(|(range, _)| range.clone())
+            .collect::<Vec<_>>();
+        let urls = links.into_iter().map(|(_, url)| url).collect::<Vec<_>>();
+        InteractiveText::new(
+            gpui::SharedString::from(format!(
+                "release-notes-text-{}-{}",
+                text.len(),
+                text.chars().take(32).collect::<String>()
+            )),
+            styled,
+        )
+        .on_click(ranges, move |index, _window, _cx| {
+            if let Some(url) = urls.get(index)
+                && webbrowser::open(url).is_err()
+            {
+                crate::ui::toast::error("Could not open link");
+            }
+        })
+        .into_any_element()
+    };
+
+    div()
+        .w_full()
+        .min_w(px(0.0))
+        .whitespace_normal()
+        .child(wrapped)
+        .into_any_element()
 }
 
 fn banner_tone(tone: UpdateBannerTone, colors: &TerminalColors) -> BannerTone {

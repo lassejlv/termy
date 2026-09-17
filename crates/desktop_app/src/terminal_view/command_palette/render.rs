@@ -2,7 +2,9 @@ use super::super::*;
 use super::presentation::{
     palette_item_category, palette_item_icon_path, palette_item_tint_category, shortcut_keycaps,
 };
-use super::state::{command_palette_layout_for_viewport, command_palette_viewport_height};
+use super::state::{
+    ReleaseListState, command_palette_layout_for_viewport, command_palette_viewport_height,
+};
 use super::style::{
     COMMAND_PALETTE_PANEL_RADIUS, COMMAND_PALETTE_ROW_RADIUS, COMMAND_PALETTE_SHORTCUT_RADIUS,
     CommandPaletteStyle, category_tint,
@@ -298,7 +300,8 @@ impl TerminalView {
                 | CommandPaletteItemKind::TaskCreate { .. }
                 | CommandPaletteItemKind::Task { .. }
                 | CommandPaletteItemKind::AppInfoEntry { .. }
-                | CommandPaletteItemKind::AppInfoCopyAll { .. } => None,
+                | CommandPaletteItemKind::AppInfoCopyAll { .. }
+                | CommandPaletteItemKind::ReleaseNotes { .. } => None,
             };
             let title = item.title.clone();
             let title_highlights = self.command_palette.filtered_title_highlights(index);
@@ -503,6 +506,7 @@ impl TerminalView {
                     }
                 }
                 CommandPaletteMode::AppInfo => "App Info".to_string(),
+                CommandPaletteMode::Releases => "Release Notes".to_string(),
             }
         };
         // (keycap, action) pairs for the footer bar. An empty keycap renders the
@@ -575,6 +579,9 @@ impl TerminalView {
                 CommandPaletteMode::AppInfo => {
                     &[("↵", "Copy"), ("esc", "Back"), ("↑↓", "Navigate")]
                 }
+                CommandPaletteMode::Releases => {
+                    &[("↵", "View Notes"), ("esc", "Back"), ("↑↓", "Navigate")]
+                }
             }
         };
         let style = CommandPaletteStyle::resolve(self);
@@ -588,25 +595,37 @@ impl TerminalView {
                     == TmuxSessionIntent::AttachOrSwitch
                     && self.command_palette.input().text().trim().is_empty() =>
             {
-                "No tmux sessions found. Type a name and press Enter to create one."
+                "No tmux sessions found. Type a name and press Enter to create one.".to_string()
             }
             CommandPaletteMode::Layouts
                 if self.command_palette.saved_layout_intent() == SavedLayoutIntent::Browse
                     && self.command_palette.input().text().trim().is_empty() =>
             {
-                "No saved layouts yet. Save the current split setup from here."
+                "No saved layouts yet. Save the current split setup from here.".to_string()
             }
             CommandPaletteMode::Tasks => match self.command_palette.task_intent() {
                 TaskIntent::Browse if self.command_palette.input().text().trim().is_empty() => {
-                    "No tasks configured. Create one here or add task.<name>.command entries to config.txt."
+                    "No tasks configured. Create one here or add task.<name>.command entries to config.txt.".to_string()
                 }
                 TaskIntent::CreateGlobalInput | TaskIntent::CreateLayoutInput => {
-                    "Enter a task as name: command"
+                    "Enter a task as name: command".to_string()
                 }
-                _ => "No matching items",
+                _ => "No matching items".to_string(),
             },
-            CommandPaletteMode::PluginInputs => "No matching options",
-            _ => "No matching items",
+            CommandPaletteMode::PluginInputs => "No matching options".to_string(),
+            CommandPaletteMode::Releases => match &self.command_palette.release_list {
+                ReleaseListState::Loading | ReleaseListState::Idle => {
+                    "Loading releases…".to_string()
+                }
+                ReleaseListState::Failed(message) => message.clone(),
+                ReleaseListState::Ready(_)
+                    if self.command_palette.input().text().trim().is_empty() =>
+                {
+                    "No GitHub releases found".to_string()
+                }
+                ReleaseListState::Ready(_) => "No matching items".to_string(),
+            },
+            _ => "No matching items".to_string(),
         };
 
         let list = if let Some(plugin_ui) = plugin_ui.clone() {

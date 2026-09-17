@@ -70,6 +70,11 @@ impl UpdateBannerModel {
                         style: UpdateButtonStyle::Primary,
                     },
                     UpdateBannerButton {
+                        label: "View release notes",
+                        action: UpdateBannerAction::ViewReleaseNotes,
+                        style: UpdateButtonStyle::Secondary,
+                    },
+                    UpdateBannerButton {
                         label: "Later",
                         action: UpdateBannerAction::Dismiss,
                         style: UpdateButtonStyle::Ghost,
@@ -221,6 +226,30 @@ mod tests {
             })
         );
         assert!(model.buttons.is_empty());
+    }
+
+    #[test]
+    fn available_state_exposes_install_and_release_notes() {
+        let model = UpdateBannerModel::from_state(&UpdateState::Available {
+            version: "1.2.3".to_string(),
+            asset_name: "Termy.dmg".to_string(),
+            url: "https://example.com/Termy.dmg".to_string(),
+            checksum_asset_name: None,
+            checksum_url: None,
+            extension: "dmg".to_string(),
+        })
+        .expect("available state should render an update banner");
+
+        let actions: Vec<_> = model.buttons.iter().map(|button| button.action).collect();
+        assert_eq!(
+            actions,
+            vec![
+                UpdateBannerAction::Install,
+                UpdateBannerAction::ViewReleaseNotes,
+                UpdateBannerAction::Dismiss,
+            ]
+        );
+        assert_eq!(model.version.as_deref(), Some("1.2.3"));
     }
 
     #[test]
