@@ -69,6 +69,8 @@ tokio = { version = "1", default-features = false, features = ["rt"] }
 libsqlite3-sys = "0.30.1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+raw-window-handle = "0.6"
+x11rb = "0.13.2"
 font-kit = { package = "zed-font-kit", version = "0.14.1-zed", features = ["source-fontconfig-dlopen"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -83,4 +85,6 @@ raw-window-handle = "0.6"
 winresource = "0.1"
 
 [dev-dependencies]
+raw-window-handle = "0.6"
+x11rb = "0.13.2"
 gpui = { workspace = true, features = ["test-support"] }

@@ -39,6 +39,19 @@ Enter/Escape; Tab and arrow keys should select buttons. Clicking outside the
 prompt must leave it open without focusing or sending input to the terminal.
 Repeating the close request must not bypass confirmation.
 
+## Linux titlebar theme (#389)
+
+`cargo test -p termy --bin termy linux_window_theme` checks X11/XWayland window
+selection, the Wayland no-op, and actual X11 property requests against a local
+protocol peer. It verifies `_GTK_THEME_VARIANT` uses UTF8_STRING `dark`, removes
+the override when returning to light, and targets the intended window ID.
+
+On a Linux desktop whose window manager honors this hint, open terminal and
+Settings windows, switch the desktop appearance dark/light, and confirm both
+native titlebars update without restarting Termy. The desktop's frame theme
+remains in charge; changing Termy's terminal colors must not override it.
+Native Wayland decorations remain compositor-controlled.
+
 ## Ignored tests
 
 - `crates/terminal_ui/tests/tmux_split_integration.rs` — requires **tmux ≥ 3.3** locally.

@@ -218,7 +218,11 @@ fn open_settings_window_with_section(
         },
         |window, cx| {
             #[cfg(target_os = "linux")]
-            window.set_window_title("Settings");
+            {
+                window.set_window_title("Settings");
+                #[cfg(not(test))]
+                crate::linux_window_theme::install(window);
+            }
             cx.new(|cx| {
                 let mut view = SettingsWindow::new(window, cx);
                 if let Some(section) = section {

@@ -6667,6 +6667,7 @@ dependencies = [
  "url",
  "webbrowser",
  "winresource",
+ "x11rb",
  "zed-font-kit",
 ]
 

@@ -18,6 +18,8 @@ mod keybindings;
 mod launch_probe;
 #[cfg(any(target_os = "linux", test))]
 mod linux_prompt;
+#[cfg(any(target_os = "linux", test))]
+mod linux_window_theme;
 #[cfg(target_os = "macos")]
 mod macos_titlebar_drag;
 mod menus;
@@ -309,7 +311,11 @@ pub(crate) fn open_terminal_window(
         },
         move |window, cx| {
             #[cfg(target_os = "linux")]
-            window.set_window_title("Termy");
+            {
+                window.set_window_title("Termy");
+                #[cfg(not(test))]
+                linux_window_theme::install(window);
+            }
             if benchmark_mode {
                 #[cfg(target_os = "macos")]
                 if let Err(error) =
