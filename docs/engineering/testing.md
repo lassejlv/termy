@@ -91,3 +91,24 @@ just validate                     # full local gate (once E0 lands)
 ## Roadmap
 
 CI parity and tmux reliability: [roadmap.md](roadmap.md) phase E0–E2.
+
+## Settings consistency and tab shortcuts (#386, #387)
+
+The UI audit found that keyboard shortcuts used a separate card border and
+12px control corners, variable control heights, wide Clear buttons, and raw
+config names as descriptions. Plugin controls were 228×28px with 40px text
+reset buttons, while built-in controls were 300×30px with 22px icon actions.
+Shortcut cards now use the same grouped-card renderer; shortcut and plugin
+controls share built-in dimensions, and reset/clear actions use one renderer
+with consistent sizing, hover feedback, tooltips, and empty action slots.
+
+Keyboard shortcuts now begin with one **Switch tabs** entry (`cycle_tabs`,
+`Ctrl+Tab` by default). **More tab shortcuts** reveals the optional directional
+and numbered bindings without changing their configuration. Search for
+“tab switch” to find the section.
+
+Run `cargo test -p termy --bin termy settings_view` for rendered expansion,
+capture/cancel, control dimensions, and binding round-trip checks. For a visual
+check, compare General, Keyboard shortcuts, and plugin settings at the minimum
+window size; controls and row actions should align. Verify recording, clearing,
+and Escape cancellation, then reload Settings to check persistence.

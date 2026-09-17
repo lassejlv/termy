@@ -326,42 +326,52 @@ impl SettingsWindow {
         }
     }
 
+    fn is_optional_tab_shortcut(action: CommandId) -> bool {
+        matches!(
+            action,
+            CommandId::SwitchTabLeft
+                | CommandId::SwitchTabRight
+                | CommandId::SwitchToTab1
+                | CommandId::SwitchToTab2
+                | CommandId::SwitchToTab3
+                | CommandId::SwitchToTab4
+                | CommandId::SwitchToTab5
+                | CommandId::SwitchToTab6
+                | CommandId::SwitchToTab7
+                | CommandId::SwitchToTab8
+                | CommandId::SwitchToTab9
+        )
+    }
+
     pub(super) fn render_keybinding_row(
         &self,
         action: CommandId,
         action_bindings: &HashMap<CommandId, String>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let config_name = action.config_name().to_string();
-        let action_title = Self::action_title_from_config_name(action.config_name());
+        let config_name = action.config_name();
+        let action_title = if action == CommandId::CycleTabs {
+            "Switch tabs".to_string()
+        } else {
+            Self::action_title_from_config_name(config_name)
+        };
         let is_capturing = self.capturing_action == Some(action);
         let binding_display = if is_capturing {
-            "Press shortcut...".to_string()
+            "Press shortcut…".to_string()
         } else {
             action_bindings.get(&action).map_or_else(
                 || "Unbound".to_string(),
                 |trigger| Self::display_trigger_for_os(trigger),
             )
         };
-        let bg_card = self.bg_card();
-        let border_color = self.border_color();
-        let input_bg = self.bg_input();
         let hover_bg = self.bg_hover();
         let accent = self.accent();
-        let accent_hover = self.accent_with_alpha(0.8);
-        let text_primary = self.text_primary();
-        let text_muted = self.text_muted();
-        let text_secondary = self.text_secondary();
-        let binding_hover_bg = if is_capturing { accent_hover } else { hover_bg };
-        let binding_text_color = if is_capturing {
-            text_primary
-        } else {
-            text_secondary
-        };
-
-        let _ = bg_card;
+        let focus_ring = self.input_focus_ring();
+        let description = (action == CommandId::CycleTabs)
+            .then_some("Move to the next tab, wrapping after the last");
         div()
             .id(SharedString::from(format!("keybind-row-{config_name}")))
+            .debug_selector(move || format!("keybind-row-{config_name}"))
             .flex()
             .items_center()
             .justify_between()
@@ -369,117 +379,76 @@ impl SettingsWindow {
             .py(px(CARD_ROW_PADDING_Y))
             .px(px(CARD_ROW_PADDING_X))
             .when(is_capturing, |s| s.bg(self.accent_with_alpha(0.06)))
-            .child(self.render_keybinding_row_labels(
-                action_title,
-                config_name,
-                text_primary,
-                text_muted,
-            ))
-            .child(self.render_keybinding_row_actions(
-                action,
-                binding_display,
-                is_capturing,
-                binding_hover_bg,
-                binding_text_color,
-                text_primary,
-                text_secondary,
-                input_bg,
-                border_color,
-                hover_bg,
-                accent,
-                cx,
-            ))
-            .into_any_element()
-    }
-
-    pub(super) fn render_keybinding_row_labels(
-        &self,
-        action_title: String,
-        config_name: String,
-        text_primary: Rgba,
-        text_muted: Rgba,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
             .child(
                 div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(text_primary)
-                    .child(action_title),
-            )
-            .child(div().text_xs().text_color(text_muted).child(config_name))
-            .into_any_element()
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn render_keybinding_row_actions(
-        &self,
-        action: CommandId,
-        binding_display: String,
-        is_capturing: bool,
-        binding_hover_bg: Rgba,
-        binding_text_color: Rgba,
-        text_primary: Rgba,
-        text_secondary: Rgba,
-        input_bg: Rgba,
-        border_color: Rgba,
-        hover_bg: Rgba,
-        accent: Rgba,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .id(SharedString::from(format!(
-                        "keybind-bind-{}",
-                        action.config_name()
-                    )))
-                    .w(px(SETTINGS_CONTROL_WIDTH))
-                    .px_3()
-                    .py_1()
-                    .rounded(px(SETTINGS_CARD_RADIUS))
-                    .bg(input_bg)
-                    .border_1()
-                    .border_color(if is_capturing { accent } else { border_color })
-                    .text_sm()
-                    .text_color(binding_text_color)
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(binding_hover_bg).text_color(text_primary))
-                    .on_click(cx.listener(move |view, _, window, cx| {
-                        if view.capturing_action == Some(action) {
-                            view.capturing_action = None;
-                            cx.notify();
-                            return;
-                        }
-                        view.begin_action_binding_capture(action, window, cx);
-                    }))
-                    .child(binding_display),
-            )
-            .child(
-                div()
-                    .id(SharedString::from(format!(
-                        "keybind-clear-{}",
-                        action.config_name()
-                    )))
-                    .px_3()
-                    .py_1()
-                    .rounded(px(SETTINGS_CARD_RADIUS))
-                    .bg(input_bg)
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(text_secondary)
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(hover_bg).text_color(text_primary))
-                    .child("Clear")
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        view.clear_action_binding(action, cx);
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(self.text_primary())
+                            .child(action_title),
+                    )
+                    .children(description.map(|description| {
+                        div()
+                            .text_xs()
+                            .line_height(px(16.0))
+                            .text_color(self.text_muted())
+                            .child(description)
                     })),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("keybind-bind-{config_name}")))
+                            .debug_selector(move || format!("keybind-bind-{config_name}"))
+                            .w(px(SETTINGS_CONTROL_WIDTH))
+                            .h(px(SETTINGS_CONTROL_HEIGHT))
+                            .px(px(SETTINGS_CONTROL_INNER_PADDING))
+                            .flex()
+                            .items_center()
+                            .rounded(px(SETTINGS_INPUT_RADIUS))
+                            .bg(self.bg_input())
+                            .border_1()
+                            .border_color(if is_capturing {
+                                accent
+                            } else {
+                                self.card_border_color()
+                            })
+                            .when(is_capturing, |s| {
+                                s.shadow(vec![Self::focus_ring_shadow(focus_ring)])
+                            })
+                            .text_size(px(SETTINGS_INPUT_TEXT_SIZE))
+                            .text_color(self.text_secondary())
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(hover_bg))
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                if view.capturing_action == Some(action) {
+                                    view.capturing_action = None;
+                                    cx.notify();
+                                } else {
+                                    view.begin_action_binding_capture(action, window, cx);
+                                }
+                            }))
+                            .child(binding_display),
+                    )
+                    .child(self.render_setting_action_button(
+                        SharedString::from(format!("keybind-clear-{config_name}")),
+                        "icons/close.svg",
+                        "Clear shortcut",
+                        action_bindings.contains_key(&action),
+                        cx,
+                        move |view, _, cx| view.clear_action_binding(action, cx),
+                    )),
             )
             .into_any_element()
     }
@@ -488,60 +457,77 @@ impl SettingsWindow {
         &mut self,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let keybind_meta = Self::setting_metadata("keybind").expect("missing metadata for keybind");
         let action_bindings = self.effective_action_bindings();
-        let rows = Self::bindable_actions()
-            .into_iter()
-            .map(|action| self.render_keybinding_row(action, &action_bindings, cx))
-            .collect::<Vec<_>>();
-        let card_bg = self.bg_elevated();
-        let border_color = self.border_color();
-        let divider = self.divider_color();
-        let text_muted = self.text_muted();
-
-        let total = rows.len();
-        let mut card = div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .rounded(px(SETTINGS_CARD_RADIUS))
-            .bg(card_bg)
-            .border_1()
-            .border_color(border_color)
-            .overflow_hidden();
-        for (index, row) in rows.into_iter().enumerate() {
-            let mut wrapper = div().w_full().child(row);
-            if index + 1 < total {
-                wrapper = wrapper.border_b_1().border_color(divider);
-            }
-            card = card.child(wrapper);
+        let actions = Self::bindable_actions();
+        let mut tab_rows =
+            vec![self.render_keybinding_row(CommandId::CycleTabs, &action_bindings, cx)];
+        let hover_bg = self.bg_hover();
+        tab_rows.push(
+            div()
+                .id("more-tab-shortcuts")
+                .debug_selector(|| "more-tab-shortcuts".into())
+                .px(px(CARD_ROW_PADDING_X))
+                .py(px(CARD_ROW_PADDING_Y))
+                .flex()
+                .items_center()
+                .gap_2()
+                .cursor_pointer()
+                .text_size(px(SETTINGS_INPUT_TEXT_SIZE))
+                .text_color(self.text_secondary())
+                .hover(move |s| s.bg(hover_bg))
+                .child(
+                    svg()
+                        .path(if self.show_more_tab_shortcuts {
+                            "icons/settings/chevron-up.svg"
+                        } else {
+                            "icons/settings/chevron-down.svg"
+                        })
+                        .size(px(14.0))
+                        .text_color(self.text_secondary()),
+                )
+                .child(if self.show_more_tab_shortcuts {
+                    "Hide extra tab shortcuts"
+                } else {
+                    "More tab shortcuts"
+                })
+                .on_click(cx.listener(|view, _, _, cx| {
+                    view.show_more_tab_shortcuts = !view.show_more_tab_shortcuts;
+                    view.capturing_action = None;
+                    cx.notify();
+                }))
+                .into_any_element(),
+        );
+        if self.show_more_tab_shortcuts {
+            tab_rows.extend(
+                actions
+                    .iter()
+                    .copied()
+                    .filter(|action| Self::is_optional_tab_shortcut(*action))
+                    .map(|action| self.render_keybinding_row(action, &action_bindings, cx)),
+            );
         }
-
+        let rows = actions
+            .into_iter()
+            .filter(|action| {
+                *action != CommandId::CycleTabs && !Self::is_optional_tab_shortcut(*action)
+            })
+            .map(|action| self.render_keybinding_row(action, &action_bindings, cx))
+            .collect();
         div()
             .flex()
             .flex_col()
             .gap(px(CARD_GAP))
             .child(self.render_section_header(
                 "Keyboard shortcuts",
-                "Click a shortcut box, then press a key combo",
+                "Click a shortcut to record. Escape cancels; Backspace clears.",
                 SettingsSection::Keybindings,
                 cx,
             ))
-            .child(
-                self.wrap_setting_with_scroll_anchor(
-                    keybind_meta.key,
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(8.0))
-                        .child(self.render_group_header("Shortcuts"))
-                        .child(card)
-                        .into_any_element(),
-                ),
-            )
-            .child(div().text_xs().text_color(text_muted).child(
-                "Recording writes a structured keybind snapshot (clear + explicit bindings).",
+            .child(self.wrap_setting_with_scroll_anchor(
+                "keybind",
+                self.render_settings_group("Tab switching", tab_rows),
             ))
+            .child(self.render_settings_group("Other shortcuts", rows))
     }
 }
 
@@ -550,6 +536,111 @@ mod tests {
     use super::SettingsWindow;
     use std::collections::HashMap;
     use termy_command_core::{CommandId, ResolvedKeybind, command_specs};
+
+    #[gpui::test]
+    fn tab_shortcuts_expand_and_capture_cancels_without_changing_bindings(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (settings, cx) = cx.add_window_view(|window, cx| {
+            let mut view = SettingsWindow::new(window, cx);
+            view.active_section = super::SettingsSection::Keybindings;
+            view.blur_sidebar_search();
+            view.config.keybind_lines = vec![termy_config_core::KeybindConfigLine {
+                line_number: 1,
+                value: "alt-x=switch_to_tab_1".into(),
+            }];
+            view.focus_handle.focus(window);
+            view
+        });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("keybind-row-cycle_tabs").is_some());
+        assert!(cx.debug_bounds("keybind-row-switch_to_tab_1").is_none());
+        let other_shortcuts_y = cx.debug_bounds("keybind-row-new_tab").unwrap().origin.y;
+        let more = cx
+            .debug_bounds("more-tab-shortcuts")
+            .expect("tab shortcut disclosure");
+        cx.simulate_click(more.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("keybind-row-switch_to_tab_1").is_some());
+        settings.read_with(cx, |view, _| {
+            assert_eq!(
+                view.effective_action_bindings()
+                    .get(&CommandId::SwitchToTab1)
+                    .map(String::as_str),
+                Some("alt-x")
+            );
+        });
+        let record = cx
+            .debug_bounds("keybind-bind-cycle_tabs")
+            .expect("main tab switch shortcut");
+        assert_eq!(record.size.width, gpui::px(super::SETTINGS_CONTROL_WIDTH));
+        assert_eq!(record.size.height, gpui::px(super::SETTINGS_CONTROL_HEIGHT));
+        cx.simulate_click(record.center(), gpui::Modifiers::default());
+        settings.read_with(cx, |view, _| {
+            assert_eq!(view.capturing_action, Some(CommandId::CycleTabs))
+        });
+        cx.simulate_keystrokes("escape");
+        settings.read_with(cx, |view, _| {
+            assert!(view.capturing_action.is_none());
+            assert_eq!(view.config.keybind_lines.len(), 1);
+            assert_eq!(view.config.keybind_lines[0].value, "alt-x=switch_to_tab_1");
+        });
+        let more = cx.debug_bounds("more-tab-shortcuts").unwrap();
+        cx.simulate_click(more.center(), gpui::Modifiers::default());
+        cx.run_until_parked();
+        settings.read_with(cx, |view, _| assert!(!view.show_more_tab_shortcuts));
+        assert_eq!(
+            cx.debug_bounds("keybind-row-new_tab").unwrap().origin.y,
+            other_shortcuts_y
+        );
+        cx.simulate_resize(gpui::size(gpui::px(760.0), gpui::px(560.0)));
+        cx.run_until_parked();
+        let record = cx.debug_bounds("keybind-bind-cycle_tabs").unwrap();
+        assert_eq!(record.size.width, gpui::px(super::SETTINGS_CONTROL_WIDTH));
+        assert!(record.right() < gpui::px(760.0));
+    }
+
+    #[test]
+    fn main_tab_switch_assignment_preserves_individual_tab_shortcuts() {
+        let mut bindings = SettingsWindow::effective_action_bindings_from_lines(&[
+            termy_config_core::KeybindConfigLine {
+                line_number: 1,
+                value: "alt-x=switch_to_tab_1".into(),
+            },
+        ]);
+        SettingsWindow::apply_assignment_with_conflict_resolution(
+            &mut bindings,
+            CommandId::CycleTabs,
+            "alt-tab",
+        );
+        let lines = SettingsWindow::serialize_structured_keybind_lines(&bindings)
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| termy_config_core::KeybindConfigLine {
+                line_number: index + 1,
+                value,
+            })
+            .collect::<Vec<_>>();
+        let reloaded = SettingsWindow::effective_action_bindings_from_lines(&lines);
+        assert_eq!(
+            reloaded.get(&CommandId::CycleTabs).map(String::as_str),
+            Some("alt-tab")
+        );
+        assert_eq!(
+            reloaded.get(&CommandId::SwitchToTab1).map(String::as_str),
+            Some("alt-x")
+        );
+        assert!(!SettingsWindow::is_optional_tab_shortcut(
+            CommandId::CycleTabs
+        ));
+        assert_eq!(
+            SettingsWindow::bindable_actions()
+                .into_iter()
+                .filter(|action| SettingsWindow::is_optional_tab_shortcut(*action))
+                .count(),
+            11
+        );
+    }
 
     #[test]
     fn bindable_actions_match_command_catalog() {

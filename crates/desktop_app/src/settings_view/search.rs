@@ -72,6 +72,20 @@ mod tests {
         assert!(score.is_none());
     }
 
+    #[test]
+    fn tab_switch_search_finds_keyboard_shortcuts() {
+        let settings = SettingsWindow::build_searchable_settings();
+        let setting = settings
+            .iter()
+            .find(|setting| setting.metadata.key == "keybind")
+            .unwrap();
+        assert_eq!(setting.metadata.title, "Keyboard shortcuts");
+        assert!(
+            SettingsWindow::setting_search_score(setting, "tab switch", &["tab", "switch"])
+                .is_some()
+        );
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn default_terminal_search_points_to_general() {
@@ -257,7 +271,7 @@ impl SettingsWindow {
             SettingsSection::Plugins => "Install and manage plugins",
             SettingsSection::Advanced => "Startup, windows, updates, and app behavior",
             SettingsSection::Colors => "Override individual terminal colors",
-            SettingsSection::Keybindings => "Assign keys to commands",
+            SettingsSection::Keybindings => "Click to record. Escape cancels; Backspace clears.",
         }
     }
 

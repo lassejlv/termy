@@ -112,35 +112,42 @@ impl SettingsWindow {
         header
     }
 
-    /// Group caption for the few surfaces that build their own card instead of
-    /// going through `render_settings_group`. Styled to match the label
-    /// `termy_ui::SettingsGroup` draws, so both kinds of group read the same.
-    pub(super) fn render_group_header(&self, title: impl Into<SharedString>) -> impl IntoElement {
-        div()
-            .text_size(px(GROUP_TITLE_SIZE))
-            .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(self.text_muted())
-            .child(title.into())
-    }
-
     pub(super) fn render_reset_setting_button(
         &self,
         setting_key: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        self.render_setting_action_button(
+            SharedString::from(format!("reset-setting-{setting_key}")),
+            "icons/settings/reset.svg",
+            "Reset to default",
+            !self.is_setting_at_default(setting_key),
+            cx,
+            move |view, _, cx| view.confirm_reset_setting_to_default(setting_key, cx),
+        )
+    }
+
+    // Keep reset and clear affordances aligned across built-in, plugin, and
+    // shortcut rows, including the empty slot when no action is available.
+    pub(super) fn render_setting_action_button(
+        &self,
+        id: SharedString,
+        icon: &'static str,
+        label: &'static str,
+        enabled: bool,
+        cx: &mut Context<Self>,
+        on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> impl IntoElement {
         let hover_bg = self.bg_hover();
         let text_primary = self.text_primary();
-        // Settings at their default value render an empty slot of the same size
-        // so controls stay column-aligned while the reset affordance stays out
-        // of sight until it applies.
-        let can_reset = !self.is_setting_at_default(setting_key);
-        let is_hovered = self.hovered_reset_setting == Some(setting_key);
+        let is_hovered = self.hovered_setting_action.as_ref() == Some(&id);
+        let hover_id = id.clone();
         let tooltip_bg = self.bg_elevated();
         let tooltip_border = self.border_color();
         let tooltip_fg = self.text_primary();
 
         div()
-            .id(SharedString::from(format!("reset-setting-{setting_key}")))
+            .id(id)
             .w(px(22.0))
             .h(px(22.0))
             .relative()
@@ -148,30 +155,30 @@ impl SettingsWindow {
             .items_center()
             .justify_center()
             .rounded(px(SETTINGS_INPUT_RADIUS))
-            .when(can_reset, |s| {
+            .when(enabled, |s| {
                 s.cursor_pointer()
                     .hover(move |s| s.bg(hover_bg))
                     .on_hover(cx.listener(move |view, hovering: &bool, _window, cx| {
                         if *hovering {
-                            view.hovered_reset_setting = Some(setting_key);
-                        } else if view.hovered_reset_setting == Some(setting_key) {
-                            view.hovered_reset_setting = None;
+                            view.hovered_setting_action = Some(hover_id.clone());
+                        } else if view.hovered_setting_action.as_ref() == Some(&hover_id) {
+                            view.hovered_setting_action = None;
                         }
                         cx.notify();
                     }))
             })
-            .children(can_reset.then(|| {
+            .children(enabled.then(|| {
                 svg()
-                    .path(SharedString::from("icons/settings/reset.svg"))
+                    .path(SharedString::from(icon))
                     .size(px(13.0))
                     .text_color(text_primary)
             }))
-            .when(can_reset, |s| {
-                s.on_click(cx.listener(move |view, _, _, cx| {
-                    view.confirm_reset_setting_to_default(setting_key, cx);
+            .when(enabled, |s| {
+                s.on_click(cx.listener(move |view, _, window, cx| {
+                    on_click(view, window, cx);
                 }))
             })
-            .when(is_hovered && can_reset, |s| {
+            .when(is_hovered && enabled, |s| {
                 s.child(
                     deferred(
                         div()
@@ -187,7 +194,7 @@ impl SettingsWindow {
                             .text_size(px(11.0))
                             .text_color(tooltip_fg)
                             .whitespace_nowrap()
-                            .child("Reset to default"),
+                            .child(label),
                     )
                     .with_priority(20),
                 )

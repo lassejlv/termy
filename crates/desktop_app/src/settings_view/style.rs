@@ -75,12 +75,6 @@ impl SettingsWindow {
         c
     }
 
-    pub(super) fn divider_color(&self) -> Rgba {
-        let mut c = self.colors.foreground;
-        c.a = self.scaled_chrome_neutral_alpha(0.10);
-        c
-    }
-
     /// Soft outline for grouped setting cards — lighter than `border_color` so
     /// cards read as a gentle inset surface rather than a boxed-in panel.
     pub(super) fn card_border_color(&self) -> Rgba {

@@ -1,8 +1,8 @@
 use super::*;
 use termy_plugin_runtime::{PluginInventory, PluginSetting};
 
-const PLUGIN_SETTING_CONTROL_WIDTH: f32 = 228.0;
-const PLUGIN_SETTING_CONTROL_HEIGHT: f32 = 28.0;
+const PLUGIN_SETTING_CONTROL_WIDTH: f32 = SETTINGS_CONTROL_WIDTH;
+const PLUGIN_SETTING_CONTROL_HEIGHT: f32 = SETTINGS_CONTROL_HEIGHT;
 
 #[derive(Clone, Debug)]
 pub(super) struct ActivePluginSettingInput {
@@ -483,32 +483,17 @@ impl SettingsWindow {
         visible: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let hover = self.bg_hover();
-        let text = self.text_muted();
-        let text_hover = self.text_primary();
-        div()
-            .id(SharedString::from(format!(
-                "plugin-setting-reset-{plugin_id}-{key}"
-            )))
-            .w(px(40.0))
-            .h(px(24.0))
-            .rounded(px(SETTINGS_BUTTON_RADIUS))
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_xs()
-            .text_color(text)
-            .when(!visible, |button| button.opacity(0.0))
-            .when(visible, |button| {
-                button
-                    .cursor_pointer()
-                    .hover(move |style| style.bg(hover).text_color(text_hover))
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        view.reset_plugin_setting_from_settings(plugin_id.clone(), key.clone(), cx);
-                    }))
-            })
-            .child("Reset")
-            .into_any_element()
+        self.render_setting_action_button(
+            SharedString::from(format!("plugin-setting-reset-{plugin_id}-{key}")),
+            "icons/settings/reset.svg",
+            "Reset to default",
+            visible,
+            cx,
+            move |view, _, cx| {
+                view.reset_plugin_setting_from_settings(plugin_id.clone(), key.clone(), cx);
+            },
+        )
+        .into_any_element()
     }
 
     fn render_plugin_text_setting_control(
@@ -625,6 +610,9 @@ impl SettingsWindow {
             .bg(input_bg)
             .border_1()
             .border_color(if active { accent } else { idle_border })
+            .when(active, |s| {
+                s.shadow(vec![Self::focus_ring_shadow(self.input_focus_ring())])
+            })
             .overflow_hidden()
             .cursor_text()
             .on_mouse_down(
@@ -895,6 +883,7 @@ impl SettingsWindow {
             .child(
                 div()
                     .flex()
+                    .flex_none()
                     .items_center()
                     .gap_2()
                     .child(control)

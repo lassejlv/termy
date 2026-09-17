@@ -99,7 +99,6 @@ const SETTINGS_INPUT_RADIUS: f32 = 7.0;
 const SETTINGS_BUTTON_RADIUS: f32 = 6.0;
 const SETTINGS_SWITCH_RADIUS: f32 = 11.0;
 // Section title and subtitle sizes now live in `termy_ui::metrics`.
-const GROUP_TITLE_SIZE: f32 = 11.0;
 const CARD_GAP: f32 = 22.0;
 const CARD_ROW_PADDING_X: f32 = 16.0;
 const CARD_ROW_PADDING_Y: f32 = 11.0;
@@ -159,13 +158,14 @@ pub struct SettingsWindow {
     search_navigation_last_target: Option<&'static str>,
     search_navigation_last_jump_at: Option<Instant>,
     capturing_action: Option<CommandId>,
+    show_more_tab_shortcuts: bool,
     background_opacity_preview_owner_id: u64,
     preview_background_opacity: Option<config::BackgroundOpacityPreview>,
     background_opacity_drag_state: Option<BackgroundOpacityDragState>,
     background_opacity_slider_bounds: Option<Bounds<Pixels>>,
     scrollbar_drag_state: Option<ScrollbarDragState>,
     scrollbar_lane_bounds: Option<Bounds<Pixels>>,
-    hovered_reset_setting: Option<&'static str>,
+    hovered_setting_action: Option<SharedString>,
     hovered_reset_section: Option<SettingsSection>,
     // Switch that was toggled most recently, so only its knob animates.
     switch_animation: Option<(SharedString, std::time::Instant)>,
@@ -265,6 +265,7 @@ impl SettingsWindow {
             search_navigation_last_target: None,
             search_navigation_last_jump_at: None,
             capturing_action: None,
+            show_more_tab_shortcuts: false,
             background_opacity_preview_owner_id: NEXT_BACKGROUND_OPACITY_PREVIEW_OWNER_ID
                 .fetch_add(1, Ordering::Relaxed),
             preview_background_opacity: config::current_background_opacity_preview(),
@@ -272,7 +273,7 @@ impl SettingsWindow {
             background_opacity_slider_bounds: None,
             scrollbar_drag_state: None,
             scrollbar_lane_bounds: None,
-            hovered_reset_setting: None,
+            hovered_setting_action: None,
             hovered_reset_section: None,
             switch_animation: None,
             scroll_animation_token: 0,

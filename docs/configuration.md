@@ -367,7 +367,7 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 
 `keybind`
 - Default: built-in platform defaults
-- Keybinding override directive
+- Customize shortcuts for tabs, panes, and app commands
 - Group: `KEYBINDS`
 
 ## Tasks
