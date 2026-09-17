@@ -85,7 +85,7 @@ pub enum CommandPhase {
 /// - 2 = Error state (red)
 /// - 3 = Indeterminate/busy (spinning)
 /// - 4 = Warning state (yellow)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProgressState {
     /// No progress indicator (state 0)
     #[default]

@@ -18,14 +18,14 @@ use crate::{
     runtime::{TerminalCursorState, TerminalDamageSnapshot, TerminalSize},
 };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TerminalColor {
     pub r: u8,
     pub g: u8,
     pub b: u8,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermyColor {
     pub r: u8,
     pub g: u8,
@@ -33,7 +33,7 @@ pub struct TermyColor {
     pub a: u8,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TerminalRenderColor {
     #[default]
     DefaultForeground,
@@ -46,7 +46,7 @@ pub enum TerminalRenderColor {
     Rgb(TerminalColor),
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TerminalUnderlineStyle {
     #[default]
     None,
@@ -57,7 +57,7 @@ pub enum TerminalUnderlineStyle {
     Dashed,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub struct TerminalRenderText(CompactString);
 
 impl TerminalRenderText {
@@ -109,7 +109,7 @@ impl PartialEq<&str> for TerminalRenderText {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TerminalRenderCell {
     pub text: TerminalRenderText,
     pub foreground: TerminalRenderColor,
@@ -150,13 +150,13 @@ impl Default for TerminalRenderCell {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalViewportScrollDirection {
     Up,
     Down,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalViewportScroll {
     pub top: usize,
     pub bottom: usize,
@@ -164,7 +164,7 @@ pub struct TerminalViewportScroll {
     pub direction: TerminalViewportScrollDirection,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TerminalRenderDamageSnapshot {
     pub damage: TerminalDamageSnapshot,
     pub scrolls: Vec<TerminalViewportScroll>,
@@ -172,7 +172,7 @@ pub struct TerminalRenderDamageSnapshot {
     pub palette_revision: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TerminalViewportMetadata {
     pub cols: u16,
     pub rows: u16,
@@ -183,8 +183,9 @@ pub struct TerminalViewportMetadata {
     pub generation: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TerminalPalette {
+    #[serde(with = "crate::remote::serde_palette")]
     pub indexed: [Option<TerminalColor>; 256],
     pub foreground: Option<TerminalColor>,
     pub background: Option<TerminalColor>,
@@ -192,7 +193,7 @@ pub struct TerminalPalette {
     pub revision: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TerminalRenderRead {
     pub metadata: TerminalViewportMetadata,
     pub palette: TerminalPalette,
@@ -203,7 +204,7 @@ pub struct TerminalRenderRead {
 /// One viewport cell. Carries no position: full frames are row-major
 /// (`index = row * cols + col`) and partial updates list cells in dirty-span
 /// order, so position is derived from context on the consuming side.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TermyCell {
     pub char: char,
     pub fg: TermyColor,
@@ -218,7 +219,7 @@ pub struct TermyCell {
     pub line_wrapped: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TermyFrame {
     pub cols: u16,
     pub rows: u16,
@@ -228,7 +229,7 @@ pub struct TermyFrame {
     pub history_size: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TermyFrameUpdate {
     pub cols: u16,
     pub rows: u16,

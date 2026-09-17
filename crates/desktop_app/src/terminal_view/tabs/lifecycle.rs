@@ -455,6 +455,7 @@ impl TerminalView {
                     Some(&self.tab_shell_integration),
                     Some(terminal_runtime),
                     launch,
+                    self.multiplexer_client(),
                 ) {
                     Ok(terminal) => terminal,
                     Err(error) => {
@@ -551,6 +552,7 @@ impl TerminalView {
             Some(&self.tab_shell_integration),
             Some(&runtime_config),
             Some(&launch),
+            self.multiplexer_client(),
         ) {
             Ok(terminal) => terminal,
             Err(error) => {
@@ -681,6 +683,13 @@ impl TerminalView {
         self.sync_plugin_lifecycle_state(false, cx);
         self.schedule_persist_native_workspace(cx);
         cx.notify();
+        if self.multiplexer.is_some()
+            && self.session.tabs.is_empty()
+            && !self.has_other_workspaces()
+        {
+            self.sync_persisted_native_workspace();
+            crate::app_actions::close_terminal_window::<Self>(self.window_handle, cx);
+        }
     }
 
     pub(crate) fn tab_index_by_id(&self, tab_id: TabId) -> Option<usize> {
@@ -1326,6 +1335,7 @@ impl TerminalView {
         tab_shell_integration: TabTitleShellIntegration,
         terminal_runtime: TerminalRuntimeConfig,
         launch: Option<TerminalLaunch>,
+        multiplexer: Option<termy_multiplexer::SessionClient>,
     ) -> Result<Terminal, String> {
         Terminal::new_native_with_launch(
             size,
@@ -1334,6 +1344,7 @@ impl TerminalView {
             Some(&tab_shell_integration),
             Some(&terminal_runtime),
             launch.as_ref(),
+            multiplexer.as_ref(),
         )
         .map_err(|error| format!("Failed to split pane: {error}"))
     }
@@ -1500,6 +1511,7 @@ impl TerminalView {
         let wakeup_router = self.native_terminal_wakeup_router.clone();
         let tab_shell_integration = self.tab_shell_integration.clone();
         let terminal_runtime = self.terminal_runtime.clone();
+        let multiplexer = self.multiplexer_client().cloned();
         let launch = launch.cloned();
         self.invalidate_native_split_generation();
         let generation = self.native_split_generation;
@@ -1513,6 +1525,7 @@ impl TerminalView {
                     tab_shell_integration,
                     terminal_runtime,
                     launch,
+                    multiplexer,
                 )
             })
             .await;

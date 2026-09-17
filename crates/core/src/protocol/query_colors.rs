@@ -2,7 +2,7 @@ use alacritty_terminal::{term::color::Colors, vte::ansi::NamedColor};
 
 use crate::{TerminalColor, backend};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalQueryColors {
     pub ansi: [TerminalColor; 16],
     pub foreground: TerminalColor,

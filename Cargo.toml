@@ -9,6 +9,7 @@ members = [
   "crates/desktop_app",
   "crates/ffi",
   "crates/native_sdk",
+  "crates/multiplexer",
   "crates/plugin_runtime",
   "crates/release_core",
   "crates/search",

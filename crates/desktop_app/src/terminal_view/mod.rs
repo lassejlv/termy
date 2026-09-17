@@ -73,6 +73,7 @@ mod kitty_images;
 #[cfg(target_os = "macos")]
 mod macos_file_drop;
 mod metrics;
+mod multiplexer_session;
 mod overlay_view;
 mod persistence;
 mod plugin_ui;
@@ -511,6 +512,7 @@ impl Terminal {
     #[cfg(test)]
     fn new_test_display(size: TerminalSize) -> Self {
         Self::Native(NativeTerminalInstance {
+            session: None,
             wakeup_id: 0,
             wakeup_route: Arc::new(Mutex::new(None)),
             terminal: Mutex::new(NativeTerminal::new_display(size, None)),
@@ -524,31 +526,19 @@ impl Terminal {
         tab_title_shell_integration: Option<&TabTitleShellIntegration>,
         runtime_config: Option<&TerminalRuntimeConfig>,
         startup_command: Option<&str>,
+        multiplexer: Option<&termy_multiplexer::SessionClient>,
     ) -> anyhow::Result<Self> {
-        let wakeup_id = NEXT_NATIVE_TERMINAL_WAKEUP_ID.fetch_add(1, Ordering::Relaxed);
-        let wakeup_route = Arc::new(Mutex::new(wakeup_router.cloned()));
-        let route = wakeup_route.clone();
-        let wakeup_notifier = Some(TerminalWakeupNotifier::new(move || {
-            if let Some(router) = route
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-            {
-                router.mark_ready(wakeup_id);
-            }
-        }));
-        Ok(Self::Native(NativeTerminalInstance {
-            wakeup_id,
-            wakeup_route,
-            terminal: Mutex::new(NativeTerminal::new_with_wakeup_notifier(
-                size,
-                configured_working_dir,
-                wakeup_notifier,
-                tab_title_shell_integration,
-                runtime_config,
-                startup_command,
-            )?),
-        }))
+        let launch =
+            startup_command.map(|command| TerminalLaunch::ShellCommand(command.to_owned()));
+        Self::new_native_with_launch(
+            size,
+            configured_working_dir,
+            wakeup_router,
+            tab_title_shell_integration,
+            runtime_config,
+            launch.as_ref(),
+            multiplexer,
+        )
     }
 
     fn new_native_with_launch(
@@ -558,11 +548,72 @@ impl Terminal {
         tab_title_shell_integration: Option<&TabTitleShellIntegration>,
         runtime_config: Option<&TerminalRuntimeConfig>,
         launch: Option<&TerminalLaunch>,
+        multiplexer: Option<&termy_multiplexer::SessionClient>,
+    ) -> anyhow::Result<Self> {
+        Self::build_native(wakeup_router, |notifier| {
+            if let Some(client) = multiplexer {
+                let (id, terminal) = client.create(
+                    termy_multiplexer::PaneLaunch {
+                        size,
+                        working_directory: configured_working_dir.map(str::to_owned),
+                        shell_integration: tab_title_shell_integration.cloned(),
+                        config: runtime_config.cloned().unwrap_or_default(),
+                        launch: launch.cloned(),
+                    },
+                    Some(notifier),
+                )?;
+                Ok((
+                    terminal,
+                    Some(crate::multiplexer::PaneSession::new(id, client.clone())),
+                ))
+            } else {
+                let terminal = NativeTerminal::new_with_launch_and_wakeup_notifier(
+                    size,
+                    configured_working_dir,
+                    Some(notifier),
+                    tab_title_shell_integration,
+                    runtime_config,
+                    launch,
+                )?;
+                Ok((terminal, None))
+            }
+        })
+    }
+
+    fn attach_native_session(
+        id: &str,
+        client: &termy_multiplexer::SessionClient,
+        wakeup_router: &NativeTerminalWakeupRouter,
+        runtime: &TerminalRuntimeConfig,
+    ) -> anyhow::Result<Self> {
+        Self::build_native(Some(wakeup_router), |notifier| {
+            let mut terminal = client.attach(id, Some(notifier))?;
+            terminal.set_query_colors(runtime.query_colors);
+            terminal.set_term_options(termy_core::TerminalOptions {
+                scrollback_history: runtime.scrollback_history,
+                default_cursor_style: runtime.default_cursor_style,
+            });
+            Ok((
+                terminal,
+                Some(crate::multiplexer::PaneSession::attached(
+                    id.to_owned(),
+                    client.clone(),
+                )),
+            ))
+        })
+    }
+
+    fn build_native(
+        wakeup_router: Option<&NativeTerminalWakeupRouter>,
+        create: impl FnOnce(
+            TerminalWakeupNotifier,
+        )
+            -> anyhow::Result<(NativeTerminal, Option<crate::multiplexer::PaneSession>)>,
     ) -> anyhow::Result<Self> {
         let wakeup_id = NEXT_NATIVE_TERMINAL_WAKEUP_ID.fetch_add(1, Ordering::Relaxed);
         let wakeup_route = Arc::new(Mutex::new(wakeup_router.cloned()));
         let route = wakeup_route.clone();
-        let wakeup_notifier = Some(TerminalWakeupNotifier::new(move || {
+        let notifier = TerminalWakeupNotifier::new(move || {
             if let Some(router) = route
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -570,19 +621,29 @@ impl Terminal {
             {
                 router.mark_ready(wakeup_id);
             }
-        }));
+        });
+        let (terminal, session) = create(notifier)?;
         Ok(Self::Native(NativeTerminalInstance {
             wakeup_id,
             wakeup_route,
-            terminal: Mutex::new(NativeTerminal::new_with_launch_and_wakeup_notifier(
-                size,
-                configured_working_dir,
-                wakeup_notifier,
-                tab_title_shell_integration,
-                runtime_config,
-                launch,
-            )?),
+            session,
+            terminal: Mutex::new(terminal),
         }))
+    }
+
+    fn session_id(&self) -> Option<&str> {
+        match self {
+            Self::Native(native) => native.session.as_ref().map(|session| session.id.as_str()),
+            Self::Tmux(_) => None,
+        }
+    }
+
+    fn detach_session(&self) {
+        if let Self::Native(native) = self
+            && let Some(session) = &native.session
+        {
+            session.detach();
+        }
     }
 
     fn wakeup_id(&self) -> Option<NativeTerminalWakeupId> {
@@ -1341,6 +1402,8 @@ pub struct TerminalView {
     focus_handle: FocusHandle,
     window_handle: gpui::AnyWindowHandle,
     owns_persisted_session: bool,
+    multiplexer: Option<Arc<crate::multiplexer::WindowSession>>,
+    multiplexer_enabled_config: bool,
     theme_id: String,
     theme_mode: config::AppearanceMode,
     manual_theme: String,
@@ -3621,6 +3684,14 @@ impl TerminalView {
         // windows start fresh and must not mirror its tmux session or overwrite
         // its native workspace snapshot when they close.
         let owns_persisted_session = !crate::app_actions::has_window::<Self>(cx);
+        if let Err(error) = crate::multiplexer::initialize(&config, cx) {
+            crate::StartupBlocker::MainWindowOpen(error).present_alert_and_exit();
+        }
+        let multiplexer_enabled_config = config.multiplexer_enabled;
+        config.multiplexer_enabled = crate::multiplexer::enabled(cx);
+        let (multiplexer, live_session) =
+            crate::multiplexer::claim_window(cx, owns_persisted_session)
+                .map_or((None, None), |(window, session)| (Some(window), session));
         if !owns_persisted_session {
             config.tmux_persistence = false;
         }
@@ -3838,20 +3909,24 @@ impl TerminalView {
             Self::predicted_prompt_seed_title(&tab_title, predicted_prompt_cwd.as_deref());
         let initial_cols = TerminalSize::default().cols;
         let initial_rows = TerminalSize::default().rows;
-        let startup_native_session =
-            if !empty && owns_persisted_session && configured_runtime_kind == RuntimeKind::Native {
-                match Self::load_startup_native_session(&config) {
-                    Ok(session) => session,
-                    Err(error) => {
-                        log::error!("Failed to preload native tab workspace: {error}");
-                        crate::ui::toast::error("Failed to load saved native tabs");
-                        None
-                    }
+        let startup_native_session = if !empty
+            && live_session.is_none()
+            && owns_persisted_session
+            && configured_runtime_kind == RuntimeKind::Native
+        {
+            match Self::load_startup_native_session(&config) {
+                Ok(session) => session,
+                Err(error) => {
+                    log::error!("Failed to preload native tab workspace: {error}");
+                    crate::ui::toast::error("Failed to load saved native tabs");
+                    None
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
         let defer_native_terminal = empty
+            || live_session.is_some()
             || startup_native_session
                 .as_ref()
                 .is_some_and(|startup| startup.session.is_some());
@@ -3869,6 +3944,7 @@ impl TerminalView {
                 initial_cols,
                 initial_rows,
                 defer_native_terminal,
+                multiplexer.as_ref().map(|window| window.client()),
             );
         let resolved_runtime_kind = runtime.kind();
 
@@ -3892,6 +3968,8 @@ impl TerminalView {
             focus_handle,
             window_handle,
             owns_persisted_session,
+            multiplexer,
+            multiplexer_enabled_config,
             theme_id,
             theme_mode: config.theme_mode,
             manual_theme: config.theme.clone(),
@@ -4059,11 +4137,20 @@ impl TerminalView {
             native_file_drop_enabled: false,
         };
         #[cfg(target_os = "windows")]
-        if config.tmux_enabled {
+        if config.tmux_enabled && !config.multiplexer_enabled {
             // Surface explicit feedback when a synced/shared config requests tmux on Windows.
             crate::ui::toast::warning(TMUX_UNSUPPORTED_WINDOWS_TOAST);
         }
-        let restored_native_workspace = if resolved_runtime_kind == RuntimeKind::Native {
+        let restored_native_workspace = if let Some(session) = live_session {
+            match view.restore_stored_session(session, cx) {
+                Ok(()) => true,
+                Err(error) => {
+                    log::error!("Failed to restore multiplexer tabs: {error}");
+                    crate::ui::toast::error(format!("Could not restore multiplexer tabs: {error}"));
+                    false
+                }
+            }
+        } else if resolved_runtime_kind == RuntimeKind::Native {
             match startup_native_session {
                 Some(startup) => {
                     let _ = view.workspace_store.set(Some(startup.store));
@@ -4099,6 +4186,7 @@ impl TerminalView {
                     .map(|session| session.command()),
                 initial_cols,
                 initial_rows,
+                view.multiplexer_client(),
             ));
         }
 
@@ -4145,6 +4233,13 @@ impl TerminalView {
             })
             .detach();
         }
+        cx.on_release(|view, _cx| view.prepare_multiplexer_detach())
+            .detach();
+        cx.on_app_quit(|view, _cx| {
+            view.prepare_multiplexer_detach();
+            async {}
+        })
+        .detach();
         cx.observe_window_activation(window, |view, window, cx| {
             if window.is_window_active() {
                 if view.refresh_install_cli_availability() {
@@ -4220,6 +4315,7 @@ impl TerminalView {
             Some(cx.observe_window_appearance(window, |view, window, cx| {
                 view.handle_window_appearance_change(window.appearance(), cx);
             }));
+        view.schedule_persist_native_workspace(cx);
         crate::launch_probe::record_stage("view_created");
         view
     }
@@ -4374,6 +4470,12 @@ impl TerminalView {
         if next_runtime_kind != self.runtime_kind() && tmux_enabled_changed {
             crate::ui::toast::info(
                 "tmux startup default saved. Use Tmux Sessions to switch runtime now.",
+            );
+        }
+        if self.multiplexer_enabled_config != config.multiplexer_enabled {
+            self.multiplexer_enabled_config = config.multiplexer_enabled;
+            crate::ui::toast::info(
+                "Built-in multiplexer setting saved. Restart Termy to apply it.",
             );
         }
         self.tmux_enabled_config = config.tmux_enabled;

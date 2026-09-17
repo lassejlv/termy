@@ -36,7 +36,7 @@ impl RuntimeKind {
 
     pub(super) fn from_app_config(config: &AppConfig) -> Self {
         Self::from_runtime_options(
-            config.tmux_enabled,
+            config.tmux_enabled && !config.multiplexer_enabled,
             cfg!(target_os = "windows"),
             config.tmux_command_prefix_argv().is_empty(),
         )
@@ -148,6 +148,7 @@ impl TerminalView {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn start_native_terminal(
         native_terminal_wakeup_router: &NativeTerminalWakeupRouter,
         configured_working_dir: Option<&str>,
@@ -156,6 +157,7 @@ impl TerminalView {
         startup_command: Option<&str>,
         initial_cols: u16,
         initial_rows: u16,
+        multiplexer: Option<&termy_multiplexer::SessionClient>,
     ) -> Terminal {
         match Terminal::new_native(
             TerminalSize {
@@ -168,6 +170,7 @@ impl TerminalView {
             Some(tab_shell_integration),
             Some(terminal_runtime),
             startup_command,
+            multiplexer,
         ) {
             Ok(terminal) => terminal,
             Err(error) => {
@@ -189,6 +192,7 @@ impl TerminalView {
         initial_cols: u16,
         initial_rows: u16,
         defer_native_terminal: bool,
+        multiplexer: Option<&termy_multiplexer::SessionClient>,
     ) -> (RuntimeState, Option<TmuxSnapshot>, Option<Terminal>) {
         let start_native = || {
             let native_terminal = Self::start_native_terminal(
@@ -199,6 +203,7 @@ impl TerminalView {
                 startup_command,
                 initial_cols,
                 initial_rows,
+                multiplexer,
             );
             (RuntimeState::Native, None, Some(native_terminal))
         };

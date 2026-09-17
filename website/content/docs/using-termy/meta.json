@@ -8,6 +8,7 @@
     "command-palette",
     "plugins",
     "ssh-hosts",
+    "multiplexer",
     "tmux-sessions",
     "tasks-layouts"
   ],

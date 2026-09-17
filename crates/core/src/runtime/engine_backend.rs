@@ -54,6 +54,7 @@ impl BackendChoice {
 pub(super) enum Backend {
     Alacritty(Box<super::alacritty_backend::AlacrittyBackend>),
     Tmon(Box<super::tmon_backend::TmonBackend>),
+    Remote(Box<crate::remote::RemoteBackend>),
 }
 
 impl Backend {
@@ -61,6 +62,7 @@ impl Backend {
         match self {
             Self::Alacritty(_) => "alacritty",
             Self::Tmon(_) => "tmon",
+            Self::Remote(_) => "multiplexer",
         }
     }
 
@@ -210,6 +212,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.feed_output(bytes),
             Self::Tmon(backend) => backend.feed_output(bytes),
+            Self::Remote(backend) => backend.feed_output(bytes),
         }
     }
 
@@ -217,6 +220,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.child_pid(),
             Self::Tmon(backend) => backend.child_pid(),
+            Self::Remote(backend) => backend.child_pid(),
         }
     }
 
@@ -224,6 +228,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.set_wakeup_enabled(enabled),
             Self::Tmon(backend) => backend.set_wakeup_enabled(enabled),
+            Self::Remote(backend) => backend.set_wakeup_enabled(enabled),
         }
     }
 
@@ -231,6 +236,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.write(input),
             Self::Tmon(backend) => backend.write(input),
+            Self::Remote(backend) => backend.write(input),
         }
     }
 
@@ -238,6 +244,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.write_owned(input),
             Self::Tmon(backend) => backend.write_owned(input),
+            Self::Remote(backend) => backend.write_owned(input),
         }
     }
 
@@ -245,6 +252,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.hydrate_output(bytes),
             Self::Tmon(backend) => backend.hydrate_output(bytes),
+            Self::Remote(backend) => backend.hydrate_output(bytes),
         }
     }
 
@@ -252,6 +260,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.write_str(input),
             Self::Tmon(backend) => backend.write_str(input),
+            Self::Remote(backend) => backend.write_str(input),
         }
     }
 
@@ -259,6 +268,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.resize(new_size),
             Self::Tmon(backend) => backend.resize(new_size),
+            Self::Remote(backend) => backend.resize(new_size),
         }
     }
 
@@ -266,6 +276,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.nudge_resize(),
             Self::Tmon(backend) => backend.nudge_resize(),
+            Self::Remote(backend) => backend.nudge_resize(),
         }
     }
 
@@ -273,6 +284,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.size(),
             Self::Tmon(backend) => backend.size(),
+            Self::Remote(backend) => backend.size(),
         }
     }
 
@@ -280,6 +292,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.kitty_graphics_placements(),
             Self::Tmon(backend) => backend.kitty_graphics_placements(),
+            Self::Remote(backend) => backend.kitty_graphics_placements(),
         }
     }
 
@@ -287,6 +300,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.kitty_graphics_revision(),
             Self::Tmon(backend) => backend.kitty_graphics_revision(),
+            Self::Remote(backend) => backend.kitty_graphics_revision(),
         }
     }
 
@@ -294,6 +308,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.kitty_graphics_snapshot(),
             Self::Tmon(backend) => backend.kitty_graphics_snapshot(),
+            Self::Remote(backend) => backend.kitty_graphics_snapshot(),
         }
     }
 
@@ -301,6 +316,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.kitty_clipboard_paste_events_enabled(),
             Self::Tmon(backend) => backend.kitty_clipboard_paste_events_enabled(),
+            Self::Remote(backend) => backend.kitty_clipboard_paste_events_enabled(),
         }
     }
 
@@ -316,6 +332,9 @@ impl Backend {
             Self::Tmon(backend) => {
                 backend.send_kitty_clipboard_paste_event(location, available_formats)
             }
+            Self::Remote(backend) => {
+                backend.send_kitty_clipboard_paste_event(location, available_formats)
+            }
         }
     }
 
@@ -326,6 +345,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.drain_events(host),
             Self::Tmon(backend) => backend.drain_events(host),
+            Self::Remote(backend) => backend.drain_events(host),
         }
     }
 
@@ -333,6 +353,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.set_query_colors(query_colors),
             Self::Tmon(backend) => backend.set_query_colors(query_colors),
+            Self::Remote(backend) => backend.set_query_colors(query_colors),
         }
     }
 
@@ -340,6 +361,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.palette(),
             Self::Tmon(backend) => backend.palette(),
+            Self::Remote(backend) => backend.palette(),
         }
     }
 
@@ -347,6 +369,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.snapshot(),
             Self::Tmon(backend) => backend.snapshot(),
+            Self::Remote(backend) => backend.snapshot(),
         }
     }
 
@@ -354,6 +377,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.frame_update(force_full),
             Self::Tmon(backend) => backend.frame_update(force_full),
+            Self::Remote(backend) => backend.frame_update(force_full),
         }
     }
 
@@ -361,6 +385,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.take_render_damage_snapshot(),
             Self::Tmon(backend) => backend.take_render_damage_snapshot(),
+            Self::Remote(backend) => backend.take_render_damage_snapshot(),
         }
     }
 
@@ -368,6 +393,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.render_read(force_full),
             Self::Tmon(backend) => backend.render_read(force_full),
+            Self::Remote(backend) => backend.render_read(force_full),
         }
     }
 
@@ -378,6 +404,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.visit_viewport_cells(visitor),
             Self::Tmon(backend) => backend.visit_viewport_cells(visitor),
+            Self::Remote(backend) => backend.visit_viewport_cells(visitor),
         }
     }
 
@@ -394,6 +421,9 @@ impl Backend {
             Self::Tmon(backend) => {
                 backend.visit_viewport_ranges_at_generation(generation, spans, visitor)
             }
+            Self::Remote(backend) => {
+                backend.visit_viewport_ranges_at_generation(generation, spans, visitor)
+            }
         }
     }
 
@@ -401,6 +431,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.line_bounds(),
             Self::Tmon(backend) => backend.line_bounds(),
+            Self::Remote(backend) => backend.line_bounds(),
         }
     }
 
@@ -417,6 +448,9 @@ impl Backend {
             Self::Tmon(backend) => {
                 backend.visit_line_cells(requested_first, requested_last, visitor)
             }
+            Self::Remote(backend) => {
+                backend.visit_line_cells(requested_first, requested_last, visitor)
+            }
         }
     }
 
@@ -424,6 +458,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.search(query),
             Self::Tmon(backend) => backend.search(query),
+            Self::Remote(backend) => backend.search(query),
         }
     }
 
@@ -435,6 +470,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.search_with_options(query, options),
             Self::Tmon(backend) => backend.search_with_options(query, options),
+            Self::Remote(backend) => backend.search_with_options(query, options),
         }
     }
 
@@ -442,6 +478,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.search_shared(query),
             Self::Tmon(backend) => backend.search_shared(query),
+            Self::Remote(backend) => backend.search_shared(query),
         }
     }
 
@@ -453,6 +490,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.search_shared_with_options(query, options),
             Self::Tmon(backend) => backend.search_shared_with_options(query, options),
+            Self::Remote(backend) => backend.search_shared_with_options(query, options),
         }
     }
 
@@ -464,6 +502,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.hyperlink_at(row, col),
             Self::Tmon(backend) => backend.hyperlink_at(row, col),
+            Self::Remote(backend) => backend.hyperlink_at(row, col),
         }
     }
 
@@ -475,6 +514,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.link_at(row, col),
             Self::Tmon(backend) => backend.link_at(row, col),
+            Self::Remote(backend) => backend.link_at(row, col),
         }
     }
 
@@ -482,6 +522,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.take_damage_snapshot(),
             Self::Tmon(backend) => backend.take_damage_snapshot(),
+            Self::Remote(backend) => backend.take_damage_snapshot(),
         }
     }
 
@@ -489,6 +530,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.scroll_display(delta_lines),
             Self::Tmon(backend) => backend.scroll_display(delta_lines),
+            Self::Remote(backend) => backend.scroll_display(delta_lines),
         }
     }
 
@@ -496,6 +538,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.scroll_to_bottom(),
             Self::Tmon(backend) => backend.scroll_to_bottom(),
+            Self::Remote(backend) => backend.scroll_to_bottom(),
         }
     }
 
@@ -503,6 +546,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.clear_scrollback(),
             Self::Tmon(backend) => backend.clear_scrollback(),
+            Self::Remote(backend) => backend.clear_scrollback(),
         }
     }
 
@@ -510,6 +554,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.scroll_state(),
             Self::Tmon(backend) => backend.scroll_state(),
+            Self::Remote(backend) => backend.scroll_state(),
         }
     }
 
@@ -517,6 +562,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.cursor_state(),
             Self::Tmon(backend) => backend.cursor_state(),
+            Self::Remote(backend) => backend.cursor_state(),
         }
     }
 
@@ -524,6 +570,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.cursor_position(),
             Self::Tmon(backend) => backend.cursor_position(),
+            Self::Remote(backend) => backend.cursor_position(),
         }
     }
 
@@ -531,6 +578,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.has_pending_events(),
             Self::Tmon(backend) => backend.has_pending_events(),
+            Self::Remote(backend) => backend.has_pending_events(),
         }
     }
 
@@ -538,6 +586,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.set_term_options(options),
             Self::Tmon(backend) => backend.set_term_options(options),
+            Self::Remote(backend) => backend.set_term_options(options),
         }
     }
 
@@ -545,6 +594,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.set_scrollback_history(scrollback_history),
             Self::Tmon(backend) => backend.set_scrollback_history(scrollback_history),
+            Self::Remote(backend) => backend.set_scrollback_history(scrollback_history),
         }
     }
 
@@ -552,6 +602,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.bracketed_paste_mode(),
             Self::Tmon(backend) => backend.bracketed_paste_mode(),
+            Self::Remote(backend) => backend.bracketed_paste_mode(),
         }
     }
 
@@ -559,6 +610,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.mouse_mode(),
             Self::Tmon(backend) => backend.mouse_mode(),
+            Self::Remote(backend) => backend.mouse_mode(),
         }
     }
 
@@ -566,6 +618,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.keyboard_mode(),
             Self::Tmon(backend) => backend.keyboard_mode(),
+            Self::Remote(backend) => backend.keyboard_mode(),
         }
     }
 
@@ -573,6 +626,7 @@ impl Backend {
         match self {
             Self::Alacritty(backend) => backend.alternate_screen_mode(),
             Self::Tmon(backend) => backend.alternate_screen_mode(),
+            Self::Remote(backend) => backend.alternate_screen_mode(),
         }
     }
 
@@ -580,7 +634,7 @@ impl Backend {
     pub(super) fn send_wakeup_for_test(&self) {
         match self {
             Self::Alacritty(backend) => backend.send_wakeup_for_test(),
-            Self::Tmon(_) => panic!("Alacritty wakeup test used a Tmon backend"),
+            Self::Tmon(_) | Self::Remote(_) => panic!("Alacritty wakeup test used a Tmon backend"),
         }
     }
 
@@ -588,7 +642,7 @@ impl Backend {
     pub(super) fn try_recv_event_for_test(&self) -> Option<RuntimeEvent> {
         match self {
             Self::Alacritty(backend) => backend.try_recv_event_for_test(),
-            Self::Tmon(_) => panic!("Alacritty wakeup test used a Tmon backend"),
+            Self::Tmon(_) | Self::Remote(_) => panic!("Alacritty wakeup test used a Tmon backend"),
         }
     }
 
@@ -596,7 +650,7 @@ impl Backend {
     pub(super) fn event_queue_is_empty_for_test(&self) -> bool {
         match self {
             Self::Alacritty(backend) => backend.event_queue_is_empty_for_test(),
-            Self::Tmon(_) => panic!("Alacritty wakeup test used a Tmon backend"),
+            Self::Tmon(_) | Self::Remote(_) => panic!("Alacritty wakeup test used a Tmon backend"),
         }
     }
 }

@@ -577,7 +577,7 @@ mod tests {
         assert_eq!(record.size.height, gpui::px(super::SETTINGS_CONTROL_HEIGHT));
         cx.simulate_click(record.center(), gpui::Modifiers::default());
         settings.read_with(cx, |view, _| {
-            assert_eq!(view.capturing_action, Some(CommandId::CycleTabs))
+            assert_eq!(view.capturing_action, Some(CommandId::CycleTabs));
         });
         cx.simulate_keystrokes("escape");
         settings.read_with(cx, |view, _| {

@@ -137,15 +137,17 @@ impl KittyGraphicsScreen {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct KittyGraphicsRenderPlacement {
     pub placement_serial: u64,
     pub image_id: u32,
     pub placement_id: u32,
+    #[serde(with = "crate::remote::serde_image")]
     pub image: Arc<tmon::GraphicsImage>,
     pub image_width: u32,
     pub image_height: u32,
     pub image_generation: u64,
+    #[serde(with = "crate::remote::serde_deadline")]
     pub animation_deadline: Option<std::time::Instant>,
     pub viewport_row: i32,
     pub col: usize,

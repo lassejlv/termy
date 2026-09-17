@@ -87,6 +87,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 
 ## Terminal
 
+`multiplexer_enabled`
+- Default: `false`
+- Keep programs running after quitting and restore tabs, panes, and terminal state when reopening. Applies after restarting Termy.
+- Group: `SESSIONS`
+
 `tmux_enabled`
 - Default: `false`
 - Enable tmux runtime integration

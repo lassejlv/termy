@@ -1543,7 +1543,7 @@ mod tests {
                 .any(|c| c.is_some_and(|ch| !ch.is_whitespace()))
         );
 
-        let native = Terminal::new_native(size, None, None, None, None, None)
+        let native = Terminal::new_native(size, None, None, None, None, None, None)
             .expect("native terminal should initialize for row adapter test");
         // Use replay hydration here instead of a live shell command so the row
         // adapter test stays deterministic across different local shells and PTY timing.

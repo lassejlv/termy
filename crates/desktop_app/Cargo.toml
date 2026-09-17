@@ -36,6 +36,7 @@ rfd = "0.15"
 # Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
 p256 = { workspace = true }
 rand_core = { workspace = true }
 bincode = "1.3"
@@ -52,6 +53,7 @@ sysinfo = "0.37"
 # Termy Workspace Crates
 termy_auto_update = { path = "../auto_update" }
 termy_core = { path = "../core" }
+termy_multiplexer = { path = "../multiplexer" }
 termy_themes = { path = "../themes" }
 termy_terminal_ui = { path = "../terminal_ui" }
 termy_ui = { path = "../ui" }

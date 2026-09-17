@@ -272,6 +272,13 @@ impl AppConfig {
                         config.auto_update = parsed;
                     }
                 }
+                RootSettingId::MultiplexerEnabled => {
+                    if let Some(parsed) =
+                        parse_bool_field(&mut diagnostics, line_number, key, value)
+                    {
+                        config.multiplexer_enabled = parsed;
+                    }
+                }
                 RootSettingId::TmuxEnabled => {
                     if let Some(parsed) =
                         parse_bool_field(&mut diagnostics, line_number, key, value)

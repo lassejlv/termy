@@ -11,7 +11,8 @@ workspace = true
 anyhow = { workspace = true }
 alacritty_terminal = { workspace = true }
 base64 = "0.22"
-compact_str = "0.8.1"
+compact_str = { version = "0.8.1", features = ["serde"] }
+serde = { workspace = true, features = ["rc"] }
 flume = { workspace = true }
 log = { workspace = true }
 dirs = { workspace = true }

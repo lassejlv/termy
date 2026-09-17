@@ -1,0 +1,32 @@
+---
+title: Built-in multiplexer
+description: Keep programs running when Termy closes and restore your windows, tabs, and panes.
+---
+
+Enable **Built-in Multiplexer** in **Settings → Terminal → Sessions**, then restart Termy. You can also set it in your config file:
+
+```txt
+multiplexer_enabled = true
+```
+
+It is off by default. No tmux installation or session commands are needed.
+
+## Quit and return
+
+Quitting Termy or closing a window leaves its programs running in a background Termy process. Reopening Termy restores your windows, workspaces, tabs, split layouts, active panes, zoom, pins, and custom tab names.
+
+Each terminal reconnects to its original running process. Its scrollback, scroll position, cursor, colors, alternate screen, input modes, links, and images remain in the background host. Programs can continue producing output while the app is closed. Configured scrollback limits still apply.
+
+Closing a **tab**, **pane**, or **workspace** ends the sessions it contains. Exiting a shell also ends that shell normally. Closing the window with its window controls keeps its sessions available for reopening.
+
+Sessions last while the background host and your operating-system session are running. They do not survive logging out, rebooting, or terminating the host. This is live process persistence; named layouts remain reusable layouts that start new terminals.
+
+## Change back to regular terminals
+
+Turn **Built-in Multiplexer** off and restart Termy. Existing background sessions remain available if you enable it again; close their tabs or panes first if you want to end them.
+
+The built-in multiplexer takes precedence over `tmux_enabled`. To use [tmux sessions](/docs/using-termy/tmux-sessions), disable the built-in multiplexer and restart Termy.
+
+## How it stays responsive
+
+The host keeps the terminal engines and bounded scrollback in memory. The app receives the current viewport and fetches history or images as needed, so reopening does not replay terminal output. Clipboard requests use the attached app's existing policy; a detached terminal cannot read the system clipboard.

@@ -581,6 +581,25 @@ impl TerminalView {
             self.session.workspaces[self.session.active_workspace].id
         };
 
+        if let (Some(client), Some(pending)) = (
+            self.multiplexer_client(),
+            self.session.workspaces[removed_index]
+                .pending_restore
+                .as_ref(),
+        ) {
+            for id in pending
+                .tabs
+                .iter()
+                .flat_map(|tab| &tab.panes)
+                .filter_map(|pane| pane.session_id.as_deref())
+            {
+                if let Err(error) = client.close(id) {
+                    crate::ui::toast::error(format!("Could not close workspace session: {error}"));
+                    return false;
+                }
+            }
+        }
+
         let removed_tabs = if deleting_active {
             self.session.tabs.as_slice()
         } else {

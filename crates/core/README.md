@@ -74,6 +74,14 @@ primitives with the harness every embedder ends up writing anyway:
 In short: the VT engine is an implementation detail; libtermy is the portable
 terminal contract plus the harness embedders actually need.
 
+## Remote terminals
+
+`Terminal::from_remote` accepts a renderer-neutral `RemoteTransport`. The
+`termy_multiplexer` crate supplies the desktop transport and keeps the parser,
+PTY, both screens, scrollback, and graphics in a background process. The core
+facade exposes the same input, rendering, query, and clipboard APIs to attached
+views; it has no socket, desktop, or session-discovery dependency.
+
 ## Kitty graphics
 
 The protocol pipeline separates command interception, bounded upload assembly,

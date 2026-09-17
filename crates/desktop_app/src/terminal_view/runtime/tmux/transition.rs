@@ -36,6 +36,7 @@ impl TerminalView {
             Some(&self.tab_shell_integration),
             Some(&self.terminal_runtime),
             None,
+            self.multiplexer_client(),
         )?;
         let predicted_prompt_cwd = Self::predicted_prompt_cwd(
             self.configured_working_dir.as_deref(),
@@ -58,6 +59,12 @@ impl TerminalView {
         launch: TmuxLaunchTarget,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.multiplexer.is_some() {
+            crate::ui::toast::info(
+                "Disable the built-in multiplexer and restart Termy to switch to tmux",
+            );
+            return false;
+        }
         let (binary, command_prefix, show_active_pane_border) = if self.runtime_uses_tmux() {
             (
                 self.tmux_runtime().config.binary.clone(),

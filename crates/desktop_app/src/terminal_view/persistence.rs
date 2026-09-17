@@ -1,6 +1,7 @@
 use super::*;
 use crate::workspace_store::{
-    StoredPane, StoredSession, StoredTab, StoredWorkspace, WORKSPACE_STORE_FILE, WorkspaceStore,
+    StoredPane, StoredSession, StoredTab, StoredTabPresentation, StoredWorkspace,
+    WORKSPACE_STORE_FILE, WorkspaceStore,
 };
 use serde_json::{Value, json};
 use std::fs;
@@ -15,6 +16,7 @@ fn inclusive_terminal_line_count(range: TerminalLineRange) -> usize {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PersistedNativePane {
+    session_id: Option<String>,
     left: u16,
     top: u16,
     width: u16,
@@ -37,6 +39,8 @@ enum PersistedNativeLayoutNode {
 
 #[derive(Clone, Debug, PartialEq)]
 struct PersistedNativeTab {
+    zoomed: bool,
+    presentation: Option<StoredTabPresentation>,
     panes: Vec<PersistedNativePane>,
     layout_tree: Option<PersistedNativeLayoutNode>,
     active_pane: usize,
@@ -67,12 +71,14 @@ struct PersistedNativeWorkspaceState {
 type RestoredWorkspaceTabs = (
     Vec<TerminalTab>,
     HashMap<TabId, NativePaneLayoutTree>,
+    HashMap<TabId, NativePaneZoomSnapshot>,
     usize,
 );
 
 #[derive(Clone)]
 struct PersistedNativeWorkspaceWriteRequest {
-    store: Arc<WorkspaceStore>,
+    store: Option<Arc<WorkspaceStore>>,
+    multiplexer: Option<Arc<crate::multiplexer::WindowSession>>,
     session: StoredSession,
     /// `(name, snapshot_json)` of the visible workspace when layout autosave
     /// applies; updates the named layout row if it still exists.
@@ -240,7 +246,7 @@ impl TerminalView {
     }
 
     fn extract_persisted_buffer_text(&self, terminal: &Terminal) -> Option<String> {
-        if !self.native_buffer_persistence {
+        if self.multiplexer.is_some() || !self.native_buffer_persistence {
             return None;
         }
 
@@ -280,12 +286,14 @@ impl TerminalView {
 
     fn should_sync_persisted_native_workspace(&self) -> bool {
         self.runtime_kind() == RuntimeKind::Native
-            && (self.should_persist_last_native_session()
+            && (self.multiplexer.is_some()
+                || self.should_persist_last_native_session()
                 || (self.native_layout_autosave && self.current_named_layout.is_some()))
     }
 
     fn should_persist_last_native_session(&self) -> bool {
-        self.owns_persisted_session
+        self.multiplexer.is_none()
+            && self.owns_persisted_session
             && (self.native_tab_persistence || self.workspace_sidebar_enabled)
     }
 
@@ -403,6 +411,8 @@ impl TerminalView {
                 .tabs
                 .into_iter()
                 .map(|tab| StoredTab {
+                    zoomed: tab.zoomed,
+                    presentation: tab.presentation,
                     pinned: tab.pinned,
                     manual_title: tab.manual_title,
                     active_pane: tab.active_pane,
@@ -413,6 +423,7 @@ impl TerminalView {
                         .panes
                         .into_iter()
                         .map(|pane| StoredPane {
+                            session_id: pane.session_id,
                             left: pane.left,
                             top: pane.top,
                             width: pane.width,
@@ -433,6 +444,8 @@ impl TerminalView {
             .tabs
             .into_iter()
             .map(|tab| PersistedNativeTab {
+                zoomed: tab.zoomed,
+                presentation: tab.presentation,
                 pinned: tab.pinned,
                 manual_title: tab.manual_title,
                 active_pane: tab.active_pane,
@@ -445,6 +458,7 @@ impl TerminalView {
                     .panes
                     .into_iter()
                     .map(|pane| PersistedNativePane {
+                        session_id: pane.session_id,
                         left: pane.left,
                         top: pane.top,
                         width: pane.width,
@@ -545,39 +559,63 @@ impl TerminalView {
         let tabs = source_tabs
             .iter()
             .map(|tab| {
-                let panes = tab
-                    .panes
+                let zoom = self.session.native_pane_zoom_snapshots.get(&tab.id);
+                let source_panes: Vec<&TerminalPane> = if let Some(zoom) = zoom {
+                    let mut panes: Vec<_> = zoom.other_panes.iter().collect();
+                    if let Some(active) = tab.panes.first() {
+                        panes.insert(zoom.active_original_index.min(panes.len()), active);
+                    }
+                    panes
+                } else {
+                    tab.panes.iter().collect()
+                };
+                let panes = source_panes
                     .iter()
-                    .map(|pane| PersistedNativePane {
-                        left: pane.left,
-                        top: pane.top,
-                        width: pane.width.max(1),
-                        height: pane.height.max(1),
-                        buffer: self.extract_persisted_buffer_text(&pane.terminal),
+                    .map(|pane| {
+                        let (left, top, width, height) = zoom
+                            .filter(|zoom| zoom.active_pane_id == pane.id)
+                            .map_or((pane.left, pane.top, pane.width, pane.height), |zoom| {
+                                zoom.active_pane_geometry
+                            });
+                        PersistedNativePane {
+                            session_id: pane.terminal.session_id().map(str::to_owned),
+                            left,
+                            top,
+                            width: width.max(1),
+                            height: height.max(1),
+                            buffer: self.extract_persisted_buffer_text(&pane.terminal),
+                        }
                     })
                     .collect::<Vec<_>>();
-                let pane_indices = tab
-                    .panes
+                let pane_indices = source_panes
                     .iter()
                     .enumerate()
                     .map(|(index, pane)| (pane.id.clone(), index))
                     .collect::<HashMap<_, _>>();
-                let layout_tree = self
-                    .session
-                    .native_pane_layout_trees
-                    .get(&tab.id)
+                let layout_tree = zoom
+                    .and_then(|zoom| zoom.layout_tree.as_ref())
+                    .or_else(|| self.session.native_pane_layout_trees.get(&tab.id))
                     .and_then(|tree| {
                         Self::persisted_layout_tree_from_native(&tree.root, &pane_indices)
-                    })
-                    .or_else(|| {
-                        Self::native_layout_tree_from_panes(&tab.panes).and_then(|tree| {
-                            Self::persisted_layout_tree_from_native(&tree.root, &pane_indices)
-                        })
                     });
+                let active_pane = source_panes
+                    .iter()
+                    .position(|pane| pane.id == tab.active_pane_id)
+                    .unwrap_or(0);
                 PersistedNativeTab {
+                    zoomed: zoom.is_some(),
+                    presentation: self.multiplexer.is_some().then(|| StoredTabPresentation {
+                        title: tab.title.clone(),
+                        explicit_title: tab.explicit_title.clone(),
+                        explicit_title_is_prediction: tab.explicit_title_is_prediction,
+                        shell_title: tab.shell_title.clone(),
+                        current_command: tab.current_command.clone(),
+                        last_prompt_cwd: tab.last_prompt_cwd.clone(),
+                        running_process: tab.running_process,
+                    }),
                     panes,
                     layout_tree,
-                    active_pane: tab.active_pane_index().unwrap_or(0),
+                    active_pane,
                     pinned: tab.pinned,
                     manual_title: tab.manual_title.clone(),
                 }
@@ -642,6 +680,7 @@ impl TerminalView {
             let mut panes = Vec::with_capacity(panes_value.len());
             for (pane_index, pane_value) in panes_value.iter().enumerate() {
                 panes.push(PersistedNativePane {
+                    session_id: None,
                     left: value_u16(
                         pane_value.get("left").ok_or_else(|| {
                             format!("workspace tab {tab_index} pane {pane_index} is missing 'left'")
@@ -701,6 +740,8 @@ impl TerminalView {
                 .map(Self::parse_persisted_layout_tree_value)
                 .transpose()?;
             tabs.push(PersistedNativeTab {
+                zoomed: false,
+                presentation: None,
                 panes,
                 layout_tree,
                 active_pane,
@@ -793,20 +834,34 @@ impl TerminalView {
         let pane_id = Self::restored_pane_id(tab_id, pane_index);
         let width = pane.width.max(1);
         let height = pane.height.max(1);
-        let terminal = Terminal::new_native(
-            TerminalSize {
-                cols: width,
-                rows: height,
-                ..TerminalSize::default()
-            },
-            working_dir,
-            Some(&self.native_terminal_wakeup_router),
-            Some(&self.tab_shell_integration),
-            Some(&self.terminal_runtime),
-            None,
-        )
-        .map_err(|error| format!("Failed to restore saved pane: {error}"))?;
-        if self.native_buffer_persistence
+        let terminal = if let (Some(client), Some(id)) =
+            (self.multiplexer_client(), pane.session_id.as_deref())
+        {
+            Terminal::attach_native_session(
+                id,
+                client,
+                &self.native_terminal_wakeup_router,
+                &self.terminal_runtime,
+            )
+            .map_err(|error| format!("Failed to reattach saved pane: {error}"))?
+        } else {
+            Terminal::new_native(
+                TerminalSize {
+                    cols: width,
+                    rows: height,
+                    ..TerminalSize::default()
+                },
+                working_dir,
+                Some(&self.native_terminal_wakeup_router),
+                Some(&self.tab_shell_integration),
+                Some(&self.terminal_runtime),
+                None,
+                self.multiplexer_client(),
+            )
+            .map_err(|error| format!("Failed to restore saved pane: {error}"))?
+        };
+        if pane.session_id.is_none()
+            && self.native_buffer_persistence
             && let Some(buffer) = pane.buffer.as_deref()
         {
             terminal.hydrate_output(buffer.as_bytes());
@@ -875,6 +930,7 @@ impl TerminalView {
             Self::predicted_prompt_seed_title(&self.tab_title, predicted_prompt_cwd.as_deref());
         let mut restored_tabs = Vec::with_capacity(workspace.tabs.len());
         let mut restored_layout_trees = HashMap::new();
+        let mut restored_zoom = HashMap::new();
 
         for persisted_tab in workspace.tabs {
             let first_pane = persisted_tab
@@ -909,6 +965,15 @@ impl TerminalView {
                 .ok_or_else(|| "restored tab has no panes".to_string())?;
             tab.pinned = persisted_tab.pinned;
             tab.manual_title = manual_title;
+            if let Some(presentation) = persisted_tab.presentation {
+                tab.title = presentation.title;
+                tab.explicit_title = presentation.explicit_title;
+                tab.explicit_title_is_prediction = presentation.explicit_title_is_prediction;
+                tab.shell_title = presentation.shell_title;
+                tab.current_command = presentation.current_command;
+                tab.last_prompt_cwd = presentation.last_prompt_cwd;
+                tab.running_process = presentation.running_process;
+            }
             let pane_ids = tab
                 .panes
                 .iter()
@@ -923,6 +988,44 @@ impl TerminalView {
             if let Some(layout_tree) = layout_tree {
                 restored_layout_trees.insert(tab.id, layout_tree);
             }
+            if persisted_tab.zoomed && tab.panes.len() > 1 {
+                let active = tab.active_pane_index().unwrap_or(0);
+                let cols = tab
+                    .panes
+                    .iter()
+                    .map(|pane| pane.left.saturating_add(pane.width))
+                    .max()
+                    .unwrap_or(1);
+                let rows = tab
+                    .panes
+                    .iter()
+                    .map(|pane| pane.top.saturating_add(pane.height))
+                    .max()
+                    .unwrap_or(1);
+                let mut panes = std::mem::take(&mut tab.panes);
+                let mut active_pane = panes.remove(active);
+                let geometry = (
+                    active_pane.left,
+                    active_pane.top,
+                    active_pane.width,
+                    active_pane.height,
+                );
+                active_pane.left = 0;
+                active_pane.top = 0;
+                active_pane.width = cols;
+                active_pane.height = rows;
+                tab.panes.push(active_pane);
+                restored_zoom.insert(
+                    tab.id,
+                    NativePaneZoomSnapshot {
+                        other_panes: panes,
+                        active_pane_geometry: geometry,
+                        active_pane_id: tab.active_pane_id.clone(),
+                        active_original_index: active,
+                        layout_tree: restored_layout_trees.remove(&tab.id),
+                    },
+                );
+            }
             restored_tabs.push(tab);
         }
 
@@ -933,7 +1036,21 @@ impl TerminalView {
                 .active_tab
                 .min(restored_tabs.len().saturating_sub(1))
         };
-        Ok((restored_tabs, restored_layout_trees, active_tab))
+        // Failed restoration must only detach from existing sessions. Arm
+        // explicit-close ownership once every pane in the workspace attached.
+        for pane in restored_tabs
+            .iter()
+            .flat_map(|tab| &tab.panes)
+            .chain(restored_zoom.values().flat_map(|zoom| &zoom.other_panes))
+        {
+            pane.terminal.adopt_session();
+        }
+        Ok((
+            restored_tabs,
+            restored_layout_trees,
+            restored_zoom,
+            active_tab,
+        ))
     }
 
     pub(super) fn materialize_pending_workspace(&mut self, index: usize) -> Result<bool, String> {
@@ -946,7 +1063,7 @@ impl TerminalView {
             return Ok(false);
         };
         let (_, _, workspace) = Self::persisted_workspace_from_stored(stored.clone());
-        let (tabs, layout_trees, active_tab) = match self.build_restored_tabs(workspace) {
+        let (tabs, layout_trees, zoom, active_tab) = match self.build_restored_tabs(workspace) {
             Ok(restored) => restored,
             Err(error) => {
                 if let Some(entry) = self.session.workspaces.get_mut(index) {
@@ -956,6 +1073,7 @@ impl TerminalView {
             }
         };
         self.session.native_pane_layout_trees.extend(layout_trees);
+        self.session.native_pane_zoom_snapshots.extend(zoom);
         let entry = self
             .session
             .workspaces
@@ -1007,10 +1125,14 @@ impl TerminalView {
         workspace: PersistedNativeWorkspace,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        let (tabs, layout_trees, active_tab) = self.build_restored_tabs(workspace)?;
+        let (tabs, layout_trees, zoom, active_tab) = self.build_restored_tabs(workspace)?;
+        for tab in &self.session.tabs {
+            self.session.native_pane_layout_trees.remove(&tab.id);
+            self.session.native_pane_zoom_snapshots.remove(&tab.id);
+        }
         self.session.tabs = tabs;
-        self.session.native_pane_layout_trees = layout_trees;
-        self.session.native_pane_zoom_snapshots.clear();
+        self.session.native_pane_layout_trees.extend(layout_trees);
+        self.session.native_pane_zoom_snapshots.extend(zoom);
         self.session.active_tab = active_tab;
         self.finish_workspace_restore(cx);
         Ok(())
@@ -1043,22 +1165,27 @@ impl TerminalView {
             .chain((0..entries.len()).filter(|index| *index != stored_active));
         let mut restored_active_id = None;
         let mut restored_layout_trees = HashMap::new();
+        let mut restored_zoom = HashMap::new();
         for index in candidate_indices.by_ref() {
             let stored_workspace = entries[index]
                 .pending_restore
                 .take()
                 .expect("restore candidate must retain its stored workspace");
             let workspace_name = entries[index].name.clone();
-            let (_, _, workspace) = Self::persisted_workspace_from_stored(stored_workspace);
+            let (_, _, workspace) = Self::persisted_workspace_from_stored(stored_workspace.clone());
             match self.build_restored_tabs(workspace) {
-                Ok((tabs, layout_trees, active_tab)) => {
+                Ok((tabs, layout_trees, zoom, active_tab)) => {
                     entries[index].tabs = tabs;
                     entries[index].active_tab = active_tab;
                     restored_layout_trees = layout_trees;
+                    restored_zoom = zoom;
                     restored_active_id = Some(entries[index].id);
                     break;
                 }
                 Err(error) => {
+                    if self.multiplexer.is_some() {
+                        entries[index].pending_restore = Some(stored_workspace);
+                    }
                     log::warn!(
                         "Skipping workspace '{workspace_name}' during session restore: {error}"
                     );
@@ -1088,7 +1215,7 @@ impl TerminalView {
         self.session.tabs = tabs;
         self.session.active_tab = active_tab.min(self.session.tabs.len().saturating_sub(1));
         self.session.native_pane_layout_trees = restored_layout_trees;
-        self.session.native_pane_zoom_snapshots.clear();
+        self.session.native_pane_zoom_snapshots = restored_zoom;
         self.finish_workspace_restore(cx);
         Ok(())
     }
@@ -1108,13 +1235,16 @@ impl TerminalView {
     fn apply_persisted_native_workspace_write_request(
         request: PersistedNativeWorkspaceWriteRequest,
     ) -> Result<(), String> {
-        if let Some((name, snapshot)) = &request.named_layout_autosave {
-            request
-                .store
-                .update_named_layout_if_exists(name, snapshot)?;
+        if let Some(window) = &request.multiplexer {
+            window.save(request.session.clone())?;
         }
-        if request.persist_last_session {
-            request.store.save_session(&request.session)?;
+        if let Some(store) = request.store {
+            if let Some((name, snapshot)) = &request.named_layout_autosave {
+                store.update_named_layout_if_exists(name, snapshot)?;
+            }
+            if request.persist_last_session {
+                store.save_session(&request.session)?;
+            }
         }
         Ok(())
     }
@@ -1126,7 +1256,11 @@ impl TerminalView {
             return None;
         }
         let session = self.collect_stored_session()?;
-        let store = self.workspace_store()?;
+        let store = if self.multiplexer.is_none() || self.native_layout_autosave {
+            Some(self.workspace_store()?)
+        } else {
+            None
+        };
         let named_layout_autosave = if self.native_layout_autosave {
             self.current_named_layout.as_ref().and_then(|name| {
                 let snapshot = self
@@ -1139,6 +1273,7 @@ impl TerminalView {
         };
         Some(PersistedNativeWorkspaceWriteRequest {
             store,
+            multiplexer: self.multiplexer.clone(),
             session,
             named_layout_autosave,
             persist_last_session: self.should_persist_last_native_session(),
@@ -1371,11 +1506,14 @@ mod tests {
             pinned: true,
             active_tab: 0,
             tabs: vec![StoredTab {
+                zoomed: false,
+                presentation: None,
                 pinned: false,
                 manual_title: Some("Build".to_string()),
                 active_pane: 0,
                 layout_tree_json: None,
                 panes: vec![StoredPane {
+                    session_id: None,
                     left: 0,
                     top: 0,
                     width: 80,

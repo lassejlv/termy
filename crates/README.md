@@ -11,6 +11,7 @@ Termy is a Rust workspace split by ownership boundary, not by implementation con
 ## Runtime And UI
 
 - `core/` (`termy_core`): headless terminal runtime/API and renderer-neutral terminal glyph semantics for embedders.
+- `multiplexer/` (`termy_multiplexer`): built-in background terminal sessions, authenticated local IPC, and remote terminal clients.
 - `tmon/` (`tmon`): experimental renderer-neutral terminal engine and native PTY/ConPTY runtime.
 - `plugin_runtime/` (`termy_plugin_runtime`): plugin discovery, typed protocol validation, and the on-demand Bun/Worker runtime.
 - `terminal_ui/` (`termy_terminal_ui`): GPUI grid painting/pixel snapping and keystroke adapters plus tmux pane display/client support; shared terminal types and special-glyph plans come directly from `termy_core`.
@@ -38,7 +39,7 @@ Each crate has its own `README.md` with `Owner`, `Validation`, and `Forbidden De
 
 ## Dependency Rules
 
-- `termy_core`, `termy_ffi`, `termy_cli`, `termy_cli_install_core`, and pure domain crates must not depend on GPUI.
+- `termy_core`, `termy_multiplexer`, `termy_ffi`, `termy_cli`, `termy_cli_install_core`, and pure domain crates must not depend on GPUI.
 - `termy_ffi` should wrap `termy_core`, not copy desktop app behavior.
 - `termy_command_core` must stay independent of config parsing and UI presentation.
 - `termy_plugin_runtime` must stay independent of GPUI, desktop command execution, and terminal presentation.

@@ -22,19 +22,19 @@ const MAX_SESSION_GRANTS: usize = 32;
 const MAX_PASTE_GRANTS: usize = 8;
 const PASTE_GRANT_LIFETIME: Duration = Duration::from_secs(60);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalClipboardLocation {
     Clipboard,
     Primary,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TerminalClipboardContent {
     pub mime_type: String,
     pub data: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TerminalClipboardReadRequest {
     pub location: TerminalClipboardLocation,
     pub mime_types: Vec<String>,
@@ -44,7 +44,7 @@ pub struct TerminalClipboardReadRequest {
     pub can_remember_permission: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum TerminalClipboardReadResult {
     Success {
         available_formats: Vec<String>,
@@ -57,7 +57,7 @@ pub enum TerminalClipboardReadResult {
     IoError,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct TerminalClipboardWriteRequest {
     pub location: TerminalClipboardLocation,
     pub contents: Vec<TerminalClipboardContent>,
@@ -66,7 +66,7 @@ pub struct TerminalClipboardWriteRequest {
     pub can_remember_permission: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalClipboardWriteResult {
     Success { remember_permission: bool },
     Denied,

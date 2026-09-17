@@ -12,14 +12,14 @@ use alacritty_terminal::{
     term::{Term, cell::Flags},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct DetectedLink {
     pub start_col: usize,
     pub end_col: usize,
     pub target: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct DetectedViewportLink {
     pub start_row: usize,
     pub start_col: usize,

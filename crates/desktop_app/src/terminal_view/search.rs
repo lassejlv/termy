@@ -1046,7 +1046,7 @@ mod tests {
             "tmux terminal should expose at least one non-empty line"
         );
 
-        let native = Terminal::new_native(size, None, None, None, None, None)
+        let native = Terminal::new_native(size, None, None, None, None, None, None)
             .expect("native terminal should initialize for read adapter test");
         let native_lines = collect_search_line_texts(&native, 0, i32::from(size.rows) - 1);
         assert_eq!(native_lines.len(), usize::from(size.rows));

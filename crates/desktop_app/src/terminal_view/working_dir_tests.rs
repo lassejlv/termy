@@ -35,6 +35,7 @@ fn new_tab_inherits_cwd_after_shell_cd_with_foreground_app(cx: &mut gpui::TestAp
                     ready.to_string_lossy().into_owned(),
                 ],
             }),
+            None,
         )
         .unwrap();
         view.session

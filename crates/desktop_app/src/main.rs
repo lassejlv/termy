@@ -23,6 +23,7 @@ mod linux_window_theme;
 #[cfg(target_os = "macos")]
 mod macos_titlebar_drag;
 mod menus;
+mod multiplexer;
 mod settings_view;
 mod ssh;
 mod startup;
@@ -210,6 +211,9 @@ fn preflight_tmux_runtime(config: &config::AppConfig) -> Result<(), StartupBlock
 }
 
 fn guard_tmux_startup(config: &mut config::AppConfig) -> Option<String> {
+    if config.multiplexer_enabled {
+        return None;
+    }
     let blocker = preflight_tmux_runtime(config).err()?;
     config.tmux_enabled = false;
     Some(blocker.tmux_fallback_message())
@@ -250,7 +254,15 @@ fn open_main_window(
     cx: &mut App,
     startup_config: config::AppConfig,
 ) -> Result<WindowHandle<TerminalView>, String> {
-    open_terminal_window(cx, startup_config, false)
+    let first = open_terminal_window(cx, startup_config.clone(), false)?;
+    while multiplexer::pending_windows(cx) > 0 {
+        if let Err(error) = open_terminal_window(cx, startup_config.clone(), false) {
+            log::error!("Failed to restore terminal window: {error}");
+            crate::ui::toast::error(error);
+            break;
+        }
+    }
+    Ok(first)
 }
 
 pub(crate) fn open_terminal_window(
@@ -258,6 +270,7 @@ pub(crate) fn open_terminal_window(
     startup_config: config::AppConfig,
     empty: bool,
 ) -> Result<WindowHandle<TerminalView>, String> {
+    multiplexer::initialize(&startup_config, cx)?;
     let window_background = initial_window_background_appearance(&startup_config);
     let startup_window_size = normalized_startup_window_size(&startup_config);
     let bounds = Bounds::centered(None, startup_window_size, cx);
@@ -617,8 +630,25 @@ fn spawn_deeplink_listener(cx: &mut App, deeplink_rx: Receiver<Vec<String>>) {
 }
 
 fn main() {
-    launch_probe::mark_process_start();
     let cli_args: Vec<String> = std::env::args().skip(1).collect();
+    if cli_args
+        .first()
+        .is_some_and(|arg| arg == "--multiplexer-host")
+    {
+        env_logger::init();
+        let result = match cli_args.as_slice() {
+            [_, directory] => termy_multiplexer::serve(std::path::Path::new(directory)),
+            _ => Err(anyhow::anyhow!(
+                "multiplexer host requires its private session directory"
+            )),
+        };
+        if let Err(error) = result {
+            eprintln!("Termy session host: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    launch_probe::mark_process_start();
     if let Some(status) = ssh::run_askpass_if_requested(&cli_args) {
         std::process::exit(status);
     }
@@ -701,7 +731,7 @@ fn main() {
             crate::ui::toast::warning(message);
         }
         // Keep startup menus/keybinds aligned with the active runtime capability set.
-        let tmux_runtime_active = if cfg!(target_os = "windows") {
+        let tmux_runtime_active = if cfg!(target_os = "windows") || app_config.multiplexer_enabled {
             false
         } else {
             app_config.tmux_enabled

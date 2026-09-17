@@ -2,7 +2,7 @@ use crate::frame::TermyFrame;
 use std::sync::Arc;
 use termy_search::{SearchConfig, SearchEngine, SearchMode};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TermySearchMatch {
     pub row: usize,
     pub start_col: usize,
@@ -36,7 +36,7 @@ impl From<TermySharedSearchMatch> for TermySearchMatch {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermySearchOptions {
     pub case_sensitive: bool,
     pub regex: bool,

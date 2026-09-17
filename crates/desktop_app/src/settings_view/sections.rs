@@ -268,6 +268,14 @@ impl SettingsWindow {
 
         let section = section.child(self.render_terminal_shell_group(cx));
 
+        let row = self.render_root_bool_setting_row(
+            "multiplexer_enabled",
+            "multiplexer-enabled-toggle",
+            RootSettingId::MultiplexerEnabled,
+            self.config.multiplexer_enabled,
+            cx,
+        );
+        let section = section.child(self.render_settings_group("Sessions", vec![row]));
         let section = section.child(self.render_terminal_tmux_group(cx));
 
         section

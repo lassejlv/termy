@@ -17,7 +17,7 @@ pub struct TermyKeystroke {
 pub type Modifiers = TermyModifiers;
 pub type Keystroke = TermyKeystroke;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TerminalKeyboardMode {
     application_cursor_keys: bool,
     disambiguate_escape_codes: bool,

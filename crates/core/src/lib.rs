@@ -12,6 +12,7 @@ mod mouse_protocol;
 mod osc_intercept;
 mod path_env;
 mod protocol;
+pub mod remote;
 mod render_metrics;
 mod resize_anchor;
 mod runtime;

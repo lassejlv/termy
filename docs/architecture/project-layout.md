@@ -10,6 +10,7 @@ Termy is a single repository with several product surfaces. Keep changes in the 
 - `crates/tmon/` owns the experimental renderer-neutral terminal engine and native PTY/ConPTY runtime.
 - `crates/plugin_runtime/` owns plugin discovery, descriptor/action validation, and the on-demand Bun host with one Worker per plugin. It must stay independent of GPUI and desktop command execution.
 - `crates/terminal_ui/` owns GPUI terminal painting, final pixel snapping, and keystroke adapters plus tmux pane display/client support used by the desktop app. Shared headless terminal types and special-glyph plans are imported directly from `termy_core`.
+- `crates/multiplexer/` owns the built-in background session host and remote clients. Terminal buffers and parser state remain in `termy_core`; desktop window and workspace layout remain app-owned.
 - `crates/tmux_control_core/` owns the UI-agnostic tmux control-mode protocol and transport shared by terminal UI and FFI.
 - `crates/ui/` owns Termy's design system in GPUI: theme-derived color tokens, layout metrics, and stateless chrome components. It must stay free of config, command, plugin, and SSH domain crates.
 - `crates/config_core/`, `crates/command_core/`, `crates/theme_core/`, and `crates/search/` own pure domain logic shared by the app, CLI, docs generation, and embedding surfaces.
@@ -29,6 +30,7 @@ Termy is a single repository with several product surfaces. Keep changes in the 
 - `tmon` (`crates/tmon/`) is the experimental standalone terminal engine.
 - `termy_plugin_runtime` (`crates/plugin_runtime/`) is the GPUI-free TypeScript plugin runtime consumed by the desktop app.
 - `termy_terminal_ui` (`crates/terminal_ui/`) is the GPUI-facing terminal adapter used by the desktop app.
+- `termy_multiplexer` (`crates/multiplexer/`) keeps native terminal sessions alive independently of the desktop process.
 - `termy_tmux_control_core` (`crates/tmux_control_core/`) is the shared headless tmux control-mode layer.
 - `termy_ui` (`crates/ui/`) is the GPUI design system: tokens, metrics, and chrome components shared by settings-style surfaces.
 - `termy_command_core`, `termy_config_core`, `termy_theme_core`, `termy_search`, `termy_ssh_core`, and `termy_themes` are pure domain crates.

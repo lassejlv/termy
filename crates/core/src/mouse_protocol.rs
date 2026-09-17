@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TerminalMouseMode {
     pub enabled: bool,
     pub report_click: bool,

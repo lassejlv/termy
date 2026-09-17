@@ -173,6 +173,9 @@ impl TerminalView {
         let fallback_title = self.fallback_title();
         match target {
             CloseRequestTarget::Application | CloseRequestTarget::WindowClose => {
+                if self.multiplexer.is_some() {
+                    return Vec::new();
+                }
                 let mut titles = self
                     .session
                     .tabs
@@ -308,6 +311,7 @@ impl TerminalView {
                 false
             }
             CloseRequestTarget::WindowClose => {
+                self.prepare_multiplexer_detach();
                 self.sync_persisted_native_workspace();
                 true
             }
@@ -468,7 +472,7 @@ impl TerminalView {
     /// window alive, so closing the visible strip's last tab is still a tab
     /// close (the workspace folds) rather than a window close.
     fn effective_tab_count_for_close(&self) -> usize {
-        if self.has_other_workspaces() {
+        if self.has_other_workspaces() || self.multiplexer.is_some() {
             self.session.tabs.len().saturating_add(1)
         } else {
             self.session.tabs.len()

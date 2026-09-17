@@ -53,7 +53,7 @@ use std::{
 };
 use unicode_width::UnicodeWidthChar;
 
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct TabTitleShellIntegration {
     pub enabled: bool,
     pub explicit_prefix: String,
@@ -65,7 +65,7 @@ const TERMY_TERM_PROGRAM: &str = "termy";
 const GHOSTTY_COMPAT_TERM_PROGRAM: &str = "ghostty";
 const GHOSTTY_COMPAT_TERM_PROGRAM_VERSION: &str = "1.2.0";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkingDirFallback {
     Home,
     Process,
@@ -107,7 +107,7 @@ pub const MAX_TERMINAL_SCROLLBACK_HISTORY: usize = 20_000;
 const MAX_TERMINAL_COLS: u16 = 4096;
 const MAX_TERMINAL_ROWS: u16 = 4096;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowsShell {
     #[default]
     Cmd,
@@ -116,20 +116,20 @@ pub enum WindowsShell {
     GitBash,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalCursorStyle {
     Line,
     Block,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalCursorState {
     pub col: usize,
     pub row: usize,
     pub style: TerminalCursorStyle,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalOptions {
     pub scrollback_history: usize,
     pub default_cursor_style: TerminalCursorStyle,
@@ -144,7 +144,7 @@ impl Default for TerminalOptions {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct TerminalRuntimeConfig {
     pub shell: Option<String>,
     pub windows_shell: WindowsShell,
@@ -162,7 +162,7 @@ pub struct TerminalRuntimeConfig {
 /// `ShellCommand` preserves the existing shell-evaluated startup-command API.
 /// Structured tools such as OpenSSH must use `Program`, which sends each
 /// argument directly to the child without routing through a shell.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum TerminalLaunch {
     ShellCommand(String),
     Program { program: String, args: Vec<String> },
@@ -1258,7 +1258,7 @@ fn pty_child_pid(_pty: &tty::Pty) -> Option<u32> {
 }
 
 /// Events sent from the terminal to the view
-#[derive(Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub enum TerminalEvent {
     /// Terminal content has changed, needs redraw
     Wakeup,
@@ -1310,19 +1310,19 @@ impl TerminalWakeupNotifier {
         }
     }
 
-    fn notify(&self) {
+    pub fn notify(&self) {
         (self.notify)();
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalDirtySpan {
     pub row: usize,
     pub left_col: usize,
     pub right_col: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum TerminalDamageSnapshot {
     Full,
     Partial(Vec<TerminalDirtySpan>),
@@ -2140,12 +2140,20 @@ impl NativeEventLoop {
             }
 
             let _ = self.pty.deregister(&self.poll);
+            // Alacritty's Pty drop sends SIGHUP and waits for the child before
+            // dropping its master fd. A shell which handles SIGHUP and resumes
+            // reading can then wait forever. Close the master first so reads
+            // receive EOF/EIO even when the session host remains running.
+            #[cfg(unix)]
+            if let Ok(null) = std::fs::File::open("/dev/null") {
+                drop(std::mem::replace(self.pty.writer(), null));
+            }
         });
     }
 }
 
 /// Terminal dimensions in cells and pixels
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq)]
 pub struct TerminalSize {
     pub cols: u16,
     pub rows: u16,
@@ -2233,6 +2241,15 @@ mod tmon_backend;
 mod alacritty_backend;
 
 impl Terminal {
+    /// Attach a renderer to a terminal owned by the built-in session host.
+    pub fn from_remote(transport: Arc<dyn crate::remote::RemoteTransport>) -> Self {
+        Self {
+            backend: engine_backend::Backend::Remote(Box::new(crate::remote::RemoteBackend::new(
+                transport,
+            ))),
+        }
+    }
+
     /// The active engine name for diagnostics. Do not branch application
     /// behavior on this value; construction policy remains owned by core.
     pub fn engine_label(&self) -> &'static str {

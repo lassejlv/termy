@@ -366,6 +366,7 @@ fn invalid_chrome_contrast_emits_diagnostic_and_keeps_default() {
 fn bool_root_setting_value(config: &AppConfig, setting: RootSettingId) -> Option<bool> {
     match setting {
         RootSettingId::AutoUpdate => Some(config.auto_update),
+        RootSettingId::MultiplexerEnabled => Some(config.multiplexer_enabled),
         RootSettingId::TmuxEnabled => Some(config.tmux_enabled),
         RootSettingId::TmuxPersistence => Some(config.tmux_persistence),
         RootSettingId::TmuxExclusive => Some(config.tmux_exclusive),

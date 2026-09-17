@@ -1191,6 +1191,7 @@ dependencies = [
  "itoa",
  "rustversion",
  "ryu",
+ "serde",
  "static_assertions",
 ]
 
@@ -6655,6 +6656,7 @@ dependencies = [
  "termy_command_core",
  "termy_config_core",
  "termy_core",
+ "termy_multiplexer",
  "termy_native_sdk",
  "termy_plugin_runtime",
  "termy_search",
@@ -6665,6 +6667,7 @@ dependencies = [
  "tokio",
  "ureq",
  "url",
+ "uuid",
  "webbrowser",
  "winresource",
  "x11rb",
@@ -6748,6 +6751,7 @@ dependencies = [
  "polling",
  "rand_core 0.6.4",
  "rustix-openpty",
+ "serde",
  "tempfile",
  "termy_config_core",
  "termy_search",
@@ -6774,6 +6778,24 @@ dependencies = [
  "termy_themes",
  "termy_tmux_control_core",
  "ureq",
+]
+
+[[package]]
+name = "termy_multiplexer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "flume",
+ "fs4",
+ "libc",
+ "log",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "termy_core",
+ "uuid",
 ]
 
 [[package]]

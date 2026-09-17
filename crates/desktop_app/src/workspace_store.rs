@@ -14,8 +14,11 @@ use std::path::Path;
 
 pub(crate) const WORKSPACE_STORE_FILE: &str = "workspaces.db";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct StoredPane {
+    /// Live multiplexer layout only; not stored in the restart-snapshot database.
+    #[serde(default)]
+    pub(crate) session_id: Option<String>,
     pub(crate) left: u16,
     pub(crate) top: u16,
     pub(crate) width: u16,
@@ -23,8 +26,12 @@ pub(crate) struct StoredPane {
     pub(crate) buffer: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct StoredTab {
+    #[serde(default)]
+    pub(crate) zoomed: bool,
+    #[serde(default)]
+    pub(crate) presentation: Option<StoredTabPresentation>,
     pub(crate) pinned: bool,
     pub(crate) manual_title: Option<String>,
     pub(crate) active_pane: usize,
@@ -34,7 +41,7 @@ pub(crate) struct StoredTab {
     pub(crate) panes: Vec<StoredPane>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct StoredWorkspace {
     pub(crate) name: String,
     pub(crate) pinned: bool,
@@ -42,10 +49,22 @@ pub(crate) struct StoredWorkspace {
     pub(crate) tabs: Vec<StoredTab>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct StoredSession {
     pub(crate) workspaces: Vec<StoredWorkspace>,
     pub(crate) active_workspace: usize,
+}
+
+/// UI title/status snapshot for live sessions; terminal events refresh it on attach.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct StoredTabPresentation {
+    pub(crate) title: String,
+    pub(crate) explicit_title: Option<String>,
+    pub(crate) explicit_title_is_prediction: bool,
+    pub(crate) shell_title: Option<String>,
+    pub(crate) current_command: Option<String>,
+    pub(crate) last_prompt_cwd: Option<String>,
+    pub(crate) running_process: bool,
 }
 
 pub(crate) struct WorkspaceStore {
@@ -279,6 +298,7 @@ impl WorkspaceStore {
             for row in pane_rows {
                 let tab_id: i64 = row.get("tab_id");
                 panes_by_tab.entry(tab_id).or_default().push(StoredPane {
+                    session_id: None,
                     left: clamp_cell(row.get::<i64, _>("pane_left")),
                     top: clamp_cell(row.get::<i64, _>("pane_top")),
                     width: clamp_cell(row.get::<i64, _>("pane_width")).max(1),
@@ -299,6 +319,8 @@ impl WorkspaceStore {
                     .entry(workspace_id)
                     .or_default()
                     .push(StoredTab {
+                        zoomed: false,
+                        presentation: None,
                         pinned: row.get("pinned"),
                         manual_title: row.get("manual_title"),
                         active_pane: row.get::<i64, _>("active_pane").max(0) as usize,
@@ -510,11 +532,14 @@ mod tests {
                     active_tab: 1,
                     tabs: vec![
                         StoredTab {
+                            zoomed: false,
+                            presentation: None,
                             pinned: true,
                             manual_title: Some("build".to_string()),
                             active_pane: 0,
                             layout_tree_json: None,
                             panes: vec![StoredPane {
+                                session_id: None,
                                 left: 0,
                                 top: 0,
                                 width: 80,
@@ -523,12 +548,15 @@ mod tests {
                             }],
                         },
                         StoredTab {
+                            zoomed: false,
+                            presentation: None,
                             pinned: false,
                             manual_title: None,
                             active_pane: 1,
                             layout_tree_json: Some("{\"kind\":\"leaf\",\"pane\":0}".to_string()),
                             panes: vec![
                                 StoredPane {
+                                    session_id: None,
                                     left: 0,
                                     top: 0,
                                     width: 40,
@@ -536,6 +564,7 @@ mod tests {
                                     buffer: None,
                                 },
                                 StoredPane {
+                                    session_id: None,
                                     left: 40,
                                     top: 0,
                                     width: 40,
@@ -551,11 +580,14 @@ mod tests {
                     pinned: false,
                     active_tab: 0,
                     tabs: vec![StoredTab {
+                        zoomed: false,
+                        presentation: None,
                         pinned: false,
                         manual_title: Some("Docs".to_string()),
                         active_pane: 0,
                         layout_tree_json: None,
                         panes: vec![StoredPane {
+                            session_id: None,
                             left: 0,
                             top: 0,
                             width: 80,
