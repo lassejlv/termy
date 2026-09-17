@@ -12,15 +12,21 @@ impl Host {
         // an inherited output handle; pipe EOF would wait for that child too.
         let mut stdout = tempfile::tempfile().unwrap();
         let mut stderr = tempfile::tempfile().unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_termy-cli"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_termy-cli"));
+        command
             .args(["mux", "--session-dir"])
             .arg(self.0.path().join("sessions"))
             .args(args)
             .stdin(Stdio::null())
             .stdout(stdout.try_clone().unwrap())
-            .stderr(stderr.try_clone().unwrap())
-            .spawn()
-            .unwrap();
+            .stderr(stderr.try_clone().unwrap());
+        #[cfg(windows)]
+        if args == ["start"] {
+            use std::os::windows::process::CommandExt;
+            // Reproduce launchers that disable Ctrl+C for their descendants.
+            command.creation_flags(0x0000_0200); // CREATE_NEW_PROCESS_GROUP
+        }
+        let mut child = command.spawn().unwrap();
         let deadline = Instant::now() + Duration::from_secs(30);
         let mut timed_out = false;
         let status = loop {

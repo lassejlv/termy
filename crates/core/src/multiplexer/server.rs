@@ -27,6 +27,17 @@ struct Server {
 }
 
 pub fn serve(root: &Path) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        // Launchers can pass down the inheritable "ignore Ctrl+C" attribute.
+        // Clear it before creating ConPTY shells so their foreground commands
+        // can be interrupted even when this host started from a background job.
+        // SAFETY: a null handler changes only the current process attribute;
+        // no callback or pointer is registered.
+        if unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0) } == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+    }
     discovery::prepare_root(root)?;
     let lock = discovery::private_file(&root.join("host.lock"))?;
     ensure!(
