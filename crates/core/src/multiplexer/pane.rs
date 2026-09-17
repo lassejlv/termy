@@ -153,6 +153,10 @@ impl Pane {
             shared: Arc::downgrade(&self.shared),
         });
         shared.subscribers.push(Arc::downgrade(&subscription));
+        drop(shared);
+        // Output can arrive between refresh and registration while the worker
+        // still sees no subscribers. Wake it to publish that pending frame.
+        let _ = self.tx.try_send(Work::Wake);
         Ok(subscription)
     }
 
@@ -348,5 +352,44 @@ impl TerminalReplyHost for HostBridge {
             Ok(RemoteHostReply::Write(value)) => value,
             _ => TerminalClipboardWriteResult::Denied,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subscribing_wakes_a_worker_that_refreshed_while_detached() {
+        let terminal = Terminal::new_display(TerminalSize::default(), None);
+        let state = Arc::new(RemoteState::capture(&terminal));
+        let shared = Arc::new(Mutex::new(Shared {
+            info: PaneInfo {
+                id: "test-pane".into(),
+                child_pid: None,
+                title: None,
+                working_directory: None,
+                exited: false,
+            },
+            state: Arc::clone(&state),
+            sticky_events: Vec::new(),
+            subscribers: Vec::new(),
+            host_replies: HashMap::new(),
+            next_host_id: 1,
+        }));
+        let (tx, rx) = flume::bounded(256);
+        let pane = Pane { tx, shared };
+        let worker = std::thread::spawn(move || {
+            let Work::Refresh(reply) = rx.recv_timeout(REQUEST_TIMEOUT).unwrap() else {
+                panic!("subscription must first refresh the pane");
+            };
+            reply.send(state).unwrap();
+            // The worker has no subscribers yet and can go idle. Registration
+            // must wake it even if no more terminal output arrives afterward.
+            assert!(matches!(rx.recv_timeout(REQUEST_TIMEOUT), Ok(Work::Wake)));
+        });
+        let subscription = pane.subscribe().unwrap();
+        worker.join().unwrap();
+        assert!(matches!(subscription.next(), Some(Update::State(_))));
     }
 }

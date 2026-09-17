@@ -1,5 +1,6 @@
 use serde_json::{Value, json};
 use std::{
+    io::{Read, Seek, SeekFrom},
     process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
@@ -7,28 +8,47 @@ use std::{
 struct Host(tempfile::TempDir);
 impl Host {
     fn call(&self, args: &[&str]) -> Output {
+        // Files keep capture bounded even if a detached Windows child retains
+        // an inherited output handle; pipe EOF would wait for that child too.
+        let mut stdout = tempfile::tempfile().unwrap();
+        let mut stderr = tempfile::tempfile().unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_termy-cli"))
             .args(["mux", "--session-dir"])
             .arg(self.0.path().join("sessions"))
             .args(args)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(stdout.try_clone().unwrap())
+            .stderr(stderr.try_clone().unwrap())
             .spawn()
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(30);
-        while child.try_wait().unwrap().is_none() {
+        let mut timed_out = false;
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
             if Instant::now() >= deadline {
-                let _ = child.kill();
-                let output = child.wait_with_output().unwrap();
-                panic!(
-                    "mux {args:?} timed out: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                timed_out = true;
+                child.kill().unwrap();
+                break child.wait().unwrap();
             }
             std::thread::sleep(Duration::from_millis(20));
-        }
-        child.wait_with_output().unwrap()
+        };
+        stdout.seek(SeekFrom::Start(0)).unwrap();
+        stderr.seek(SeekFrom::Start(0)).unwrap();
+        let mut output = Output {
+            status,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        };
+        stdout.read_to_end(&mut output.stdout).unwrap();
+        stderr.read_to_end(&mut output.stderr).unwrap();
+        assert!(
+            !timed_out,
+            "mux {args:?} timed out: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output
     }
     fn ok(&self, args: &[&str]) -> Value {
         let output = self.call(args);
