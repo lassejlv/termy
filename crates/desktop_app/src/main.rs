@@ -298,8 +298,8 @@ pub(crate) fn open_terminal_window(
             },
             // Keep the NSWindow movable so macOS preserves normal zoom and
             // Dock-overlay behavior. The macOS content-view bridge below
-            // disables AppKit-owned titlebar dragging without changing the
-            // window's native management semantics.
+            // disables automatic background dragging; hit-tested titlebar
+            // presses explicitly start a native AppKit drag.
             is_movable: cfg!(target_os = "macos"),
             is_resizable: true,
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),

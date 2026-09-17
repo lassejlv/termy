@@ -126,6 +126,15 @@ impl TerminalView {
         }
 
         if outcome.arm_move {
+            #[cfg(target_os = "macos")]
+            {
+                // AppKit needs the original mouse-down event, not a later
+                // mouse-move. It may consume mouse-up, so clear our arm now.
+                self.disarm_titlebar_window_move();
+                if let Err(error) = crate::macos_titlebar_drag::start_titlebar_window_drag(window) {
+                    log::warn!("Failed to start native titlebar drag: {error}");
+                }
+            }
             window.prevent_default();
             cx.stop_propagation();
         }

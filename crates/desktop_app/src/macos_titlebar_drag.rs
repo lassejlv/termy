@@ -1,9 +1,10 @@
 use cocoa::{
-    appkit::{NSWindow, NSWindowCollectionBehavior},
+    appkit::{NSEventType, NSWindow, NSWindowCollectionBehavior},
     base::{BOOL, NO, YES, id, nil},
 };
 use gpui::Window;
 use objc::{
+    class,
     declare::ClassDecl,
     msg_send,
     runtime::{Class, Object, Sel},
@@ -34,6 +35,7 @@ pub(crate) enum NativeTitlebarDragError {
     ClassRegistration,
     FirstResponder,
     PanelVisibility,
+    MissingMouseDownEvent,
 }
 
 impl fmt::Display for NativeTitlebarDragError {
@@ -64,8 +66,46 @@ impl fmt::Display for NativeTitlebarDragError {
                 f,
                 "macOS benchmark window does not support persistent panel visibility.",
             ),
+            Self::MissingMouseDownEvent => write!(
+                f,
+                "macOS titlebar dragging requires this window's left mouse-down event.",
+            ),
         }
     }
+}
+
+/// Hand a hit-tested titlebar press to AppKit while its original event is current.
+pub(crate) fn start_titlebar_window_drag(window: &Window) -> Result<(), NativeTitlebarDragError> {
+    let handle = HasWindowHandle::window_handle(window)
+        .map_err(|_| NativeTitlebarDragError::WindowHandle)?;
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return Err(NativeTitlebarDragError::NonAppKitHandle);
+    };
+    let ns_view = handle.ns_view.as_ptr().cast::<Object>();
+
+    // SAFETY: GPUI calls this on the main thread during mouse-down dispatch.
+    // The borrowed window keeps its NSView/NSWindow alive, and NSApplication
+    // owns the current event throughout this synchronous call.
+    unsafe {
+        let ns_window: id = msg_send![ns_view, window];
+        if ns_window == nil {
+            return Err(NativeTitlebarDragError::MissingWindow);
+        }
+        let app: id = msg_send![class!(NSApplication), sharedApplication];
+        let event: id = msg_send![app, currentEvent];
+        if event == nil {
+            return Err(NativeTitlebarDragError::MissingMouseDownEvent);
+        }
+        let event_type: usize = msg_send![event, type];
+        let event_window: id = msg_send![event, window];
+        if event_type != NSEventType::NSLeftMouseDown as usize || event_window != ns_window {
+            return Err(NativeTitlebarDragError::MissingMouseDownEvent);
+        }
+        // Unlike GPUI 0.2.2's macOS start_window_move (a no-op), this hands
+        // movement to Window Server and returns immediately.
+        let _: () = msg_send![ns_window, performWindowDragWithEvent: event];
+    }
+    Ok(())
 }
 
 pub(crate) fn keep_benchmark_panel_visible_when_inactive(
