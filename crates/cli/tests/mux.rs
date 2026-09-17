@@ -52,11 +52,17 @@ impl Host {
     }
     fn ok(&self, args: &[&str]) -> Value {
         let output = self.call(args);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        if !output.status.success() {
+            let capture = if args.first() == Some(&"wait") && args.len() > 1 {
+                String::from_utf8_lossy(&self.call(&["capture", args[1]]).stdout).into_owned()
+            } else {
+                String::new()
+            };
+            panic!(
+                "mux {args:?} failed: {}\n{capture}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(envelope["schema_version"], 1);
         assert_eq!(envelope["ok"], true);
@@ -73,7 +79,7 @@ impl Drop for Host {
 fn agent_commands_control_a_persistent_terminal_across_processes() {
     let host = Host(tempfile::tempdir().unwrap());
     let shell = if cfg!(windows) {
-        "powershell.exe"
+        "powershell.exe -NoLogo -NoProfile"
     } else {
         "/bin/sh"
     };
@@ -84,6 +90,11 @@ fn agent_commands_control_a_persistent_terminal_across_processes() {
     assert_eq!(host.ok(&["list"]), json!([]));
     let pane = host.ok(&["create", "--shell", shell]);
     let id = pane["id"].as_str().unwrap();
+    if cfg!(windows) {
+        // PSReadLine initializes asynchronously and can discard input sent
+        // before its first prompt. Wait for readiness instead of sleeping.
+        host.ok(&["wait", id, "PS ", "--timeout-ms", "15000"]);
+    }
     let created_layout = host.ok(&["layout"]);
     assert_eq!(
         created_layout["windows"][0]["session"]["workspaces"][0]["tabs"][0]["panes"][0]["session_id"],
@@ -261,4 +272,36 @@ fn agent_commands_control_a_persistent_terminal_across_processes() {
             .len(),
         1
     );
+}
+
+#[test]
+fn starting_a_host_releases_captured_output_while_host_stays_alive() {
+    let host = Host(tempfile::tempdir().unwrap());
+    let root = host.0.path().join("sessions");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let output = Command::new(env!("CARGO_BIN_EXE_termy-cli"))
+            .args(["mux", "--session-dir"])
+            .arg(root)
+            .arg("start")
+            .output();
+        let _ = tx.send(output);
+    });
+    let output = rx.recv_timeout(Duration::from_secs(15));
+    if output.is_err() {
+        // Release leaked pipes before failing, rather than leaving the test
+        // helper or background host running on the CI machine.
+        let _ = host.call(&["shutdown"]);
+    }
+    let output = output
+        .expect("mux start retained its captured output pipes")
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let ready: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(ready["ok"], true);
+    assert_eq!(host.ok(&["list"]), json!([]));
 }

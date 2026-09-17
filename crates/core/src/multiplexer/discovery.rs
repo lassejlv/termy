@@ -126,6 +126,7 @@ pub fn connect_or_start(root: &Path, executable: &Path) -> anyhow::Result<Sessio
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        prevent_standard_handle_inheritance()?;
         command.creation_flags(0x0000_0008 | 0x0000_0200); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     }
     let mut child = command.spawn().context("start background terminal host")?;
@@ -145,4 +146,32 @@ pub fn connect_or_start(root: &Path, executable: &Path) -> anyhow::Result<Sessio
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+#[cfg(windows)]
+fn prevent_standard_handle_inheritance() -> anyhow::Result<()> {
+    use windows_sys::Win32::{
+        Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation},
+        System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE},
+    };
+    // Stdio::null() replaces the child's standard handles, but CreateProcess
+    // also inherits other inheritable handles in this process. In a piped CLI
+    // invocation those include our original stdout/stderr, keeping pipe EOF
+    // pending until the detached host exits. Clear inheritance without closing
+    // or redirecting the caller's streams. Rust duplicates explicitly inherited
+    // stdio when spawning other commands, so those commands still work normally.
+    for stream in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: the constants select existing process standard handles.
+        let handle = unsafe { GetStdHandle(stream) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            continue;
+        }
+        // SAFETY: this changes only the inheritance flag of the existing
+        // process handle; it neither closes the handle nor accesses its data.
+        if unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("isolate background host standard handles");
+        }
+    }
+    Ok(())
 }
