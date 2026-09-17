@@ -1,18 +1,34 @@
 use serde_json::{Value, json};
 use std::{
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
     time::{Duration, Instant},
 };
 
 struct Host(tempfile::TempDir);
 impl Host {
     fn call(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_termy-cli"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_termy-cli"))
             .args(["mux", "--session-dir"])
             .arg(self.0.path().join("sessions"))
             .args(args)
-            .output()
-            .unwrap()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "mux {args:?} timed out: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        child.wait_with_output().unwrap()
     }
     fn ok(&self, args: &[&str]) -> Value {
         let output = self.call(args);
@@ -36,12 +52,17 @@ impl Drop for Host {
 #[test]
 fn agent_commands_control_a_persistent_terminal_across_processes() {
     let host = Host(tempfile::tempdir().unwrap());
+    let shell = if cfg!(windows) {
+        "powershell.exe"
+    } else {
+        "/bin/sh"
+    };
     let invalid = host.call(&["create", "--cols", "0"]);
     assert_eq!(invalid.status.code(), Some(1));
     assert!(!host.0.path().join("sessions/endpoint.json").exists());
     host.ok(&["start"]);
     assert_eq!(host.ok(&["list"]), json!([]));
-    let pane = host.ok(&["create", "--shell", "/bin/sh"]);
+    let pane = host.ok(&["create", "--shell", shell]);
     let id = pane["id"].as_str().unwrap();
     let created_layout = host.ok(&["layout"]);
     assert_eq!(
@@ -66,7 +87,16 @@ fn agent_commands_control_a_persistent_terminal_across_processes() {
         layout["windows"][0]["session"]["workspaces"][0]["pinned"],
         true
     );
-    host.ok(&["send", id, "printf 'CLI_%s\\n' PROOF", "--enter"]);
+    host.ok(&[
+        "send",
+        id,
+        if cfg!(windows) {
+            "Write-Output ('CLI_' + 'PROOF')"
+        } else {
+            "printf 'CLI_%s\\n' PROOF"
+        },
+        "--enter",
+    ]);
     let captured = host.ok(&["wait", id, "CLI_PROOF"]);
     assert!(captured["text"].as_str().unwrap().contains("CLI_PROOF"));
     assert_eq!(host.ok(&["list"])[0]["child_pid"], pid);
@@ -83,12 +113,25 @@ fn agent_commands_control_a_persistent_terminal_across_processes() {
     host.ok(&[
         "send",
         id,
-        "printf 'RUNNING_%s\\n' NOW; sleep 60",
+        if cfg!(windows) {
+            "Write-Output ('RUNNING_' + 'NOW'); Start-Sleep -Seconds 60"
+        } else {
+            "printf 'RUNNING_%s\\n' NOW; sleep 60"
+        },
         "--enter",
     ]);
     host.ok(&["wait", id, "RUNNING_NOW"]);
     host.ok(&["key", id, "c", "--control"]);
-    host.ok(&["send", id, "printf 'INTERRUPTED_%s\\n' OK", "--enter"]);
+    host.ok(&[
+        "send",
+        id,
+        if cfg!(windows) {
+            "Write-Output ('INTERRUPTED_' + 'OK')"
+        } else {
+            "printf 'INTERRUPTED_%s\\n' OK"
+        },
+        "--enter",
+    ]);
     host.ok(&["wait", id, "INTERRUPTED_OK"]);
     let timeout = host.call(&["wait", id, "NO_SUCH_OUTPUT", "--timeout-ms", "50"]);
     assert_eq!(timeout.status.code(), Some(1));
@@ -101,7 +144,7 @@ fn agent_commands_control_a_persistent_terminal_across_processes() {
     let pane = host.ok(&[
         "create",
         "--shell",
-        "/bin/sh",
+        shell,
         "--window",
         "window-1",
         "--workspace",
@@ -165,8 +208,8 @@ fn agent_commands_control_a_persistent_terminal_across_processes() {
         layout["windows"][0]["session"]["workspaces"][1]["name"],
         "Review"
     );
-    let first = host.ok(&["create", "--shell", "/bin/sh"]);
-    let second = host.ok(&["create", "--shell", "/bin/sh"]);
+    let first = host.ok(&["create", "--shell", shell]);
+    let second = host.ok(&["create", "--shell", shell]);
     let first = first["id"].as_str().unwrap();
     let second = second["id"].as_str().unwrap();
     host.ok(&["workspace", "window-1", "1", "select-tab", "0"]);
