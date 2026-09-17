@@ -1,5 +1,5 @@
 use std::{ffi::OsString, path::Path, process::Command};
-use termy_config_core::config_path;
+use termy_core::config_core::config_path;
 
 struct EditorLauncher {
     program: OsString,

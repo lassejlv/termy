@@ -7,7 +7,9 @@ use state::{
     CommandPaletteScrollDirection, command_palette_next_scroll_y, command_palette_target_scroll_y,
     ordered_theme_ids_for_palette,
 };
-use termy_command_core::{CommandAvailability, CommandCapabilities, CommandUnavailableReason};
+use termy_core::command_core::{
+    CommandAvailability, CommandCapabilities, CommandUnavailableReason,
+};
 
 mod fuzzy;
 mod plugins;

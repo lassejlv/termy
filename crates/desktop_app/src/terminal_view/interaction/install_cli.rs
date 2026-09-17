@@ -22,7 +22,7 @@ impl TerminalView {
             return;
         }
 
-        match termy_cli_install_core::install_cli(self.terminal_runtime.shell.as_deref()) {
+        match termy_core::cli_install_core::install_cli(self.terminal_runtime.shell.as_deref()) {
             Ok(result) => {
                 let install_path = result.install_path;
                 let path_str = install_path.display().to_string();

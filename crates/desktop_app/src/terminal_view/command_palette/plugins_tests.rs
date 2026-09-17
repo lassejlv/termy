@@ -1,5 +1,5 @@
 use super::*;
-use termy_plugin_runtime::PluginSelectOption;
+use termy_core::plugin_runtime::PluginSelectOption;
 
 fn lifecycle_snapshot(
     tab_id: u64,
@@ -29,7 +29,7 @@ fn command(inputs: Vec<PluginInput>) -> PluginCommand {
         disabled_reason: None,
         icon: PluginIcon::Command,
         inputs,
-        when: termy_plugin_runtime::PluginCommandWhen::default(),
+        when: termy_core::plugin_runtime::PluginCommandWhen::default(),
         timeout_ms: 10_000,
     }
 }

@@ -78,11 +78,11 @@ impl TerminalView {
     pub(crate) fn clamp_workspace_sidebar_width(width: f32) -> f32 {
         if width.is_finite() {
             width.clamp(
-                termy_config_core::MIN_SIDEBAR_WIDTH,
-                termy_config_core::MAX_SIDEBAR_WIDTH,
+                termy_core::config_core::MIN_SIDEBAR_WIDTH,
+                termy_core::config_core::MAX_SIDEBAR_WIDTH,
             )
         } else {
-            termy_config_core::DEFAULT_SIDEBAR_WIDTH
+            termy_core::config_core::DEFAULT_SIDEBAR_WIDTH
         }
     }
 
@@ -182,7 +182,7 @@ impl TerminalView {
         };
         if (self.workspace_sidebar_width - drag.start_width).abs() >= 1.0
             && let Err(error) = crate::config::set_root_setting(
-                termy_config_core::RootSettingId::SidebarWidth,
+                termy_core::config_core::RootSettingId::SidebarWidth,
                 &format!("{:.0}", self.workspace_sidebar_width),
             )
         {
@@ -1053,16 +1053,16 @@ mod tests {
     fn workspace_sidebar_width_clamps_to_configured_bounds() {
         assert_eq!(
             TerminalView::clamp_workspace_sidebar_width(1.0),
-            termy_config_core::MIN_SIDEBAR_WIDTH
+            termy_core::config_core::MIN_SIDEBAR_WIDTH
         );
         assert_eq!(TerminalView::clamp_workspace_sidebar_width(240.0), 240.0);
         assert_eq!(
             TerminalView::clamp_workspace_sidebar_width(10_000.0),
-            termy_config_core::MAX_SIDEBAR_WIDTH
+            termy_core::config_core::MAX_SIDEBAR_WIDTH
         );
         assert_eq!(
             TerminalView::clamp_workspace_sidebar_width(f32::NAN),
-            termy_config_core::DEFAULT_SIDEBAR_WIDTH
+            termy_core::config_core::DEFAULT_SIDEBAR_WIDTH
         );
     }
 

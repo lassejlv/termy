@@ -149,7 +149,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use termy_search::{SearchMatch, SearchResults};
+    use termy_core::search_engine::{SearchMatch, SearchResults};
 
     #[test]
     fn marker_top_for_line_maps_bounds() {

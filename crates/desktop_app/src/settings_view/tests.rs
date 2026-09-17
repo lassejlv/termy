@@ -90,7 +90,7 @@ fn settings_ui_tokens_track_the_windows_own_chrome_colors(cx: &mut TestAppContex
 
     cx.update(|app| {
         assert_eq!(
-            app.try_global::<termy_ui::Tokens>().copied(),
+            app.try_global::<crate::design_system::Tokens>().copied(),
             Some(tokens),
             "components render from the global, so it has to carry this window's colors"
         );

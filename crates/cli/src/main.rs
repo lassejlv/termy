@@ -35,6 +35,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Action {
+    /// Control persistent terminal sessions; responses are JSON
+    Mux(commands::mux::Args),
     /// Install and manage plugins
     Plugin {
         #[command(subcommand)]
@@ -206,6 +208,17 @@ enum PluginCommand {
 }
 
 fn main() {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--multiplexer-host")) {
+        let result = std::env::args_os()
+            .nth(2)
+            .ok_or_else(|| anyhow::anyhow!("session directory required"))
+            .and_then(|root| termy_core::multiplexer::serve(std::path::Path::new(&root)));
+        if let Err(error) = result {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let cli = Cli::parse();
 
     let path = cli.working_directory.or(cli.path);
@@ -215,6 +228,7 @@ fn main() {
     }
 
     match cli.action {
+        Some(Action::Mux(args)) => commands::mux::run(args),
         Some(Action::Plugin { command }) => commands::plugins::run(command),
         Some(Action::Version) => commands::version::run(),
         Some(Action::Help) => commands::help::run(),

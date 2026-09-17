@@ -19,6 +19,11 @@ mod runtime;
 mod search;
 mod shell_integration;
 
+pub use crate::config_core::{
+    AppConfig, ConfigDiagnostic, ConfigDiagnosticKind, ConfigParseReport,
+    CursorStyle as AppConfigCursorStyle, SystemAppearance, config_path,
+};
+pub use crate::tmon::{GraphicsImage, graphics_display_size};
 pub use cell_metrics::{TerminalCellMetrics, measure_cell, measure_cell_from_config};
 pub use config::{
     LoadedTermyConfig, ResolvedThemeColors, TermyConfigError, load_config_from_contents,
@@ -86,8 +91,31 @@ pub use search::{
     search_frame_shared, search_frame_shared_with_options, search_frame_with_options,
 };
 pub use shell_integration::{CommandLifecycle, CommandPhase, ProgressState};
-pub use termy_config_core::{
-    AppConfig, ConfigDiagnostic, ConfigDiagnosticKind, ConfigParseReport,
-    CursorStyle as AppConfigCursorStyle, SystemAppearance, config_path,
-};
-pub use tmon::{GraphicsImage, graphics_display_size};
+
+pub mod cli_install_core;
+
+pub mod command_core;
+
+pub mod config_core;
+
+pub mod ffi;
+
+pub mod multiplexer;
+
+pub mod plugin_runtime;
+
+pub mod release_core;
+
+pub mod search_engine;
+
+pub mod session_model;
+
+pub mod ssh_core;
+
+pub mod theme_core;
+
+pub mod themes;
+
+pub mod tmon;
+
+pub mod tmux_control_core;

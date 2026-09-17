@@ -1,7 +1,7 @@
 use super::*;
+use crate::terminal_ui::TmuxNotification;
 use crate::terminal_view::runtime::TMUX_MOUSE_MODE_SUBSCRIPTION_NAME;
 use std::time::{Duration, Instant};
-use termy_terminal_ui::TmuxNotification;
 
 fn parse_tmux_mouse_mode_subscription(value: &str) -> Option<TmuxPaneMouseMode> {
     let [standard, button, any, sgr, utf8] = value.as_bytes() else {

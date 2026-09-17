@@ -1,5 +1,5 @@
 use super::*;
-use termy_terminal_ui::{TmuxClient, TmuxLaunchTarget, TmuxRuntimeConfig};
+use crate::terminal_ui::{TmuxClient, TmuxLaunchTarget, TmuxRuntimeConfig};
 
 impl TerminalView {
     fn refresh_runtime_capability_surfaces(&mut self, cx: &mut Context<Self>) {

@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     sync::atomic::{AtomicU64, Ordering},
 };
-use termy_plugin_runtime::{
+use termy_core::plugin_runtime::{
     PluginAction, PluginCommand, PluginCommandPlacement, PluginContext, PluginEvent,
     PluginEventDispatch, PluginIcon, PluginInput, PluginOriginContext, PluginPaneContext,
     PluginPaneKind, PluginRuntimeKind, PluginSelectOption, PluginTabContext, PluginTerminalLaunch,
@@ -1100,10 +1100,11 @@ impl TerminalView {
             Some("Cancel".to_string()),
         );
         let (progress_tx, progress_rx) = flume::bounded(32);
-        let control =
-            termy_plugin_runtime::PluginInvocationControl::with_progress_handler(move |progress| {
+        let control = termy_core::plugin_runtime::PluginInvocationControl::with_progress_handler(
+            move |progress| {
                 let _ = progress_tx.try_send(progress);
-            });
+            },
+        );
         self.plugin_invocations.insert(loading_id, control.clone());
         let progress_window_handle = window_handle;
         let progress_title = title;

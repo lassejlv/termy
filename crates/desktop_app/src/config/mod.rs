@@ -25,7 +25,7 @@ pub use preview::{
     publish_background_opacity_preview, subscribe_background_opacity_preview,
     synced_background_opacity_preview,
 };
-pub use termy_config_core::{
+pub use termy_core::config_core::{
     AppConfig, AppearanceMode, ConfigDiagnostic, ConfigDiagnosticKind, CursorStyle, CustomColors,
     PaneFocusEffect, SHELL_DECIDE_THEME_ID, SystemAppearance, TabBarPosition, TabCloseVisibility,
     TabTitleConfig, TabTitleSource, TabWidthMode, TaskConfig, TerminalScrollbarStyle,
@@ -57,7 +57,7 @@ pub struct RuntimeConfigLoad {
     pub loaded_from_disk: bool,
 }
 
-pub(crate) const DEFAULT_CONFIG: &str = termy_config_core::DEFAULT_CONFIG_TEMPLATE;
+pub(crate) const DEFAULT_CONFIG: &str = termy_core::config_core::DEFAULT_CONFIG_TEMPLATE;
 
 fn load_from_path(path: PathBuf) -> Result<LoadedConfig, ConfigIoError> {
     let original_contents =
@@ -278,15 +278,15 @@ fn migrate_legacy_builtin_theme_in_contents_with_installed_ids(
         return contents.to_string();
     }
 
-    termy_config_core::upsert_root_setting(
+    termy_core::config_core::upsert_root_setting(
         contents,
-        termy_config_core::RootSettingId::Theme,
+        termy_core::config_core::RootSettingId::Theme,
         &next_theme,
     )
 }
 
 fn canonical_legacy_builtin_theme_id(theme_id: &str) -> Option<&'static str> {
-    let normalized = termy_themes::normalize_theme_id(theme_id);
+    let normalized = termy_core::themes::normalize_theme_id(theme_id);
     let lookup = normalized.replace('-', "");
 
     match lookup.as_str() {
@@ -369,7 +369,7 @@ mod tests {
                 .expect("active config line must contain '='");
             let key = key.trim();
             assert!(
-                termy_config_core::VALID_ROOT_KEYS
+                termy_core::config_core::VALID_ROOT_KEYS
                     .iter()
                     .any(|valid| valid.eq_ignore_ascii_case(key)),
                 "unknown root key in DEFAULT_CONFIG: {key}"
@@ -386,7 +386,7 @@ mod tests {
             }
             let section_name = trimmed[1..trimmed.len() - 1].trim();
             assert!(
-                termy_config_core::VALID_SECTIONS
+                termy_core::config_core::VALID_SECTIONS
                     .iter()
                     .any(|section| section.eq_ignore_ascii_case(section_name)),
                 "unknown section in DEFAULT_CONFIG: {section_name}"

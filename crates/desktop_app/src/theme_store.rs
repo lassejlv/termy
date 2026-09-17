@@ -1,8 +1,8 @@
 use crate::config;
 use std::collections::HashMap;
 use std::path::PathBuf;
-pub(crate) use termy_themes::ThemeStoreTheme;
-use termy_themes::{
+pub(crate) use termy_core::themes::ThemeStoreTheme;
+use termy_core::themes::{
     THEME_REGISTRY_CACHE_VERSION, ThemeColors, ThemeRegistryCache, ThemeRegistryIndex,
     normalize_theme_id, parse_theme_colors_json, registry_file_url,
 };

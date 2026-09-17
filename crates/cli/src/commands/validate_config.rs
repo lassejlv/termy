@@ -1,5 +1,7 @@
-use termy_command_core::{KeybindDirective, KeybindLineRef, parse_keybind_directives_from_iter};
-use termy_config_core::{AppConfig, ConfigDiagnosticKind, config_path};
+use termy_core::command_core::{
+    KeybindDirective, KeybindLineRef, parse_keybind_directives_from_iter,
+};
+use termy_core::config_core::{AppConfig, ConfigDiagnosticKind, config_path};
 
 pub fn run() {
     let Some(path) = config_path() else {

@@ -7,28 +7,6 @@ struct NativeScaledAxisSpan {
 }
 
 impl TerminalView {
-    pub(in super::super) fn native_pane_min_extent_for_axis(axis: PaneResizeAxis) -> u16 {
-        match axis {
-            PaneResizeAxis::Horizontal => NATIVE_PANE_MIN_COLS,
-            PaneResizeAxis::Vertical => NATIVE_PANE_MIN_ROWS,
-        }
-    }
-
-    pub(in super::super) fn native_min_extent_allowed(
-        total_extent: u16,
-        pane_count: usize,
-        min_extent: u16,
-    ) -> u16 {
-        let pane_count = u16::try_from(pane_count).expect("native pane count must fit into u16");
-        assert!(pane_count > 0, "native pane count must be non-zero");
-        let required = min_extent.saturating_mul(pane_count);
-        if total_extent >= required {
-            min_extent
-        } else {
-            (total_extent / pane_count).max(1)
-        }
-    }
-
     pub(in super::super) fn native_pane_lane_count_for_axis(
         panes: &[TerminalPane],
         axis: PaneResizeAxis,
@@ -249,15 +227,15 @@ impl TerminalView {
             .iter()
             .map(|pane| Self::scaled_native_pane_axis_span(pane.top, pane.height, old_rows, rows))
             .collect::<Vec<_>>();
-        let min_cols = Self::native_min_extent_allowed(
+        let min_cols = NativeLayout::native_min_extent_allowed(
             cols,
             tab.panes.len(),
-            Self::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal),
+            NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal),
         );
-        let min_rows = Self::native_min_extent_allowed(
+        let min_rows = NativeLayout::native_min_extent_allowed(
             rows,
             tab.panes.len(),
-            Self::native_pane_min_extent_for_axis(PaneResizeAxis::Vertical),
+            NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Vertical),
         );
         Self::rebalance_native_pane_axis_spans(&mut horizontal_spans, cols, min_cols);
         Self::rebalance_native_pane_axis_spans(&mut vertical_spans, rows, min_rows);
@@ -333,7 +311,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "native pane count must be non-zero")]
     fn native_min_extent_allowed_rejects_zero_panes() {
-        let _ = TerminalView::native_min_extent_allowed(10, 0, 2);
+        let _ = NativeLayout::native_min_extent_allowed(10, 0, 2);
     }
 
     #[test]

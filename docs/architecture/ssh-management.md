@@ -1,7 +1,7 @@
 # SSH Management
 
 Termy's Rust/GPUI desktop app owns the saved-host workflow. The headless
-`termy_ssh_core` crate owns validated data, atomic persistence, OpenSSH
+`termy_core::ssh_core` crate owns validated data, atomic persistence, OpenSSH
 arguments, and keychain credential lifecycle.
 
 ## Data and secrets
@@ -40,7 +40,7 @@ not set `StrictHostKeyChecking=no` or alter the user's SSH configuration.
 ## Validation
 
 ```sh
-cargo test -p termy_ssh_core
+cargo test -p termy_core
 cargo test -p termy
 cargo check --workspace
 just check-boundaries

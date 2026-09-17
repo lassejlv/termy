@@ -97,7 +97,7 @@ impl SettingsWindow {
         // Title and subtitle come from the design system; the reset affordance
         // keeps its hover, tooltip, and confirmation flow here because that is
         // app behavior, not presentation.
-        let mut header = termy_ui::SectionHeader::new(title)
+        let mut header = crate::design_system::SectionHeader::new(title)
             .subtitle(subtitle)
             .leading(self.render_section_tile(
                 section,

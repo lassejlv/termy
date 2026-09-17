@@ -4,7 +4,6 @@ use crate::{
     workspace_store::{StoredPane, StoredSession, StoredTab, StoredWorkspace},
 };
 use gpui::{App, Global};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashSet, VecDeque},
     sync::{
@@ -12,24 +11,15 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use termy_multiplexer::{SessionClient, connect_or_start};
+use termy_core::multiplexer::{SessionClient, connect_or_start};
 
-#[derive(Clone, Serialize, Deserialize)]
-struct SavedWindow {
-    id: String,
-    session: StoredSession,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct SavedState {
-    version: u32,
-    windows: Vec<SavedWindow>,
-}
+use termy_core::session_model::{StoredMultiplexer as SavedState, StoredWindow as SavedWindow};
 
 struct State {
     saved: SavedState,
     pending: VecDeque<String>,
     claimed: HashSet<String>,
+    published_windows: HashSet<String>,
 }
 
 struct Manager {
@@ -72,6 +62,11 @@ fn install(client: SessionClient, cx: &mut App) -> Result<(), String> {
     if saved.version != 1 {
         return Err("Unsupported multiplexer layout version".into());
     }
+    let published_windows = saved
+        .windows
+        .iter()
+        .map(|window| window.id.clone())
+        .collect();
     let panes = client.list().map_err(|error| error.to_string())?;
     reconcile(&mut saved, &panes);
     let pending = saved
@@ -85,6 +80,7 @@ fn install(client: SessionClient, cx: &mut App) -> Result<(), String> {
             saved,
             pending,
             claimed: HashSet::new(),
+            published_windows,
         }),
         write_gate: Mutex::new(()),
     }))));
@@ -171,27 +167,117 @@ impl WindowSession {
         if self.is_released() {
             return Ok(());
         }
-        let json = {
-            let mut state = self.manager.state.lock().unwrap();
-            if let Some(window) = state
-                .saved
-                .windows
-                .iter_mut()
-                .find(|window| window.id == self.id)
-            {
-                window.session = session;
+        let previous = self
+            .manager
+            .state
+            .lock()
+            .unwrap()
+            .saved
+            .windows
+            .iter()
+            .find(|window| window.id == self.id)
+            .map(|window| window.session.clone());
+        if self.manager.client.supports_conditional_layout_updates() {
+            let mut published = false;
+            for _ in 0..8 {
+                let expected = self
+                    .manager
+                    .client
+                    .layout()
+                    .map_err(|error| error.to_string())?;
+                let mut remote = match &expected {
+                    Some(json) => serde_json::from_str::<SavedState>(json)
+                        .map_err(|error| error.to_string())?,
+                    None => SavedState {
+                        version: 1,
+                        windows: Vec::new(),
+                    },
+                };
+                if remote.version != 1 {
+                    return Err("Unsupported multiplexer layout version".into());
+                }
+                if let Some(window) = remote
+                    .windows
+                    .iter_mut()
+                    .find(|window| window.id == self.id)
+                {
+                    window.session = match &previous {
+                        Some(base) => termy_core::session_model::merge_session(
+                            base,
+                            &session,
+                            &window.session,
+                        )
+                        .map_err(str::to_owned)?,
+                        None if window.session == session => session.clone(),
+                        None => return Err("This window was created by another client".into()),
+                    };
+                } else {
+                    if self
+                        .manager
+                        .state
+                        .lock()
+                        .unwrap()
+                        .published_windows
+                        .contains(&self.id)
+                        && expected.is_some()
+                    {
+                        return Err("This window was removed by another client".into());
+                    }
+                    remote.windows.push(SavedWindow {
+                        id: self.id.clone(),
+                        session: session.clone(),
+                    });
+                }
+                let replacement =
+                    serde_json::to_string(&remote).map_err(|error| error.to_string())?;
+                if self
+                    .manager
+                    .client
+                    .compare_and_set_layout(expected, replacement)
+                    .map_err(|error| error.to_string())?
+                {
+                    published = true;
+                    break;
+                }
+            }
+            if !published {
+                return Err("The session layout is changing; try saving again".into());
+            }
+        } else {
+            // Older hosts cannot accept CLI layout edits. Keep their
+            // original save protocol without interrupting live terminals.
+            let mut saved = self.manager.state.lock().unwrap().saved.clone();
+            if let Some(window) = saved.windows.iter_mut().find(|window| window.id == self.id) {
+                window.session = session.clone();
             } else {
-                state.saved.windows.push(SavedWindow {
+                saved.windows.push(SavedWindow {
                     id: self.id.clone(),
-                    session,
+                    session: session.clone(),
                 });
             }
-            serde_json::to_string(&state.saved).map_err(|error| error.to_string())?
-        };
-        self.manager
-            .client
-            .set_layout(json)
-            .map_err(|error| error.to_string())
+            self.manager
+                .client
+                .set_layout(serde_json::to_string(&saved).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
+        }
+        // Retain what this view actually knows, not the merged remote state.
+        // Otherwise its next unchanged save would undo remote-only edits.
+        let mut state = self.manager.state.lock().unwrap();
+        state.published_windows.insert(self.id.clone());
+        if let Some(window) = state
+            .saved
+            .windows
+            .iter_mut()
+            .find(|window| window.id == self.id)
+        {
+            window.session = session;
+        } else {
+            state.saved.windows.push(SavedWindow {
+                id: self.id.clone(),
+                session,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -251,7 +337,7 @@ fn session_ids(session: &StoredSession) -> impl Iterator<Item = &str> {
         .filter_map(|pane| pane.session_id.as_deref())
 }
 
-fn reconcile(saved: &mut SavedState, live: &[termy_multiplexer::PaneInfo]) {
+fn reconcile(saved: &mut SavedState, live: &[termy_core::multiplexer::PaneInfo]) {
     let live_ids: HashSet<&str> = live.iter().map(|pane| pane.id.as_str()).collect();
     for window in &mut saved.windows {
         for workspace in &mut window.session.workspaces {

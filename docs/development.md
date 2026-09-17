@@ -41,7 +41,7 @@ is not supported on Linux or Windows.
 Run the automated real-window render benchmark compare on macOS:
 
 ```sh
-cargo run -p xtask -- benchmark-compare \
+cargo run -p termy_cli --bin xtask -- benchmark-compare \
   --baseline termy:/path/to/termy/worktree \
   --candidate ghostty:/Applications/Ghostty.app \
   --output /tmp/termy-benchmark-compare
@@ -60,7 +60,7 @@ Target specs use `kind:/path`:
 Legacy Termy-only compare syntax still works:
 
 ```sh
-cargo run -p xtask -- benchmark-compare \
+cargo run -p termy_cli --bin xtask -- benchmark-compare \
   --baseline-root /path/to/baseline/worktree \
   --candidate-root /path/to/candidate/worktree \
   --output /tmp/termy-benchmark-compare

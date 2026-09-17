@@ -87,10 +87,10 @@ the same multiplier for overall application CPU or GPU rendering.
 ## Reproduction
 
 ```sh
-cargo test --locked -p termy -p termy_terminal_ui -p termy_core
-cargo clippy --locked -p termy -p termy_terminal_ui -p termy_core --all-targets -- -D warnings
+cargo test --locked -p termy -p termy -p termy_core
+cargo clippy --locked -p termy -p termy -p termy_core --all-targets -- -D warnings
 cargo build --locked --release -p termy --bin termy
-cargo test --locked --release -p termy_terminal_ui repeated_full_damage_scrolling -- --nocapture
+cargo test --locked --release -p termy repeated_full_damage_scrolling -- --nocapture
 bash scripts/check-boundaries.sh
 ```
 

@@ -1,5 +1,5 @@
 use super::state::{CommandPaletteItem, CommandPaletteItemKind, CommandPaletteState};
-use termy_terminal_ui::{TmuxSessionSummary, TmuxSocketTarget};
+use crate::terminal_ui::{TmuxSessionSummary, TmuxSocketTarget};
 
 const TMUX_SESSION_ACTIVE_HINT: &str = "active session";
 const TMUX_SESSION_NAME_REQUIRED_HINT: &str = "name required";

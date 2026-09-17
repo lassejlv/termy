@@ -88,7 +88,7 @@ Common options:
 
 ```sh
 cargo check -p termy
-cargo test -p termy_config_core
+cargo test -p termy_core
 just test-workspace          # all workspace tests (release)
 just check-boundaries
 just validate                # check + fmt + tests + boundaries + clippy (before large PRs)
@@ -102,20 +102,19 @@ just test-tmux-integration
 
 Roadmaps:
 
-- Product + milestones: [ROADMAP.md](ROADMAP.md)
 - Engineering quality (CI, modularity, scorecard): [docs/engineering/roadmap.md](docs/engineering/roadmap.md)
 
 ## Config and command changes
 
 If you change config keys:
 
-- update the config schema in `crates/config_core`
+- update the config schema in `crates/core/src/config_core`
 - keep parsing, defaults, and rendering in sync
 - regenerate config docs
 
 If you change commands or keybind-facing actions:
 
-- update the command catalog in `crates/command_core`
+- update the command catalog in `crates/core/src/command_core`
 - wire the action through the app in `crates/desktop_app/src/`
 - regenerate keybinding docs if defaults or public command names changed
 

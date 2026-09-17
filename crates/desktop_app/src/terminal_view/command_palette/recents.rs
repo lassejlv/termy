@@ -111,7 +111,7 @@ pub(super) fn recent_key_for_item(item: &CommandPaletteItem) -> Option<String> {
 }
 
 fn recents_path() -> Option<PathBuf> {
-    let config_path = termy_config_core::config_path()?;
+    let config_path = termy_core::config_core::config_path()?;
     Some(config_path.parent()?.join(RECENTS_FILE))
 }
 
@@ -212,7 +212,7 @@ mod tests {
             kind: CommandPaletteItemKind::PluginCommand {
                 plugin_id: "acme".to_string(),
                 command_id: "do-thing".to_string(),
-                icon: termy_plugin_runtime::PluginIcon::Command,
+                icon: termy_core::plugin_runtime::PluginIcon::Command,
             },
         };
 

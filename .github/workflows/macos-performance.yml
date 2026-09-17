@@ -72,7 +72,7 @@ jobs:
           TERMY_EXPERIMENTAL_TMON_ENGINE: "0"
         run: |
           cd "$GITHUB_WORKSPACE/candidate"
-          cargo run -p xtask -- benchmark-compare \
+          cargo run -p termy_cli --bin xtask -- benchmark-compare \
             --baseline-root "$GITHUB_WORKSPACE/baseline" \
             --candidate-root "$GITHUB_WORKSPACE/candidate" \
             --output "$GITHUB_WORKSPACE/benchmark-output-${{ matrix.scenario }}" \

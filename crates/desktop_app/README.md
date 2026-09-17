@@ -4,7 +4,7 @@ Main desktop application.
 
 ## Owner
 
-This crate owns the GPUI app shell, windows, titlebar/chrome, menus, settings, onboarding, command execution, and user-visible desktop workflows. Single-instance handoff lives in `src/instance.rs`: Linux launches open independent terminal windows in the running process, including `--working-directory` launches. `--new-window` explicitly requests a window on any platform; `--new-tab` and `termy://new` request a tab. Other `termy://` routes retain their existing behavior. macOS and Windows retain their default launch behavior. File-manager verbs are registered at startup through `termy_native_sdk::register_open_tab_here`.
+This crate owns the GPUI app shell, windows, titlebar/chrome, menus, settings, onboarding, command execution, and user-visible desktop workflows. Single-instance handoff lives in `src/instance.rs`: Linux launches open independent terminal windows in the running process, including `--working-directory` launches. `--new-window` explicitly requests a window on any platform; `--new-tab` and `termy://new` request a tab. Other `termy://` routes retain their existing behavior. macOS and Windows retain their default launch behavior. File-manager verbs are registered at startup through `termy::native_sdk::register_open_tab_here`.
 
 Single-instance ownership uses an OS file lock that is released on process exit.
 The lock file stays in place so concurrent launches share the same lock; leftover
@@ -21,9 +21,9 @@ Important internal areas:
 - `src/config/`: app-owned config I/O and mutation.
 - `src/ui/`: desktop-only presentation and state, including update banners, toasts, and scrollbars.
 
-Push reusable headless behavior into `termy_core` or a pure domain crate. Push GPUI-adjacent terminal adapter behavior into `termy_terminal_ui` only when it is reusable outside the desktop app shell. Push reusable chrome presentation — surfaces, controls, status affordances — into `termy_ui`, and keep the state and behavior behind it here.
+Reusable headless behavior belongs in `termy_core`. GPUI terminal adapters live in `src/terminal_ui/`; reusable chrome and controls live in `src/design_system/`. Native integrations and update support live in `src/native_sdk/` and `src/auto_update/`.
 
-`src/settings_view/` renders its section headers and grouped cards with `termy_ui`. Its colors are published to the kit by `SettingsWindow::sync_ui_tokens`, which maps this window's own translucent chrome colors onto `termy_ui::Tokens`; do not swap that for `Tokens::from_palette`, which is opaque and would drop the window's transparency.
+`src/settings_view/` renders its section headers and grouped cards with `design_system`. Its colors are published to the kit by `SettingsWindow::sync_ui_tokens`, which maps this window's own translucent chrome colors onto `termy::design_system::Tokens`; do not swap that for `Tokens::from_palette`, which is opaque and would drop the window's transparency.
 
 ## Kitty graphics
 
@@ -61,7 +61,7 @@ cargo check -p termy
 
 ## Forbidden Dependencies
 
-- `termy_ffi`
+- `termy_cli`
 - native host app packages
 - website packages
 

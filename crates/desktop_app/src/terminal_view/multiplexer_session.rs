@@ -14,7 +14,7 @@ impl Terminal {
 }
 
 impl TerminalView {
-    pub(super) fn multiplexer_client(&self) -> Option<&termy_multiplexer::SessionClient> {
+    pub(super) fn multiplexer_client(&self) -> Option<&termy_core::multiplexer::SessionClient> {
         self.multiplexer.as_ref().map(|window| window.client())
     }
 

@@ -132,7 +132,6 @@ require_path "scripts/build-dmg.sh"
 require_path "scripts/build-setup.ps1"
 require_path "scripts/build-linux.sh"
 require_path "scripts/check-platform-builds.sh"
-require_path "crates/README.md"
 require_path "scripts/README.md"
 require_path "docs/architecture/project-layout.md"
 require_path "docs/architecture/release-packaging.md"
@@ -265,35 +264,20 @@ require_pattern 'grep -Ev.*x86_64.*aarch64' \
 require_pattern 'file-manager' \
   "scripts/install-linux.sh" \
   "Linux install helper must install file-manager Open new Termy tab here entries"
-check_forbidden_dep "termy_command_core" "gpui"
-check_forbidden_dep "termy_command_core" "termy_config_core"
-check_forbidden_dep "termy_config_core" "termy_themes"
-check_forbidden_dep "termy_cli_install_core" "gpui"
-check_forbidden_dep "termy_cli" "gpui"
-check_forbidden_dep "termy_core" "gpui"
-check_forbidden_dep "termy_multiplexer" "gpui"
-check_forbidden_dep "termy_multiplexer" "termy_terminal_ui"
-check_forbidden_dep "termy_multiplexer" "termy_tmux_control_core"
-check_forbidden_all_target_dep "tmon" "termy_core"
-check_forbidden_all_target_dep "tmon" "termy"
-check_forbidden_all_target_dep "tmon" "termy_terminal_ui"
-check_forbidden_all_target_dep "tmon" "termy_ui"
-check_forbidden_all_target_dep "tmon" "gpui"
-check_forbidden_all_target_dep "tmon" "gpui_platform"
-check_forbidden_all_target_dep "tmon" "termy_ffi"
-check_forbidden_dep "termy_ffi" "gpui"
-check_forbidden_dep "termy_ffi" "termy_terminal_ui"
-check_forbidden_dep "termy_plugin_runtime" "gpui"
-check_forbidden_dep "termy_plugin_runtime" "termy_command_core"
-check_forbidden_dep "termy_plugin_runtime" "termy_config_core"
-check_forbidden_dep "termy_plugin_runtime" "termy_terminal_ui"
-check_forbidden_dep "termy_ssh_core" "gpui"
-check_forbidden_dep "termy_ssh_core" "termy_terminal_ui"
-check_forbidden_dep "termy_ui" "termy_terminal_ui"
-check_forbidden_dep "termy_ui" "termy_config_core"
-check_forbidden_dep "termy_ui" "termy_command_core"
-check_forbidden_dep "termy_ui" "termy_plugin_runtime"
-check_forbidden_dep "termy_ui" "termy_ssh_core"
+# Only core, desktop and CLI are Cargo packages; helpers are ordinary modules.
+check_forbidden_all_target_dep "termy_core" "gpui"
+check_forbidden_all_target_dep "termy_core" "termy"
+check_forbidden_all_target_dep "termy_cli" "gpui"
+check_forbidden_all_target_dep "termy_cli" "termy"
+forbid_pattern 'termy_core::|crate::(multiplexer|ffi|runtime|config_core|plugin_runtime)' \
+  "crates/core/src/tmon" \
+  "the terminal engine must remain independent of its host modules"
+forbid_pattern 'crate::(config_core|runtime|multiplexer)|gpui::' \
+  "crates/core/src/command_core" \
+  "the command catalog must remain independent of configuration and runtime"
+forbid_pattern 'termy_core::|crate::(terminal_view|settings_view|terminal_ui)' \
+  "crates/desktop_app/src/design_system" \
+  "the design system must remain presentation-only"
 
 require_issue_url_for_pattern \
   'clippy::cognitive_complexity' \
@@ -301,9 +285,9 @@ require_issue_url_for_pattern \
   "clippy::cognitive_complexity allows must link a tracking issue on the same line"
 require_ignored_test_budget
 
-cargo run -p xtask -- generate-keybindings-doc --check
-cargo run -p xtask -- generate-config-doc --check
-cargo run -p xtask -- check-dependency-policy
+cargo run -p termy_cli --bin xtask -- generate-keybindings-doc --check
+cargo run -p termy_cli --bin xtask -- generate-config-doc --check
+cargo run -p termy_cli --bin xtask -- check-dependency-policy
 
 "$(dirname "${BASH_SOURCE[0]}")/check-file-sizes.sh"
 

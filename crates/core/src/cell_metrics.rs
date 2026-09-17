@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use termy_config_core::{AppConfig, DEFAULT_LINE_HEIGHT, MAX_LINE_HEIGHT, MIN_LINE_HEIGHT};
+use crate::config_core::{AppConfig, DEFAULT_LINE_HEIGHT, MAX_LINE_HEIGHT, MIN_LINE_HEIGHT};
 
 const METRIC_GLYPHS: [char; 3] = ['M', '0', ' '];
 const FALLBACK_REFERENCE_FONT_SIZE: f32 = 14.0;

@@ -12,7 +12,7 @@ anyhow = { workspace = true }
 alacritty_terminal = { workspace = true }
 base64 = "0.22"
 compact_str = { version = "0.8.1", features = ["serde"] }
-serde = { workspace = true, features = ["rc"] }
+serde = { workspace = true, features = ["derive", "rc"] }
 flume = { workspace = true }
 log = { workspace = true }
 dirs = { workspace = true }
@@ -21,18 +21,32 @@ fontdb = "0.23"
 polling = { workspace = true }
 png = "0.18"
 rand_core = { workspace = true }
-termy_config_core = { path = "../config_core" }
-termy_search = { path = "../search" }
-termy_themes = { path = "../themes" }
-tmon = { path = "../tmon" }
 ttf-parser = "0.25"
 unicode-width = { workspace = true }
+bincode = { version = "1.3" }
+serde_json = { workspace = true }
+ureq = { workspace = true }
+fs4 = { version = "0.13.1", features = ["sync"] }
+uuid = { workspace = true }
+keyring = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+semver = { workspace = true }
+regex = "1"
+tempfile = { workspace = true }
 
-[target.'cfg(unix)'.dependencies]
-rustix-openpty = "0.2"
+[target."cfg(unix)".dependencies]
+rustix-openpty = { version = "0.2" }
+libc = "0.2"
+rustix = { version = "1", features = ["std"] }
 
-[target.'cfg(windows)'.dependencies]
+[target."cfg(windows)".dependencies]
 winreg = "0.55"
 
 [dev-dependencies]
 tempfile = { workspace = true }
+alacritty_terminal = { workspace = true }
+unicode-width = { workspace = true }
+
+[lib]
+crate-type = ["rlib", "cdylib"]

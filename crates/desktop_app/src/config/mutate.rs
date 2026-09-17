@@ -11,7 +11,7 @@ use std::cell::RefCell;
 
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, de::IgnoredAny};
-use termy_config_core::{
+use termy_core::config_core::{
     AppConfig, ColorSettingId, ColorSettingUpdate, Rgb8, RootSettingId, SHELL_DECIDE_THEME_ID,
     TaskConfig, apply_color_updates, color_setting_from_key, color_setting_spec, parse_theme_id,
     prettify_config_contents, remove_raw_root_key as remove_raw_root_key_entry,
@@ -470,7 +470,7 @@ mod tests {
                 );
 
                 let contents = std::fs::read_to_string(config_path).expect("read config");
-                let config = termy_config_core::AppConfig::from_contents(&contents);
+                let config = termy_core::config_core::AppConfig::from_contents(&contents);
                 assert_eq!(config.theme, "shell-decide");
                 assert_eq!(config.theme_light, "termy-light");
                 assert_eq!(config.theme_dark, "termy");
@@ -489,7 +489,7 @@ mod tests {
                 command: "cargo build".to_string(),
                 layout: Some("dashboard".to_string()),
                 working_dir: None,
-                keybind: Some(termy_config_core::KeybindConfigLine {
+                keybind: Some(termy_core::config_core::KeybindConfigLine {
                     line_number: 99,
                     value: "secondary-shift-b".to_string(),
                 }),

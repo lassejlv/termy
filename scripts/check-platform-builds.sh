@@ -54,7 +54,7 @@ run_desktop_checks() {
   cargo check -p termy -p termy_cli
 
   log "Testing command availability"
-  cargo test -p termy_command_core -p termy_cli
+  cargo test -p termy_core -p termy_cli
 }
 
 run_native() {
@@ -81,11 +81,11 @@ run_native() {
 run_local_cross() {
   log "Checking shared command core for Windows MSVC"
   require_rust_target x86_64-pc-windows-msvc
-  cargo check -p termy_command_core --target x86_64-pc-windows-msvc
+  cargo check -p termy_core --target x86_64-pc-windows-msvc
 
   log "Checking shared command core for Linux GNU"
   require_rust_target x86_64-unknown-linux-gnu
-  cargo check -p termy_command_core --target x86_64-unknown-linux-gnu
+  cargo check -p termy_core --target x86_64-unknown-linux-gnu
 
   if [[ "$(uname -s)" == "Darwin" ]]; then
     log "Checking macOS x86_64 desktop target"

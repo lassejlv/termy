@@ -3,7 +3,7 @@
 `libtermy` is the embeddable Termy terminal engine. The first cut is split into:
 
 - `termy_core`: Rust API for a single headless terminal surface.
-- `termy_ffi`: C ABI wrapper over `termy_core`.
+- `termy_core::ffi`: C ABI wrapper over `termy_core`.
 
 The core API owns PTY startup, terminal parsing, input writes, resize, event
 draining, damage snapshots, renderer-neutral frame snapshots, and canonical
@@ -12,7 +12,7 @@ depend on GPUI and does not expose Termy's app chrome, tabs, panes, or tmux
 session model as part of the public v1 surface.
 
 `termy_core` can also load Termy's normal config format through the existing
-headless `termy_config_core` parser. Config loading returns the full parsed
+headless `termy_core::config_core` parser. Config loading returns the full parsed
 `AppConfig`, parse diagnostics, and a `TerminalRuntimeConfig` ready to pass into
 terminal creation. Missing default config files fall back to defaults without
 creating files; explicit missing paths are reported as load errors.
@@ -84,9 +84,9 @@ geometry while one- and two-cell animated spinners remain shaped text.
 
 ## C ABI
 
-Use `termy_ffi` as an opaque-handle API:
+Use `termy_core::ffi` as an opaque-handle API:
 
-- `crates/ffi/include/termy.h`
+- `crates/core/include/termy.h`
 - `termy_config_load_default`
 - `termy_config_load_path`
 - `termy_config_from_contents`
@@ -200,4 +200,4 @@ Cursor style values:
 Search returns visible-frame matches only. Each `TermyFfiSearchMatch` reports the
 row, inclusive start and end columns, and the visible line text that matched.
 
-The C ABI header is at `crates/ffi/include/termy.h`.
+The C ABI header is at `crates/core/include/termy.h`.

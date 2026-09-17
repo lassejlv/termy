@@ -14,6 +14,7 @@ pub fn run() {
     println!("Available commands:");
     println!();
     println!("  plugin            Install and manage plugins");
+    println!("  mux               Control persistent terminals and layouts (JSON output)");
     println!("  -tui              Interactive TUI for all CLI features");
     println!("  -version          Show version information");
     println!("  -help             Show this help message");

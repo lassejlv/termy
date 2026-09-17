@@ -14,58 +14,9 @@ use std::path::Path;
 
 pub(crate) const WORKSPACE_STORE_FILE: &str = "workspaces.db";
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct StoredPane {
-    /// Live multiplexer layout only; not stored in the restart-snapshot database.
-    #[serde(default)]
-    pub(crate) session_id: Option<String>,
-    pub(crate) left: u16,
-    pub(crate) top: u16,
-    pub(crate) width: u16,
-    pub(crate) height: u16,
-    pub(crate) buffer: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct StoredTab {
-    #[serde(default)]
-    pub(crate) zoomed: bool,
-    #[serde(default)]
-    pub(crate) presentation: Option<StoredTabPresentation>,
-    pub(crate) pinned: bool,
-    pub(crate) manual_title: Option<String>,
-    pub(crate) active_pane: usize,
-    /// Pane split layout tree, serialized as JSON in the same shape the
-    /// legacy file format used.
-    pub(crate) layout_tree_json: Option<String>,
-    pub(crate) panes: Vec<StoredPane>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct StoredWorkspace {
-    pub(crate) name: String,
-    pub(crate) pinned: bool,
-    pub(crate) active_tab: usize,
-    pub(crate) tabs: Vec<StoredTab>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct StoredSession {
-    pub(crate) workspaces: Vec<StoredWorkspace>,
-    pub(crate) active_workspace: usize,
-}
-
-/// UI title/status snapshot for live sessions; terminal events refresh it on attach.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct StoredTabPresentation {
-    pub(crate) title: String,
-    pub(crate) explicit_title: Option<String>,
-    pub(crate) explicit_title_is_prediction: bool,
-    pub(crate) shell_title: Option<String>,
-    pub(crate) current_command: Option<String>,
-    pub(crate) last_prompt_cwd: Option<String>,
-    pub(crate) running_process: bool,
-}
+pub use termy_core::session_model::{
+    StoredPane, StoredSession, StoredTab, StoredTabPresentation, StoredWorkspace,
+};
 
 pub(crate) struct WorkspaceStore {
     runtime: tokio::runtime::Runtime,

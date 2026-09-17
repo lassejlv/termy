@@ -1,6 +1,6 @@
 use crate::frame::TermyFrame;
+use crate::search_engine::{SearchConfig, SearchEngine, SearchMode};
 use std::sync::Arc;
-use termy_search::{SearchConfig, SearchEngine, SearchMode};
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TermySearchMatch {

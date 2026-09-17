@@ -8,10 +8,10 @@
 
 use super::plugins;
 use super::state::{CommandPaletteItem, CommandPaletteItemKind};
-use termy_command_core::CommandId;
+use termy_core::command_core::CommandId;
 
 pub(super) fn command_icon_path(id: CommandId) -> &'static str {
-    use termy_command_core::CommandId::*;
+    use termy_core::command_core::CommandId::*;
     match id {
         NewTab => "icons/command_palette/new-tab.svg",
         CloseTab | ClosePane | ClosePaneOrTab => "icons/command_palette/close-tab.svg",
@@ -103,7 +103,7 @@ pub(super) fn palette_item_icon_path(item: &CommandPaletteItem) -> &'static str 
 /// Group label for a built-in command. Exhaustive on purpose: a new command
 /// fails to compile until it is filed under a category.
 pub(super) fn command_category(id: CommandId) -> &'static str {
-    use termy_command_core::CommandId::*;
+    use termy_core::command_core::CommandId::*;
     match id {
         NewTab
         | CloseTab
@@ -321,7 +321,7 @@ mod tests {
             kind: CommandPaletteItemKind::PluginCommand {
                 plugin_id: "acme".to_string(),
                 command_id: "do-thing".to_string(),
-                icon: termy_plugin_runtime::PluginIcon::Command,
+                icon: termy_core::plugin_runtime::PluginIcon::Command,
             },
         };
 

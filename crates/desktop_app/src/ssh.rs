@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 use sysinfo::{Pid, ProcessesToUpdate, System, get_current_pid};
-use termy_ssh_core::{
+use termy_core::ssh_core::{
     AskpassPromptKind, AskpassRequest, HOSTS_FILE_NAME, SshHost, SshHostManager,
     SystemKeyringBackend, parse_askpass_request, resolve_askpass_secret,
 };
@@ -11,7 +11,7 @@ use termy_ssh_core::{
 pub(crate) fn hosts_path(config_path: Option<&Path>) -> Result<PathBuf, String> {
     let config_path = config_path
         .map(Path::to_path_buf)
-        .or_else(termy_config_core::config_path)
+        .or_else(termy_core::config_core::config_path)
         .ok_or_else(|| "Unable to resolve the Termy configuration directory".to_string())?;
     let parent = config_path
         .parent()
@@ -56,7 +56,7 @@ pub(crate) fn run_askpass_if_requested(cli_args: &[String]) -> Option<i32> {
             }
         }
         AskpassPromptKind::HostKeyConfirmation => {
-            let confirmed = termy_native_sdk::confirm("Verify SSH Host Key", prompt);
+            let confirmed = crate::native_sdk::confirm("Verify SSH Host Key", prompt);
             if confirmed {
                 "yes".to_string()
             } else {

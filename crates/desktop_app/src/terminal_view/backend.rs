@@ -201,16 +201,16 @@ impl TerminalReplyHost for GpuiClipboardReplyHost<'_, '_> {
                 "{name} wants to read {formats} from your {}.",
                 clipboard_location_name(request.location)
             );
-            match termy_native_sdk::request_clipboard_permission(
+            match crate::native_sdk::request_clipboard_permission(
                 "Allow clipboard access?",
                 &message,
                 request.can_remember_permission,
             ) {
-                termy_native_sdk::ClipboardPermission::Deny => {
+                crate::native_sdk::ClipboardPermission::Deny => {
                     return TerminalClipboardReadResult::Denied;
                 }
-                termy_native_sdk::ClipboardPermission::AllowOnce => false,
-                termy_native_sdk::ClipboardPermission::AllowAlways => true,
+                crate::native_sdk::ClipboardPermission::AllowOnce => false,
+                crate::native_sdk::ClipboardPermission::AllowAlways => true,
             }
         };
 
@@ -246,12 +246,12 @@ impl TerminalReplyHost for GpuiClipboardReplyHost<'_, '_> {
                 let contents = request
                     .contents
                     .into_iter()
-                    .map(|content| termy_native_sdk::NativeClipboardContent {
+                    .map(|content| crate::native_sdk::NativeClipboardContent {
                         mime_type: content.mime_type,
                         data: content.data,
                     })
                     .collect();
-                match termy_native_sdk::write_clipboard_contents(contents) {
+                match crate::native_sdk::write_clipboard_contents(contents) {
                     Ok(()) => TerminalClipboardWriteResult::Success {
                         remember_permission: false,
                     },
@@ -276,7 +276,7 @@ fn available_formats(
 ) -> Result<Vec<String>, TerminalClipboardReadResult> {
     match location {
         TerminalClipboardLocation::Clipboard => {
-            termy_native_sdk::available_clipboard_formats().map_err(native_read_error)
+            crate::native_sdk::available_clipboard_formats().map_err(native_read_error)
         }
         TerminalClipboardLocation::Primary => primary_item(cx)
             .map(|(_, formats)| formats)
@@ -291,7 +291,7 @@ fn read_formats(
 ) -> Result<Vec<TerminalClipboardContent>, TerminalClipboardReadResult> {
     match location {
         TerminalClipboardLocation::Clipboard => {
-            termy_native_sdk::read_clipboard_formats(mime_types)
+            crate::native_sdk::read_clipboard_formats(mime_types)
                 .map(|contents| {
                     contents
                         .into_iter()
@@ -394,14 +394,18 @@ fn write_primary(
     }
 }
 
-fn native_read_error(error: termy_native_sdk::NativeClipboardError) -> TerminalClipboardReadResult {
+fn native_read_error(
+    error: crate::native_sdk::NativeClipboardError,
+) -> TerminalClipboardReadResult {
     match error {
-        termy_native_sdk::NativeClipboardError::Unsupported
-        | termy_native_sdk::NativeClipboardError::Unavailable => {
+        crate::native_sdk::NativeClipboardError::Unsupported
+        | crate::native_sdk::NativeClipboardError::Unavailable => {
             TerminalClipboardReadResult::Unsupported
         }
-        termy_native_sdk::NativeClipboardError::InvalidData => TerminalClipboardReadResult::IoError,
-        termy_native_sdk::NativeClipboardError::Io(message) => {
+        crate::native_sdk::NativeClipboardError::InvalidData => {
+            TerminalClipboardReadResult::IoError
+        }
+        crate::native_sdk::NativeClipboardError::Io(message) => {
             log::warn!("Kitty clipboard read failed: {message}");
             TerminalClipboardReadResult::IoError
         }
@@ -409,17 +413,17 @@ fn native_read_error(error: termy_native_sdk::NativeClipboardError) -> TerminalC
 }
 
 fn native_write_error(
-    error: termy_native_sdk::NativeClipboardError,
+    error: crate::native_sdk::NativeClipboardError,
 ) -> TerminalClipboardWriteResult {
     match error {
-        termy_native_sdk::NativeClipboardError::Unsupported
-        | termy_native_sdk::NativeClipboardError::Unavailable => {
+        crate::native_sdk::NativeClipboardError::Unsupported
+        | crate::native_sdk::NativeClipboardError::Unavailable => {
             TerminalClipboardWriteResult::Unsupported
         }
-        termy_native_sdk::NativeClipboardError::InvalidData => {
+        crate::native_sdk::NativeClipboardError::InvalidData => {
             TerminalClipboardWriteResult::InvalidData
         }
-        termy_native_sdk::NativeClipboardError::Io(message) => {
+        crate::native_sdk::NativeClipboardError::Io(message) => {
             log::warn!("Kitty clipboard write failed: {message}");
             TerminalClipboardWriteResult::IoError
         }

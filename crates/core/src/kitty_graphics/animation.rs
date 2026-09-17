@@ -1,12 +1,14 @@
 use super::*;
+use crate::tmon::{
+    GraphicsAnimation, GraphicsAnimationControl, GraphicsComposition, GraphicsFrameUpdate,
+};
 use std::time::Instant;
-use tmon::{GraphicsAnimation, GraphicsAnimationControl, GraphicsComposition, GraphicsFrameUpdate};
 
 impl KittyGraphicsState {
     pub(super) fn edit_animation(
         &mut self,
         command: &KittyGraphicsCommand,
-        patch: Option<tmon::GraphicsImage>,
+        patch: Option<crate::tmon::GraphicsImage>,
     ) -> Result<u32, String> {
         let id = self
             .resolve_image_id(command)

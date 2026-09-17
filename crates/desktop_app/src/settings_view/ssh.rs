@@ -1,5 +1,5 @@
 use super::*;
-use termy_ssh_core::{
+use termy_core::ssh_core::{
     SecretUpdate, SshAuthentication, SshAuthenticationType, SshHost, SshHostInput,
 };
 
@@ -273,7 +273,7 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx: &mut AsyncApp| {
             let title = "Delete SSH Host";
             let message = format!("Delete “{display_name}” and its saved Keychain credential?");
-            if !termy_native_sdk::confirm(title, &message) {
+            if !crate::native_sdk::confirm(title, &message) {
                 return;
             }
             let _ = cx.update(|cx| {

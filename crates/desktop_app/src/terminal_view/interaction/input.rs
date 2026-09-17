@@ -757,9 +757,9 @@ impl TerminalView {
         if !terminal.kitty_clipboard_paste_events_enabled() {
             return false;
         }
-        let available_formats = match termy_native_sdk::available_clipboard_formats() {
+        let available_formats = match crate::native_sdk::available_clipboard_formats() {
             Ok(formats) => formats,
-            Err(termy_native_sdk::NativeClipboardError::Unavailable) => Vec::new(),
+            Err(crate::native_sdk::NativeClipboardError::Unavailable) => Vec::new(),
             Err(error) => {
                 log::warn!("Kitty clipboard paste notification failed: {error:?}");
                 Vec::new()

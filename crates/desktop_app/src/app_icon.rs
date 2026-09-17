@@ -1,7 +1,7 @@
 use crate::config::AppConfig;
 
 #[cfg(target_os = "macos")]
-static APPLIED_ICON: std::sync::Mutex<Option<termy_config_core::AppIcon>> =
+static APPLIED_ICON: std::sync::Mutex<Option<termy_core::config_core::AppIcon>> =
     std::sync::Mutex::new(None);
 
 #[cfg(target_os = "macos")]
@@ -15,7 +15,7 @@ pub(crate) fn apply_from_config(config: &AppConfig) {
 
 pub(crate) fn apply_at_startup(config: &AppConfig) {
     #[cfg(target_os = "macos")]
-    if config.app_icon == termy_config_core::AppIcon::TermyDefault
+    if config.app_icon == termy_core::config_core::AppIcon::TermyDefault
         && std::env::current_exe()
             .ok()
             .and_then(|exe| {
@@ -43,7 +43,7 @@ fn can_use_bundled_icon(bundle: &std::path::Path) -> bool {
         && !bundle.join("Icon\r").exists()
 }
 
-pub(crate) fn apply(icon: termy_config_core::AppIcon) {
+pub(crate) fn apply(icon: termy_core::config_core::AppIcon) {
     #[cfg(target_os = "macos")]
     {
         let mut applied = APPLIED_ICON
@@ -53,19 +53,19 @@ pub(crate) fn apply(icon: termy_config_core::AppIcon) {
             return;
         }
         let icon_bytes = match icon {
-            termy_config_core::AppIcon::TermyDefault => TERMY_DEFAULT_ICON_PNG,
-            termy_config_core::AppIcon::TermyOld => TERMY_OLD_ICON_PNG,
+            termy_core::config_core::AppIcon::TermyDefault => TERMY_DEFAULT_ICON_PNG,
+            termy_core::config_core::AppIcon::TermyOld => TERMY_OLD_ICON_PNG,
         };
 
-        termy_native_sdk::set_dock_icon_from_png(icon_bytes);
+        crate::native_sdk::set_dock_icon_from_png(icon_bytes);
         crate::launch_probe::record_stage("dock_icon_applied");
 
         let persisted = match icon {
-            termy_config_core::AppIcon::TermyDefault => {
-                termy_native_sdk::clear_current_app_bundle_file_icon()
+            termy_core::config_core::AppIcon::TermyDefault => {
+                crate::native_sdk::clear_current_app_bundle_file_icon()
             }
-            termy_config_core::AppIcon::TermyOld => {
-                termy_native_sdk::set_current_app_bundle_file_icon_from_png(icon_bytes)
+            termy_core::config_core::AppIcon::TermyOld => {
+                crate::native_sdk::set_current_app_bundle_file_icon_from_png(icon_bytes)
             }
         };
 

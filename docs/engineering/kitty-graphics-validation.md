@@ -22,9 +22,9 @@ tests ignored because they require a live tmux environment. The public runtime
 regressions also pass with the Alacritty backend explicitly selected. Checks:
 
 ```sh
-cargo test --locked -p termy -p termy_core -p termy_terminal_ui -p termy_ffi -p tmon
+cargo test --locked -p termy -p termy_core -p termy -p termy_core -p termy_core
 TERMY_CORE_TEST_BACKEND=alacritty cargo test --locked -p termy_core
-cargo clippy --locked -p termy -p termy_core -p termy_terminal_ui -p termy_ffi -p tmon --all-targets -- -D warnings
+cargo clippy --locked -p termy -p termy_core -p termy -p termy_core -p termy_core --all-targets -- -D warnings
 cargo check --locked --workspace
 cargo build --locked -p termy --bin termy
 bash scripts/check-boundaries.sh

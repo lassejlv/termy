@@ -7,11 +7,11 @@ use crate::{
 };
 
 pub(super) struct TmonBackend {
-    terminal: tmon::Terminal,
+    terminal: crate::tmon::Terminal,
     kitty_clipboard: std::sync::Mutex<KittyClipboardHostState>,
     query_colors: TerminalQueryColors,
     default_cursor_style: TerminalCursorStyle,
-    last_damage_cursor: std::sync::Mutex<Option<tmon::CursorState>>,
+    last_damage_cursor: std::sync::Mutex<Option<crate::tmon::CursorState>>,
 }
 
 impl TmonBackend {
@@ -73,9 +73,10 @@ impl TmonBackend {
             &runtime_config,
             launch,
         )?;
-        let wakeup_notifier =
-            wakeup_notifier.map(|notifier| tmon::WakeupNotifier::new(move || notifier.notify()));
-        let terminal = tmon::Terminal::new(tmon_size(size.clamped()), config, wakeup_notifier)?;
+        let wakeup_notifier = wakeup_notifier
+            .map(|notifier| crate::tmon::WakeupNotifier::new(move || notifier.notify()));
+        let terminal =
+            crate::tmon::Terminal::new(tmon_size(size.clamped()), config, wakeup_notifier)?;
         let last_damage_cursor = std::sync::Mutex::new(terminal.cursor_state());
         Ok(Self {
             terminal,
@@ -95,12 +96,12 @@ impl TmonBackend {
         let size = tmon_size(size.clamped());
         let config = display_config(&runtime_config);
         let terminal = match wakeup_notifier {
-            Some(notifier) => tmon::Terminal::new_display_with_wakeup_notifier(
+            Some(notifier) => crate::tmon::Terminal::new_display_with_wakeup_notifier(
                 size,
                 config,
-                tmon::WakeupNotifier::new(move || notifier.notify()),
+                crate::tmon::WakeupNotifier::new(move || notifier.notify()),
             ),
-            None => tmon::Terminal::new_display(size, config),
+            None => crate::tmon::Terminal::new_display(size, config),
         };
         let last_damage_cursor = std::sync::Mutex::new(terminal.cursor_state());
         Self {
@@ -203,13 +204,13 @@ impl TmonBackend {
         let mut translated = Vec::with_capacity(events.len());
         for event in events {
             match event {
-                tmon::Event::ClipboardLoad(request) => {
+                crate::tmon::Event::ClipboardLoad(request) => {
                     if let Some(text) = host.load_clipboard(clipboard_target(request.target())) {
                         self.terminal
                             .write_protocol_reply_owned(request.format_reply(&text));
                     }
                 }
-                tmon::Event::KittyClipboard(packet) => {
+                crate::tmon::Event::KittyClipboard(packet) => {
                     let terminator = if packet.bell_terminated() {
                         KittyClipboardOscTerminator::Bell
                     } else {
@@ -226,12 +227,12 @@ impl TmonBackend {
                         self.terminal.write_protocol_reply_owned(response);
                     }
                 }
-                tmon::Event::KittyClipboardMode(enabled) => self
+                crate::tmon::Event::KittyClipboardMode(enabled) => self
                     .kitty_clipboard
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .set_paste_events_enabled(enabled),
-                tmon::Event::KittyClipboardReset => self
+                crate::tmon::Event::KittyClipboardReset => self
                     .kitty_clipboard
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -472,7 +473,7 @@ impl TmonBackend {
     pub(super) fn link_at(&self, row: usize, col: usize) -> Option<DetectedViewportLink> {
         self.terminal
             .link_at(row, col, |characters, hovered_index| {
-                find_link_in_line(characters, hovered_index).map(|link| tmon::LinkMatch {
+                find_link_in_line(characters, hovered_index).map(|link| crate::tmon::LinkMatch {
                     start_col: link.start_col,
                     end_col: link.end_col,
                     target: link.target,
@@ -566,7 +567,7 @@ impl TmonBackend {
     fn damage_with_cursor(
         &self,
         damage: TerminalDamageSnapshot,
-        viewport: tmon::ViewportMetadata,
+        viewport: crate::tmon::ViewportMetadata,
     ) -> TerminalDamageSnapshot {
         let mut previous = self
             .last_damage_cursor
@@ -606,9 +607,9 @@ fn native_config(
     shell_integration: Option<&TabTitleShellIntegration>,
     runtime_config: &TerminalRuntimeConfig,
     launch: Option<&TerminalLaunch>,
-) -> anyhow::Result<tmon::Config> {
+) -> anyhow::Result<crate::tmon::Config> {
     let resolved_launch = resolve_terminal_launch(runtime_config, launch)?;
-    Ok(tmon::Config {
+    Ok(crate::tmon::Config {
         shell: None,
         working_directory: resolve_launch_working_directory(
             configured_working_dir,
@@ -617,7 +618,7 @@ fn native_config(
         environment: terminal_environment_overrides(shell_integration, runtime_config)
             .into_iter()
             .collect(),
-        launch: Some(tmon::Launch::Program {
+        launch: Some(crate::tmon::Launch::Program {
             program: resolved_launch.program,
             args: resolved_launch.args,
         }),
@@ -626,24 +627,24 @@ fn native_config(
             .min(MAX_TERMINAL_SCROLLBACK_HISTORY),
         default_cursor_style: tmon_cursor_style(runtime_config.default_cursor_style),
         query_colors: tmon_query_colors(runtime_config.query_colors),
-        osc52: tmon::Osc52::CopyPaste,
+        osc52: crate::tmon::Osc52::CopyPaste,
     })
 }
 
-fn display_config(runtime_config: &TerminalRuntimeConfig) -> tmon::Config {
-    tmon::Config {
+fn display_config(runtime_config: &TerminalRuntimeConfig) -> crate::tmon::Config {
+    crate::tmon::Config {
         scrollback_history: runtime_config
             .scrollback_history
             .min(MAX_TERMINAL_SCROLLBACK_HISTORY),
         default_cursor_style: tmon_cursor_style(runtime_config.default_cursor_style),
         query_colors: tmon_query_colors(runtime_config.query_colors),
-        osc52: tmon::Osc52::CopyPaste,
-        ..tmon::Config::default()
+        osc52: crate::tmon::Osc52::CopyPaste,
+        ..crate::tmon::Config::default()
     }
 }
 
-fn tmon_size(size: TerminalSize) -> tmon::Size {
-    tmon::Size {
+fn tmon_size(size: TerminalSize) -> crate::tmon::Size {
+    crate::tmon::Size {
         cols: size.cols,
         rows: size.rows,
         cell_width: size.cell_width,
@@ -651,7 +652,7 @@ fn tmon_size(size: TerminalSize) -> tmon::Size {
     }
 }
 
-fn terminal_size(size: tmon::Size) -> TerminalSize {
+fn terminal_size(size: crate::tmon::Size) -> TerminalSize {
     TerminalSize {
         cols: size.cols,
         rows: size.rows,
@@ -660,26 +661,26 @@ fn terminal_size(size: tmon::Size) -> TerminalSize {
     }
 }
 
-fn tmon_cursor_style(style: TerminalCursorStyle) -> tmon::CursorStyle {
+fn tmon_cursor_style(style: TerminalCursorStyle) -> crate::tmon::CursorStyle {
     match style {
-        TerminalCursorStyle::Line => tmon::CursorStyle::Line,
-        TerminalCursorStyle::Block => tmon::CursorStyle::Block,
+        TerminalCursorStyle::Line => crate::tmon::CursorStyle::Line,
+        TerminalCursorStyle::Block => crate::tmon::CursorStyle::Block,
     }
 }
 
-fn cursor_state(state: tmon::CursorState) -> TerminalCursorState {
+fn cursor_state(state: crate::tmon::CursorState) -> TerminalCursorState {
     TerminalCursorState {
         col: state.col,
         row: state.row,
         style: match state.style {
-            tmon::CursorStyle::Line => TerminalCursorStyle::Line,
-            tmon::CursorStyle::Block => TerminalCursorStyle::Block,
+            crate::tmon::CursorStyle::Line => TerminalCursorStyle::Line,
+            crate::tmon::CursorStyle::Block => TerminalCursorStyle::Block,
         },
     }
 }
 
-fn tmon_options(options: TerminalOptions) -> tmon::TerminalOptions {
-    tmon::TerminalOptions {
+fn tmon_options(options: TerminalOptions) -> crate::tmon::TerminalOptions {
+    crate::tmon::TerminalOptions {
         scrollback_history: options
             .scrollback_history
             .min(MAX_TERMINAL_SCROLLBACK_HISTORY),
@@ -687,13 +688,13 @@ fn tmon_options(options: TerminalOptions) -> tmon::TerminalOptions {
     }
 }
 
-fn tmon_query_colors(colors: TerminalQueryColors) -> tmon::QueryColors {
-    let rgb = |color: TerminalColor| tmon::Rgb {
+fn tmon_query_colors(colors: TerminalQueryColors) -> crate::tmon::QueryColors {
+    let rgb = |color: TerminalColor| crate::tmon::Rgb {
         r: color.r,
         g: color.g,
         b: color.b,
     };
-    tmon::QueryColors {
+    crate::tmon::QueryColors {
         ansi: colors.ansi.map(rgb),
         foreground: rgb(colors.foreground),
         background: rgb(colors.background),
@@ -701,48 +702,50 @@ fn tmon_query_colors(colors: TerminalQueryColors) -> tmon::QueryColors {
     }
 }
 
-fn terminal_event(event: tmon::Event) -> TerminalEvent {
+fn terminal_event(event: crate::tmon::Event) -> TerminalEvent {
     match event {
-        tmon::Event::Wakeup => TerminalEvent::Wakeup,
-        tmon::Event::Title(title) => TerminalEvent::Title(title),
-        tmon::Event::ResetTitle => TerminalEvent::ResetTitle,
-        tmon::Event::Bell => TerminalEvent::Bell,
-        tmon::Event::Exit => TerminalEvent::Exit,
-        tmon::Event::ClipboardStore(text) => TerminalEvent::ClipboardStore(text),
-        tmon::Event::ClipboardLoad(_) => unreachable!("clipboard loads are handled before mapping"),
-        tmon::Event::KittyClipboard(_)
-        | tmon::Event::KittyClipboardMode(_)
-        | tmon::Event::KittyClipboardReset => {
+        crate::tmon::Event::Wakeup => TerminalEvent::Wakeup,
+        crate::tmon::Event::Title(title) => TerminalEvent::Title(title),
+        crate::tmon::Event::ResetTitle => TerminalEvent::ResetTitle,
+        crate::tmon::Event::Bell => TerminalEvent::Bell,
+        crate::tmon::Event::Exit => TerminalEvent::Exit,
+        crate::tmon::Event::ClipboardStore(text) => TerminalEvent::ClipboardStore(text),
+        crate::tmon::Event::ClipboardLoad(_) => {
+            unreachable!("clipboard loads are handled before mapping")
+        }
+        crate::tmon::Event::KittyClipboard(_)
+        | crate::tmon::Event::KittyClipboardMode(_)
+        | crate::tmon::Event::KittyClipboardReset => {
             unreachable!("Kitty clipboard events are handled before mapping")
         }
-        tmon::Event::ShellPromptStart => TerminalEvent::ShellPromptStart,
-        tmon::Event::ShellCommandStart => TerminalEvent::ShellCommandStart,
-        tmon::Event::ShellCommandExecuting => TerminalEvent::ShellCommandExecuting,
-        tmon::Event::ShellCommandFinished(exit_code) => {
+        crate::tmon::Event::ShellPromptStart => TerminalEvent::ShellPromptStart,
+        crate::tmon::Event::ShellCommandStart => TerminalEvent::ShellCommandStart,
+        crate::tmon::Event::ShellCommandExecuting => TerminalEvent::ShellCommandExecuting,
+        crate::tmon::Event::ShellCommandFinished(exit_code) => {
             TerminalEvent::ShellCommandFinished(exit_code)
         }
-        tmon::Event::Progress(progress) => TerminalEvent::Progress(match progress {
-            tmon::Progress::Clear => ProgressState::Clear,
-            tmon::Progress::InProgress(value) => ProgressState::InProgress(value),
-            tmon::Progress::Error(value) => ProgressState::Error(value),
-            tmon::Progress::Indeterminate => ProgressState::Indeterminate,
-            tmon::Progress::Warning(value) => ProgressState::Warning(value),
+        crate::tmon::Event::Progress(progress) => TerminalEvent::Progress(match progress {
+            crate::tmon::Progress::Clear => ProgressState::Clear,
+            crate::tmon::Progress::InProgress(value) => ProgressState::InProgress(value),
+            crate::tmon::Progress::Error(value) => ProgressState::Error(value),
+            crate::tmon::Progress::Indeterminate => ProgressState::Indeterminate,
+            crate::tmon::Progress::Warning(value) => ProgressState::Warning(value),
         }),
-        tmon::Event::WorkingDirectory(path) => TerminalEvent::WorkingDirectory(path),
+        crate::tmon::Event::WorkingDirectory(path) => TerminalEvent::WorkingDirectory(path),
     }
 }
 
-fn clipboard_target(target: tmon::ClipboardTarget) -> TerminalClipboardTarget {
+fn clipboard_target(target: crate::tmon::ClipboardTarget) -> TerminalClipboardTarget {
     match target {
-        tmon::ClipboardTarget::Clipboard => TerminalClipboardTarget::Clipboard,
-        tmon::ClipboardTarget::Selection => TerminalClipboardTarget::Selection,
+        crate::tmon::ClipboardTarget::Clipboard => TerminalClipboardTarget::Clipboard,
+        crate::tmon::ClipboardTarget::Selection => TerminalClipboardTarget::Selection,
     }
 }
 
-fn damage(damage: tmon::DamageSnapshot) -> TerminalDamageSnapshot {
+fn damage(damage: crate::tmon::DamageSnapshot) -> TerminalDamageSnapshot {
     match damage {
-        tmon::DamageSnapshot::Full => TerminalDamageSnapshot::Full,
-        tmon::DamageSnapshot::Partial(spans) => TerminalDamageSnapshot::Partial(
+        crate::tmon::DamageSnapshot::Full => TerminalDamageSnapshot::Full,
+        crate::tmon::DamageSnapshot::Partial(spans) => TerminalDamageSnapshot::Partial(
             spans
                 .into_iter()
                 .map(|span| TerminalDirtySpan {
@@ -756,7 +759,7 @@ fn damage(damage: tmon::DamageSnapshot) -> TerminalDamageSnapshot {
 }
 
 fn render_damage(
-    update: tmon::RenderDamageSnapshot,
+    update: crate::tmon::RenderDamageSnapshot,
     palette_revision: u64,
 ) -> TerminalRenderDamageSnapshot {
     TerminalRenderDamageSnapshot {
@@ -769,8 +772,8 @@ fn render_damage(
                 bottom: scroll.bottom,
                 count: scroll.count,
                 direction: match scroll.direction {
-                    tmon::ScrollDirection::Up => TerminalViewportScrollDirection::Up,
-                    tmon::ScrollDirection::Down => TerminalViewportScrollDirection::Down,
+                    crate::tmon::ScrollDirection::Up => TerminalViewportScrollDirection::Up,
+                    crate::tmon::ScrollDirection::Down => TerminalViewportScrollDirection::Down,
                 },
             })
             .collect(),
@@ -779,8 +782,8 @@ fn render_damage(
     }
 }
 
-fn terminal_palette(palette: &tmon::Palette) -> TerminalPalette {
-    let color = |rgb: tmon::Rgb| TerminalColor {
+fn terminal_palette(palette: &crate::tmon::Palette) -> TerminalPalette {
+    let color = |rgb: crate::tmon::Rgb| TerminalColor {
         r: rgb.r,
         g: rgb.g,
         b: rgb.b,
@@ -794,12 +797,17 @@ fn terminal_palette(palette: &tmon::Palette) -> TerminalPalette {
     }
 }
 
-fn render_cell(cell: &tmon::Cell, combining: Option<tmon::Combining<'_>>) -> TerminalRenderCell {
+fn render_cell(
+    cell: &crate::tmon::Cell,
+    combining: Option<crate::tmon::Combining<'_>>,
+) -> TerminalRenderCell {
     let mut encoded = [0; 4];
     let combining = match combining {
         None => None,
-        Some(tmon::Combining::Character(character)) => Some(&*character.encode_utf8(&mut encoded)),
-        Some(tmon::Combining::Text(text)) => Some(text),
+        Some(crate::tmon::Combining::Character(character)) => {
+            Some(&*character.encode_utf8(&mut encoded))
+        }
+        Some(crate::tmon::Combining::Text(text)) => Some(text),
     };
     TerminalRenderCell {
         text: TerminalRenderText::from_cell_suffix(cell.character, combining),
@@ -810,12 +818,12 @@ fn render_cell(cell: &tmon::Cell, combining: Option<tmon::Combining<'_>>) -> Ter
         dim: cell.attributes.dim(),
         italic: cell.attributes.italic(),
         underline_style: match cell.attributes.underline_style() {
-            tmon::UnderlineStyle::None => TerminalUnderlineStyle::None,
-            tmon::UnderlineStyle::Single => TerminalUnderlineStyle::Single,
-            tmon::UnderlineStyle::Double => TerminalUnderlineStyle::Double,
-            tmon::UnderlineStyle::Curly => TerminalUnderlineStyle::Curly,
-            tmon::UnderlineStyle::Dotted => TerminalUnderlineStyle::Dotted,
-            tmon::UnderlineStyle::Dashed => TerminalUnderlineStyle::Dashed,
+            crate::tmon::UnderlineStyle::None => TerminalUnderlineStyle::None,
+            crate::tmon::UnderlineStyle::Single => TerminalUnderlineStyle::Single,
+            crate::tmon::UnderlineStyle::Double => TerminalUnderlineStyle::Double,
+            crate::tmon::UnderlineStyle::Curly => TerminalUnderlineStyle::Curly,
+            crate::tmon::UnderlineStyle::Dotted => TerminalUnderlineStyle::Dotted,
+            crate::tmon::UnderlineStyle::Dashed => TerminalUnderlineStyle::Dashed,
         },
         inverse: cell.attributes.inverse(),
         hidden: cell.attributes.hidden(),
@@ -827,18 +835,18 @@ fn render_cell(cell: &tmon::Cell, combining: Option<tmon::Combining<'_>>) -> Ter
     }
 }
 
-fn render_color(color: tmon::Color, foreground: bool) -> TerminalRenderColor {
+fn render_color(color: crate::tmon::Color, foreground: bool) -> TerminalRenderColor {
     match color {
-        tmon::Color::Default if foreground => TerminalRenderColor::DefaultForeground,
-        tmon::Color::Default => TerminalRenderColor::DefaultBackground,
-        tmon::Color::Indexed(index) => TerminalRenderColor::Indexed(index),
-        tmon::Color::Rgb { r, g, b } => TerminalRenderColor::Rgb(TerminalColor { r, g, b }),
+        crate::tmon::Color::Default if foreground => TerminalRenderColor::DefaultForeground,
+        crate::tmon::Color::Default => TerminalRenderColor::DefaultBackground,
+        crate::tmon::Color::Indexed(index) => TerminalRenderColor::Indexed(index),
+        crate::tmon::Color::Rgb { r, g, b } => TerminalRenderColor::Rgb(TerminalColor { r, g, b }),
     }
 }
 
 fn legacy_cell(
-    cell: &tmon::Cell,
-    palette: &tmon::Palette,
+    cell: &crate::tmon::Cell,
+    palette: &crate::tmon::Palette,
     query_colors: TerminalQueryColors,
 ) -> TermyCell {
     let mut foreground = cell.foreground;
@@ -846,11 +854,11 @@ fn legacy_cell(
     if cell.attributes.inverse() {
         std::mem::swap(&mut foreground, &mut background);
     }
-    let uses_terminal_default_bg = matches!(background, tmon::Color::Default);
+    let uses_terminal_default_bg = matches!(background, crate::tmon::Color::Default);
     if cell.attributes.bold()
-        && let tmon::Color::Indexed(index @ 0..=7) = foreground
+        && let crate::tmon::Color::Indexed(index @ 0..=7) = foreground
     {
-        foreground = tmon::Color::Indexed(index + 8);
+        foreground = crate::tmon::Color::Indexed(index + 8);
     }
     let mut fg = resolve_color(foreground, true, palette, query_colors);
     if cell.attributes.dim() {
@@ -878,10 +886,10 @@ fn legacy_cell(
 }
 
 fn legacy_update_cells(
-    source: &[tmon::Cell],
+    source: &[crate::tmon::Cell],
     damage: &TerminalDamageSnapshot,
     cols: usize,
-    palette: &tmon::Palette,
+    palette: &crate::tmon::Palette,
     query_colors: TerminalQueryColors,
 ) -> Vec<TermyCell> {
     match damage {
@@ -923,13 +931,13 @@ fn normalize_damage_spans(spans: &mut Vec<TerminalDirtySpan>) {
 }
 
 fn resolve_color(
-    color: tmon::Color,
+    color: crate::tmon::Color,
     foreground: bool,
-    palette: &tmon::Palette,
+    palette: &crate::tmon::Palette,
     query_colors: TerminalQueryColors,
 ) -> TermyColor {
     let color = match color {
-        tmon::Color::Default if foreground => {
+        crate::tmon::Color::Default if foreground => {
             palette
                 .foreground()
                 .map_or(query_colors.foreground, |color| TerminalColor {
@@ -938,14 +946,16 @@ fn resolve_color(
                     b: color.b,
                 })
         }
-        tmon::Color::Default => palette
-            .background()
-            .map_or(query_colors.background, |color| TerminalColor {
-                r: color.r,
-                g: color.g,
-                b: color.b,
-            }),
-        tmon::Color::Indexed(index) => palette.indexed(index).map_or_else(
+        crate::tmon::Color::Default => {
+            palette
+                .background()
+                .map_or(query_colors.background, |color| TerminalColor {
+                    r: color.r,
+                    g: color.g,
+                    b: color.b,
+                })
+        }
+        crate::tmon::Color::Indexed(index) => palette.indexed(index).map_or_else(
             || query_colors.indexed_color(index),
             |color| TerminalColor {
                 r: color.r,
@@ -953,7 +963,7 @@ fn resolve_color(
                 b: color.b,
             },
         ),
-        tmon::Color::Rgb { r, g, b } => TerminalColor { r, g, b },
+        crate::tmon::Color::Rgb { r, g, b } => TerminalColor { r, g, b },
     };
     TermyColor {
         r: color.r,
@@ -963,7 +973,7 @@ fn resolve_color(
     }
 }
 
-fn search_character(cell: &tmon::Cell) -> char {
+fn search_character(cell: &crate::tmon::Cell) -> char {
     let render_text = !cell.wide_spacer()
         && !cell.leading_wide_spacer()
         && !cell.attributes.hidden()
@@ -972,7 +982,9 @@ fn search_character(cell: &tmon::Cell) -> char {
     if render_text { cell.character } else { ' ' }
 }
 
-fn graphics_placement(placement: tmon::GraphicsRenderPlacement) -> KittyGraphicsRenderPlacement {
+fn graphics_placement(
+    placement: crate::tmon::GraphicsRenderPlacement,
+) -> KittyGraphicsRenderPlacement {
     KittyGraphicsRenderPlacement {
         placement_serial: placement.placement_serial,
         image_id: placement.image_id,

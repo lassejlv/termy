@@ -1,9 +1,0 @@
-{
-  "$schema": "https://termy.sh/schemas/plugin.schema.json",
-  "apiVersion": 1,
-  "id": "todos",
-  "name": "Todos",
-  "version": "1.0.0",
-  "main": "plugin.tsx",
-  "capabilities": ["storage", "native-ui"]
-}

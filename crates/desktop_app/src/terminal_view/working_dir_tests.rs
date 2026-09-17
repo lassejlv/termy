@@ -89,7 +89,7 @@ fn new_tab_inherits_cwd_after_shell_cd_with_foreground_app(cx: &mut gpui::TestAp
 // #388: exercised by just test-tmux-integration on macOS and Linux CI.
 #[ignore = "requires tmux >= 3.3"]
 fn new_tmux_tab_inherits_live_pane_cwd_with_foreground_app(cx: &mut gpui::TestAppContext) {
-    use termy_terminal_ui::{TmuxClient, TmuxLaunchTarget, TmuxRuntimeConfig, TmuxSocketTarget};
+    use crate::terminal_ui::{TmuxClient, TmuxLaunchTarget, TmuxRuntimeConfig, TmuxSocketTarget};
     struct Server(String);
     impl Drop for Server {
         fn drop(&mut self) {

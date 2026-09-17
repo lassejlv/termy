@@ -25,7 +25,7 @@ process.
 | Host | Use | What you get |
 | --- | --- | --- |
 | Rust | `termy_core` | Native Rust types and the smallest integration layer |
-| C, C++, Swift, Objective-C | `termy_ffi` | Opaque handles and a C-compatible ABI |
+| C, C++, Swift, Objective-C | `termy_core::ffi` | Opaque handles and a C-compatible ABI |
 | External output or tmux panes | Display terminal | Parser, grid, damage, and frames without a PTY |
 
 Both APIs are renderer-neutral. libtermy produces cells, cursor state, damage,
@@ -159,13 +159,13 @@ Build the shared library from the repository:
 ```bash
 git clone https://github.com/lassejlv/termy
 cd termy
-cargo build --release -p termy_ffi
+cargo build --release -p termy_core
 ```
 
-The build produces `libtermy_ffi.dylib` on macOS,
-`libtermy_ffi.so` on Linux, or `termy_ffi.dll` on Windows under
+The build produces `libtermy_core.dylib` on macOS,
+`libtermy_core.so` on Linux, or `termy_core.dll` on Windows under
 `target/release`. The public header is
-[`crates/ffi/include/termy.h`](https://github.com/lassejlv/termy/blob/main/crates/ffi/include/termy.h).
+[`crates/core/include/termy.h`](https://github.com/lassejlv/termy/blob/main/crates/core/include/termy.h).
 
 ```c
 #include "termy.h"
@@ -328,6 +328,5 @@ When working from a Termy checkout, the focused checks are:
 
 ```bash
 cargo test -p termy_core
-cargo test -p termy_ffi
-cargo build --release -p termy_ffi
+cargo build --release -p termy_core
 ```

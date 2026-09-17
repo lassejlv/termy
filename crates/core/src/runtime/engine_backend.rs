@@ -16,7 +16,7 @@ impl BackendChoice {
             return choice;
         }
         let requested = env::var_os(EXPERIMENTAL_TMON_ENV);
-        let available = tmon::native_pty_available();
+        let available = crate::tmon::native_pty_available();
         if requested.as_deref() == Some(std::ffi::OsStr::new("1")) && !available {
             log::warn!(
                 "TERMY_EXPERIMENTAL_TMON_ENGINE=1 requested, but Tmon's native PTY is unavailable; \

@@ -1,5 +1,5 @@
 use super::*;
-use termy_command_core::{CommandCapabilities, CommandUnavailableReason};
+use termy_core::command_core::{CommandCapabilities, CommandUnavailableReason};
 
 impl TerminalView {
     fn shortcut_action_allowed_with_active_inline_input(action: CommandAction) -> bool {

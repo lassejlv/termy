@@ -2,6 +2,7 @@
 name = "termy_cli"
 version = "0.2.70"
 edition = "2024"
+default-run = "termy-cli"
 
 [lints]
 workspace = true
@@ -10,7 +11,12 @@ workspace = true
 name = "termy-cli"
 path = "src/main.rs"
 
+[[bin]]
+name = "xtask"
+path = "src/xtask/main.rs"
+
 [dependencies]
+anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 notify = "8"
 ratatui = "0.29"
@@ -23,15 +29,14 @@ tempfile = { workspace = true }
 ureq = { workspace = true }
 url = { workspace = true }
 percent-encoding = "2.3"
-termy_config_core = { path = "../config_core" }
-termy_command_core = { path = "../command_core" }
-termy_cli_install_core = { path = "../cli_install_core" }
-termy_plugin_runtime = { path = "../plugin_runtime" }
-termy_theme_core = { path = "../theme_core" }
-termy_themes = { path = "../themes" }
-termy_release_core = { path = "../release_core" }
+alacritty_terminal = { workspace = true }
+roxmltree = "0.20"
+termy_core = { path = "../core" }
 
-# For list-fonts (platform-specific)
-[target.'cfg(target_os = "macos")'.dependencies]
+
+[target."cfg(target_os = \"macos\")".dependencies]
 core-text = "=21.0.0"
 core-foundation = "0.10"
+
+[features]
+benchmark-allocations = []

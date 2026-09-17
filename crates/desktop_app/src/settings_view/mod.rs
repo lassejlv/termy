@@ -18,13 +18,13 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::time::{Duration, Instant};
-use termy_command_core::CommandId;
-use termy_config_core::{
+use termy_core::command_core::CommandId;
+use termy_core::config_core::{
     RootSettingId, RootSettingValueKind, SettingsSection as CoreSettingsSection,
     color_setting_from_key, color_setting_specs, format_line_height, root_setting_default_value,
     root_setting_enum_choices, root_setting_from_key, root_setting_specs, root_setting_value_kind,
 };
-use termy_plugin_runtime::{InstalledPlugin, PluginRuntime, PluginSettingState};
+use termy_core::plugin_runtime::{InstalledPlugin, PluginRuntime, PluginSettingState};
 
 mod colors;
 mod components;
@@ -98,7 +98,7 @@ const SETTINGS_CARD_RADIUS: f32 = 12.0;
 const SETTINGS_INPUT_RADIUS: f32 = 7.0;
 const SETTINGS_BUTTON_RADIUS: f32 = 6.0;
 const SETTINGS_SWITCH_RADIUS: f32 = 11.0;
-// Section title and subtitle sizes now live in `termy_ui::metrics`.
+// Section title and subtitle sizes now live in `crate::design_system::metrics`.
 const CARD_GAP: f32 = 22.0;
 const CARD_ROW_PADDING_X: f32 = 16.0;
 const CARD_ROW_PADDING_Y: f32 = 11.0;
@@ -192,7 +192,7 @@ pub struct SettingsWindow {
     plugin_bun_path: Option<PathBuf>,
     plugin_bun_error: Option<String>,
     plugin_operation_in_flight: bool,
-    ssh_hosts: Vec<termy_ssh_core::SshHost>,
+    ssh_hosts: Vec<termy_core::ssh_core::SshHost>,
     ssh_hosts_error: Option<String>,
     ssh_form: Option<SshHostForm>,
 }
@@ -499,7 +499,7 @@ impl SettingsWindow {
         );
 
         cx.spawn(async move |this, cx: &mut AsyncApp| {
-            let confirmed = termy_native_sdk::confirm(title, &message);
+            let confirmed = crate::native_sdk::confirm(title, &message);
             if !confirmed {
                 return;
             }
@@ -519,7 +519,7 @@ impl SettingsWindow {
             return;
         }
 
-        if termy_themes::builtin_theme(&key).is_none() {
+        if termy_core::themes::builtin_theme(&key).is_none() {
             let reset = match config::reset_theme_references_in_config(&key) {
                 Ok(reset) => reset,
                 Err(error) => {

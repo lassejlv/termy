@@ -5,14 +5,14 @@ use super::recents::CommandPaletteRecents;
 use super::state_layouts::SavedLayoutIntent;
 use super::state_tmux::{TmuxSessionIntent, TmuxSessionRow, TmuxSessionStatusHint};
 use crate::config::SHELL_DECIDE_THEME_ID;
+use crate::terminal_ui::TmuxSocketTarget;
 use gpui::{Pixels, Point, UniformListScrollHandle};
 use std::collections::HashMap;
 use std::ops::Range;
 #[cfg(unix)]
 #[cfg(test)]
 use std::os::unix::fs::PermissionsExt;
-use termy_plugin_runtime::PluginIcon;
-use termy_terminal_ui::TmuxSocketTarget;
+use termy_core::plugin_runtime::PluginIcon;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in super::super) enum CommandPaletteMode {
@@ -196,7 +196,7 @@ impl CommandPaletteItem {
         }
     }
 
-    pub(super) fn ssh_host(host: &termy_ssh_core::SshHost, enabled: bool) -> Self {
+    pub(super) fn ssh_host(host: &termy_core::ssh_core::SshHost, enabled: bool) -> Self {
         Self {
             title: format!("Connect to {}", host.display_name),
             keywords: format!(

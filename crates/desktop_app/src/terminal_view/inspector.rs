@@ -337,7 +337,7 @@ impl TerminalView {
         // drag ended where it started.
         if (self.inspector.height - drag.start_height).abs() >= 1.0
             && let Err(error) = crate::config::set_root_setting(
-                termy_config_core::RootSettingId::InspectorHeight,
+                termy_core::config_core::RootSettingId::InspectorHeight,
                 &format!("{:.0}", self.inspector.height),
             )
         {

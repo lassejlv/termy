@@ -219,12 +219,12 @@ impl SettingsWindow {
     /// tokens.
     ///
     /// Every value comes from the helpers above rather than from
-    /// `termy_ui::Tokens::from_palette`, because those helpers already fold in
+    /// `crate::design_system::Tokens::from_palette`, because those helpers already fold in
     /// background opacity, the opacity preview, and the chrome-contrast profile.
     /// Deriving tokens from the raw palette instead would paint opaque surfaces
     /// and quietly drop the window's translucency.
-    pub(super) fn ui_tokens(&self) -> termy_ui::Tokens {
-        termy_ui::Tokens {
+    pub(super) fn ui_tokens(&self) -> crate::design_system::Tokens {
+        crate::design_system::Tokens {
             bg_window: self.bg_primary(),
             bg_panel: self.bg_secondary(),
             // Cards in this window ride the elevated surface, not `bg_card()`,
@@ -256,8 +256,8 @@ impl SettingsWindow {
     /// nothing changed so a repaint does not churn the global.
     pub(super) fn sync_ui_tokens(&self, cx: &mut Context<Self>) {
         let tokens = self.ui_tokens();
-        if cx.try_global::<termy_ui::Tokens>() != Some(&tokens) {
-            termy_ui::set_tokens(tokens, cx);
+        if cx.try_global::<crate::design_system::Tokens>() != Some(&tokens) {
+            crate::design_system::set_tokens(tokens, cx);
         }
     }
 

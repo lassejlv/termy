@@ -1,27 +1,5 @@
 [workspace]
-members = [
-  "crates/auto_update",
-  "crates/cli",
-  "crates/cli_install_core",
-  "crates/command_core",
-  "crates/config_core",
-  "crates/core",
-  "crates/desktop_app",
-  "crates/ffi",
-  "crates/native_sdk",
-  "crates/multiplexer",
-  "crates/plugin_runtime",
-  "crates/release_core",
-  "crates/search",
-  "crates/ssh_core",
-  "crates/terminal_ui",
-  "crates/theme_core",
-  "crates/themes",
-  "crates/tmux_control_core",
-  "crates/tmon",
-  "crates/ui",
-  "crates/xtask",
-]
+members = ["crates/core", "crates/desktop_app", "crates/cli"]
 resolver = "2"
 
 [workspace.dependencies]

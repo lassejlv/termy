@@ -8,7 +8,6 @@ Contributor-facing plans for codebase quality, CI parity, and long-term maintain
 | [quality-scorecard.md](quality-scorecard.md) | Measurable gates for a 10/10 codebase; update monthly |
 | [terminal-view-decomposition.md](terminal-view-decomposition.md) | Module extraction plan for `terminal_view/` |
 
-Product-facing release planning lives in the repo root: [ROADMAP.md](../../ROADMAP.md).
 
 ## Quick commands
 

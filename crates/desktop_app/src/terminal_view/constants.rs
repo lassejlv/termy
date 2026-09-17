@@ -109,8 +109,7 @@ pub(super) const NEW_TAB_ANIMATION_DURATION: Duration = Duration::from_millis(18
 pub(super) const NEW_TAB_ANIMATION_FRAME_MS: u64 = 16;
 pub(super) const TAB_INTERACTION_ANIMATION_FRAME_MS: u64 = 16;
 pub(super) const MAX_PANE_FOCUS_STRENGTH: f32 = 2.0;
-pub(super) const NATIVE_PANE_MIN_COLS: u16 = 24;
-pub(super) const NATIVE_PANE_MIN_ROWS: u16 = 8;
+
 // Grab handle pill at each pane's top center for drag-to-move.
 pub(super) const PANE_DRAG_HANDLE_WIDTH: f32 = 44.0;
 pub(super) const PANE_DRAG_HANDLE_HEIGHT: f32 = 12.0;

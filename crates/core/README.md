@@ -4,6 +4,9 @@ Reusable headless libtermy runtime and API.
 
 ## Owner
 
+This package also owns the multiplexer, shared domain helpers, plugin runtime, SSH,
+terminal engine, and C ABI as modules. See [Project Layout](../../docs/architecture/project-layout.md).
+
 This crate owns terminal lifecycle, frame snapshots, keyboard/mouse protocol helpers, search over frames, config-to-runtime conversion, shell integration state, renderer-neutral special-glyph geometry, and embedder-facing render metrics. It must remain independent of GPUI and desktop app chrome.
 
 Use this crate when behavior should be available to FFI, WASM, JS, or non-GPUI host examples.
@@ -25,8 +28,7 @@ embedder or desktop configuration surface.
 ## Forbidden Dependencies
 
 - `gpui`
-- `termy_terminal_ui`
-- `termy_ffi`
+- `termy::terminal_ui`
 - `termy` / `crates/desktop_app`
 
 ## Rust render contracts
@@ -69,7 +71,7 @@ primitives with the harness every embedder ends up writing anyway:
 - **Special-glyph plans** — shared block, box-drawing, sextant, Braille, rounded-corner, and diagonal geometry without a renderer dependency.
 - **Launch resolution** — working directory normalization, fallbacks, locale, and PATH setup.
 - **PTY plumbing** — `rustix-openpty` on Unix, shell discovery via `winreg` on Windows.
-- **Portable surface** — no GPUI dependency. The same crate powers the desktop app, `termy_ffi` (C ABI), WASM hosts, JS bindings, and headless tests. Wrap the engine once, host many times.
+- **Portable surface** — no GPUI dependency. The same crate powers the desktop app, its `ffi` module (C ABI), WASM hosts, JS bindings, and headless tests. Wrap the engine once, host many times.
 
 In short: the VT engine is an implementation detail; libtermy is the portable
 terminal contract plus the harness embedders actually need.
@@ -77,7 +79,7 @@ terminal contract plus the harness embedders actually need.
 ## Remote terminals
 
 `Terminal::from_remote` accepts a renderer-neutral `RemoteTransport`. The
-`termy_multiplexer` crate supplies the desktop transport and keeps the parser,
+`termy_core::multiplexer` crate supplies the desktop transport and keeps the parser,
 PTY, both screens, scrollback, and graphics in a background process. The core
 facade exposes the same input, rendering, query, and clipboard APIs to attached
 views; it has no socket, desktop, or session-discovery dependency.

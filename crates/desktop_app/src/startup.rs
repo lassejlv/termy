@@ -36,7 +36,7 @@ impl StartupBlocker {
     pub(crate) fn present_alert_and_exit(self) -> ! {
         let message = self.message();
         eprintln!("Termy startup blocked:\n{message}");
-        termy_native_sdk::show_alert("Termy Startup Error", &message);
+        crate::native_sdk::show_alert("Termy Startup Error", &message);
         std::process::exit(1);
     }
 }

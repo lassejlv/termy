@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use termy_command_core::{
+use termy_core::command_core::{
     CommandCapabilities, CommandId, CommandUnavailableReason, KeybindLineRef,
     default_resolved_keybinds, parse_keybind_directives_from_iter, resolve_keybinds,
 };
-use termy_config_core::{AppConfig, config_path};
-use termy_theme_core::{ANSI_COLOR_NAMES, ThemeColors, format_hex, parse_theme_colors_json};
+use termy_core::config_core::{AppConfig, config_path};
+use termy_core::theme_core::{ANSI_COLOR_NAMES, ThemeColors, format_hex, parse_theme_colors_json};
 
 pub fn config_file_path() -> Result<PathBuf, String> {
     config_path().ok_or_else(|| "Could not determine config directory".to_string())
@@ -26,7 +26,7 @@ pub fn list_keybind_lines() -> Vec<String> {
 }
 
 pub fn list_theme_lines() -> Vec<String> {
-    termy_themes::available_theme_ids()
+    termy_core::themes::available_theme_ids()
         .into_iter()
         .map(ToString::to_string)
         .collect()
@@ -62,7 +62,7 @@ pub fn show_config_lines() -> Result<Vec<String>, String> {
         lines.push("(not created yet - using defaults)".to_string());
         lines.push(String::new());
         lines.extend(
-            termy_config_core::DEFAULT_CONFIG_TEMPLATE
+            termy_core::config_core::DEFAULT_CONFIG_TEMPLATE
                 .lines()
                 .map(ToString::to_string),
         );
@@ -75,7 +75,7 @@ pub fn show_config_lines() -> Result<Vec<String>, String> {
         lines.push("(empty file - using defaults)".to_string());
         lines.push(String::new());
         lines.extend(
-            termy_config_core::DEFAULT_CONFIG_TEMPLATE
+            termy_core::config_core::DEFAULT_CONFIG_TEMPLATE
                 .lines()
                 .map(ToString::to_string),
         );
@@ -97,13 +97,14 @@ pub fn active_theme_id() -> String {
 pub fn active_theme_colors() -> Result<ThemeColors, String> {
     let config = load_config_for_providers();
     let theme_id = config.theme.clone();
-    let mut colors = if theme_id.eq_ignore_ascii_case(termy_config_core::SHELL_DECIDE_THEME_ID) {
-        terminal_default_theme_colors()
-    } else {
-        load_installed_theme_colors(&theme_id)
-            .or_else(|| termy_themes::resolve_theme(&theme_id))
-            .ok_or_else(|| format!("Unknown theme: {theme_id}"))?
-    };
+    let mut colors =
+        if theme_id.eq_ignore_ascii_case(termy_core::config_core::SHELL_DECIDE_THEME_ID) {
+            terminal_default_theme_colors()
+        } else {
+            load_installed_theme_colors(&theme_id)
+                .or_else(|| termy_core::themes::resolve_theme(&theme_id))
+                .ok_or_else(|| format!("Unknown theme: {theme_id}"))?
+        };
 
     apply_custom_colors(&mut colors, &config.colors);
     Ok(colors)
@@ -142,10 +143,10 @@ fn action_lines_for_capabilities(tmux_enabled: bool, install_cli_available: bool
         .collect()
 }
 
-pub fn terminal_default_theme_colors() -> termy_themes::ThemeColors {
-    use termy_themes::Rgb8;
+pub fn terminal_default_theme_colors() -> termy_core::themes::ThemeColors {
+    use termy_core::themes::Rgb8;
 
-    termy_themes::ThemeColors {
+    termy_core::themes::ThemeColors {
         ansi: [
             Rgb8::new(0x00, 0x00, 0x00),
             Rgb8::new(0xCD, 0x00, 0x00),
@@ -171,7 +172,7 @@ pub fn terminal_default_theme_colors() -> termy_themes::ThemeColors {
 }
 
 fn load_installed_theme_colors(theme_id: &str) -> Option<ThemeColors> {
-    let normalized = termy_theme_core::normalize_theme_id(theme_id);
+    let normalized = termy_core::theme_core::normalize_theme_id(theme_id);
     if normalized.is_empty() {
         return None;
     }
@@ -185,7 +186,7 @@ fn load_installed_theme_colors(theme_id: &str) -> Option<ThemeColors> {
     parse_theme_colors_json(&contents).ok()
 }
 
-fn apply_custom_colors(colors: &mut ThemeColors, custom: &termy_config_core::CustomColors) {
+fn apply_custom_colors(colors: &mut ThemeColors, custom: &termy_core::config_core::CustomColors) {
     if let Some(color) = custom.foreground {
         colors.foreground = convert_config_color(color);
     }
@@ -202,20 +203,20 @@ fn apply_custom_colors(colors: &mut ThemeColors, custom: &termy_config_core::Cus
     }
 }
 
-fn convert_config_color(color: termy_config_core::Rgb8) -> termy_theme_core::Rgb8 {
-    termy_theme_core::Rgb8::new(color.r, color.g, color.b)
+fn convert_config_color(color: termy_core::config_core::Rgb8) -> termy_core::theme_core::Rgb8 {
+    termy_core::theme_core::Rgb8::new(color.r, color.g, color.b)
 }
 
 #[cfg(test)]
 fn keybind_lines_for_tmux_enabled(
-    lines: &[termy_config_core::KeybindConfigLine],
+    lines: &[termy_core::config_core::KeybindConfigLine],
     tmux_enabled: bool,
 ) -> Vec<String> {
     keybind_lines_for_capabilities(lines, tmux_enabled, detect_install_cli_available())
 }
 
 fn keybind_lines_for_capabilities(
-    lines: &[termy_config_core::KeybindConfigLine],
+    lines: &[termy_core::config_core::KeybindConfigLine],
     tmux_enabled: bool,
     install_cli_available: bool,
 ) -> Vec<String> {
@@ -239,8 +240,8 @@ fn keybind_lines_for_capabilities(
 }
 
 fn resolve_keybinds_for_lines(
-    lines: &[termy_config_core::KeybindConfigLine],
-) -> Vec<termy_command_core::ResolvedKeybind> {
+    lines: &[termy_core::config_core::KeybindConfigLine],
+) -> Vec<termy_core::command_core::ResolvedKeybind> {
     let (directives, _warnings) =
         parse_keybind_directives_from_iter(lines.iter().map(|line| KeybindLineRef {
             line_number: line.line_number,
@@ -250,7 +251,7 @@ fn resolve_keybinds_for_lines(
 }
 
 fn detect_install_cli_available() -> bool {
-    !termy_cli_install_core::is_cli_installed()
+    !termy_core::cli_install_core::is_cli_installed()
 }
 
 fn command_capabilities(tmux_enabled: bool, install_cli_available: bool) -> CommandCapabilities {
@@ -358,11 +359,11 @@ mod tests {
         keybind_lines_for_capabilities, keybind_lines_for_tmux_enabled, list_theme_lines,
         resolve_keybinds_for_lines,
     };
-    use termy_command_core::{
+    use termy_core::command_core::{
         CommandId, KeybindLineRef, default_resolved_keybinds, parse_keybind_directives_from_iter,
         resolve_keybinds,
     };
-    use termy_config_core::KeybindConfigLine;
+    use termy_core::config_core::KeybindConfigLine;
 
     fn fixture_keybind_lines() -> Vec<KeybindConfigLine> {
         vec![

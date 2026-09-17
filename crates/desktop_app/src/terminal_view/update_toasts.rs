@@ -1,5 +1,5 @@
 use super::TerminalView;
-use termy_auto_update::UpdateState;
+use crate::auto_update::UpdateState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum UpdateToastEffect {

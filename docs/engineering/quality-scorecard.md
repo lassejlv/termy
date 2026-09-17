@@ -53,5 +53,4 @@ Baseline audit: **2026-06-01** (app version **0.3.0**).
 ## Related
 
 - [Engineering roadmap](roadmap.md)
-- [Product roadmap](../../ROADMAP.md)
 - [Project layout](../architecture/project-layout.md)

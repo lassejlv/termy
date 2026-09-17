@@ -1,5 +1,5 @@
 use super::*;
-use termy_terminal_ui::TmuxClient;
+use crate::terminal_ui::TmuxClient;
 
 fn reorder_active_window_id<'a>(
     previous_active_window_id: Option<&'a str>,

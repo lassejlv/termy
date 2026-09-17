@@ -293,7 +293,8 @@ impl TerminalView {
                 .panes
                 .iter()
                 .find(|pane| pane.id == tab.active_pane_id)?;
-            let min_width = Self::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal);
+            let min_width =
+                NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal);
             (!self
                 .session
                 .native_pane_zoom_snapshots
@@ -359,11 +360,13 @@ impl TerminalView {
         match region {
             PaneDropRegion::Center => true,
             PaneDropRegion::Left | PaneDropRegion::Right => {
-                let min_width = Self::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal);
+                let min_width =
+                    NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal);
                 pane.width >= min_width.saturating_mul(2)
             }
             PaneDropRegion::Top | PaneDropRegion::Bottom => {
-                let min_height = Self::native_pane_min_extent_for_axis(PaneResizeAxis::Vertical);
+                let min_height =
+                    NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Vertical);
                 pane.height >= min_height.saturating_mul(2)
             }
         }
@@ -414,7 +417,7 @@ impl TerminalView {
                 .native_pane_layout_trees
                 .get_mut(&tab_id)
                 .is_some_and(|tree| {
-                    Self::native_swap_leaves(&mut tree.root, source_pane_id, target_pane_id)
+                    NativeLayout::native_swap_leaves(&mut tree.root, source_pane_id, target_pane_id)
                 }),
             PaneDropRegion::Left
             | PaneDropRegion::Right
@@ -424,7 +427,7 @@ impl TerminalView {
                     return false;
                 };
                 let (next_root, _, removed) =
-                    Self::native_remove_leaf_from_tree(tree.root, source_pane_id);
+                    NativeLayout::native_remove_leaf_from_tree(tree.root, source_pane_id);
                 let Some(mut root) = next_root.filter(|_| removed) else {
                     // The tree is stale; drop it so it is rebuilt from pane
                     // geometry on next use.
@@ -437,7 +440,7 @@ impl TerminalView {
                     PaneDropRegion::Bottom => (PaneResizeAxis::Vertical, false),
                     PaneDropRegion::Center => unreachable!(),
                 };
-                if !Self::native_replace_leaf_with_split_ordered(
+                if !NativeLayout::native_replace_leaf_with_split_ordered(
                     &mut root,
                     target_pane_id,
                     axis,
@@ -446,7 +449,11 @@ impl TerminalView {
                 ) {
                     return false;
                 }
-                Self::native_balance_split_group_containing_leaf(&mut root, axis, source_pane_id);
+                NativeLayout::native_balance_split_group_containing_leaf(
+                    &mut root,
+                    axis,
+                    source_pane_id,
+                );
                 self.session
                     .native_pane_layout_trees
                     .insert(tab_id, NativePaneLayoutTree { root });
@@ -502,7 +509,7 @@ impl TerminalView {
             return false;
         }
         let target_pane_id = self.session.tabs[target_index].active_pane_id.clone();
-        let min_width = Self::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal);
+        let min_width = NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal);
         if self.session.tabs[target_index]
             .panes
             .iter()
@@ -622,9 +629,9 @@ impl TerminalView {
         target_pane_id: &str,
     ) -> Option<(NativePaneLayoutNode, NativePaneLayoutNode, Option<String>)> {
         let (source_root, next_focus_id, removed) =
-            Self::native_remove_leaf_from_tree(source_root, source_pane_id);
+            NativeLayout::native_remove_leaf_from_tree(source_root, source_pane_id);
         let source_root = source_root.filter(|_| removed)?;
-        if !Self::native_replace_leaf_with_split_ordered(
+        if !NativeLayout::native_replace_leaf_with_split_ordered(
             &mut target_root,
             target_pane_id,
             PaneResizeAxis::Horizontal,
@@ -754,7 +761,7 @@ mod tests {
                 }),
             }),
         };
-        assert!(TerminalView::native_swap_leaves(&mut root, "a", "c"));
+        assert!(NativeLayout::native_swap_leaves(&mut root, "a", "c"));
         match &root {
             NativePaneLayoutNode::Split { first, second, .. } => {
                 assert!(
@@ -779,7 +786,7 @@ mod tests {
         let mut root = NativePaneLayoutNode::Leaf {
             pane_id: "a".to_string(),
         };
-        assert!(!TerminalView::native_swap_leaves(&mut root, "a", "missing"));
+        assert!(!NativeLayout::native_swap_leaves(&mut root, "a", "missing"));
     }
 
     #[test]
@@ -787,7 +794,7 @@ mod tests {
         let mut root = NativePaneLayoutNode::Leaf {
             pane_id: "target".to_string(),
         };
-        assert!(TerminalView::native_replace_leaf_with_split_ordered(
+        assert!(NativeLayout::native_replace_leaf_with_split_ordered(
             &mut root,
             "target",
             PaneResizeAxis::Horizontal,

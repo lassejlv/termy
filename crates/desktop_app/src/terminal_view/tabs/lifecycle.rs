@@ -496,7 +496,7 @@ impl TerminalView {
             crate::ui::toast::error("That saved SSH host no longer exists");
             return false;
         };
-        let process = match termy_ssh_core::openssh_launch(&host) {
+        let process = match termy_core::ssh_core::openssh_launch(&host) {
             Ok(process) => process,
             Err(error) => {
                 crate::ui::toast::error(format!(
@@ -524,7 +524,11 @@ impl TerminalView {
             let askpass = std::env::current_exe()
                 .map_err(|error| format!("Unable to locate the Termy executable: {error}"))
                 .and_then(|executable| {
-                    termy_ssh_core::askpass_environment(&executable, std::process::id(), &host)
+                    termy_core::ssh_core::askpass_environment(
+                        &executable,
+                        std::process::id(),
+                        &host,
+                    )
                 });
             match askpass {
                 Ok(environment) => runtime_config.environment.extend(environment),
@@ -958,7 +962,7 @@ impl TerminalView {
             && let Some(tree) = self.session.native_pane_layout_trees.remove(&tab_id)
         {
             let (next_root, next_focus_id, removed) =
-                Self::native_remove_leaf_from_tree(tree.root, pane_id.as_str());
+                NativeLayout::native_remove_leaf_from_tree(tree.root, pane_id.as_str());
             if removed && let Some(next_root) = next_root {
                 self.session
                     .native_pane_layout_trees
@@ -1335,7 +1339,7 @@ impl TerminalView {
         tab_shell_integration: TabTitleShellIntegration,
         terminal_runtime: TerminalRuntimeConfig,
         launch: Option<TerminalLaunch>,
-        multiplexer: Option<termy_multiplexer::SessionClient>,
+        multiplexer: Option<termy_core::multiplexer::SessionClient>,
     ) -> Result<Terminal, String> {
         Terminal::new_native_with_launch(
             size,
@@ -1407,7 +1411,8 @@ impl TerminalView {
     ) -> Result<(NativePaneRect, NativePaneRect), String> {
         match axis {
             NativeSplitAxis::Vertical => {
-                let min_width = Self::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal);
+                let min_width =
+                    NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal);
                 if width < min_width.saturating_mul(2) {
                     return Err(format!(
                         "Pane needs at least {} columns to split vertically",
@@ -1432,7 +1437,8 @@ impl TerminalView {
                 ))
             }
             NativeSplitAxis::Horizontal => {
-                let min_height = Self::native_pane_min_extent_for_axis(PaneResizeAxis::Vertical);
+                let min_height =
+                    NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Vertical);
                 if height < min_height.saturating_mul(2) {
                     return Err(format!(
                         "Pane needs at least {} rows to split horizontally",
@@ -1651,13 +1657,13 @@ impl TerminalView {
                 NativeSplitAxis::Vertical => PaneResizeAxis::Horizontal,
                 NativeSplitAxis::Horizontal => PaneResizeAxis::Vertical,
             };
-            if Self::native_replace_leaf_with_split(
+            if NativeLayout::native_replace_leaf_with_split(
                 &mut tree.root,
                 active_pane_id,
                 layout_axis,
                 pane_id.as_str(),
             ) {
-                Self::native_balance_split_group_containing_leaf(
+                NativeLayout::native_balance_split_group_containing_leaf(
                     &mut tree.root,
                     layout_axis,
                     pane_id.as_str(),
@@ -1976,7 +1982,7 @@ impl TerminalView {
             && let Some(tree) = self.session.native_pane_layout_trees.remove(&tab_id)
         {
             let (next_root, next_focus_id, removed) =
-                Self::native_remove_leaf_from_tree(tree.root, active_pane_id.as_str());
+                NativeLayout::native_remove_leaf_from_tree(tree.root, active_pane_id.as_str());
             if removed && let Some(next_root) = next_root {
                 self.session
                     .native_pane_layout_trees

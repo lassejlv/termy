@@ -1,7 +1,7 @@
 use std::time::Instant;
 
+use crate::terminal_ui::{TmuxClient, TmuxLaunchTarget, TmuxRuntimeConfig, TmuxSnapshot};
 use flume::Sender;
-use termy_terminal_ui::{TmuxClient, TmuxLaunchTarget, TmuxRuntimeConfig, TmuxSnapshot};
 
 use super::*;
 
@@ -157,7 +157,7 @@ impl TerminalView {
         startup_command: Option<&str>,
         initial_cols: u16,
         initial_rows: u16,
-        multiplexer: Option<&termy_multiplexer::SessionClient>,
+        multiplexer: Option<&termy_core::multiplexer::SessionClient>,
     ) -> Terminal {
         match Terminal::new_native(
             TerminalSize {
@@ -192,7 +192,7 @@ impl TerminalView {
         initial_cols: u16,
         initial_rows: u16,
         defer_native_terminal: bool,
-        multiplexer: Option<&termy_multiplexer::SessionClient>,
+        multiplexer: Option<&termy_core::multiplexer::SessionClient>,
     ) -> (RuntimeState, Option<TmuxSnapshot>, Option<Terminal>) {
         let start_native = || {
             let native_terminal = Self::start_native_terminal(

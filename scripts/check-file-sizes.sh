@@ -19,11 +19,11 @@ ALLOWLIST=(
   crates/desktop_app/src/terminal_view/persistence.rs
   crates/desktop_app/src/terminal_view/render.rs
   crates/desktop_app/src/terminal_view/tabs/lifecycle.rs
-  crates/ffi/src/lib.rs
-  crates/plugin_runtime/src/lib.rs
-  crates/plugin_runtime/src/tests.rs
-  crates/terminal_ui/src/grid.rs
-  crates/xtask/src/benchmark.rs
+  crates/core/src/ffi/mod.rs
+  crates/core/src/plugin_runtime/mod.rs
+  crates/core/src/plugin_runtime/tests.rs
+  crates/desktop_app/src/terminal_ui/grid.rs
+  crates/cli/src/xtask/benchmark.rs
 )
 
 is_allowlisted() {
@@ -52,7 +52,7 @@ while IFS= read -r file; do
       failed=1
     fi
   fi
-done < <(git ls-files 'crates/**/*.rs' | sort)
+done < <(rg --files crates -g '*.rs' | sort)
 
 if (( failed != 0 )); then
   echo "File size checks failed" >&2

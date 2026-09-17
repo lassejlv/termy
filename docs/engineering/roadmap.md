@@ -2,7 +2,7 @@
 
 **Purpose:** Make Termy cheap to change, safe to ship, and easy for contributors—without blocking v1.0 on perfection.
 
-**Companion docs:** [quality-scorecard.md](quality-scorecard.md) · [terminal-view-decomposition.md](terminal-view-decomposition.md) · [Product roadmap](../../ROADMAP.md)
+**Companion docs:** [quality-scorecard.md](quality-scorecard.md) · [terminal-view-decomposition.md](terminal-view-decomposition.md)
 
 ---
 
@@ -70,7 +70,7 @@
 |----|------------|------|----------------|-----------|--------|
 | E2.1 | Tmux CI reliability | macOS job: `brew install tmux`; fail if &lt; 3.3; always run `just test-tmux-integration` | G7: job fails if tests fail, not skip silently | G7 | Done |
 | E2.2 | Test pyramid doc | `docs/engineering/testing.md`: unit → integration → manual | Linked from CONTRIBUTING | — | Done |
-| E2.3 | FFI contract tests | Minimal C API round-trips in `crates/ffi` tests | Run on Linux + macOS in CI | — | Partial |
+| E2.3 | FFI contract tests | Minimal C API round-trips in `crates/core/src/ffi` tests | Run on Linux + macOS in CI | — | Partial |
 | E2.5 | Ignore audit | Every `#[ignore]` has issue URL; quarterly cleanup | ≤10 ignored tests repo-wide | — | Partial |
 | E2.6 | Stress harness | Scripted tab storm + scrollback (product Phase 4) | Documented scenario; optional CI nightly | — | Planned |
 
@@ -121,7 +121,7 @@
 | **Per PR** | Run smallest subset from CONTRIBUTING; never increase allowlisted file sizes without tranche plan |
 | **Per release** | One E1 tranche *or* one E2 hardening item |
 | **Monthly** | Update [quality-scorecard.md](quality-scorecard.md) (15 min) |
-| **Quarterly** | Roadmap review: defer stale items; sync with [ROADMAP.md](../../ROADMAP.md) product phases |
+| **Quarterly** | Roadmap review: defer stale items; sync with the product milestones product phases |
 
 ---
 
@@ -139,7 +139,6 @@
 
 Create GitHub labels for tracking:
 
-- `roadmap:product` — ties to ROADMAP.md phase
 - `roadmap:engineering` — ties to Ex.y in this doc
 - `quality-gate` — scorecard regression
 
@@ -148,5 +147,4 @@ Create GitHub labels for tracking:
 ## Related
 
 - [Quality scorecard](quality-scorecard.md)
-- [Product roadmap](../../ROADMAP.md)
 - [Development / render metrics](../development.md)

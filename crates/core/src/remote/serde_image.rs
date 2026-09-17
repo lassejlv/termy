@@ -1,6 +1,6 @@
+use crate::tmon::GraphicsImage;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
 use std::sync::Arc;
-use tmon::GraphicsImage;
 
 pub fn serialize<S: Serializer>(
     image: &Arc<GraphicsImage>,

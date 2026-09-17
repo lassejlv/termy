@@ -95,7 +95,6 @@ Termy is supported by companies and people who care about fast, native developer
 
 ## Roadmap and contributing
 
-- [Product and v1.0 roadmap](./ROADMAP.md)
 - [Engineering quality roadmap](./docs/engineering/roadmap.md)
 - [Contributor setup and validation](./CONTRIBUTING.md)
 

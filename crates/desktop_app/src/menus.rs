@@ -2,7 +2,9 @@ use crate::commands::{CommandAction, CommandMenuEntry, MenuRoot};
 #[cfg(target_os = "macos")]
 use gpui::SystemMenuType;
 use gpui::{Menu, MenuItem};
-use termy_command_core::{CommandAvailability, CommandCapabilities, CommandUnavailableReason};
+use termy_core::command_core::{
+    CommandAvailability, CommandCapabilities, CommandUnavailableReason,
+};
 
 const INSTALL_CLI_TITLE: &str = "Install CLI";
 const INSTALL_CLI_INSTALLED_TITLE: &str = "Install CLI (Installed)";
@@ -98,7 +100,7 @@ mod tests {
     use super::{INSTALL_CLI_INSTALLED_TITLE, INSTALL_CLI_TITLE, app_menus};
     use crate::commands::CommandAction;
     use gpui::{MenuItem, OsAction};
-    use termy_command_core::{CommandCapabilities, CommandUnavailableReason};
+    use termy_core::command_core::{CommandCapabilities, CommandUnavailableReason};
 
     #[test]
     fn top_level_menu_order_is_stable() {

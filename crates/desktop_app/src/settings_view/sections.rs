@@ -64,7 +64,7 @@ impl SettingsWindow {
         let app_icon = self.config.app_icon;
         let theme_mode_is_system = matches!(
             self.config.theme_mode,
-            termy_config_core::AppearanceMode::System
+            termy_core::config_core::AppearanceMode::System
         );
         let chrome_contrast = self.config.chrome_contrast;
         let font_family = self.config.font_family.clone();
@@ -133,8 +133,8 @@ impl SettingsWindow {
                 app_icon_meta.title,
                 app_icon_meta.description,
                 match app_icon {
-                    termy_config_core::AppIcon::TermyDefault => "default",
-                    termy_config_core::AppIcon::TermyOld => "old",
+                    termy_core::config_core::AppIcon::TermyDefault => "default",
+                    termy_core::config_core::AppIcon::TermyOld => "old",
                 }
                 .to_string(),
                 cx,
@@ -245,7 +245,7 @@ impl SettingsWindow {
     ) -> AnyElement {
         // Card chrome, label, and the hairlines between rows all come from the
         // design system now; the rows themselves stay owned by this view.
-        termy_ui::SettingsGroup::new(title.into())
+        crate::design_system::SettingsGroup::new(title.into())
             .children(rows)
             .into_any_element()
     }

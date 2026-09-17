@@ -42,6 +42,7 @@ fn is_cli_entrypoint(arg: &str) -> bool {
             | "-help"
             | "-version"
             | "plugin"
+            | "mux"
             | "-list-fonts"
             | "-list-keybinds"
             | "-list-themes"
@@ -139,6 +140,7 @@ mod tests {
     fn delegates_all_cli_commands() {
         for command in [
             "plugin",
+            "mux",
             "-list-fonts",
             "-list-keybinds",
             "-list-themes",

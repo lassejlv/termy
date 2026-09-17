@@ -5,7 +5,7 @@ use std::{
     path::Path,
     process::{Child, Command, Stdio},
 };
-use termy_multiplexer::SessionClient;
+use termy_core::multiplexer::SessionClient;
 
 const PREFIX: &str = "terminal_view::multiplexer_session::tests::";
 
@@ -118,7 +118,7 @@ fn ids(client: &SessionClient) -> Vec<(String, Option<u32>)> {
 #[test]
 fn host_process() {
     if let Ok(root) = std::env::var("TERMY_DESKTOP_MUX_ROOT") {
-        termy_multiplexer::serve(Path::new(&root)).unwrap();
+        termy_core::multiplexer::serve(Path::new(&root)).unwrap();
     }
 }
 
@@ -316,6 +316,62 @@ impl Drop for Host {
         let _ = self.0.kill();
         let _ = self.0.wait();
     }
+}
+
+#[gpui::test]
+fn desktop_saves_preserve_cli_workspace_edits(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("host");
+    let _host = Host(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("{PREFIX}host_process"), "--nocapture"])
+            .env("TERMY_DESKTOP_MUX_ROOT", &root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| SessionClient::connect(&root).is_ok());
+    let client = SessionClient::connect(&root).unwrap();
+    let session = cx.update(|cx| {
+        crate::multiplexer::install_for_test(client.clone(), cx).unwrap();
+        crate::multiplexer::claim_window(cx, false).unwrap().0
+    });
+    let local = termy_core::session_model::StoredSession {
+        active_workspace: 0,
+        workspaces: vec![termy_core::session_model::StoredWorkspace {
+            name: "Development".into(),
+            pinned: false,
+            active_tab: 0,
+            tabs: Vec::new(),
+        }],
+    };
+    session.save(local.clone()).unwrap();
+    let saved: termy_core::session_model::StoredMultiplexer =
+        serde_json::from_str(&client.layout().unwrap().unwrap()).unwrap();
+    client
+        .edit_workspace(
+            &saved.windows[0].id,
+            0,
+            &local.workspaces[0],
+            &termy_core::session_model::WorkspaceEdit::SetPinned { pinned: true },
+        )
+        .unwrap();
+    session.save(local.clone()).unwrap();
+    session.save(local.clone()).unwrap();
+    let saved: termy_core::session_model::StoredMultiplexer =
+        serde_json::from_str(&client.layout().unwrap().unwrap()).unwrap();
+    assert!(saved.windows[0].session.workspaces[0].pinned);
+    let mut changed = local;
+    changed.workspaces[0].name = "Desktop renamed".into();
+    session.save(changed).unwrap();
+    let saved: termy_core::session_model::StoredMultiplexer =
+        serde_json::from_str(&client.layout().unwrap().unwrap()).unwrap();
+    assert_eq!(
+        saved.windows[0].session.workspaces[0].name,
+        "Desktop renamed"
+    );
+    assert!(saved.windows[0].session.workspaces[0].pinned);
 }
 
 #[test]

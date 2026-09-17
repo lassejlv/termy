@@ -1,5 +1,5 @@
 use super::*;
-use termy_terminal_ui::{TmuxClient, TmuxPaneState, TmuxSnapshot};
+use crate::terminal_ui::{TmuxClient, TmuxPaneState, TmuxSnapshot};
 
 fn window_order_index(window_order: &[&str], target_window_id: Option<&str>) -> Option<usize> {
     target_window_id.and_then(|target| {

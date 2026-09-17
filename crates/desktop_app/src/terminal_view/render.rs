@@ -247,23 +247,23 @@ fn terminal_cell_text_attributes(cell: TerminalCellRef<'_>) -> CellTextAttribute
 
 fn core_terminal_underline_style(
     style: termy_core::TerminalUnderlineStyle,
-) -> Option<termy_terminal_ui::TerminalUnderlineStyle> {
+) -> Option<crate::terminal_ui::TerminalUnderlineStyle> {
     Some(match style {
         termy_core::TerminalUnderlineStyle::None => return None,
         termy_core::TerminalUnderlineStyle::Single => {
-            termy_terminal_ui::TerminalUnderlineStyle::Single
+            crate::terminal_ui::TerminalUnderlineStyle::Single
         }
         termy_core::TerminalUnderlineStyle::Double => {
-            termy_terminal_ui::TerminalUnderlineStyle::Double
+            crate::terminal_ui::TerminalUnderlineStyle::Double
         }
         termy_core::TerminalUnderlineStyle::Curly => {
-            termy_terminal_ui::TerminalUnderlineStyle::Curly
+            crate::terminal_ui::TerminalUnderlineStyle::Curly
         }
         termy_core::TerminalUnderlineStyle::Dotted => {
-            termy_terminal_ui::TerminalUnderlineStyle::Dotted
+            crate::terminal_ui::TerminalUnderlineStyle::Dotted
         }
         termy_core::TerminalUnderlineStyle::Dashed => {
-            termy_terminal_ui::TerminalUnderlineStyle::Dashed
+            crate::terminal_ui::TerminalUnderlineStyle::Dashed
         }
     })
 }
@@ -271,14 +271,14 @@ fn core_terminal_underline_style(
 fn terminal_cell_underline(
     cell: TerminalCellRef<'_>,
     context: PaneCellBuildContext<'_>,
-) -> Option<termy_terminal_ui::TerminalUnderline> {
+) -> Option<crate::terminal_ui::TerminalUnderline> {
     match cell {
         // Preserve the existing tmux presentation policy until PaneTerminal
         // moves behind core: every underline variant is painted as a single
         // underline using the effective foreground.
         TerminalCellRef::Tmux(cell) => cell.flags.intersects(Flags::ALL_UNDERLINES).then_some(
-            termy_terminal_ui::TerminalUnderline {
-                style: termy_terminal_ui::TerminalUnderlineStyle::Single,
+            crate::terminal_ui::TerminalUnderline {
+                style: crate::terminal_ui::TerminalUnderlineStyle::Single,
                 color: None,
             },
         ),
@@ -287,7 +287,7 @@ fn terminal_cell_underline(
             let color = cell.underline_color.map(|color| {
                 resolve_core_color(color, context.colors, context.core_palette).into()
             });
-            Some(termy_terminal_ui::TerminalUnderline { style, color })
+            Some(crate::terminal_ui::TerminalUnderline { style, color })
         }
     }
 }
@@ -509,7 +509,7 @@ struct PaneCellBuildContext<'a> {
     pane_focus_target_bg: gpui::Rgba,
     terminal_surface_bg: gpui::Rgba,
     selection_range: Option<(SelectionPos, SelectionPos)>,
-    pane_search_results: Option<&'a termy_search::SearchResults>,
+    pane_search_results: Option<&'a termy_core::search_engine::SearchResults>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1287,7 +1287,7 @@ impl TerminalView {
         selection_bg.a = SELECTION_BG_ALPHA;
         let selection_fg = colors.background;
         TerminalGrid {
-            paint_phase: termy_terminal_ui::TerminalGridPaintPhase::All,
+            paint_phase: crate::terminal_ui::TerminalGridPaintPhase::All,
             cells,
             paint_cache,
             paint_damage,
@@ -1950,7 +1950,7 @@ impl TerminalView {
         {
             let state = self.terminal_context_menu.clone()?;
             let plugin_commands = self.plugin_commands_for_placement(
-                termy_plugin_runtime::PluginCommandPlacement::TerminalContextMenu,
+                termy_core::plugin_runtime::PluginCommandPlacement::TerminalContextMenu,
                 cx,
             );
             let overlay_style = self.overlay_style();
@@ -2068,7 +2068,7 @@ impl TerminalView {
                     .child("Copy Image")
                     .into_any_element()
             };
-            let plugin_command_item = |command: termy_plugin_runtime::PluginCommand| {
+            let plugin_command_item = |command: termy_core::plugin_runtime::PluginCommand| {
                 let enabled = command.disabled_reason.is_none();
                 let text_color = if enabled { text_active } else { text_disabled };
                 let plugin_id = command.plugin_id.clone();
@@ -2375,7 +2375,7 @@ impl TerminalView {
         {
             let state = self.tab_context_menu.clone()?;
             let plugin_commands = self.plugin_commands_for_placement(
-                termy_plugin_runtime::PluginCommandPlacement::TabContextMenu,
+                termy_core::plugin_runtime::PluginCommandPlacement::TabContextMenu,
                 cx,
             );
             let overlay_style = self.overlay_style();
@@ -2407,7 +2407,7 @@ impl TerminalView {
             };
             let hover_bg = overlay_style.chrome_panel_cursor(0.22);
             let pin_label = if state.pinned { "Unpin Tab" } else { "Pin Tab" };
-            let plugin_command_item = |command: termy_plugin_runtime::PluginCommand| {
+            let plugin_command_item = |command: termy_core::plugin_runtime::PluginCommand| {
                 let enabled = command.disabled_reason.is_none();
                 let text_color = if enabled { text_active } else { text_disabled };
                 let plugin_id = command.plugin_id.clone();
@@ -4211,7 +4211,7 @@ mod tests {
                 .expect("native underline flag should render");
             assert_eq!(
                 underline.style,
-                termy_terminal_ui::TerminalUnderlineStyle::Single
+                crate::terminal_ui::TerminalUnderlineStyle::Single
             );
             assert_eq!(underline.color, None);
         }
@@ -4230,23 +4230,23 @@ mod tests {
         let cases = [
             (
                 termy_core::TerminalUnderlineStyle::Single,
-                termy_terminal_ui::TerminalUnderlineStyle::Single,
+                crate::terminal_ui::TerminalUnderlineStyle::Single,
             ),
             (
                 termy_core::TerminalUnderlineStyle::Double,
-                termy_terminal_ui::TerminalUnderlineStyle::Double,
+                crate::terminal_ui::TerminalUnderlineStyle::Double,
             ),
             (
                 termy_core::TerminalUnderlineStyle::Curly,
-                termy_terminal_ui::TerminalUnderlineStyle::Curly,
+                crate::terminal_ui::TerminalUnderlineStyle::Curly,
             ),
             (
                 termy_core::TerminalUnderlineStyle::Dotted,
-                termy_terminal_ui::TerminalUnderlineStyle::Dotted,
+                crate::terminal_ui::TerminalUnderlineStyle::Dotted,
             ),
             (
                 termy_core::TerminalUnderlineStyle::Dashed,
-                termy_terminal_ui::TerminalUnderlineStyle::Dashed,
+                crate::terminal_ui::TerminalUnderlineStyle::Dashed,
             ),
         ];
 

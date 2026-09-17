@@ -1,4 +1,4 @@
-use termy_config_core::{config_path, prettify_config_contents};
+use termy_core::config_core::{config_path, prettify_config_contents};
 
 pub fn run() {
     let Some(path) = config_path() else {

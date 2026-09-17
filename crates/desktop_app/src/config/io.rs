@@ -65,7 +65,7 @@ fn ensure_config_file_watcher_started() {
         return;
     }
 
-    let Some(config_path) = termy_config_core::config_path() else {
+    let Some(config_path) = termy_core::config_core::config_path() else {
         return;
     };
     let Some(config_dir) = config_path.parent() else {
@@ -138,7 +138,8 @@ pub(crate) fn write_atomic(path: &Path, contents: &str) -> Result<(), ConfigIoEr
 }
 
 pub fn ensure_config_file() -> Result<PathBuf, ConfigIoError> {
-    let path = termy_config_core::config_path().ok_or(ConfigIoError::ConfigPathUnavailable)?;
+    let path =
+        termy_core::config_core::config_path().ok_or(ConfigIoError::ConfigPathUnavailable)?;
     if !path.exists() {
         let parent = path
             .parent()

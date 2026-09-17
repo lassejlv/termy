@@ -4,12 +4,12 @@ use gpui::App;
 #[cfg(debug_assertions)]
 use gpui::Keystroke;
 use log::warn;
-use termy_command_core::{
+use termy_core::command_core::{
     CommandId, KeybindDirective, KeybindLineRef, KeybindWarning, ResolvedKeybind,
     canonicalize_keybind_trigger, default_resolved_keybinds, parse_keybind_directives_from_iter,
     resolve_keybinds,
 };
-use termy_config_core::KeybindConfigLine;
+use termy_core::config_core::KeybindConfigLine;
 
 const GLOBAL_KEYBIND_WARNING_LINE_NUMBER: usize = 0;
 const PLUGIN_KEYBIND_PREFIX: &str = "plugin:";
@@ -57,7 +57,7 @@ pub fn install_keybindings(cx: &mut App, config: &AppConfig, tmux_enabled: bool)
     }));
     cx.bind_keys(crate::commands::inline_input_keybindings());
     cx.set_menus(crate::menus::app_menus(
-        !termy_cli_install_core::is_cli_installed(),
+        !termy_core::cli_install_core::is_cli_installed(),
         tmux_enabled,
         config.simple_mode,
     ));
@@ -84,10 +84,10 @@ fn parse_plugin_keybind_action(action: &str) -> Result<Option<(String, String)>,
     let Some((plugin_id, command_id)) = target.split_once('/') else {
         return Err("plugin keybind action must use `plugin:<plugin-id>/<command-id>`".to_string());
     };
-    if !termy_plugin_runtime::valid_plugin_id(plugin_id) {
+    if !termy_core::plugin_runtime::valid_plugin_id(plugin_id) {
         return Err(format!("invalid plugin ID `{plugin_id}` in keybind action"));
     }
-    if !termy_plugin_runtime::valid_plugin_id(command_id) {
+    if !termy_core::plugin_runtime::valid_plugin_id(command_id) {
         return Err(format!(
             "invalid plugin command ID `{command_id}` in keybind action"
         ));
@@ -301,7 +301,7 @@ fn resolve_keybinds_for_config(
     config: &AppConfig,
     tmux_enabled: bool,
 ) -> (
-    Vec<termy_command_core::ResolvedKeybind>,
+    Vec<termy_core::command_core::ResolvedKeybind>,
     Vec<KeybindWarning>,
 ) {
     let (command_lines, _plugin_bindings, mut warnings) = partition_plugin_keybinds(config);
@@ -316,7 +316,7 @@ fn resolve_command_keybinds_for_lines(
     tmux_enabled: bool,
     keybind_lines: &[KeybindConfigLine],
 ) -> (
-    Vec<termy_command_core::ResolvedKeybind>,
+    Vec<termy_core::command_core::ResolvedKeybind>,
     Vec<KeybindWarning>,
 ) {
     let (directives, mut warnings) =
@@ -429,11 +429,11 @@ mod tests {
         resolve_keybinds_for_config, resolve_task_keybinds_for_config,
     };
     use crate::config::AppConfig;
-    use termy_command_core::{
+    use termy_core::command_core::{
         CommandId, KeybindLineRef, ResolvedKeybind, default_resolved_keybinds,
         parse_keybind_directives_from_iter, resolve_keybinds,
     };
-    use termy_config_core::KeybindConfigLine;
+    use termy_core::config_core::KeybindConfigLine;
 
     fn fixture_keybind_lines() -> Vec<KeybindConfigLine> {
         vec![

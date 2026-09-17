@@ -42,12 +42,12 @@ const MAX_RELATIVE_DEPTH: usize = 8;
 
 #[derive(Clone, Debug)]
 struct StoredImage {
-    image: Arc<tmon::GraphicsImage>,
+    image: Arc<crate::tmon::GraphicsImage>,
     width: u32,
     height: u32,
     generation: u64,
     number: Option<u32>,
-    animation: Option<tmon::GraphicsAnimation>,
+    animation: Option<crate::tmon::GraphicsAnimation>,
 }
 
 impl StoredImage {
@@ -143,7 +143,7 @@ pub struct KittyGraphicsRenderPlacement {
     pub image_id: u32,
     pub placement_id: u32,
     #[serde(with = "crate::remote::serde_image")]
-    pub image: Arc<tmon::GraphicsImage>,
+    pub image: Arc<crate::tmon::GraphicsImage>,
     pub image_width: u32,
     pub image_height: u32,
     pub image_generation: u64,
@@ -203,7 +203,7 @@ pub fn kitty_graphics_placeholders_from_alacritty_grid(
             .saturating_sub(i32::try_from(display_offset).unwrap_or(i32::MAX));
         for col in 0..cols {
             let cell = &grid[Line(line)][Column(col)];
-            if cell.c != tmon::kitty_graphics_unicode::PLACEHOLDER {
+            if cell.c != crate::tmon::kitty_graphics_unicode::PLACEHOLDER {
                 previous = None;
                 continue;
             }
@@ -267,7 +267,7 @@ fn placeholder_diacritics(combining: Option<&[char]>) -> [Option<u32>; 3] {
         .iter_mut()
         .zip(combining.unwrap_or_default().iter().copied())
     {
-        *slot = tmon::kitty_graphics_unicode::diacritic_index(character);
+        *slot = crate::tmon::kitty_graphics_unicode::diacritic_index(character);
     }
     decoded
 }
@@ -276,7 +276,7 @@ impl KittyGraphicsState {
     pub fn resize(&mut self, size: TerminalSize) {
         self.viewport_rows = size.rows;
         for placement in &mut self.placements {
-            let (width, height) = tmon::graphics_display_size(
+            let (width, height) = crate::tmon::graphics_display_size(
                 placement.source_width,
                 placement.source_height,
                 placement.display_cols,
@@ -794,7 +794,7 @@ impl KittyGraphicsState {
             let PlacementLocation::Direct { anchor_line, .. } = &mut placement.location else {
                 return true;
             };
-            let mut span = tmon::GraphicsRowSpan {
+            let mut span = crate::tmon::GraphicsRowSpan {
                 anchor: *anchor_line - history_size as i64,
                 rows: placement.occupied_rows,
                 clip_top: placement.clip_top_rows,
@@ -1050,7 +1050,7 @@ impl KittyGraphicsState {
                 .max(1.0);
             placed_source_width = source_width.min(available.floor() as u32);
         }
-        let (width, height) = tmon::graphics_display_size(
+        let (width, height) = crate::tmon::graphics_display_size(
             placed_source_width,
             source_height,
             display_cols,
@@ -1160,7 +1160,7 @@ impl KittyGraphicsState {
                 }
                 result
             }
-            's' => tmon::read_graphics_shared_memory(
+            's' => crate::tmon::read_graphics_shared_memory(
                 &decoded,
                 u64::from(command.u32_value('O').unwrap_or(0)),
                 command

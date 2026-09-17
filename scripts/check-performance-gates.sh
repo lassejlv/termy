@@ -27,7 +27,7 @@ Input options:
   --duration-secs SECS    Scenario duration for --run-compare (default: 5)
 
 Gate options are forwarded to:
-  cargo run -p xtask -- benchmark-gate
+  cargo run -p termy_cli --bin xtask -- benchmark-gate
 
 Useful gate options:
   --max-cpu-delta-percent N
@@ -97,7 +97,7 @@ if [[ "$RUN_COMPARE" -eq 1 ]]; then
   echo "==> Running benchmark compare"
   (
     cd "$CANDIDATE_ROOT"
-    cargo run -p xtask -- benchmark-compare \
+    cargo run -p termy_cli --bin xtask -- benchmark-compare \
       --baseline-root "$BASELINE_ROOT" \
       --candidate-root "$CANDIDATE_ROOT" \
       --output "$OUTPUT_ROOT" \
@@ -118,4 +118,4 @@ fi
 
 echo "==> Checking performance gates"
 # ${arr[@]+...} guard: empty-array expansion under `set -u` errors on bash 3.2 (macOS /bin/bash).
-(cd "$REPO_ROOT" && cargo run -p xtask -- benchmark-gate --summary "$SUMMARY" ${GATE_ARGS[@]+"${GATE_ARGS[@]}"})
+(cd "$REPO_ROOT" && cargo run -p termy_cli --bin xtask -- benchmark-gate --summary "$SUMMARY" ${GATE_ARGS[@]+"${GATE_ARGS[@]}"})

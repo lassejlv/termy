@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use gpui::{Font, FontWeight, SharedString, TextSystem, px};
-use termy_config_core::DEFAULT_FONT_FAMILY;
+use termy_core::config_core::DEFAULT_FONT_FAMILY;
 
 const TERMINAL_METRIC_GLYPHS: [char; 5] = ['M', 'i', 'W', '0', ' '];
 const TERMINAL_METRIC_FONT_SIZE: f32 = 14.0;

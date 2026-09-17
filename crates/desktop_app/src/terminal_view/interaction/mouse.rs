@@ -376,18 +376,18 @@ impl TerminalView {
             && let Some(tree) = self.session.native_pane_layout_trees.get_mut(&tab_id)
         {
             let min_extent = match axis {
-                PaneResizeAxis::Horizontal => Self::native_min_extent_allowed(
+                PaneResizeAxis::Horizontal => NativeLayout::native_min_extent_allowed(
                     total_cols,
-                    Self::native_tree_leaf_count(&tree.root),
-                    Self::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal),
+                    NativeLayout::native_tree_leaf_count(&tree.root),
+                    NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal),
                 ),
-                PaneResizeAxis::Vertical => Self::native_min_extent_allowed(
+                PaneResizeAxis::Vertical => NativeLayout::native_min_extent_allowed(
                     total_rows,
-                    Self::native_tree_leaf_count(&tree.root),
-                    Self::native_pane_min_extent_for_axis(PaneResizeAxis::Vertical),
+                    NativeLayout::native_tree_leaf_count(&tree.root),
+                    NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Vertical),
                 ),
             };
-            let result = Self::native_adjust_tree_split(
+            let result = NativeLayout::native_adjust_tree_split(
                 &mut tree.root,
                 target_id.as_str(),
                 axis,
@@ -457,14 +457,14 @@ impl TerminalView {
                 }
                 let horizontal_lane_count =
                     Self::native_pane_lane_count_for_axis(&tab.panes, PaneResizeAxis::Horizontal);
-                let min_width = Self::native_min_extent_allowed(
+                let min_width = NativeLayout::native_min_extent_allowed(
                     tab.panes
                         .iter()
                         .map(|pane| pane.left.saturating_add(pane.width))
                         .max()
                         .unwrap_or(0),
                     horizontal_lane_count,
-                    Self::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal),
+                    NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Horizontal),
                 );
 
                 if divider_delta > 0 {
@@ -545,14 +545,14 @@ impl TerminalView {
                 }
                 let vertical_lane_count =
                     Self::native_pane_lane_count_for_axis(&tab.panes, PaneResizeAxis::Vertical);
-                let min_height = Self::native_min_extent_allowed(
+                let min_height = NativeLayout::native_min_extent_allowed(
                     tab.panes
                         .iter()
                         .map(|pane| pane.top.saturating_add(pane.height))
                         .max()
                         .unwrap_or(0),
                     vertical_lane_count,
-                    Self::native_pane_min_extent_for_axis(PaneResizeAxis::Vertical),
+                    NativeLayout::native_pane_min_extent_for_axis(PaneResizeAxis::Vertical),
                 );
 
                 if divider_delta > 0 {

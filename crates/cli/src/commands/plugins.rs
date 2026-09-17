@@ -11,7 +11,7 @@ use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
 use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode};
 use serde::Deserialize;
 use tempfile::TempDir;
-use termy_plugin_runtime::{
+use termy_core::plugin_runtime::{
     MAX_PLUGIN_SOURCE_BYTES, MAX_PLUGIN_SOURCE_FILES, PluginRuntime, PluginSourceMetadata,
     valid_plugin_id, validate_plugin_capabilities,
 };
@@ -505,7 +505,7 @@ fn remove(id: &str, yes: bool) -> Result<(), String> {
 }
 
 fn plugin_runtime() -> Result<PluginRuntime, String> {
-    let config_path = termy_config_core::config_path()
+    let config_path = termy_core::config_core::config_path()
         .ok_or_else(|| "Termy config path is unavailable".to_string())?;
     Ok(PluginRuntime::new(Some(&config_path)))
 }

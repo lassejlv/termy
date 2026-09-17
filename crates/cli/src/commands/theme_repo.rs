@@ -5,7 +5,7 @@ use std::{
 
 use semver::Version;
 use sha2::{Digest, Sha256};
-use termy_theme_core::{
+use termy_core::theme_core::{
     ThemeMetadata, ThemeMetadataVersion, ThemeRegistryEntry, ThemeRegistryIndex,
     normalize_theme_id, parse_theme_colors_json, theme_colors_json_pretty,
 };

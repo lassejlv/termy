@@ -6628,10 +6628,12 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "bincode",
+ "clipboard-rs",
  "cocoa 0.26.0",
  "core-foundation 0.10.0",
  "core-text",
  "dirs 6.0.0",
+ "dispatch2",
  "env_logger",
  "flume",
  "fs4",
@@ -6641,57 +6643,41 @@ dependencies = [
  "log",
  "notify",
  "objc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-uniform-type-identifiers",
  "p256",
  "rand_core 0.6.4",
  "raw-window-handle",
  "rfd",
+ "rustix-openpty",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "smol",
  "sqlx",
  "sysinfo 0.37.2",
  "tempfile",
- "termy_auto_update",
- "termy_cli_install_core",
- "termy_command_core",
- "termy_config_core",
  "termy_core",
- "termy_multiplexer",
- "termy_native_sdk",
- "termy_plugin_runtime",
- "termy_search",
- "termy_ssh_core",
- "termy_terminal_ui",
- "termy_themes",
- "termy_ui",
  "tokio",
+ "unicode-width 0.2.0",
  "ureq",
  "url",
  "uuid",
  "webbrowser",
+ "windows 0.61.3",
  "winresource",
  "x11rb",
  "zed-font-kit",
 ]
 
 [[package]]
-name = "termy_auto_update"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "flume",
- "gpui",
- "log",
- "sha2 0.10.9",
- "termy_release_core",
- "ureq",
- "windows 0.61.3",
-]
-
-[[package]]
 name = "termy_cli"
 version = "0.2.70"
 dependencies = [
+ "alacritty_terminal",
+ "anyhow",
  "clap",
  "core-foundation 0.10.0",
  "core-text",
@@ -6699,39 +6685,15 @@ dependencies = [
  "notify",
  "percent-encoding",
  "ratatui",
+ "roxmltree",
  "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "termy_cli_install_core",
- "termy_command_core",
- "termy_config_core",
- "termy_plugin_runtime",
- "termy_release_core",
- "termy_theme_core",
- "termy_themes",
+ "termy_core",
  "ureq",
  "url",
-]
-
-[[package]]
-name = "termy_cli_install_core"
-version = "0.1.0"
-dependencies = [
- "dirs 6.0.0",
- "tempfile",
-]
-
-[[package]]
-name = "termy_command_core"
-version = "0.1.0"
-
-[[package]]
-name = "termy_config_core"
-version = "0.1.0"
-dependencies = [
- "termy_theme_core",
 ]
 
 [[package]]
@@ -6741,164 +6703,33 @@ dependencies = [
  "alacritty_terminal",
  "anyhow",
  "base64",
+ "bincode",
  "compact_str",
  "dirs 6.0.0",
  "flate2",
  "flume",
  "fontdb 0.23.0",
+ "fs4",
+ "keyring",
+ "libc",
  "log",
  "png 0.18.1",
  "polling",
  "rand_core 0.6.4",
+ "regex",
+ "rustix 1.1.4",
  "rustix-openpty",
- "serde",
- "tempfile",
- "termy_config_core",
- "termy_search",
- "termy_themes",
- "tmon",
- "ttf-parser 0.25.1",
- "unicode-width 0.2.0",
- "winreg",
-]
-
-[[package]]
-name = "termy_ffi"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "flume",
- "serde",
- "serde_json",
- "tempfile",
- "termy_cli_install_core",
- "termy_command_core",
- "termy_config_core",
- "termy_core",
- "termy_themes",
- "termy_tmux_control_core",
- "ureq",
-]
-
-[[package]]
-name = "termy_multiplexer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bincode",
- "flume",
- "fs4",
- "libc",
- "log",
- "rand_core 0.6.4",
- "serde",
- "serde_json",
- "tempfile",
- "termy_core",
- "uuid",
-]
-
-[[package]]
-name = "termy_native_sdk"
-version = "0.1.0"
-dependencies = [
- "clipboard-rs",
- "dispatch2",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "objc2-uniform-type-identifiers",
- "tempfile",
- "url",
- "windows 0.61.3",
-]
-
-[[package]]
-name = "termy_plugin_runtime"
-version = "0.1.0"
-dependencies = [
- "dirs 6.0.0",
- "keyring",
- "rand_core 0.6.4",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "url",
-]
-
-[[package]]
-name = "termy_release_core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "semver",
- "serde",
+ "ttf-parser 0.25.1",
+ "unicode-width 0.2.0",
  "ureq",
-]
-
-[[package]]
-name = "termy_search"
-version = "0.1.0"
-dependencies = [
- "regex",
- "unicode-width 0.2.0",
-]
-
-[[package]]
-name = "termy_ssh_core"
-version = "0.1.0"
-dependencies = [
- "keyring",
- "serde",
- "serde_json",
- "tempfile",
+ "url",
  "uuid",
-]
-
-[[package]]
-name = "termy_terminal_ui"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "anyhow",
- "flume",
- "gpui",
- "rustix-openpty",
- "termy_core",
- "termy_tmux_control_core",
- "unicode-width 0.2.0",
-]
-
-[[package]]
-name = "termy_theme_core"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "termy_themes"
-version = "0.1.0"
-dependencies = [
- "termy_theme_core",
-]
-
-[[package]]
-name = "termy_tmux_control_core"
-version = "0.1.0"
-dependencies = [
- "flume",
- "rustix 1.1.4",
- "rustix-openpty",
-]
-
-[[package]]
-name = "termy_ui"
-version = "0.1.0"
-dependencies = [
- "gpui",
+ "winreg",
 ]
 
 [[package]]
@@ -7014,14 +6845,6 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
-
-[[package]]
-name = "tmon"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "unicode-width 0.2.0",
-]
 
 [[package]]
 name = "tokio"
@@ -8688,22 +8511,6 @@ name = "xmlwriter"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
-
-[[package]]
-name = "xtask"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "anyhow",
- "roxmltree",
- "serde",
- "serde_json",
- "tempfile",
- "termy_command_core",
- "termy_config_core",
- "termy_core",
- "tmon",
-]
 
 [[package]]
 name = "y4m"

@@ -16,7 +16,7 @@ use gpui::{
 };
 use serde_json::Value;
 use std::{borrow::Cow, collections::BTreeMap};
-use termy_plugin_runtime::{
+use termy_core::plugin_runtime::{
     PluginContext, PluginOriginContext, PluginRuntime, PluginUiAlignment, PluginUiButtonVariant,
     PluginUiGap, PluginUiNode, PluginUiTextVariant, PluginUiTone, PluginViewAction,
     PluginViewDescriptor, PluginViewRender, PluginViewTarget, PluginViewValue,
@@ -125,7 +125,7 @@ impl PluginUiView {
     fn current_context(
         &self,
         cx: &mut Context<Self>,
-    ) -> Result<termy_plugin_runtime::PluginContext, String> {
+    ) -> Result<termy_core::plugin_runtime::PluginContext, String> {
         let mut context = self
             .parent
             .update(cx, |view, cx| view.plugin_context(cx))
@@ -210,7 +210,7 @@ impl PluginUiView {
         &mut self,
         result: Result<PluginViewRender, String>,
         cx: &mut Context<Self>,
-    ) -> Option<Vec<termy_plugin_runtime::PluginAction>> {
+    ) -> Option<Vec<termy_core::plugin_runtime::PluginAction>> {
         self.loading = false;
         self.busy = false;
         match result {

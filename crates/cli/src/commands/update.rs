@@ -1,4 +1,4 @@
-use termy_release_core::{UpdateCheck, check_for_updates};
+use termy_core::release_core::{UpdateCheck, check_for_updates};
 
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 

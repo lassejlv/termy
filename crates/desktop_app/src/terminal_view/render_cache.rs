@@ -1,5 +1,5 @@
 use super::SelectionPos;
-use termy_terminal_ui::{TerminalGridPaintCacheHandle, TerminalGridRows};
+use crate::terminal_ui::{TerminalGridPaintCacheHandle, TerminalGridRows};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::terminal_view) struct KittyGraphicsRenderCacheKey {

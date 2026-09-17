@@ -1,4 +1,0 @@
-interface:
-  display_name: "Ghostty to Termy"
-  short_description: "Convert Ghostty configs into valid Termy configs"
-  default_prompt: "Use $ghostty-to-termy to convert my Ghostty configuration to Termy and report unsupported settings."

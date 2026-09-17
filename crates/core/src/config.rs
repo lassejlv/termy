@@ -4,17 +4,17 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use crate::config_core::{
+    AppConfig, ConfigDiagnostic, CursorStyle, SHELL_DECIDE_THEME_ID, SystemAppearance,
+    WindowsShell, WorkingDirFallback, resolve_active_theme,
+};
 use crate::protocol::TerminalQueryColors;
 use crate::runtime::{
     TerminalCursorStyle, TerminalRuntimeConfig, WindowsShell as RuntimeWindowsShell,
     WorkingDirFallback as RuntimeWorkingDirFallback,
 };
+use crate::themes::{ThemeColors, normalize_theme_id, parse_theme_colors_json};
 use crate::{TerminalColor, TermyColor};
-use termy_config_core::{
-    AppConfig, ConfigDiagnostic, CursorStyle, SHELL_DECIDE_THEME_ID, SystemAppearance,
-    WindowsShell, WorkingDirFallback, resolve_active_theme,
-};
-use termy_themes::{ThemeColors, normalize_theme_id, parse_theme_colors_json};
 
 #[derive(Debug, Clone)]
 pub struct LoadedTermyConfig {
@@ -58,7 +58,7 @@ impl Error for TermyConfigError {
 }
 
 pub fn load_config_from_default_path() -> Result<LoadedTermyConfig, TermyConfigError> {
-    let Some(path) = termy_config_core::config_path() else {
+    let Some(path) = crate::config_core::config_path() else {
         return Ok(default_loaded_config(None));
     };
 
@@ -187,10 +187,10 @@ pub fn resolve_theme_colors_from_app_config(
         load_installed_theme_colors(&active_theme, config_path)
             .or_else(|| builtin_theme_colors(&active_theme))
             .unwrap_or_else(|| match (config.theme_mode, system_appearance) {
-                (termy_config_core::AppearanceMode::System, SystemAppearance::Light) => {
-                    termy_themes::termy_light()
+                (crate::config_core::AppearanceMode::System, SystemAppearance::Light) => {
+                    crate::themes::termy_light()
                 }
-                _ => termy_themes::termy(),
+                _ => crate::themes::termy(),
             })
     };
     apply_custom_colors(&mut colors, &config.colors);
@@ -225,7 +225,7 @@ fn load_installed_theme_colors(theme_id: &str, config_path: Option<&Path>) -> Op
     let config_path = if let Some(path) = config_path {
         path
     } else {
-        owned_config_path = termy_config_core::config_path()?;
+        owned_config_path = crate::config_core::config_path()?;
         owned_config_path.as_path()
     };
     let theme_path = config_path
@@ -238,27 +238,27 @@ fn load_installed_theme_colors(theme_id: &str, config_path: Option<&Path>) -> Op
 
 fn builtin_theme_colors(theme_id: &str) -> Option<ThemeColors> {
     match normalize_theme_id(theme_id).as_str() {
-        "termy" => Some(termy_themes::termy()),
-        "termy-light" | "termylight" => Some(termy_themes::termy_light()),
-        "tokyo-night" | "tokyonight" => Some(termy_themes::tokyo_night()),
+        "termy" => Some(crate::themes::termy()),
+        "termy-light" | "termylight" => Some(crate::themes::termy_light()),
+        "tokyo-night" | "tokyonight" => Some(crate::themes::tokyo_night()),
         "catppuccin-mocha" | "catppuccin" | "catppuccinmocha" => {
-            Some(termy_themes::catppuccin_mocha())
+            Some(crate::themes::catppuccin_mocha())
         }
-        "dracula" => Some(termy_themes::dracula()),
-        "gruvbox-dark" | "gruvbox" | "gruvboxdark" => Some(termy_themes::gruvbox_dark()),
-        "nord" => Some(termy_themes::nord()),
-        "solarized-dark" | "solarized" | "solarizeddark" => Some(termy_themes::solarized_dark()),
-        "one-dark" | "one" | "onedark" => Some(termy_themes::one_dark()),
-        "monokai" => Some(termy_themes::monokai()),
-        "material-dark" | "material" | "materialdark" => Some(termy_themes::material_dark()),
-        "palenight" => Some(termy_themes::palenight()),
-        "tomorrow-night" | "tomorrow" | "tomorrownight" => Some(termy_themes::tomorrow_night()),
-        "oceanic-next" | "oceanic" | "oceanicnext" => Some(termy_themes::oceanic_next()),
-        _ => termy_themes::resolve_theme(theme_id),
+        "dracula" => Some(crate::themes::dracula()),
+        "gruvbox-dark" | "gruvbox" | "gruvboxdark" => Some(crate::themes::gruvbox_dark()),
+        "nord" => Some(crate::themes::nord()),
+        "solarized-dark" | "solarized" | "solarizeddark" => Some(crate::themes::solarized_dark()),
+        "one-dark" | "one" | "onedark" => Some(crate::themes::one_dark()),
+        "monokai" => Some(crate::themes::monokai()),
+        "material-dark" | "material" | "materialdark" => Some(crate::themes::material_dark()),
+        "palenight" => Some(crate::themes::palenight()),
+        "tomorrow-night" | "tomorrow" | "tomorrownight" => Some(crate::themes::tomorrow_night()),
+        "oceanic-next" | "oceanic" | "oceanicnext" => Some(crate::themes::oceanic_next()),
+        _ => crate::themes::resolve_theme(theme_id),
     }
 }
 
-fn apply_custom_colors(colors: &mut ThemeColors, custom: &termy_config_core::CustomColors) {
+fn apply_custom_colors(colors: &mut ThemeColors, custom: &crate::config_core::CustomColors) {
     if let Some(color) = custom.foreground {
         colors.foreground = theme_rgb_from_config_rgb(color);
     }
@@ -285,15 +285,15 @@ fn terminal_default_theme_colors() -> ThemeColors {
     }
 }
 
-fn theme_rgb_from_terminal_color(color: TerminalColor) -> termy_themes::Rgb8 {
-    termy_themes::Rgb8::new(color.r, color.g, color.b)
+fn theme_rgb_from_terminal_color(color: TerminalColor) -> crate::themes::Rgb8 {
+    crate::themes::Rgb8::new(color.r, color.g, color.b)
 }
 
-fn theme_rgb_from_config_rgb(color: termy_config_core::Rgb8) -> termy_themes::Rgb8 {
-    termy_themes::Rgb8::new(color.r, color.g, color.b)
+fn theme_rgb_from_config_rgb(color: crate::config_core::Rgb8) -> crate::themes::Rgb8 {
+    crate::themes::Rgb8::new(color.r, color.g, color.b)
 }
 
-fn term_color_from_rgb(color: termy_themes::Rgb8) -> TermyColor {
+fn term_color_from_rgb(color: crate::themes::Rgb8) -> TermyColor {
     TermyColor {
         r: color.r,
         g: color.g,
@@ -378,7 +378,7 @@ mod tests {
         let tempdir = tempdir().expect("tempdir");
         let config_path = tempdir.path().join("config.txt");
         let config = AppConfig {
-            theme_mode: termy_config_core::AppearanceMode::System,
+            theme_mode: crate::config_core::AppearanceMode::System,
             theme_light: "missing-light-theme".to_string(),
             ..AppConfig::default()
         };

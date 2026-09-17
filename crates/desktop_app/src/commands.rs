@@ -1,5 +1,5 @@
 use gpui::{FocusHandle, KeyBinding, MenuItem, OsAction, Window, actions};
-use termy_command_core::{CommandAvailability, CommandCapabilities, CommandId};
+use termy_core::command_core::{CommandAvailability, CommandCapabilities, CommandId};
 
 const GLOBAL_CONTEXT: Option<&str> = None;
 const TERMINAL_CONTEXT: Option<&str> = Some("Terminal");
@@ -1074,7 +1074,7 @@ define_commands!(
     ),
 );
 
-termy_command_core::termy_command_catalog!(impl_command_action_id_mapping);
+termy_core::termy_command_catalog!(impl_command_action_id_mapping);
 
 actions!(
     termy_inline_input,
@@ -1133,7 +1133,7 @@ mod tests {
         inline_input_keybindings,
     };
     use std::collections::HashSet;
-    use termy_command_core::{CommandCapabilities, CommandId};
+    use termy_core::command_core::{CommandCapabilities, CommandId};
 
     #[test]
     fn command_catalog_contains_unique_actions() {

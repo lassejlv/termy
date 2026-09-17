@@ -449,7 +449,10 @@ impl TerminalView {
         let (current, total) = self.search_state.results().position().unwrap_or((0, 0));
         let has_error = self.search_state.error().is_some();
         let case_sensitive = self.search_state.is_case_sensitive();
-        let regex_mode = matches!(self.search_state.mode(), termy_search::SearchMode::Regex);
+        let regex_mode = matches!(
+            self.search_state.mode(),
+            termy_core::search_engine::SearchMode::Regex
+        );
         let error_color = gpui::Rgba {
             r: 0.98,
             g: 0.48,

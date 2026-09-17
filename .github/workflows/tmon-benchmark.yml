@@ -7,9 +7,7 @@ on:
       - "Cargo.lock"
       - "Cargo.toml"
       - "crates/core/**"
-      - "crates/tmon/**"
-      - "crates/xtask/**"
-      - "tools/tmon-revision-gate/**"
+      - "crates/cli/**"
       - ".github/workflows/tmon-benchmark.yml"
   workflow_dispatch:
     inputs:
@@ -81,43 +79,7 @@ jobs:
             rustc --version
             echo "Cargo.lock SHA-256: $(sha256sum Cargo.lock | awk '{print $1}')"
             echo
-            cargo run --locked --quiet -p xtask --release --example engine_compare
-          } 2>&1 | tee -a "$report"
-
-      - name: Checkout immutable snapshot baseline
-        id: snapshot_baseline_checkout
-        if: ${{ always() && steps.checkout.outcome == 'success' }}
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          ref: 03d7ca5c5420ca141afe56f725341faadb71af18
-          path: .tmon-snapshot-reference
-          persist-credentials: false
-
-      - name: Enforce immutable snapshot baseline
-        id: snapshot_regression_gate
-        if: ${{ always() && steps.checkout.outcome == 'success' && steps.snapshot_baseline_checkout.outcome == 'success' && steps.setup_rust.outcome == 'success' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          report="$RUNNER_TEMP/$TMON_BENCH_REPORT_NAME"
-          source_config="$RUNNER_TEMP/tmon-baseline-source.toml"
-          printf '%s\n' \
-            '[source.https-baseline]' \
-            'git = "https://github.com/lassejlv/termy"' \
-            'rev = "03d7ca5c5420ca141afe56f725341faadb71af18"' \
-            'replace-with = "local-baseline"' \
-            '' \
-            '[source.local-baseline]' \
-            "git = \"file://$GITHUB_WORKSPACE/.tmon-snapshot-reference\"" \
-            'rev = "03d7ca5c5420ca141afe56f725341faadb71af18"' \
-            '' \
-            '[net]' \
-            'git-fetch-with-cli = true' > "$source_config"
-          {
-            echo
-            cargo run --locked --quiet --release \
-              --manifest-path tools/tmon-revision-gate/Cargo.toml \
-              --config "$source_config"
+            cargo run --locked --quiet -p termy_cli --release --example engine_compare
           } 2>&1 | tee -a "$report"
 
       - name: Run allocation accounting
@@ -132,7 +94,7 @@ jobs:
           report="$RUNNER_TEMP/$TMON_BENCH_REPORT_NAME"
           {
             echo
-            cargo run --locked --quiet -p xtask --release --example engine_compare --features benchmark-allocations
+            cargo run --locked --quiet -p termy_cli --release --example engine_compare --features benchmark-allocations
           } 2>&1 | tee -a "$report"
 
       - name: Finalize report
@@ -142,11 +104,9 @@ jobs:
         env:
           INITIALIZE_OUTCOME: ${{ steps.initialize_report.outcome }}
           CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
-          SNAPSHOT_BASELINE_CHECKOUT_OUTCOME: ${{ steps.snapshot_baseline_checkout.outcome }}
           SETUP_RUST_OUTCOME: ${{ steps.setup_rust.outcome }}
           CACHE_RUST_OUTCOME: ${{ steps.cache_rust.outcome }}
           COMPARISON_OUTCOME: ${{ steps.comparison.outcome }}
-          SNAPSHOT_GATE_OUTCOME: ${{ steps.snapshot_regression_gate.outcome }}
           ALLOCATION_OUTCOME: ${{ steps.allocation_accounting.outcome }}
         run: |
           set -euo pipefail
@@ -158,11 +118,9 @@ jobs:
             echo "======================"
             printf 'Initialize report: %s\n' "${INITIALIZE_OUTCOME:-unknown}"
             printf 'Checkout:          %s\n' "${CHECKOUT_OUTCOME:-unknown}"
-            printf 'Baseline checkout: %s\n' "${SNAPSHOT_BASELINE_CHECKOUT_OUTCOME:-unknown}"
             printf 'Setup Rust:        %s\n' "${SETUP_RUST_OUTCOME:-unknown}"
             printf 'Cache Rust:        %s\n' "${CACHE_RUST_OUTCOME:-unknown}"
             printf 'Run comparison:    %s\n' "${COMPARISON_OUTCOME:-unknown}"
-            printf 'Snapshot gate:     %s\n' "${SNAPSHOT_GATE_OUTCOME:-unknown}"
             printf 'Allocation report: %s\n' "${ALLOCATION_OUTCOME:-unknown}"
           } >> "$report"
 

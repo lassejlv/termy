@@ -34,6 +34,7 @@ mod theme_store;
 mod ui;
 mod workspace_store;
 
+use crate::terminal_ui::TmuxClient;
 use commands::{OpenConfig, OpenSettings};
 use deeplink::{DeepLinkArgument, DeepLinkRoute};
 use flume::Receiver;
@@ -44,7 +45,7 @@ use gpui::{
 use startup::StartupBlocker;
 use terminal_view::{TerminalView, initial_window_background_appearance};
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-use termy_terminal_ui::TmuxClient;
+use termy::{auto_update, design_system, native_sdk, terminal_ui};
 
 pub(crate) const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const APP_ID: &str = "termy";
@@ -494,7 +495,7 @@ fn start_theme_install_from_deeplink(cx: &mut App, slug: String) {
                     "Install theme \"{}\" into your local theme library?",
                     theme.name
                 );
-                if !termy_native_sdk::confirm(title, &message) {
+                if !crate::native_sdk::confirm(title, &message) {
                     return;
                 }
 
@@ -637,7 +638,7 @@ fn main() {
     {
         env_logger::init();
         let result = match cli_args.as_slice() {
-            [_, directory] => termy_multiplexer::serve(std::path::Path::new(directory)),
+            [_, directory] => termy_core::multiplexer::serve(std::path::Path::new(directory)),
             _ => Err(anyhow::anyhow!(
                 "multiplexer host requires its private session directory"
             )),
@@ -754,7 +755,7 @@ fn main() {
         if let Some(executable) = current_executable() {
             let open_tab_tx = deeplink_tx.clone();
             if let Err(error) =
-                termy_native_sdk::register_open_tab_here(&executable, move |directory| {
+                crate::native_sdk::register_open_tab_here(&executable, move |directory| {
                     let url = deeplink::new_tab_deeplink_for_dir(&directory.to_string_lossy());
                     if let Err(error) = open_tab_tx.send(vec![url]) {
                         log::error!("Failed to enqueue Finder/file-manager tab: {error}");

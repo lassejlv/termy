@@ -1,7 +1,10 @@
 [package]
 name = "termy"
+default-run = "termy"
 version = "0.2.70"
 edition = "2024"
+
+[package.metadata]
 
 [package.metadata.bundle]
 name = "Termy"
@@ -16,24 +19,14 @@ workspace = true
 [dependencies]
 image = { version = "0.25", default-features = false }
 gpui = { workspace = true }
-
-# Terminal emulation
 alacritty_terminal = { workspace = true }
-
-# Async/concurrency
 flume = { workspace = true }
 smol = "2.0"
 anyhow = { workspace = true }
 dirs = { workspace = true }
-
-# Logging
 log = { workspace = true }
 env_logger = "0.11"
-
-# File dialogs
 rfd = "0.15"
-
-# Serialization
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
@@ -41,52 +34,58 @@ p256 = { workspace = true }
 rand_core = { workspace = true }
 bincode = "1.3"
 url = { workspace = true }
-
-# File I/O
 tempfile = { workspace = true }
 fs4 = { version = "0.13.1", features = ["sync"] }
 notify = "8"
 ureq = { workspace = true }
 webbrowser = "1.0"
 sysinfo = "0.37"
-
-# Termy Workspace Crates
-termy_auto_update = { path = "../auto_update" }
-termy_core = { path = "../core" }
-termy_multiplexer = { path = "../multiplexer" }
-termy_themes = { path = "../themes" }
-termy_terminal_ui = { path = "../terminal_ui" }
-termy_ui = { path = "../ui" }
-termy_search = { path = "../search" }
-termy_ssh_core = { path = "../ssh_core" }
-termy_native_sdk = { path = "../native_sdk" }
-termy_config_core = { path = "../config_core" }
-termy_command_core = { path = "../command_core" }
-termy_cli_install_core = { path = "../cli_install_core" }
-termy_plugin_runtime = { path = "../plugin_runtime" }
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio"] }
 tokio = { version = "1", default-features = false, features = ["rt"] }
+sha2 = { workspace = true }
+unicode-width = { workspace = true }
+termy_core = { path = "../core" }
 
-[target.'cfg(not(target_os = "windows"))'.dependencies]
+
+[target."cfg(not(target_os = \"windows\"))".dependencies]
 libsqlite3-sys = "0.30.1"
 
-[target.'cfg(target_os = "linux")'.dependencies]
+
+[target."cfg(target_os = \"linux\")".dependencies]
 raw-window-handle = "0.6"
 x11rb = "0.13.2"
 font-kit = { package = "zed-font-kit", version = "0.14.1-zed", features = ["source-fontconfig-dlopen"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-# Pin core-text to 21.0.0 to avoid core-graphics version conflict on macOS.
+
+[target."cfg(target_os = \"macos\")".dependencies]
 core-text = "=21.0.0"
 core-foundation = "0.10"
 cocoa = "=0.26.0"
 objc = "0.2"
 raw-window-handle = "0.6"
+dispatch2 = "0.3.0"
+objc2 = "0.6.3"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData", "NSDictionary", "NSGeometry", "NSString"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAccessibility", "NSAlert", "NSApplication", "NSBitmapImageRep", "NSButton", "NSControl", "NSEvent", "NSGraphics", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem", "NSResponder", "NSView", "NSWorkspace"] }
+objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false, features = ["UTType"] }
 
-[target.'cfg(target_os = "windows")'.build-dependencies]
+
+[target."cfg(target_os = \"windows\")".build-dependencies]
 winresource = "0.1"
+
+[target."cfg(target_os = \"windows\")".dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+
+[target."cfg(any(target_os = \"macos\", target_os = \"linux\", target_os = \"windows\"))".dependencies]
+clipboard-rs = { version = "0.3.5", features = ["wayland"] }
+url = { workspace = true }
+
+[target."cfg(unix)".dependencies]
+rustix-openpty = "0.2"
 
 [dev-dependencies]
 raw-window-handle = "0.6"
 x11rb = "0.13.2"
 gpui = { workspace = true, features = ["test-support"] }
+tempfile = { workspace = true }

@@ -5,7 +5,7 @@ use super::{
 
 impl SettingsWindow {
     pub(super) fn render_colors_section(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = termy_config_core::color_setting_specs()
+        let rows = termy_core::config_core::color_setting_specs()
             .iter()
             .map(|spec| {
                 let display = self.custom_color_for_id(spec.id).map_or_else(

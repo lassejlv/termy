@@ -1,5 +1,5 @@
 use super::*;
-use termy_plugin_runtime::{PluginInventory, PluginSetting};
+use termy_core::plugin_runtime::{PluginInventory, PluginSetting};
 
 const PLUGIN_SETTING_CONTROL_WIDTH: f32 = SETTINGS_CONTROL_WIDTH;
 const PLUGIN_SETTING_CONTROL_HEIGHT: f32 = SETTINGS_CONTROL_HEIGHT;
@@ -328,7 +328,7 @@ impl SettingsWindow {
             let message = format!(
                 "Install \"{folder_name}\"? Plugins are trusted local code and run with your user permissions."
             );
-            if !termy_native_sdk::confirm("Install Plugin", &message) {
+            if !crate::native_sdk::confirm("Install Plugin", &message) {
                 let _ = cx.update(|cx| {
                     this.update(cx, |view, cx| {
                         view.plugin_operation_in_flight = false;
@@ -406,7 +406,7 @@ impl SettingsWindow {
             let message = format!(
                 "Uninstall \"{name}\"? Its copied plugin directory will be permanently removed."
             );
-            if !termy_native_sdk::confirm("Uninstall Plugin", &message) {
+            if !crate::native_sdk::confirm("Uninstall Plugin", &message) {
                 let _ = cx.update(|cx| {
                     this.update(cx, |view, cx| {
                         view.plugin_operation_in_flight = false;
@@ -653,7 +653,7 @@ impl SettingsWindow {
         plugin_id: String,
         key: String,
         value: String,
-        options: Vec<termy_plugin_runtime::PluginSettingOption>,
+        options: Vec<termy_core::plugin_runtime::PluginSettingOption>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let open = self

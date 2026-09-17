@@ -1,6 +1,6 @@
 use super::super::*;
+use crate::terminal_ui::TmuxPaneState;
 use std::path::Path;
-use termy_terminal_ui::TmuxPaneState;
 
 impl TerminalView {
     pub(crate) fn fallback_title(&self) -> &str {
@@ -141,7 +141,7 @@ impl TerminalView {
     }
 
     fn smart_mode_shell_fallback_enabled(tab_title: &TabTitleConfig) -> bool {
-        tab_title.mode == termy_config_core::TabTitleMode::Smart
+        tab_title.mode == termy_core::config_core::TabTitleMode::Smart
             && !tab_title.shell_integration
             && tab_title.priority.contains(&TabTitleSource::Explicit)
             && tab_title.priority.contains(&TabTitleSource::Shell)
@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn smart_mode_shell_fallback_disabled_for_non_smart_mode() {
         let config = TabTitleConfig {
-            mode: termy_config_core::TabTitleMode::Shell,
+            mode: termy_core::config_core::TabTitleMode::Shell,
             shell_integration: false,
             ..Default::default()
         };

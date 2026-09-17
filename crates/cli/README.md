@@ -6,7 +6,10 @@ Command-line companion for Termy.
 
 This crate owns the `termy-cli` binary, including user-facing terminal commands, config inspection helpers, theme/config utilities, and install/update commands that belong outside the desktop app.
 
-Keep reusable install logic in `termy_cli_install_core`, release metadata logic in `termy_release_core`, and desktop UI actions in `crates/desktop_app/`.
+Keep reusable install logic in `termy_core::cli_install_core`, release metadata logic in `termy_core::release_core`, and desktop UI actions in `crates/desktop_app/`.
+
+The `mux` commands control persistent sessions and layouts with JSON responses.
+Repository tooling is the `xtask` binary in `src/xtask/`.
 
 ## Validation
 
@@ -17,6 +20,4 @@ cargo test -p termy_cli
 ## Forbidden Dependencies
 
 - `gpui`
-- `termy_terminal_ui`
-- `termy_ffi`
 - `termy` / `crates/desktop_app`

@@ -1,13 +1,8 @@
 /target
 .codex/
-.ds_store
+.DS_Store
 .env
 ./docs/examples/plugins/hello-rust/target
-566490945-60d73b62-c4ff-4f37-9210-d96d45ddfd18.png
-termy-bench-v2.md
-termy-bench-v1.md
-tmon-alacritty-benchmark.txt
-AGENT_PROMPT_RENDER_PERF.md
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
 .build

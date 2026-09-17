@@ -3,7 +3,7 @@ use std::collections::HashMap;
 
 impl SettingsWindow {
     fn bindable_actions() -> Vec<CommandId> {
-        termy_command_core::command_specs()
+        termy_core::command_core::command_specs()
             .iter()
             .map(|spec| spec.id)
             .collect()
@@ -30,7 +30,7 @@ impl SettingsWindow {
     }
 
     fn collapse_resolved_keybinds_to_single_binding(
-        resolved: &[termy_command_core::ResolvedKeybind],
+        resolved: &[termy_core::command_core::ResolvedKeybind],
     ) -> HashMap<CommandId, String> {
         let mut bindings = HashMap::with_capacity(resolved.len());
         for binding in resolved {
@@ -40,17 +40,17 @@ impl SettingsWindow {
     }
 
     fn effective_action_bindings_from_lines(
-        lines: &[termy_config_core::KeybindConfigLine],
+        lines: &[termy_core::config_core::KeybindConfigLine],
     ) -> HashMap<CommandId, String> {
         let (directives, _warnings) =
-            termy_command_core::parse_keybind_directives_from_iter(lines.iter().map(|line| {
-                termy_command_core::KeybindLineRef {
+            termy_core::command_core::parse_keybind_directives_from_iter(lines.iter().map(
+                |line| termy_core::command_core::KeybindLineRef {
                     line_number: line.line_number,
                     value: line.value.as_str(),
-                }
-            }));
-        let resolved = termy_command_core::resolve_keybinds(
-            termy_command_core::default_resolved_keybinds(),
+                },
+            ));
+        let resolved = termy_core::command_core::resolve_keybinds(
+            termy_core::command_core::default_resolved_keybinds(),
             &directives,
         );
         Self::collapse_resolved_keybinds_to_single_binding(&resolved)
@@ -90,10 +90,12 @@ impl SettingsWindow {
         self.config.keybind_lines = lines
             .into_iter()
             .enumerate()
-            .map(|(index, value)| termy_config_core::KeybindConfigLine {
-                line_number: index + 1,
-                value,
-            })
+            .map(
+                |(index, value)| termy_core::config_core::KeybindConfigLine {
+                    line_number: index + 1,
+                    value,
+                },
+            )
             .collect();
         Ok(())
     }
@@ -219,7 +221,7 @@ impl SettingsWindow {
             format!("{}-{}", parts.join("-"), normalized_key)
         };
 
-        termy_command_core::canonicalize_keybind_trigger(&raw).map(Some)
+        termy_core::command_core::canonicalize_keybind_trigger(&raw).map(Some)
     }
 
     fn secondary_display_label() -> &'static str {
@@ -535,7 +537,7 @@ impl SettingsWindow {
 mod tests {
     use super::SettingsWindow;
     use std::collections::HashMap;
-    use termy_command_core::{CommandId, ResolvedKeybind, command_specs};
+    use termy_core::command_core::{CommandId, ResolvedKeybind, command_specs};
 
     #[gpui::test]
     fn tab_shortcuts_expand_and_capture_cancels_without_changing_bindings(
@@ -545,7 +547,7 @@ mod tests {
             let mut view = SettingsWindow::new(window, cx);
             view.active_section = super::SettingsSection::Keybindings;
             view.blur_sidebar_search();
-            view.config.keybind_lines = vec![termy_config_core::KeybindConfigLine {
+            view.config.keybind_lines = vec![termy_core::config_core::KeybindConfigLine {
                 line_number: 1,
                 value: "alt-x=switch_to_tab_1".into(),
             }];
@@ -603,7 +605,7 @@ mod tests {
     #[test]
     fn main_tab_switch_assignment_preserves_individual_tab_shortcuts() {
         let mut bindings = SettingsWindow::effective_action_bindings_from_lines(&[
-            termy_config_core::KeybindConfigLine {
+            termy_core::config_core::KeybindConfigLine {
                 line_number: 1,
                 value: "alt-x=switch_to_tab_1".into(),
             },
@@ -616,10 +618,12 @@ mod tests {
         let lines = SettingsWindow::serialize_structured_keybind_lines(&bindings)
             .into_iter()
             .enumerate()
-            .map(|(index, value)| termy_config_core::KeybindConfigLine {
-                line_number: index + 1,
-                value,
-            })
+            .map(
+                |(index, value)| termy_core::config_core::KeybindConfigLine {
+                    line_number: index + 1,
+                    value,
+                },
+            )
             .collect::<Vec<_>>();
         let reloaded = SettingsWindow::effective_action_bindings_from_lines(&lines);
         assert_eq!(

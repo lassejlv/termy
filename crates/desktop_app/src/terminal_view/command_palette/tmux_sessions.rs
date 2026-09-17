@@ -1,6 +1,6 @@
 use super::state_tmux::{TmuxSessionRow, TmuxSessionStatusHint};
 use super::*;
-use termy_terminal_ui::{TmuxClient, TmuxLaunchTarget, TmuxSocketTarget};
+use crate::terminal_ui::{TmuxClient, TmuxLaunchTarget, TmuxSocketTarget};
 
 impl TerminalView {
     pub(in crate::terminal_view) fn open_tmux_session_palette_with_intent(
@@ -345,7 +345,7 @@ impl TerminalView {
         // is mutably updating this view can re-enter and trip RefCell borrow checks.
         // Run confirm out-of-band, then re-enter through AsyncApp for the mutation.
         cx.spawn(async move |this, cx: &mut AsyncApp| {
-            let confirmed = termy_native_sdk::confirm("Kill tmux Session", &confirmation_message);
+            let confirmed = crate::native_sdk::confirm("Kill tmux Session", &confirmation_message);
             if !confirmed {
                 return;
             }
