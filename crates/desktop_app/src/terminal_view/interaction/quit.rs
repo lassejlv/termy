@@ -73,13 +73,6 @@ impl TerminalView {
         ) && warn_on_quit
     }
 
-    fn should_force_close_when_prompt_in_flight(target: CloseRequestTarget) -> bool {
-        matches!(
-            target,
-            CloseRequestTarget::Application | CloseRequestTarget::WindowClose
-        )
-    }
-
     fn tab_close_request_target(tab_count: usize, tab_id: TabId) -> CloseRequestTarget {
         if tab_count <= 1 {
             CloseRequestTarget::WindowClose
@@ -338,22 +331,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> bool {
         if self.quit_prompt_in_flight {
-            if Self::should_force_close_when_prompt_in_flight(target) {
-                // If the quit confirm prompt is unresponsive, allow a second
-                // close request to follow through.
-                match target {
-                    CloseRequestTarget::Application => {
-                        self.allow_quit_without_prompt = true;
-                        cx.quit();
-                    }
-                    CloseRequestTarget::WindowClose => {
-                        self.allow_quit_without_prompt = true;
-                        return true;
-                    }
-                    CloseRequestTarget::TabClose { .. }
-                    | CloseRequestTarget::WorkspaceDelete { .. } => {}
-                }
-            }
+            // A repeated close request must not bypass an unanswered confirmation.
             return false;
         }
 
@@ -529,20 +507,46 @@ impl TerminalView {
 mod tests {
     use super::{CloseRequestTarget, TerminalView};
 
-    #[test]
-    fn prompt_in_flight_force_close_policy_allows_app_and_window_targets() {
-        assert!(TerminalView::should_force_close_when_prompt_in_flight(
-            CloseRequestTarget::Application
-        ));
-        assert!(TerminalView::should_force_close_when_prompt_in_flight(
-            CloseRequestTarget::WindowClose
-        ));
-        assert!(!TerminalView::should_force_close_when_prompt_in_flight(
-            CloseRequestTarget::TabClose { tab_id: 1 }
-        ));
-        assert!(!TerminalView::should_force_close_when_prompt_in_flight(
-            CloseRequestTarget::WorkspaceDelete { workspace_id: 1 }
-        ));
+    #[gpui::test]
+    fn close_confirmation_handles_repeated_close_cancel_retry_and_confirm(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| cx.set_prompt_builder(crate::linux_prompt::render_prompt));
+        let config = crate::config::AppConfig {
+            warn_on_quit: true,
+            tmux_enabled: false,
+            ..Default::default()
+        };
+        let (view, cx) = cx.add_window_view(|window, cx| {
+            let mut view = TerminalView::new_for_window(window, cx, config, true);
+            // This test window must not overwrite the user's persisted session.
+            view.owns_persisted_session = false;
+            view
+        });
+        for _ in 0..2 {
+            view.update_in(cx, |view, window, cx| {
+                for target in [
+                    CloseRequestTarget::WindowClose,
+                    CloseRequestTarget::Application,
+                ] {
+                    assert!(!view.request_close(target, window, cx));
+                    assert!(view.quit_prompt_in_flight);
+                    assert!(!view.allow_quit_without_prompt);
+                }
+            });
+            cx.simulate_keystrokes("escape");
+            cx.run_until_parked();
+            view.read_with(cx, |view, _| {
+                assert!(!view.quit_prompt_in_flight);
+                assert!(!view.allow_quit_without_prompt);
+            });
+        }
+        view.update_in(cx, |view, window, cx| {
+            assert!(!view.request_close(CloseRequestTarget::WindowClose, window, cx));
+        });
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(cx.windows().is_empty());
     }
 
     #[test]

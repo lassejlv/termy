@@ -25,6 +25,20 @@ The pinned GPUI 0.2.2 `start_window_move` is a no-op on macOS. Termy calls
 AppKit's `performWindowDragWithEvent:` from the hit-tested mouse-down handler;
 state-machine tests alone cannot verify this native handoff.
 
+## Linux close confirmation (#390)
+
+`cargo test -p termy --bin termy linux_prompt::tests` dispatches keyboard and
+mouse input through GPUI's rendered prompt, checks that the terminal underneath
+receives neither, and verifies focus restoration after cancellation. The quit
+interaction tests also exercise cancellation, repeated close requests, and
+confirmed window closure with a real `TerminalView`.
+
+For a desktop smoke check on Linux, set `warn_on_quit = true`, open a terminal,
+then request window close. Confirm and cancel with both the buttons and
+Enter/Escape; Tab and arrow keys should select buttons. Clicking outside the
+prompt must leave it open without focusing or sending input to the terminal.
+Repeating the close request must not bypass confirmation.
+
 ## Ignored tests
 
 - `crates/terminal_ui/tests/tmux_split_integration.rs` — requires **tmux ≥ 3.3** locally.

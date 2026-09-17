@@ -16,6 +16,8 @@ mod font_families;
 mod instance;
 mod keybindings;
 mod launch_probe;
+#[cfg(any(target_os = "linux", test))]
+mod linux_prompt;
 #[cfg(target_os = "macos")]
 mod macos_titlebar_drag;
 mod menus;
@@ -651,6 +653,8 @@ fn main() {
 
     application.run(move |cx: &mut App| {
         launch_probe::record_stage("application_running");
+        #[cfg(target_os = "linux")]
+        cx.set_prompt_builder(linux_prompt::render_prompt);
 
         // Fold only the initiating launch. Requests received from other
         // processes during startup must each create their own window.
