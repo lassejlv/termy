@@ -4,7 +4,11 @@ pub fn run() {
     println!("  termy /path/to/project");
     println!("  termy --working-directory /path/to/project");
     println!();
-    println!("If Termy is already running, those commands open a new tab.");
+    println!("  termy --new-window [--working-directory /path/to/project]");
+    println!("  termy --new-tab [--working-directory /path/to/project]");
+    println!();
+    println!("On Linux, launching Termy opens a new window by default.");
+    println!("Use --new-tab to add a tab to the running window.");
     println!("File managers use the same path via Open new Termy tab here.");
     println!();
     println!("Available commands:");

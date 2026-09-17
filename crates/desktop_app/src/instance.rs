@@ -1,5 +1,5 @@
-use crate::StartupArguments;
-use crate::deeplink::new_tab_deeplink_for_dir;
+use crate::deeplink::{new_tab_deeplink_for_dir, new_window_deeplink};
+use crate::{LaunchTarget, StartupArguments};
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -37,9 +37,22 @@ impl Drop for InstanceGuard {
 }
 
 pub(crate) fn urls_to_forward(startup: &StartupArguments) -> Vec<String> {
+    urls_to_forward_for_platform(startup, cfg!(target_os = "linux"))
+}
+
+pub(super) fn urls_to_forward_for_platform(startup: &StartupArguments, linux: bool) -> Vec<String> {
     let mut urls = Vec::new();
-    if let Some(dir) = &startup.working_dir {
+    let new_window = match startup.launch_target {
+        LaunchTarget::Window => true,
+        LaunchTarget::Tab => false,
+        LaunchTarget::Default => linux && startup.deeplinks.is_empty(),
+    };
+    if new_window {
+        urls.push(new_window_deeplink(startup.working_dir.as_deref()));
+    } else if let Some(dir) = &startup.working_dir {
         urls.push(new_tab_deeplink_for_dir(dir));
+    } else if startup.launch_target == LaunchTarget::Tab {
+        urls.push("termy://new".to_string());
     }
     urls.extend(startup.deeplinks.iter().cloned());
     if urls.is_empty() {
@@ -275,10 +288,48 @@ mod tests {
     }
 
     #[test]
+    fn launch_routing_preserves_explicit_window_tab_and_deeplink_intent() {
+        for (args, linux, expected) in [
+            (vec![], true, "termy://window"),
+            (
+                vec!["--working-directory", "/tmp/demo"],
+                true,
+                "termy://window?dir=%2Ftmp%2Fdemo",
+            ),
+            (vec!["/tmp/demo"], true, "termy://window?dir=%2Ftmp%2Fdemo"),
+            (vec![], false, "termy://"),
+            (vec!["/tmp/demo"], false, "termy://new?dir=%2Ftmp%2Fdemo"),
+            (vec!["--new-window"], false, "termy://window"),
+            (
+                vec!["--new-window", "/tmp/demo"],
+                false,
+                "termy://window?dir=%2Ftmp%2Fdemo",
+            ),
+            (vec!["--new-tab"], true, "termy://new"),
+            (
+                vec!["--new-tab", "/tmp/demo"],
+                true,
+                "termy://new?dir=%2Ftmp%2Fdemo",
+            ),
+            (vec!["termy://settings"], true, "termy://settings"),
+            (vec!["termy://new"], true, "termy://new"),
+            (vec!["termy://"], true, "termy://"),
+        ] {
+            let startup = crate::parse_startup_arguments(args.clone());
+            assert_eq!(
+                super::urls_to_forward_for_platform(&startup, linux),
+                vec![expected],
+                "{args:?}, linux={linux}"
+            );
+        }
+    }
+
+    #[test]
     fn working_directory_forwards_as_new_tab_deeplink() {
         let startup = StartupArguments {
             working_dir: Some("/tmp/demo".to_string()),
             deeplinks: Vec::new(),
+            launch_target: crate::LaunchTarget::Tab,
         };
         assert_eq!(
             urls_to_forward(&startup),
@@ -289,7 +340,10 @@ mod tests {
     #[test]
     fn empty_launch_forwards_an_activate_deeplink() {
         let startup = StartupArguments::default();
-        assert_eq!(urls_to_forward(&startup), vec!["termy://".to_string()]);
+        assert_eq!(
+            super::urls_to_forward_for_platform(&startup, false),
+            vec!["termy://".to_string()]
+        );
     }
 
     #[test]

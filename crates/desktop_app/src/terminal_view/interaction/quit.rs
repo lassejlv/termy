@@ -224,7 +224,8 @@ impl TerminalView {
 
     fn close_warning_title(target: CloseRequestTarget) -> &'static str {
         match target {
-            CloseRequestTarget::Application | CloseRequestTarget::WindowClose => "Quit Termy?",
+            CloseRequestTarget::Application => "Quit Termy?",
+            CloseRequestTarget::WindowClose => "Close Window?",
             CloseRequestTarget::TabClose { .. } => "Close Tab?",
             CloseRequestTarget::WorkspaceDelete { .. } => "Delete Workspace?",
         }
@@ -232,9 +233,8 @@ impl TerminalView {
 
     fn close_warning_buttons(target: CloseRequestTarget) -> &'static [&'static str] {
         match target {
-            CloseRequestTarget::Application | CloseRequestTarget::WindowClose => {
-                &["Quit", "Cancel"]
-            }
+            CloseRequestTarget::Application => &["Quit", "Cancel"],
+            CloseRequestTarget::WindowClose => &["Close Window", "Cancel"],
             CloseRequestTarget::TabClose { .. } => &["Close Tab", "Cancel"],
             CloseRequestTarget::WorkspaceDelete { .. } => &["Delete Workspace", "Cancel"],
         }
@@ -242,7 +242,8 @@ impl TerminalView {
 
     fn close_warning_final_prompt(target: CloseRequestTarget) -> &'static str {
         match target {
-            CloseRequestTarget::Application | CloseRequestTarget::WindowClose => "Quit anyway?",
+            CloseRequestTarget::Application => "Quit anyway?",
+            CloseRequestTarget::WindowClose => "Close this window anyway?",
             CloseRequestTarget::TabClose { .. } => "Close it anyway?",
             CloseRequestTarget::WorkspaceDelete { .. } => "Delete this workspace anyway?",
         }
@@ -300,6 +301,15 @@ impl TerminalView {
         match target {
             CloseRequestTarget::Application => {
                 self.sync_persisted_native_workspace();
+                for handle in cx.windows() {
+                    if handle != self.window_handle
+                        && let Some(handle) = handle.downcast::<Self>()
+                    {
+                        let _ = handle.update(cx, |view, _, _| {
+                            view.sync_persisted_native_workspace();
+                        });
+                    }
+                }
                 self.allow_quit_without_prompt = true;
                 cx.quit();
                 false
@@ -351,7 +361,19 @@ impl TerminalView {
             return false;
         }
 
-        let busy_titles = self.busy_tab_titles_for_close_target(target);
+        let mut busy_titles = self.busy_tab_titles_for_close_target(target);
+        if target == CloseRequestTarget::Application {
+            for handle in cx.windows() {
+                if handle != self.window_handle
+                    && let Some(handle) = handle.downcast::<Self>()
+                    && let Ok(titles) = handle.update(cx, |view, _, _| {
+                        view.busy_tab_titles_for_close_target(target)
+                    })
+                {
+                    busy_titles.extend(titles);
+                }
+            }
+        }
         if !Self::should_prompt_for_close_target(
             target,
             self.warn_on_quit,
@@ -399,8 +421,15 @@ impl TerminalView {
                 }
 
                 match target {
-                    CloseRequestTarget::Application => cx.quit(),
+                    CloseRequestTarget::Application => {
+                        let _ = this.update(cx, |view, cx| {
+                            view.follow_through_close_request(target, cx);
+                        });
+                    }
                     CloseRequestTarget::WindowClose => {
+                        let _ = this.update(cx, |view, cx| {
+                            view.follow_through_close_request(target, cx);
+                        });
                         let _ = window_handle.update(cx, |_, window, _| window.remove_window());
                     }
                     CloseRequestTarget::TabClose { tab_id } => {
@@ -600,6 +629,20 @@ mod tests {
         assert_eq!(
             TerminalView::close_warning_final_prompt(target),
             "Delete this workspace anyway?"
+        );
+    }
+
+    #[test]
+    fn window_close_warning_describes_only_the_current_window() {
+        let target = CloseRequestTarget::WindowClose;
+        assert_eq!(TerminalView::close_warning_title(target), "Close Window?");
+        assert_eq!(
+            TerminalView::close_warning_buttons(target),
+            &["Close Window", "Cancel"]
+        );
+        assert_eq!(
+            TerminalView::close_warning_final_prompt(target),
+            "Close this window anyway?"
         );
     }
 }

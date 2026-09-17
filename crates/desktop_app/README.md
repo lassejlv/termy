@@ -4,12 +4,14 @@ Main desktop application.
 
 ## Owner
 
-This crate owns the GPUI app shell, windows, titlebar/chrome, menus, settings, onboarding, command execution, and user-visible desktop workflows. Single-instance handoff lives in `src/instance.rs`: a second launch forwards `--working-directory` and `termy://` requests into a new tab of the running window. File-manager verbs are registered at startup through `termy_native_sdk::register_open_tab_here`.
+This crate owns the GPUI app shell, windows, titlebar/chrome, menus, settings, onboarding, command execution, and user-visible desktop workflows. Single-instance handoff lives in `src/instance.rs`: Linux launches open independent terminal windows in the running process, including `--working-directory` launches. `--new-window` explicitly requests a window on any platform; `--new-tab` and `termy://new` request a tab. Other `termy://` routes retain their existing behavior. macOS and Windows retain their default launch behavior. File-manager verbs are registered at startup through `termy_native_sdk::register_open_tab_here`.
 
 Single-instance ownership uses an OS file lock that is released on process exit.
 The lock file stays in place so concurrent launches share the same lock; leftover
 files from a previous run do not trigger the startup retry delay. Launches also
 forward to an already-running v0.2.61 instance, which used a marker file instead.
+
+Additional windows start with a fresh session. The first terminal window owns native session restoration and persistence; extra windows do not overwrite its saved workspace. Managed tmux sessions in extra windows are independent and torn down when closed.
 
 Important internal areas:
 
@@ -73,3 +75,10 @@ cursor placement. Space switches pages, R redraws, and Q restores the shell.
 Use `--scroll` to start on the scrolling page. Resize the window while viewing
 each page. The test is intentionally synthetic; application-specific behavior
 still needs testing in the relevant application.
+
+Tab dragging across windows lives in `src/terminal_view/tabs/transfer.rs`.
+Native transfers move the live terminals, remap pane IDs, and retarget their
+wakeup routes. tmux transfers move the server window between compatible sessions.
+Dragging outside opens a destination window; dropping onto another terminal
+window appends the tab there. Moving the last tab closes its source window and
+hands off native persistence ownership when necessary.

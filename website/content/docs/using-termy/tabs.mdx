@@ -35,9 +35,41 @@ after the app bundle is replaced or moved.
 | macOS | Finder Services, and Open With on a folder |
 | Linux | Nautilus/Caja Scripts, Nemo actions, KDE/Dolphin folder menus, and Open With |
 
-If Termy is already running, the action adds a tab in that folder instead of starting a second window. You can also do this from a shell:
+If Termy is already running, the action adds a tab in that folder. You can also request a tab from a shell:
 
 ```bash
-termy /path/to/project
-termy --working-directory /path/to/project
+termy --new-tab --working-directory /path/to/project
 ```
+
+## Open another window
+
+On Linux, each launch of `termy` opens a separate window. This also applies to
+`termy /path/to/project` and `termy --working-directory /path/to/project`. Your
+window manager can tile and move each window independently. Set your Hyprland
+terminal command to `termy`; no wrapper is needed.
+
+Use `--new-window` to explicitly open a window on any platform:
+
+```bash
+termy --new-window
+termy --new-window --working-directory /path/to/project
+```
+
+Closing a window or exiting its last shell leaves the other windows running.
+Additional windows start fresh. The first window owns the saved native session;
+extra windows do not overwrite it. With tmux enabled, extra windows use separate,
+temporary managed sessions. Explicitly attaching to a named tmux session still
+shares that session.
+
+On macOS and Windows, launches without either flag keep their existing behavior.
+
+## Move tabs between windows
+
+Drag a tab outside its window and release to open it in a new window. Drop it
+onto another Termy terminal window to move it there. The tab keeps its running
+shells, split panes, and scrollback. Moving the last tab closes the empty window.
+Press Escape before releasing to cancel a drag. If the tab bar is hidden for a
+single tab, turn off `auto_hide_tabbar` to make that tab available to drag.
+
+Windows must use the same terminal runtime. With tmux, they must also use the
+same server and different sessions.

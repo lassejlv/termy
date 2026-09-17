@@ -3776,7 +3776,11 @@ impl Render for TerminalView {
             .size_full()
             .bg(terminal_surface_bg)
             .font_family(ui_font_family)
-            .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, _window, cx| {
+            .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                if this.finish_window_tab_drag(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if matches!(
                     event.button,
                     MouseButton::Left | MouseButton::Middle | MouseButton::Right
@@ -3798,7 +3802,11 @@ impl Render for TerminalView {
             ))
             .on_mouse_up_out(
                 MouseButton::Left,
-                cx.listener(|this, _event: &MouseUpEvent, _window, cx| {
+                cx.listener(|this, event: &MouseUpEvent, window, cx| {
+                    if this.finish_window_tab_drag(event, window, cx) {
+                        cx.stop_propagation();
+                        return;
+                    }
                     if this.finish_workspace_sidebar_resize_drag() {
                         cx.notify();
                     }

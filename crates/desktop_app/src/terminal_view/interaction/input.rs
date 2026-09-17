@@ -785,6 +785,10 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.keystroke.key == "escape" && self.cancel_window_tab_drag(cx) {
+            cx.stop_propagation();
+            return;
+        }
         let cursor_was_hidden = !self.cursor_blink_visible;
         self.reset_cursor_blink_phase();
         let _ = self.close_terminal_context_menu(cx);

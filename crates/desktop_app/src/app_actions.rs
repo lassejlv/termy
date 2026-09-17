@@ -37,11 +37,7 @@ pub(crate) fn open_settings_or_config_file(cx: &mut App) -> Result<(), String> {
 }
 
 pub(crate) fn focus_existing_window<V: 'static>(cx: &mut App) -> bool {
-    if let Some(window_handle) = cx
-        .windows()
-        .into_iter()
-        .find_map(|handle| handle.downcast::<V>())
-    {
+    if let Some(window_handle) = preferred_window::<V>(cx) {
         window_handle
             .update(cx, |_view, window, _cx| {
                 window.activate_window();
@@ -52,10 +48,37 @@ pub(crate) fn focus_existing_window<V: 'static>(cx: &mut App) -> bool {
     }
 }
 
+fn preferred_window<V: 'static>(cx: &App) -> Option<gpui::WindowHandle<V>> {
+    cx.active_window()
+        .and_then(|handle| handle.downcast::<V>())
+        .or_else(|| {
+            cx.windows()
+                .into_iter()
+                .find_map(|handle| handle.downcast::<V>())
+        })
+}
+
 pub(crate) fn has_window<V: 'static>(cx: &App) -> bool {
     cx.windows()
         .into_iter()
         .any(|handle| handle.downcast::<V>().is_some())
+}
+
+pub(crate) fn close_terminal_window<V: 'static>(handle: gpui::AnyWindowHandle, cx: &mut App) {
+    let windows = cx.windows();
+    if !windows.contains(&handle) {
+        return;
+    }
+    let terminal_count = windows
+        .into_iter()
+        .filter(|window| window.downcast::<V>().is_some())
+        .count();
+    log::debug!("Closing terminal window; {terminal_count} terminal windows remain");
+    if terminal_count <= 1 {
+        cx.quit();
+    } else {
+        let _ = handle.update(cx, |_, window, _| window.remove_window());
+    }
 }
 
 pub(crate) fn update_open_settings_windows(
@@ -98,11 +121,7 @@ pub(crate) fn open_new_tab_in_main_window(
     command: Option<String>,
     dir: Option<String>,
 ) -> Result<(), String> {
-    let Some(main_window) = cx
-        .windows()
-        .into_iter()
-        .find_map(|handle| handle.downcast::<TerminalView>())
-    else {
+    let Some(main_window) = preferred_window::<TerminalView>(cx) else {
         return Err("No main window available for new tab deeplink".to_string());
     };
 

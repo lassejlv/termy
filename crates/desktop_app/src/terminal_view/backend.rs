@@ -11,6 +11,7 @@ pub(super) enum Terminal {
 
 pub(super) struct NativeTerminalInstance {
     pub(super) wakeup_id: NativeTerminalWakeupId,
+    pub(super) wakeup_route: Arc<Mutex<Option<NativeTerminalWakeupRouter>>>,
     pub(super) terminal: Mutex<NativeTerminal>,
 }
 

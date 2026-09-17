@@ -421,6 +421,26 @@ impl TmuxClient {
         self.run_control_status_args(&["kill-window", "-t", window_id])
     }
 
+    /// Move a live tmux window through the destination control connection, so
+    /// removing the source session's last window cannot interrupt the reply.
+    pub fn move_window_from(&self, source: &Self, window_id: &str) -> Result<()> {
+        if !self.out_of_band_commands_available
+            || !source.out_of_band_commands_available
+            || self.tmux_binary != source.tmux_binary
+            || self.command_prefix != source.command_prefix
+            || self.socket_target != source.socket_target
+        {
+            return Err(anyhow!(
+                "Tabs can only move between sessions on the same tmux server"
+            ));
+        }
+        if self.session_name == source.session_name {
+            return Err(anyhow!("These windows already share the same tmux session"));
+        }
+        let target = format!("{}:", self.session_name);
+        self.run_control_status_args(&["move-window", "-d", "-s", window_id, "-t", &target])
+    }
+
     pub fn rename_window(&self, window_id: &str, name: &str) -> Result<()> {
         self.run_control_status_args(&["rename-window", "-t", window_id, name])
     }

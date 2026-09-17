@@ -362,7 +362,7 @@ Actions=open-tab-here;
 
 [Desktop Action open-tab-here]
 Name=Open new Termy tab here
-Exec=$APP_NAME_LOWER --working-directory %f
+Exec=$APP_NAME_LOWER --new-tab --working-directory %f
 EOF
       cp "$APPDIR/${APP_NAME_LOWER}.desktop" "$APPDIR/usr/share/applications/${APP_NAME_LOWER}.desktop"
     fi

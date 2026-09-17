@@ -59,6 +59,15 @@ const WINDOWS_DEFAULT_WINDOW_HEIGHT: f32 = 820.0;
 pub(crate) struct StartupArguments {
     working_dir: Option<String>,
     deeplinks: Vec<String>,
+    launch_target: LaunchTarget,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LaunchTarget {
+    #[default]
+    Default,
+    Window,
+    Tab,
 }
 
 fn parse_startup_arguments<I, S>(args: I) -> StartupArguments
@@ -72,6 +81,10 @@ where
     while let Some(arg) = args.next() {
         if arg.starts_with("termy://") {
             startup.deeplinks.push(arg);
+        } else if arg == "--new-window" {
+            startup.launch_target = LaunchTarget::Window;
+        } else if arg == "--new-tab" {
+            startup.launch_target = LaunchTarget::Tab;
         } else if let Some(value) = arg.strip_prefix("--working-directory=") {
             startup.working_dir = non_empty_arg_value(value);
         } else if arg == "--working-directory" {
@@ -131,6 +144,20 @@ fn absorb_pending_open_urls(startup: &mut StartupArguments, urls: Vec<String>) {
         }
     }
     fold_startup_new_tab_into_working_dir(startup);
+}
+
+fn fold_startup_window_deeplink(startup: &mut StartupArguments) {
+    if startup.deeplinks.len() != 1 {
+        return;
+    }
+    if let Ok((DeepLinkRoute::NewWindow, argument)) = DeepLinkRoute::parse(&startup.deeplinks[0]) {
+        if startup.working_dir.is_none()
+            && let Some(DeepLinkArgument::NewTab(payload)) = argument
+        {
+            startup.working_dir = payload.dir;
+        }
+        startup.deeplinks.clear();
+    }
 }
 
 fn current_executable() -> Option<std::path::PathBuf> {
@@ -219,6 +246,14 @@ fn open_main_window(
     cx: &mut App,
     startup_config: config::AppConfig,
 ) -> Result<WindowHandle<TerminalView>, String> {
+    open_terminal_window(cx, startup_config, false)
+}
+
+pub(crate) fn open_terminal_window(
+    cx: &mut App,
+    startup_config: config::AppConfig,
+    empty: bool,
+) -> Result<WindowHandle<TerminalView>, String> {
     let window_background = initial_window_background_appearance(&startup_config);
     let startup_window_size = normalized_startup_window_size(&startup_config);
     let bounds = Bounds::centered(None, startup_window_size, cx);
@@ -303,7 +338,13 @@ fn open_main_window(
 
             let view = cx.new({
                 let startup_config = startup_config;
-                |cx| TerminalView::new(window, cx, startup_config)
+                |cx| {
+                    if empty {
+                        TerminalView::new_for_window(window, cx, startup_config, true)
+                    } else {
+                        TerminalView::new(window, cx, startup_config)
+                    }
+                }
             });
             let view_handle = view.downgrade();
 
@@ -478,6 +519,13 @@ fn dispatch_deeplink(
 ) -> Result<(), String> {
     match route {
         DeepLinkRoute::Activate => Ok(()),
+        DeepLinkRoute::NewWindow => {
+            let dir = match route_argument {
+                Some(DeepLinkArgument::NewTab(payload)) => payload.dir,
+                _ => None,
+            };
+            open_main_window_with_runtime_config_overrides(cx, dir).map(|_| ())
+        }
         DeepLinkRoute::NewTab => {
             let (command, dir) = match route_argument {
                 Some(DeepLinkArgument::NewTab(payload)) => (payload.command, payload.dir),
@@ -524,7 +572,11 @@ fn handle_open_urls_with_main_window<V: 'static>(
         match DeepLinkRoute::parse(raw_url) {
             Ok((route, route_argument)) => {
                 log::info!("Handling deeplink: {raw_url}");
-                let _ = focus_or_open_main_window::<V>(cx, &mut open_window);
+                // A new-window request creates its own terminal. Opening or
+                // focusing one first would create an extra window on cold start.
+                if route != DeepLinkRoute::NewWindow {
+                    let _ = focus_or_open_main_window::<V>(cx, &mut open_window);
+                }
                 if let Err(error) = dispatch(cx, route, route_argument) {
                     log::error!("Failed to handle deeplink {raw_url}: {error}");
                     crate::ui::toast::error(error);
@@ -573,7 +625,7 @@ fn main() {
     let (deeplink_tx, deeplink_rx) = flume::unbounded::<Vec<String>>();
     match instance::claim_or_forward(&instance::urls_to_forward(&startup_arguments)) {
         Ok(instance::InstanceClaim::Forwarded) => {
-            eprintln!("Termy is already running; activating the existing window.");
+            log::info!("Forwarded launch request to the running Termy instance.");
             std::process::exit(0);
         }
         Ok(instance::InstanceClaim::Primary(guard)) => {
@@ -600,6 +652,9 @@ fn main() {
     application.run(move |cx: &mut App| {
         launch_probe::record_stage("application_running");
 
+        // Fold only the initiating launch. Requests received from other
+        // processes during startup must each create their own window.
+        fold_startup_window_deeplink(&mut startup_arguments);
         let mut pending_urls = Vec::new();
         while let Ok(urls) = deeplink_rx.try_recv() {
             pending_urls.extend(urls);
@@ -727,6 +782,64 @@ mod tests {
         let parsed = parse_startup_arguments(["termy://new?dir=%2Ftmp%2Fproject"]);
         assert_eq!(parsed.working_dir, None);
         assert_eq!(parsed.deeplinks, vec!["termy://new?dir=%2Ftmp%2Fproject"]);
+    }
+
+    #[test]
+    fn startup_window_deeplink_uses_initial_window_but_pending_requests_are_retained() {
+        let mut startup = parse_startup_arguments(["termy://window?dir=%2Ftmp%2Fproject"]);
+        super::fold_startup_window_deeplink(&mut startup);
+        assert_eq!(startup.working_dir.as_deref(), Some("/tmp/project"));
+        assert!(startup.deeplinks.is_empty());
+        absorb_pending_open_urls(&mut startup, vec!["termy://window".into()]);
+        assert_eq!(startup.deeplinks, vec!["termy://window"]);
+    }
+
+    #[gpui::test]
+    fn linux_launch_handoffs_open_independent_windows(cx: &mut TestAppContext) {
+        let home = tempfile::tempdir().expect("instance home");
+        let super::instance::InstanceClaim::Primary(guard) =
+            super::instance::claim_or_forward_in(home.path(), &[]).expect("primary claim")
+        else {
+            panic!("expected primary instance");
+        };
+        let (tx, rx) = flume::unbounded();
+        super::instance::spawn_listener(guard, tx);
+        cx.update(open_test_window);
+        for args in [vec![], vec!["--working-directory", "/tmp/another project"]] {
+            let startup = parse_startup_arguments(args);
+            let urls = super::instance::urls_to_forward_for_platform(&startup, true);
+            assert!(matches!(
+                super::instance::claim_or_forward_in(home.path(), &urls).unwrap(),
+                super::instance::InstanceClaim::Forwarded
+            ));
+            let forwarded = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+            cx.update(|app| {
+                handle_open_urls_with_main_window::<ReopenTestView>(
+                    app,
+                    &forwarded,
+                    |_| panic!("new-window requests must not reuse an existing window"),
+                    |app, route, argument| {
+                        assert_eq!(route, DeepLinkRoute::NewWindow);
+                        if let Some(dir) = &startup.working_dir {
+                            assert_eq!(
+                                argument,
+                                Some(DeepLinkArgument::NewTab(NewTabDeepLink {
+                                    command: None,
+                                    dir: Some(dir.clone()),
+                                }))
+                            );
+                        }
+                        open_test_window(app);
+                        Ok(())
+                    },
+                );
+            });
+        }
+        assert_eq!(cx.windows().len(), 3);
+        let closing = cx.windows()[0];
+        cx.update(|app| app_actions::close_terminal_window::<ReopenTestView>(closing, app));
+        assert_eq!(cx.windows().len(), 2);
+        assert!(!cx.windows().contains(&closing));
     }
 
     #[test]

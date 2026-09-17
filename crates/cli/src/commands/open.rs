@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub fn run(path: PathBuf) {
-    match launch_termy(path) {
+pub fn run(path: Option<PathBuf>, new_window: bool, new_tab: bool) {
+    match launch_termy(path, new_window, new_tab) {
         Ok(()) => {}
         Err(error) => {
             eprintln!("{error}");
@@ -11,13 +11,20 @@ pub fn run(path: PathBuf) {
     }
 }
 
-fn launch_termy(path: PathBuf) -> Result<(), String> {
-    let working_dir = resolve_working_dir(&path)?;
+fn launch_termy(path: Option<PathBuf>, new_window: bool, new_tab: bool) -> Result<(), String> {
+    let working_dir = path.as_deref().map(resolve_working_dir).transpose()?;
     let app_binary = find_termy_app_binary()?;
 
-    Command::new(&app_binary)
-        .arg("--working-directory")
-        .arg(&working_dir)
+    let mut command = Command::new(&app_binary);
+    if new_window {
+        command.arg("--new-window");
+    } else if new_tab {
+        command.arg("--new-tab");
+    }
+    if let Some(working_dir) = working_dir {
+        command.arg("--working-directory").arg(working_dir);
+    }
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

@@ -6,3 +6,4 @@ mod identity;
 mod lifecycle;
 mod reset;
 mod sizing;
+mod transfer;

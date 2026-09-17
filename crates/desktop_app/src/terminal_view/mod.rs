@@ -150,11 +150,6 @@ impl NativeTerminalWakeupRouter {
         }
     }
 
-    fn notifier(&self, wakeup_id: NativeTerminalWakeupId) -> TerminalWakeupNotifier {
-        let router = self.clone();
-        TerminalWakeupNotifier::new(move || router.mark_ready(wakeup_id))
-    }
-
     fn mark_ready(&self, wakeup_id: NativeTerminalWakeupId) {
         self.ready
             .lock()
@@ -514,6 +509,7 @@ impl Terminal {
     fn new_test_display(size: TerminalSize) -> Self {
         Self::Native(NativeTerminalInstance {
             wakeup_id: 0,
+            wakeup_route: Arc::new(Mutex::new(None)),
             terminal: Mutex::new(NativeTerminal::new_display(size, None)),
         })
     }
@@ -527,9 +523,20 @@ impl Terminal {
         startup_command: Option<&str>,
     ) -> anyhow::Result<Self> {
         let wakeup_id = NEXT_NATIVE_TERMINAL_WAKEUP_ID.fetch_add(1, Ordering::Relaxed);
-        let wakeup_notifier = wakeup_router.map(|router| router.notifier(wakeup_id));
+        let wakeup_route = Arc::new(Mutex::new(wakeup_router.cloned()));
+        let route = wakeup_route.clone();
+        let wakeup_notifier = Some(TerminalWakeupNotifier::new(move || {
+            if let Some(router) = route
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                router.mark_ready(wakeup_id);
+            }
+        }));
         Ok(Self::Native(NativeTerminalInstance {
             wakeup_id,
+            wakeup_route,
             terminal: Mutex::new(NativeTerminal::new_with_wakeup_notifier(
                 size,
                 configured_working_dir,
@@ -550,9 +557,20 @@ impl Terminal {
         launch: Option<&TerminalLaunch>,
     ) -> anyhow::Result<Self> {
         let wakeup_id = NEXT_NATIVE_TERMINAL_WAKEUP_ID.fetch_add(1, Ordering::Relaxed);
-        let wakeup_notifier = wakeup_router.map(|router| router.notifier(wakeup_id));
+        let wakeup_route = Arc::new(Mutex::new(wakeup_router.cloned()));
+        let route = wakeup_route.clone();
+        let wakeup_notifier = Some(TerminalWakeupNotifier::new(move || {
+            if let Some(router) = route
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                router.mark_ready(wakeup_id);
+            }
+        }));
         Ok(Self::Native(NativeTerminalInstance {
             wakeup_id,
+            wakeup_route,
             terminal: Mutex::new(NativeTerminal::new_with_launch_and_wakeup_notifier(
                 size,
                 configured_working_dir,
@@ -1324,6 +1342,8 @@ pub struct TerminalView {
     native_terminal_wakeup_router: NativeTerminalWakeupRouter,
     native_terminal_wakeup_batch: HashSet<NativeTerminalWakeupId>,
     focus_handle: FocusHandle,
+    window_handle: gpui::AnyWindowHandle,
+    owns_persisted_session: bool,
     theme_id: String,
     theme_mode: config::AppearanceMode,
     manual_theme: String,
@@ -3642,6 +3662,22 @@ impl TerminalView {
     }
 
     pub fn new(window: &mut Window, cx: &mut Context<Self>, config: AppConfig) -> Self {
+        Self::new_for_window(window, cx, config, false)
+    }
+
+    pub(crate) fn new_for_window(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        mut config: AppConfig,
+        empty: bool,
+    ) -> Self {
+        // Only the first terminal owns the saved startup session. Additional
+        // windows start fresh and must not mirror its tmux session or overwrite
+        // its native workspace snapshot when they close.
+        let owns_persisted_session = !crate::app_actions::has_window::<Self>(cx);
+        if !owns_persisted_session {
+            config.tmux_persistence = false;
+        }
         crate::launch_probe::record_stage("window_created");
         let effective_font_family = crate::font_families::effective_terminal_font_family(
             &config.font_family,
@@ -3660,6 +3696,7 @@ impl TerminalView {
         #[cfg(test)]
         let _ = &background_opacity_preview_rx;
         let terminal_frame_drain_scheduled = Arc::new(AtomicBool::new(false));
+        let terminal_frame_callback_pending = Arc::new(AtomicBool::new(false));
         let window_handle = window.window_handle();
 
         // Focus the terminal immediately
@@ -3695,10 +3732,39 @@ impl TerminalView {
 
                 let this = this.clone();
                 let terminal_frame_drain_scheduled = terminal_frame_drain_scheduled.clone();
+                let terminal_frame_callback_pending = terminal_frame_callback_pending.clone();
+                // Occluded/minimized windows may not receive another frame.
+                // Keep shell exits and other terminal events moving in those
+                // windows without giving up frame batching for visible ones.
+                let fallback_view = this.clone();
+                let fallback_scheduled = terminal_frame_drain_scheduled.clone();
+                let fallback = cx.spawn(async move |cx| {
+                    smol::Timer::after(Duration::from_millis(100)).await;
+                    if fallback_scheduled.swap(false, Ordering::AcqRel) {
+                        let _ = cx.update(|cx| {
+                            fallback_view.update(cx, |view, cx| {
+                                if view.process_terminal_events(cx) {
+                                    cx.notify();
+                                }
+                            })
+                        });
+                    }
+                });
                 if cx
                     .update_window(window_handle, move |_, window, _| {
+                        // Keep at most one frame callback queued while an
+                        // obscured window continues receiving terminal output.
+                        if terminal_frame_callback_pending.swap(true, Ordering::AcqRel) {
+                            fallback.detach();
+                            window.refresh();
+                            return;
+                        }
                         window.on_next_frame(move |_window, cx| {
-                            terminal_frame_drain_scheduled.store(false, Ordering::Release);
+                            drop(fallback);
+                            terminal_frame_callback_pending.store(false, Ordering::Release);
+                            if !terminal_frame_drain_scheduled.swap(false, Ordering::AcqRel) {
+                                return;
+                            }
                             let _ = this.update(cx, |view, cx| {
                                 if view.process_terminal_events(cx) {
                                     cx.notify();
@@ -3826,21 +3892,23 @@ impl TerminalView {
             Self::predicted_prompt_seed_title(&tab_title, predicted_prompt_cwd.as_deref());
         let initial_cols = TerminalSize::default().cols;
         let initial_rows = TerminalSize::default().rows;
-        let startup_native_session = if configured_runtime_kind == RuntimeKind::Native {
-            match Self::load_startup_native_session(&config) {
-                Ok(session) => session,
-                Err(error) => {
-                    log::error!("Failed to preload native tab workspace: {error}");
-                    crate::ui::toast::error("Failed to load saved native tabs");
-                    None
+        let startup_native_session =
+            if !empty && owns_persisted_session && configured_runtime_kind == RuntimeKind::Native {
+                match Self::load_startup_native_session(&config) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        log::error!("Failed to preload native tab workspace: {error}");
+                        crate::ui::toast::error("Failed to load saved native tabs");
+                        None
+                    }
                 }
-            }
-        } else {
-            None
-        };
-        let defer_native_terminal = startup_native_session
-            .as_ref()
-            .is_some_and(|startup| startup.session.is_some());
+            } else {
+                None
+            };
+        let defer_native_terminal = empty
+            || startup_native_session
+                .as_ref()
+                .is_some_and(|startup| startup.session.is_some());
         let (runtime, initial_snapshot, mut native_terminal) =
             Self::runtime_startup_from_app_config(
                 &config,
@@ -3876,6 +3944,8 @@ impl TerminalView {
             native_terminal_wakeup_router,
             native_terminal_wakeup_batch: HashSet::new(),
             focus_handle,
+            window_handle,
+            owns_persisted_session,
             theme_id,
             theme_mode: config.theme_mode,
             manual_theme: config.theme.clone(),
@@ -4071,6 +4141,7 @@ impl TerminalView {
             false
         };
         if resolved_runtime_kind == RuntimeKind::Native
+            && !empty
             && !restored_native_workspace
             && native_terminal.is_none()
         {
@@ -4885,7 +4956,7 @@ impl TerminalView {
         }
 
         if should_quit {
-            // Shell `exit` in the last native pane should close the app immediately.
+            // Shell `exit` in the last native pane closes only its own window.
             self.sync_persisted_native_workspace();
             if self.benchmark_exit_on_complete() {
                 self.schedule_benchmark_exit(cx);
@@ -4893,7 +4964,10 @@ impl TerminalView {
             } else {
                 self.finish_benchmark_session();
                 self.allow_quit_without_prompt = true;
-                cx.quit();
+                let window_handle = self.window_handle;
+                cx.defer(move |cx| {
+                    crate::app_actions::close_terminal_window::<Self>(window_handle, cx);
+                });
             }
         }
 

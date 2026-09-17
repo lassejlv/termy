@@ -626,6 +626,35 @@ fn managed_nonpersistent_drop_kills_session() {
         0,
         "no tmux clients should remain after non-persistent drop"
     );
+
+    // Moving the last window must preserve its shell when the source client drops.
+    let source = new_tmux_client_with_persistence_live(binary.as_str(), false);
+    let target = new_tmux_client_with_persistence_live(binary.as_str(), false);
+    let snapshot = source.refresh_snapshot().expect("source snapshot");
+    let moved = active_window(&snapshot);
+    let pane_id = &moved.panes[0].id;
+    let before = run_tmux_test_socket_output(
+        binary.as_str(),
+        &["display-message", "-p", "-t", pane_id, "#{pane_pid}"],
+    );
+    assert!(before.status.success());
+    target
+        .move_window_from(&source, &moved.id)
+        .expect("move last window");
+    drop(source);
+    wait_for_tmux_settle();
+    let after = target.refresh_snapshot().expect("destination snapshot");
+    assert_eq!(after.windows.len(), 2);
+    assert!(after.windows.iter().any(|window| window.id == moved.id));
+    let pid = run_tmux_test_socket_output(
+        binary.as_str(),
+        &["display-message", "-p", "-t", pane_id, "#{pane_pid}"],
+    );
+    assert!(pid.status.success());
+    assert_eq!(
+        before.stdout, pid.stdout,
+        "moving a tab must preserve the shell PID"
+    );
 }
 
 #[test]

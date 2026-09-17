@@ -8,6 +8,7 @@ const MAX_DEEPLINK_DIR_LEN: usize = 4096;
 pub(crate) enum DeepLinkRoute {
     Activate,
     NewTab,
+    NewWindow,
     Settings,
     OpenConfig,
     ThemeInstall,
@@ -55,7 +56,7 @@ impl DeepLinkRoute {
 
         match segments.as_slice() {
             [] => Ok((Self::Activate, None)),
-            ["new"] => {
+            ["new" | "window"] => {
                 // Do not honor ?cmd= from external URL protocol launches. Writing
                 // deeplink-controlled bytes into a PTY can execute commands.
                 let command = None;
@@ -67,7 +68,12 @@ impl DeepLinkRoute {
                 } else {
                     Some(DeepLinkArgument::NewTab(NewTabDeepLink { command, dir }))
                 };
-                Ok((Self::NewTab, argument))
+                let route = if segments == ["window"] {
+                    Self::NewWindow
+                } else {
+                    Self::NewTab
+                };
+                Ok((route, argument))
             }
             ["settings"] => Ok((Self::Settings, None)),
             ["open", "config"] => Ok((Self::OpenConfig, None)),
@@ -100,6 +106,14 @@ fn parse_query_value(url: &Url, name: &str) -> Option<String> {
 pub(crate) fn new_tab_deeplink_for_dir(dir: &str) -> String {
     let mut url = Url::parse("termy://new").expect("static Termy new-tab URL");
     url.query_pairs_mut().append_pair("dir", dir);
+    url.to_string()
+}
+
+pub(crate) fn new_window_deeplink(dir: Option<&str>) -> String {
+    let mut url = Url::parse("termy://window").expect("static Termy new-window URL");
+    if let Some(dir) = dir {
+        url.query_pairs_mut().append_pair("dir", dir);
+    }
     url.to_string()
 }
 
@@ -194,6 +208,27 @@ mod tests {
                 }))
             ))
         );
+    }
+
+    #[test]
+    fn window_deeplink_roundtrips_directory_and_rejects_control_characters() {
+        let dir = "/tmp/a folder & another";
+        let url = super::new_window_deeplink(Some(dir));
+        assert_eq!(
+            DeepLinkRoute::parse(&url),
+            Ok((
+                NewWindow,
+                Some(DeepLinkArgument::NewTab(NewTabDeepLink {
+                    command: None,
+                    dir: Some(dir.to_string()),
+                }))
+            ))
+        );
+        assert_eq!(
+            DeepLinkRoute::parse("termy://window?cmd=whoami"),
+            Ok((NewWindow, None))
+        );
+        assert!(DeepLinkRoute::parse("termy://window?dir=%2Ftmp%0A").is_err());
     }
 
     #[test]

@@ -8,4 +8,4 @@ X-KDE-Priority=TopLevel
 [Desktop Action openTabHere]
 Name=Open new Termy tab here
 Icon=termy
-Exec=termy --working-directory %f
+Exec=termy --new-tab --working-directory %f

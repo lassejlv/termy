@@ -285,7 +285,8 @@ impl TerminalView {
     }
 
     fn should_persist_last_native_session(&self) -> bool {
-        self.native_tab_persistence || self.workspace_sidebar_enabled
+        self.owns_persisted_session
+            && (self.native_tab_persistence || self.workspace_sidebar_enabled)
     }
 
     fn persisted_native_workspace_path() -> Result<PathBuf, String> {

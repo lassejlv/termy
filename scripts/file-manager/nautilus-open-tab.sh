@@ -20,4 +20,4 @@ fi
 if [[ -f "$target" ]]; then
 	target="$(dirname "$target")"
 fi
-exec termy --working-directory "$target"
+exec termy --new-tab --working-directory "$target"

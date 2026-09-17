@@ -48,6 +48,9 @@ impl TerminalView {
         self.switch_tab(tab_index, cx);
         self.focus_terminal_after_tab_activation(window, cx);
         self.begin_tab_drag(tab_index, orientation);
+        if click_count != 2 {
+            self.arm_window_tab_drag(tab_index, window.mouse_position(), cx);
+        }
         if Self::should_begin_tab_rename(orientation, click_count) {
             self.begin_rename_tab(tab_index, cx);
         }

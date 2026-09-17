@@ -17,6 +17,14 @@ struct Cli {
     )]
     working_directory: Option<PathBuf>,
 
+    /// Open a separate terminal window
+    #[arg(long, conflicts_with = "new_tab")]
+    new_window: bool,
+
+    /// Open a tab in the running terminal window
+    #[arg(long, conflicts_with = "new_window")]
+    new_tab: bool,
+
     /// Open Termy with this working directory
     #[arg(value_name = "PATH")]
     path: Option<PathBuf>,
@@ -200,8 +208,9 @@ enum PluginCommand {
 fn main() {
     let cli = Cli::parse();
 
-    if let Some(path) = cli.working_directory.or(cli.path) {
-        commands::open::run(path);
+    let path = cli.working_directory.or(cli.path);
+    if path.is_some() || cli.new_window || cli.new_tab {
+        commands::open::run(path, cli.new_window, cli.new_tab);
         return;
     }
 

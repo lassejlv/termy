@@ -70,7 +70,7 @@ pub(crate) fn nautilus_script(quoted_exe: &str) -> String {
          if [[ -f \"$target\" ]]; then\n\
          \ttarget=\"$(dirname \"$target\")\"\n\
          fi\n\
-         exec {quoted_exe} --working-directory \"$target\"\n"
+         exec {quoted_exe} --new-tab --working-directory \"$target\"\n"
     )
 }
 
@@ -79,7 +79,7 @@ pub(crate) fn nemo_action(quoted_exe: &str) -> String {
         "[Nemo Action]\n\
          Name={OPEN_TAB_HERE_LABEL}\n\
          Comment=Open a new Termy tab in this folder\n\
-         Exec={quoted_exe} --working-directory %F\n\
+         Exec={quoted_exe} --new-tab --working-directory %F\n\
          Icon-Name=termy\n\
          Selection=any\n\
          Extensions=dir;\n\
@@ -99,7 +99,7 @@ pub(crate) fn kde_servicemenu(quoted_exe: &str) -> String {
          [Desktop Action openTabHere]\n\
          Name={OPEN_TAB_HERE_LABEL}\n\
          Icon=termy\n\
-         Exec={quoted_exe} --working-directory %f\n"
+         Exec={quoted_exe} --new-tab --working-directory %f\n"
     )
 }
 
@@ -146,9 +146,16 @@ mod tests {
     #[test]
     fn scripts_invoke_termy_with_working_directory() {
         let quoted = "'/usr/bin/termy'";
-        assert!(nautilus_script(quoted).contains("exec '/usr/bin/termy' --working-directory"));
-        assert!(nemo_action(quoted).contains("Exec='/usr/bin/termy' --working-directory %F"));
-        assert!(kde_servicemenu(quoted).contains("Exec='/usr/bin/termy' --working-directory %f"));
+        assert!(
+            nautilus_script(quoted).contains("exec '/usr/bin/termy' --new-tab --working-directory")
+        );
+        assert!(
+            nemo_action(quoted).contains("Exec='/usr/bin/termy' --new-tab --working-directory %F")
+        );
+        assert!(
+            kde_servicemenu(quoted)
+                .contains("Exec='/usr/bin/termy' --new-tab --working-directory %f")
+        );
         assert!(kde_servicemenu(quoted).contains("inode/directory"));
         assert!(nemo_action(quoted).contains("Open new Termy tab here"));
     }
