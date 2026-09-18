@@ -1,12 +1,12 @@
 use crate::multiplexer::{discovery, protocol::*};
 use crate::{remote::*, *};
-use anyhow::{bail, ensure};
+use anyhow::{Context, bail, ensure};
 use flume::Sender;
 use std::{
     net::{Shutdown, TcpStream},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -19,10 +19,10 @@ struct Connection {
 
 impl Connection {
     fn connect(root: &Path) -> anyhow::Result<Self> {
-        let (stream, conditional_layout_updates) = discovery::connect_with_capabilities(root)?;
+        let (stream, capabilities) = discovery::connect_with_capabilities(root)?;
         Ok(Self {
             stream: Mutex::new(stream),
-            conditional_layout_updates,
+            conditional_layout_updates: capabilities.conditional_layout_updates,
         })
     }
     fn request(&self, request: Request) -> anyhow::Result<Response> {
@@ -123,8 +123,13 @@ impl SessionClient {
         validate_state(&state)?;
         let rpc = Connection::connect(&self.root)?;
         let input = Connection::connect(&self.root)?;
-        let mut stream = discovery::connect(&self.root)?;
-        write_message(&mut stream, &Request::Subscribe(id.to_owned()))?;
+        let (mut stream, capabilities) = discovery::connect_with_capabilities(&self.root)?;
+        let subscription = if capabilities.graphics_stream {
+            Request::SubscribeGraphics(id.to_owned())
+        } else {
+            Request::Subscribe(id.to_owned())
+        };
+        write_message(&mut stream, &subscription)?;
         ensure!(
             matches!(read_message(&mut stream)?, Response::Ok),
             "cannot subscribe to terminal session"
@@ -132,8 +137,13 @@ impl SessionClient {
         stream.set_read_timeout(None)?;
         let close_stream = stream.try_clone()?;
         let (input_tx, input_rx) = flume::bounded(256);
+        let mut initial_state = (*state).clone();
+        // Painting reads a completed local snapshot, even before the first
+        // graphics update arrives. It must never make a synchronous image RPC.
+        initial_state.graphics = Some(Vec::new());
         let shared = Arc::new(ClientState {
-            state: Mutex::new(state),
+            state: Mutex::new(Arc::new(initial_state)),
+            state_updated: Condvar::new(),
             pending: Mutex::new(Pending::default()),
             wakeup,
             wakeup_enabled: AtomicBool::new(true),
@@ -141,16 +151,44 @@ impl SessionClient {
             closing: AtomicBool::new(false),
         });
         let reader_shared = Arc::clone(&shared);
+        let legacy_graphics = if capabilities.graphics_stream {
+            None
+        } else {
+            Some(Connection::connect(&self.root)?)
+        };
+        let reader_pane_id = id.to_owned();
         std::thread::Builder::new()
             .name("termy-session-read".into())
             .spawn(move || {
+                let mut graphics = graphics::GraphicsDecoder::default();
+                let mut legacy_cache = LegacyGraphicsCache::default();
                 let result = (|| -> anyhow::Result<()> {
                     loop {
                         match read_message(&mut stream)? {
-                            Update::State(state) => {
+                            Update::State(mut state) => {
                                 validate_state(&state)?;
-                                *reader_shared.state.lock().unwrap() = state;
-                                reader_shared.pending.lock().unwrap().wakeup = true;
+                                let connection = legacy_graphics
+                                    .as_ref()
+                                    .context("unexpected legacy terminal update")?;
+                                legacy_cache.update(
+                                    Arc::make_mut(&mut state),
+                                    || match connection.request(Request::Command {
+                                        pane: reader_pane_id.clone(),
+                                        command: RemoteCommand::Graphics,
+                                    })? {
+                                        Response::Reply(RemoteReply::Graphics(
+                                            revision,
+                                            placements,
+                                        )) => Ok((revision, placements)),
+                                        _ => bail!("invalid terminal graphics response"),
+                                    },
+                                )?;
+                                reader_shared.publish_state(state);
+                            }
+                            Update::GraphicsState(mut state, update) => {
+                                validate_state(&state)?;
+                                Arc::make_mut(&mut state).graphics = Some(graphics.decode(update)?);
+                                reader_shared.publish_state(state);
                             }
                             Update::Events(events) => {
                                 let mut pending = reader_shared.pending.lock().unwrap();
@@ -287,6 +325,7 @@ struct Pending {
 
 struct ClientState {
     state: Mutex<Arc<RemoteState>>,
+    state_updated: Condvar,
     pending: Mutex<Pending>,
     wakeup: Option<TerminalWakeupNotifier>,
     wakeup_enabled: AtomicBool,
@@ -295,6 +334,35 @@ struct ClientState {
 }
 
 impl ClientState {
+    fn publish_state(&self, state: Arc<RemoteState>) {
+        *self.state.lock().unwrap() = state;
+        self.pending.lock().unwrap().wakeup = true;
+        self.state_updated.notify_all();
+    }
+
+    fn wait_for_generation(&self, generation: u64) -> anyhow::Result<()> {
+        let (state, _) = self
+            .state_updated
+            .wait_timeout_while(
+                self.state.lock().unwrap(),
+                Duration::from_secs(5),
+                |state| {
+                    state.render.metadata.generation < generation
+                        && !self.disconnected.load(Ordering::Acquire)
+                },
+            )
+            .unwrap();
+        ensure!(
+            !self.disconnected.load(Ordering::Acquire),
+            "terminal session disconnected"
+        );
+        ensure!(
+            state.render.metadata.generation >= generation,
+            "terminal viewport did not catch up"
+        );
+        Ok(())
+    }
+
     fn notify(&self) {
         if self.wakeup_enabled.load(Ordering::Acquire)
             && let Some(wakeup) = &self.wakeup
@@ -307,6 +375,10 @@ impl ClientState {
             return;
         }
         log::error!("terminal session connection lost: {error}");
+        // Pair the notification with the state mutex used by scroll waiters.
+        let state = self.state.lock().unwrap();
+        self.state_updated.notify_all();
+        drop(state);
         self.pending
             .lock()
             .unwrap()
@@ -339,11 +411,38 @@ impl RemoteTransport for ClientTerminal {
         Arc::clone(&self.shared.state.lock().unwrap())
     }
     fn request(&self, command: RemoteCommand) -> anyhow::Result<RemoteReply> {
+        let changes_viewport = matches!(
+            command,
+            RemoteCommand::Scroll(_)
+                | RemoteCommand::ScrollToBottom
+                | RemoteCommand::ClearScrollback
+        );
         match self.rpc.request(Request::Command {
             pane: self.id.clone(),
             command,
         }) {
-            Ok(Response::Reply(reply)) => Ok(reply),
+            Ok(Response::Reply(reply)) => {
+                if changes_viewport && matches!(reply, RemoteReply::Changed(true)) {
+                    // Attach refreshes/publishes immediately on every supported
+                    // host. Wait for that generation on the ordered subscription
+                    // (including its graphics), rather than letting selection
+                    // record the old offset during the 16ms frame interval.
+                    let result = (|| {
+                        let Response::Attached(_, state) =
+                            self.rpc.request(Request::Attach(self.id.clone()))?
+                        else {
+                            bail!("invalid terminal refresh response");
+                        };
+                        self.shared
+                            .wait_for_generation(state.render.metadata.generation)
+                    })();
+                    if let Err(error) = result {
+                        self.shared.fail(&error);
+                        return Err(error);
+                    }
+                }
+                Ok(reply)
+            }
             Ok(_) => bail!("invalid terminal response"),
             Err(error) => {
                 self.shared.fail(&error);

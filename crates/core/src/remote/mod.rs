@@ -1,12 +1,13 @@
 //! Renderer-neutral remote terminal boundary. The session host owns the engine;
 //! clients cache only the viewport and send input or history queries to it.
 mod backend;
+pub mod graphics;
 pub(crate) mod serde_deadline;
 pub(crate) mod serde_image;
 pub(crate) mod serde_palette;
 
 use crate::*;
-pub(crate) use backend::RemoteBackend;
+pub(crate) use backend::{LegacyGraphicsCache, RemoteBackend};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -24,6 +25,10 @@ pub struct RemoteState {
     pub graphics_revision: u64,
     #[serde(with = "serde_deadline")]
     pub graphics_deadline: Option<std::time::Instant>,
+    /// Local snapshot supplied by the negotiated graphics stream. Skipped in
+    /// the legacy state format so existing sessions remain attachable.
+    #[serde(skip)]
+    pub graphics: Option<Vec<KittyGraphicsRenderPlacement>>,
 }
 
 impl RemoteState {
@@ -47,6 +52,7 @@ impl RemoteState {
                 .iter()
                 .filter_map(|placement| placement.animation_deadline)
                 .min(),
+            graphics: Some(graphics),
         }
     }
 }

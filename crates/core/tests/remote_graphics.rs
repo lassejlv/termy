@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 use termy_core::{
     Terminal, TerminalEvent, TerminalSize,
     remote::{
@@ -7,7 +10,7 @@ use termy_core::{
     },
 };
 
-struct Host(Mutex<Terminal>);
+struct Host(Mutex<Terminal>, AtomicUsize);
 
 impl RemoteTransport for Host {
     fn state(&self) -> Arc<RemoteState> {
@@ -17,7 +20,9 @@ impl RemoteTransport for Host {
     fn request(&self, command: RemoteCommand) -> anyhow::Result<RemoteReply> {
         let reply = remote::execute(&mut self.0.lock().unwrap(), command);
         // Exercise the same image serialization boundary as the session host.
-        Ok(bincode::deserialize(&bincode::serialize(&reply)?)?)
+        let bytes = bincode::serialize(&reply)?;
+        self.1.fetch_add(bytes.len(), Ordering::Relaxed);
+        Ok(bincode::deserialize(&bytes)?)
     }
 
     fn send(&self, command: RemoteCommand) {
@@ -37,15 +42,18 @@ impl RemoteTransport for Host {
 }
 
 fn terminal() -> (Arc<Host>, Terminal) {
-    let host = Arc::new(Host(Mutex::new(Terminal::new_display(
-        TerminalSize {
-            cols: 20,
-            rows: 6,
-            cell_width: 10.0,
-            cell_height: 20.0,
-        },
-        None,
-    ))));
+    let host = Arc::new(Host(
+        Mutex::new(Terminal::new_display(
+            TerminalSize {
+                cols: 20,
+                rows: 6,
+                cell_width: 10.0,
+                cell_height: 20.0,
+            },
+            None,
+        )),
+        AtomicUsize::new(0),
+    ));
     let remote = Terminal::from_remote(host.clone());
     (host, remote)
 }
@@ -100,4 +108,48 @@ fn remote_images_follow_unicode_placeholder_redraws() {
     remote.feed_output(b"\x1b[2;2H ");
     assert_placements_match(&host, &remote);
     assert!(remote.kitty_graphics_placements().is_empty());
+}
+
+#[test]
+fn remote_resize_does_not_retransfer_unchanged_image_pixels() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let (host, mut remote) = terminal();
+    // Incompressible pixels expose the cost hidden by one-pixel fixtures.
+    let mut seed = 1u32;
+    let pixels: Vec<u8> = (0..1024 * 1024 * 4)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as u8
+        })
+        .collect();
+    remote.feed_output(
+        format!(
+            "\x1b_Ga=T,i=1,f=32,s=1024,v=1024,c=2,r=2,C=1;{}\x1b\\",
+            STANDARD.encode(pixels)
+        )
+        .as_bytes(),
+    );
+    assert_eq!(remote.kitty_graphics_placements().len(), 1);
+    host.1.store(0, Ordering::Relaxed);
+    let start = std::time::Instant::now();
+    for cols in 21..33 {
+        remote.resize(TerminalSize {
+            cols,
+            rows: 6,
+            cell_width: 10.0,
+            cell_height: 20.0,
+        });
+        assert_placements_match(&host, &remote);
+    }
+    let bytes = host.1.load(Ordering::Relaxed);
+    eprintln!(
+        "12 resize/render cycles: {:?}, {bytes} reply bytes",
+        start.elapsed()
+    );
+    assert!(
+        bytes < 64 * 1024,
+        "resizing retransferred unchanged image pixels: {bytes} bytes"
+    );
 }

@@ -319,6 +319,123 @@ impl Drop for Host {
 }
 
 #[gpui::test]
+fn multiplexer_text_selection_survives_scrolling_and_output(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("host");
+    let _host = Host(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("{PREFIX}host_process"), "--nocapture"])
+            .env("TERMY_DESKTOP_MUX_ROOT", &root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| SessionClient::connect(&root).is_ok());
+    let client = SessionClient::connect(&root).unwrap();
+    cx.update(|cx| crate::multiplexer::install_for_test(client.clone(), cx).unwrap());
+    let handle = window(cx, true);
+    update(cx, handle, |view, cx| {
+        let launch = TerminalLaunch::Program {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "stty -echo; i=0; while [ $i -lt 100 ]; do printf 'line-%02d\\r\\n' \"$i\"; i=$((i+1)); done; printf READY; read go; printf '\\r\\nincoming-output\\r\\n'; read done".into()],
+        };
+        assert!(view.add_tab_with_launch(None, Some(&launch), cx));
+    });
+    wait(|| update(cx, handle, |view, _| core_text(view).contains("READY")));
+
+    let cell_position = |view: &TerminalView, col: usize, row: usize| {
+        let (padding_x, padding_y) = view.effective_terminal_padding();
+        let size = view.layout_cell_size();
+        point(
+            px(view.workspace_sidebar_width() + padding_x) + size.width * (col as f32 + 0.5),
+            px(view.terminal_content_top_inset() + padding_y) + size.height * (row as f32 + 0.5),
+        )
+    };
+    cx.update(|cx| {
+        handle
+            .update(cx, |view, window, cx| {
+                view.process_terminal_events(cx);
+                let start = cell_position(view, 0, 1);
+                let end = cell_position(view, 6, 1);
+                view.handle_mouse_down(
+                    &MouseDownEvent {
+                        button: MouseButton::Left,
+                        position: start,
+                        click_count: 1,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+                view.handle_global_mouse_move_event(
+                    &MouseMoveEvent {
+                        pressed_button: Some(MouseButton::Left),
+                        position: end,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+                assert!(view.selection_dragging && view.has_selection());
+                assert!(view.selected_text().unwrap().starts_with("line-"));
+                let anchor = view.selection_anchor;
+                view.handle_terminal_scroll_wheel(
+                    &ScrollWheelEvent {
+                        position: end,
+                        delta: gpui::ScrollDelta::Lines(point(0.0, 1.0)),
+                        touch_phase: TouchPhase::Moved,
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    view.content_scroll_baseline,
+                    view.active_terminal().unwrap().scroll_state().0
+                );
+                assert!(view.content_scroll_baseline > 0);
+                view.process_terminal_events(cx);
+                assert_eq!(
+                    view.selection_anchor, anchor,
+                    "user scrolling must not move the selection anchor"
+                );
+                assert!(view.selection_dragging && view.has_selection());
+                assert!(view.handle_global_mouse_up_event(
+                    &MouseUpEvent {
+                        button: MouseButton::Left,
+                        position: end,
+                        click_count: 1,
+                        ..Default::default()
+                    },
+                    cx
+                ));
+                assert!(!view.selection_dragging && view.has_selection());
+            })
+            .unwrap();
+    });
+
+    let (selected, history) = update(cx, handle, |view, _| {
+        let selected = view.selected_text().unwrap();
+        let terminal = view.active_terminal().unwrap();
+        let history = terminal.scroll_state().1;
+        terminal.write_input(b"go\n");
+        (selected, history)
+    });
+    wait(|| {
+        update(cx, handle, |view, _| {
+            view.active_terminal().unwrap().scroll_state().1 > history
+        })
+    });
+    update(cx, handle, |view, cx| {
+        view.process_terminal_events(cx);
+        assert!(view.has_selection());
+        assert_eq!(view.selected_text().as_deref(), Some(selected.as_str()));
+    });
+    client.shutdown().unwrap();
+}
+
+#[gpui::test]
 fn desktop_saves_preserve_cli_workspace_edits(cx: &mut TestAppContext) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("host");

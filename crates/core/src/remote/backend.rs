@@ -12,6 +12,44 @@ struct GraphicsCacheKey {
     alternate_screen: bool,
 }
 
+impl GraphicsCacheKey {
+    fn of(state: &RemoteState) -> Self {
+        let metadata = state.render.metadata;
+        Self {
+            revision: state.graphics_revision,
+            generation: metadata.generation,
+            cols: metadata.cols,
+            rows: metadata.rows,
+            display_offset: metadata.display_offset,
+            history_size: metadata.history_size,
+            alternate_screen: state.alternate_screen,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct LegacyGraphicsCache {
+    key: Option<GraphicsCacheKey>,
+    placements: Vec<KittyGraphicsRenderPlacement>,
+}
+
+impl LegacyGraphicsCache {
+    pub(crate) fn update(
+        &mut self,
+        state: &mut RemoteState,
+        fetch: impl FnOnce() -> anyhow::Result<(u64, Vec<KittyGraphicsRenderPlacement>)>,
+    ) -> anyhow::Result<()> {
+        let key = GraphicsCacheKey::of(state);
+        if self.key != Some(key) {
+            let (_, placements) = fetch()?;
+            self.placements = placements;
+            self.key = Some(key);
+        }
+        state.graphics = Some(self.placements.clone());
+        Ok(())
+    }
+}
+
 struct GraphicsCache {
     key: Option<GraphicsCacheKey>,
     snapshot: (u64, Vec<KittyGraphicsRenderPlacement>),
@@ -146,18 +184,12 @@ impl RemoteBackend {
     }
     pub(crate) fn kitty_graphics_snapshot(&self) -> (u64, Vec<KittyGraphicsRenderPlacement>) {
         let state = self.transport.state();
-        let metadata = state.render.metadata;
+        if let Some(placements) = &state.graphics {
+            return (state.graphics_revision, placements.clone());
+        }
         // Placements are viewport-relative. History scrolling and Unicode
         // placeholder redraws can move them without changing image storage.
-        let key = GraphicsCacheKey {
-            revision: state.graphics_revision,
-            generation: metadata.generation,
-            cols: metadata.cols,
-            rows: metadata.rows,
-            display_offset: metadata.display_offset,
-            history_size: metadata.history_size,
-            alternate_screen: state.alternate_screen,
-        };
+        let key = GraphicsCacheKey::of(&state);
         let mut cached = self.graphics.lock().unwrap();
         if cached.key != Some(key)
             && let Some(RemoteReply::Graphics(revision, placements)) =
@@ -209,6 +241,7 @@ impl RemoteBackend {
                 && old.render.palette == state.render.palette
         }) {
             None => TerminalDamageSnapshot::Full,
+            Some(old) if Arc::ptr_eq(old, state) => TerminalDamageSnapshot::Partial(Vec::new()),
             Some(old) => {
                 let cols = usize::from(metadata.cols);
                 let mut spans = Vec::new();
@@ -328,6 +361,30 @@ impl RemoteBackend {
         last: i32,
         mut visitor: impl FnMut((i32, i32, usize), i32, usize, &TerminalRenderCell),
     ) -> (i32, i32, usize) {
+        let state = self.transport.state();
+        let metadata = state.render.metadata;
+        let cols = usize::from(metadata.cols);
+        let bounds = (
+            -(metadata.history_size as i32),
+            i32::from(metadata.rows) - 1,
+            cols,
+        );
+        if first > last {
+            return bounds;
+        }
+        let viewport_first = -(metadata.display_offset as i32);
+        let viewport_last = viewport_first + i32::from(metadata.rows) - 1;
+        if first >= viewport_first && last <= viewport_last {
+            // Selection belongs to the frame the user can see. Querying the
+            // host here both blocks the UI and may read newer, shifted lines.
+            for line in first..=last {
+                let start = (line - viewport_first) as usize * cols;
+                for (col, cell) in state.render.cells[start..start + cols].iter().enumerate() {
+                    visitor(bounds, line, col, cell);
+                }
+            }
+            return bounds;
+        }
         if let Some(RemoteReply::Lines { bounds, cells }) =
             self.request(RemoteCommand::Lines { first, last })
         {
@@ -387,6 +444,14 @@ impl RemoteBackend {
             .collect()
     }
     pub(crate) fn hyperlink_at(&self, row: usize, col: usize) -> Option<DetectedLink> {
+        let state = self.transport.state();
+        let cols = usize::from(state.render.metadata.cols);
+        if col >= cols
+            || row >= usize::from(state.render.metadata.rows)
+            || !state.render.cells[row * cols + col].hyperlink
+        {
+            return None;
+        }
         match self.request(RemoteCommand::Hyperlink { row, col }) {
             Some(RemoteReply::Hyperlink(link)) => link,
             _ => None,

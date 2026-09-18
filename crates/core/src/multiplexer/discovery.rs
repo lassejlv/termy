@@ -17,6 +17,8 @@ pub(crate) struct Endpoint {
     pub token: String,
     #[serde(default)]
     pub conditional_layout_updates: bool,
+    #[serde(default)]
+    pub graphics_stream: bool,
 }
 
 pub(crate) fn prepare_root(root: &Path) -> anyhow::Result<()> {
@@ -54,11 +56,7 @@ pub(crate) fn private_file(path: &Path) -> anyhow::Result<File> {
     Ok(options.open(path)?)
 }
 
-pub(crate) fn connect(root: &Path) -> anyhow::Result<TcpStream> {
-    connect_with_capabilities(root).map(|(stream, _)| stream)
-}
-
-pub(crate) fn connect_with_capabilities(root: &Path) -> anyhow::Result<(TcpStream, bool)> {
+pub(crate) fn connect_with_capabilities(root: &Path) -> anyhow::Result<(TcpStream, Endpoint)> {
     let endpoint: Endpoint = serde_json::from_slice(&fs::read(root.join("endpoint.json"))?)?;
     ensure!(
         endpoint.version == VERSION,
@@ -75,11 +73,11 @@ pub(crate) fn connect_with_capabilities(root: &Path) -> anyhow::Result<(TcpStrea
         &mut stream,
         &Request::Hello {
             version: VERSION,
-            token: endpoint.token,
+            token: endpoint.token.clone(),
         },
     )?;
     match read_message(&mut stream)? {
-        Response::Ok => Ok((stream, endpoint.conditional_layout_updates)),
+        Response::Ok => Ok((stream, endpoint)),
         Response::Error(error) => bail!(error),
         _ => bail!("unexpected multiplexer greeting"),
     }

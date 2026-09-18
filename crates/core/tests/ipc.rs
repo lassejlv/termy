@@ -48,6 +48,69 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
 }
 
 #[test]
+fn scrolling_reply_updates_viewport_before_selection_reads() {
+    assert_scrolling_reply_updates_viewport(false);
+}
+
+#[test]
+fn legacy_scrolling_reply_updates_viewport_before_selection_reads() {
+    assert_scrolling_reply_updates_viewport(true);
+}
+
+fn assert_scrolling_reply_updates_viewport(legacy_graphics: bool) {
+    let host = Host::new();
+    if legacy_graphics {
+        let path = host.root.join("endpoint.json");
+        let mut endpoint: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        endpoint.as_object_mut().unwrap().remove("graphics_stream");
+        fs::write(path, serde_json::to_vec(&endpoint).unwrap()).unwrap();
+    }
+    let (id, terminal) = host.client.create(
+        PaneLaunch {
+            size: TerminalSize { cols: 40, rows: 6, ..TerminalSize::default() },
+            working_directory: None,
+            shell_integration: None,
+            config: TerminalRuntimeConfig::default(),
+            launch: Some(TerminalLaunch::Program {
+                program: "/bin/sh".into(),
+                args: vec!["-c".into(), "stty -echo; i=0; while [ $i -lt 50 ]; do printf 'line-%s\\r\\n' \"$i\"; i=$((i+1)); done; printf READY; read done".into()],
+            }),
+        },
+        None,
+    ).unwrap();
+    wait_until(|| terminal.scroll_state().1 >= 45);
+    let started = Instant::now();
+    for _ in 0..10 {
+        assert!(terminal.scroll_display(3));
+        assert_eq!(
+            terminal.scroll_state().0,
+            3,
+            "selection must see the acknowledged scroll before recording its baseline"
+        );
+        assert_eq!(terminal.render_read(true).metadata.display_offset, 3);
+        assert!(terminal.scroll_to_bottom());
+        assert_eq!(terminal.scroll_state().0, 0);
+    }
+    eprintln!(
+        "20 acknowledged viewport changes (legacy graphics: {legacy_graphics}): {:?}",
+        started.elapsed()
+    );
+    // Once output and scrolling stop, read-only RPCs must not keep publishing
+    // identical frames and waking the desktop (including legacy image reads).
+    std::thread::sleep(Duration::from_millis(50));
+    terminal.drain_events(&mut |_| None);
+    terminal.snapshot();
+    terminal.search("line");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(
+        !terminal.has_pending_events(),
+        "read-only queries woke the terminal"
+    );
+    host.client.close(&id).unwrap();
+}
+
+#[test]
 fn kitty_images_follow_pty_scrolling_through_the_session_host() {
     let host = Host::new();
     // Wait for input between frames so the client caches each placement before

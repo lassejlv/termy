@@ -84,6 +84,25 @@ move with text, disappear above the viewport, and return when scrolling
 back. Remote placements must refresh on viewport changes even when the image
 revision stays unchanged.
 
+## Selection in persistent sessions
+
+Visible selection reads must use the displayed viewport without an IPC round trip.
+Scroll commands must make their updated viewport available before the desktop
+records its selection baseline, including when connected through the legacy
+graphics protocol. Otherwise a delayed user scroll looks like incoming output
+and shifts the selection anchor.
+
+```sh
+cargo test -p termy_core --test remote_selection
+cargo test -p termy_core --test ipc scrolling_reply_updates_viewport
+cargo test -p termy --bin termy multiplexer_text_selection_survives_scrolling_and_output
+```
+
+Repeat the core commands with `TERMY_CORE_TEST_BACKEND=alacritty` and `tmon`.
+The desktop regression drives mouse down, dragging, wheel scrolling, and release
+against an isolated session host, then verifies the selected text survives new
+output while viewing history.
+
 ## Ignored tests
 
 - `crates/desktop_app/tests/tmux_split_integration.rs` — requires **tmux ≥ 3.3** locally.

@@ -585,6 +585,10 @@ impl TerminalView {
         let tab = self.session.tabs.get(self.session.active_tab)?;
         let pane = tab.panes.iter().find(|pane| pane.id == pane_id)?;
         let terminal = pane.terminal();
+        let placements = terminal.kitty_graphics_placements();
+        if placements.is_empty() {
+            return None;
+        }
         let size = terminal.size();
         let cell_width = size.cell_width;
         let cell_height = size.cell_height;
@@ -603,7 +607,6 @@ impl TerminalView {
 
         let foreground_wins = !allow_negative_z_over_foreground
             && self.pane_cell_has_foreground_semantics(pane_id.as_str(), cell);
-        let placements = terminal.kitty_graphics_placements();
         let placement = topmost_kitty_graphics_placement_at_point(
             &placements,
             local_x,

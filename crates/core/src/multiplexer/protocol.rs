@@ -53,6 +53,7 @@ pub(crate) enum Request {
         expected: Option<String>,
         replacement: String,
     },
+    SubscribeGraphics(String),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -71,6 +72,7 @@ pub(crate) enum Update {
     State(Arc<RemoteState>),
     Events(Vec<TerminalEvent>),
     Host { id: u64, request: RemoteHostRequest },
+    GraphicsState(Arc<RemoteState>, graphics::GraphicsUpdate),
 }
 
 fn codec() -> impl Options {

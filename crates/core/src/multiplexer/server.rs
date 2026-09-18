@@ -51,6 +51,7 @@ pub fn serve(root: &Path) -> anyhow::Result<()> {
     let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     let endpoint = Endpoint {
         conditional_layout_updates: true,
+        graphics_stream: true,
         version: VERSION,
         port: address.port(),
         token: token.clone(),
@@ -156,7 +157,10 @@ impl Server {
                     Response::LayoutUpdated(false)
                 }
             }
-            Request::Shutdown | Request::Hello { .. } | Request::Subscribe(_) => {
+            Request::Shutdown
+            | Request::Hello { .. }
+            | Request::Subscribe(_)
+            | Request::SubscribeGraphics(_) => {
                 bail!("invalid session request")
             }
         })
@@ -184,7 +188,8 @@ fn serve_client(mut stream: TcpStream, server: &Server) -> anyhow::Result<()> {
             let _ = TcpStream::connect(server.address);
             return Ok(());
         }
-        if let Request::Subscribe(id) = request {
+        let graphics_stream = matches!(&request, Request::SubscribeGraphics(_));
+        if let Request::Subscribe(id) | Request::SubscribeGraphics(id) = request {
             let subscription = server.pane(&id)?.subscribe()?;
             write_message(&mut stream, &Response::Ok)?;
             let mut reader = stream.try_clone()?;
@@ -196,7 +201,12 @@ fn serve_client(mut stream: TcpStream, server: &Server) -> anyhow::Result<()> {
                     let _ = reader.read(&mut [0u8]);
                     monitor.close();
                 })?;
-            while let Some(update) = subscription.next() {
+            let mut graphics = crate::remote::graphics::GraphicsEncoder::default();
+            while let Some(mut update) = subscription.next() {
+                if graphics_stream && let Update::State(state) = update {
+                    let images = graphics.encode(state.graphics.as_deref().unwrap_or_default());
+                    update = Update::GraphicsState(state, images);
+                }
                 if let Err(error) = write_message(&mut stream, &update) {
                     subscription.close();
                     let _ = stream.shutdown(std::net::Shutdown::Both);

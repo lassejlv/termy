@@ -138,12 +138,11 @@ impl KittyGraphicsScreen {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-pub struct KittyGraphicsRenderPlacement {
+pub struct KittyGraphicsRenderPlacement<I = Arc<crate::tmon::GraphicsImage>> {
     pub placement_serial: u64,
     pub image_id: u32,
     pub placement_id: u32,
-    #[serde(with = "crate::remote::serde_image")]
-    pub image: Arc<crate::tmon::GraphicsImage>,
+    pub image: I,
     pub image_width: u32,
     pub image_height: u32,
     pub image_generation: u64,
@@ -166,6 +165,38 @@ pub struct KittyGraphicsRenderPlacement {
     pub x_offset: u32,
     pub y_offset: u32,
     pub z_index: i32,
+}
+
+impl<I> KittyGraphicsRenderPlacement<I> {
+    pub(crate) fn map_image<J>(self, image: J) -> KittyGraphicsRenderPlacement<J> {
+        KittyGraphicsRenderPlacement {
+            placement_serial: self.placement_serial,
+            image_id: self.image_id,
+            placement_id: self.placement_id,
+            image,
+            image_width: self.image_width,
+            image_height: self.image_height,
+            image_generation: self.image_generation,
+            animation_deadline: self.animation_deadline,
+            viewport_row: self.viewport_row,
+            col: self.col,
+            col_offset: self.col_offset,
+            virtual_cell: self.virtual_cell,
+            source_x: self.source_x,
+            source_y: self.source_y,
+            source_width: self.source_width,
+            source_height: self.source_height,
+            display_cols: self.display_cols,
+            display_rows: self.display_rows,
+            occupied_cols: self.occupied_cols,
+            occupied_rows: self.occupied_rows,
+            clip_top_rows: self.clip_top_rows,
+            clip_bottom_rows: self.clip_bottom_rows,
+            x_offset: self.x_offset,
+            y_offset: self.y_offset,
+            z_index: self.z_index,
+        }
+    }
 }
 
 #[derive(Default)]

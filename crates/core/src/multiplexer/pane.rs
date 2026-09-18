@@ -253,9 +253,18 @@ fn run(mut terminal: Terminal, rx: Receiver<Work>, shared: Arc<Mutex<Shared>>) {
         match rx.recv_timeout(timeout) {
             Ok(Work::Close) | Err(flume::RecvTimeoutError::Disconnected) => break,
             Ok(Work::Command(command, reply)) => {
+                let changes_state = !matches!(
+                    command,
+                    RemoteCommand::Snapshot
+                        | RemoteCommand::Lines { .. }
+                        | RemoteCommand::Search { .. }
+                        | RemoteCommand::Hyperlink { .. }
+                        | RemoteCommand::Link { .. }
+                        | RemoteCommand::Graphics
+                );
                 let result = crate::remote::execute(&mut terminal, command);
+                dirty |= changes_state && !matches!(result, RemoteReply::Changed(false));
                 let _ = reply.try_send(result);
-                dirty = true;
             }
             Ok(Work::Refresh(reply)) => {
                 let state = Arc::new(RemoteState::capture(&terminal));
