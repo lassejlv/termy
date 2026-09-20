@@ -39,10 +39,8 @@ Linux release launchers prefer X11/XWayland when it is available so the desktop
 window manager can provide the native title bar and window controls. To run the
 Wayland backend instead, launch Termy with `TERMY_LINUX_BACKEND=wayland`.
 Both terminal and Settings windows request system-managed decorations, including
-KDE's title bar, window controls, and resize borders. On X11/XWayland, Termy
-also updates the GTK theme-variant hint from the desktop's light/dark preference
-for window managers that support it. This follows the desktop preference,
-independently of Termy's terminal color theme.
+KDE's title bar, window controls, and resize borders. The window manager controls
+the titlebar theme independently of Termy's terminal color theme.
 
 ## Windows
 

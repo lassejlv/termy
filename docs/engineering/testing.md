@@ -39,18 +39,17 @@ Enter/Escape; Tab and arrow keys should select buttons. Clicking outside the
 prompt must leave it open without focusing or sending input to the terminal.
 Repeating the close request must not bypass confirmation.
 
-## Linux titlebar theme (#389)
+## Linux X11 startup and titlebars
 
-`cargo test -p termy --bin termy linux_window_theme` checks X11/XWayland window
-selection, the Wayland no-op, and actual X11 property requests against a local
-protocol peer. It verifies `_GTK_THEME_VARIANT` uses UTF8_STRING `dark`, removes
-the override when returning to light, and targets the intended window ID.
+On an X11 or XWayland desktop, launch `termy` from a terminal, open a second
+window, and open Settings. All windows should open with system-managed titlebars
+without a panic. Repeat with `TERMY_LINUX_BACKEND=wayland` on a Wayland desktop.
 
-On a Linux desktop whose window manager honors this hint, open terminal and
-Settings windows, switch the desktop appearance dark/light, and confirm both
-native titlebars update without restarting Termy. The desktop's frame theme
-remains in charge; changing Termy's terminal colors must not override it.
-Native Wayland decorations remain compositor-controlled.
+GPUI 0.2.2's X11 `HasWindowHandle::window_handle` is unimplemented and panics
+instead of returning an error. Do not query it to set `_GTK_THEME_VARIANT`;
+leave titlebar theming to the window manager until the backend supports it.
+GPUI test windows do not exercise this native backend, so unit tests alone
+cannot validate Linux startup.
 
 ## New-tab working directory (#388)
 

@@ -6623,7 +6623,7 @@ dependencies = [
 
 [[package]]
 name = "termy"
-version = "0.2.73"
+version = "0.2.74"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -6668,13 +6668,12 @@ dependencies = [
  "webbrowser",
  "windows 0.61.3",
  "winresource",
- "x11rb",
  "zed-font-kit",
 ]
 
 [[package]]
 name = "termy_cli"
-version = "0.2.73"
+version = "0.2.74"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
