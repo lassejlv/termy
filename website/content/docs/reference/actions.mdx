@@ -34,7 +34,8 @@ description: Every action you can bind to a trigger.
 
 `clear_screen` sends the same form-feed control character as `Ctrl+L` to the
 active pane, clearing the viewport while preserving scrollback in shells that
-use the conventional `Ctrl+L` behavior.
+use the conventional `Ctrl+L` behavior. On macOS, `Cmd+K` uses this action by
+default. On other platforms, bind it explicitly if desired:
 
 ```txt
 keybind = secondary-k=clear_screen

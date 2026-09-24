@@ -6623,7 +6623,7 @@ dependencies = [
 
 [[package]]
 name = "termy"
-version = "0.2.74"
+version = "0.2.75"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -6673,7 +6673,7 @@ dependencies = [
 
 [[package]]
 name = "termy_cli"
-version = "0.2.74"
+version = "0.2.75"
 dependencies = [
  "alacritty_terminal",
  "anyhow",

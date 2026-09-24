@@ -44,6 +44,7 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-g` -> `search_next`
 - `secondary-shift-g` -> `search_previous`
 - `secondary-alt-i` -> `toggle_inspector`
+- `secondary-k` -> `clear_screen`
 - `secondary-m` -> `minimize_window`
 - `secondary-c` -> `copy`
 - `secondary-v` -> `paste`

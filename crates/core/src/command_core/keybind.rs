@@ -196,6 +196,10 @@ pub fn default_keybinds_for_platform(platform: KeybindPlatform) -> Vec<DefaultKe
 
     if matches!(platform, KeybindPlatform::MacOs) {
         bindings.push(DefaultKeybind {
+            trigger: "secondary-k",
+            action: CommandId::ClearScreen,
+        });
+        bindings.push(DefaultKeybind {
             trigger: "secondary-m",
             action: CommandId::MinimizeWindow,
         });
@@ -579,6 +583,27 @@ mod tests {
                         && binding.action == CommandId::ToggleWorkspaceSidebar
                 }),
                 "missing secondary-b -> toggle_workspace_sidebar on {}",
+                platform.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn macos_defaults_clear_screen_on_command_k_only() {
+        let mac = default_keybinds_for_platform(KeybindPlatform::MacOs);
+        assert!(mac.iter().any(|binding| {
+            binding.trigger == "secondary-k" && binding.action == CommandId::ClearScreen
+        }));
+        for platform in [
+            KeybindPlatform::Windows,
+            KeybindPlatform::Linux,
+            KeybindPlatform::Other,
+        ] {
+            assert!(
+                default_keybinds_for_platform(platform)
+                    .iter()
+                    .all(|binding| binding.trigger != "secondary-k"),
+                "unexpected secondary-k binding on {}",
                 platform.as_str()
             );
         }
