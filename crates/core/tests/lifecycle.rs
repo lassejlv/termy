@@ -124,6 +124,9 @@ fn child_client() {
             terminal.hyperlink_at(1, 0).unwrap().target,
             "https://example.com"
         );
+        // The initial frame is available before the separate graphics stream
+        // delivers its first snapshot to a newly attached client.
+        wait_until(|| terminal.kitty_graphics_placements().len() == 1);
         let graphics = terminal.kitty_graphics_placements();
         assert_eq!(graphics.len(), 1);
         assert_eq!(graphics[0].image_id, 7);
