@@ -17,15 +17,19 @@ jobs:
     name: Mark release as latest and publish AUR
     if: ${{ github.event.release.prerelease == false && github.event.release.draft == false }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 70
     steps:
-      - name: Wait for the AUR source asset
+      - name: Wait for required release assets
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         with:
           script: |
             const tag = context.payload.release.tag_name;
-            const expectedAsset = `Termy-${tag}-linux-x86_64.tar.gz`;
-            const deadline = Date.now() + 20 * 60 * 1000;
+            const expectedAssets = [
+              `Termy-${tag}-linux-x86_64.tar.gz`,
+              `Termy-${tag}-macos-arm64-signed.dmg`,
+              `Termy-${tag}-macos-x86_64-signed.dmg`
+            ];
+            const deadline = Date.now() + 65 * 60 * 1000;
 
             while (true) {
               const { data: release } = await github.rest.repos.getRelease({
@@ -34,16 +38,18 @@ jobs:
                 release_id: context.payload.release.id
               });
 
-              if (release.assets.some((asset) => asset.name === expectedAsset)) {
-                core.info(`Found ${expectedAsset}`);
+              const available = new Set(release.assets.map((asset) => asset.name));
+              const missing = expectedAssets.filter((asset) => !available.has(asset));
+              if (missing.length === 0) {
+                core.info("Found Linux source and signed macOS release assets");
                 break;
               }
 
               if (Date.now() >= deadline) {
-                throw new Error(`Timed out waiting for ${expectedAsset}`);
+                throw new Error(`Timed out waiting for ${missing.join(", ")}`);
               }
 
-              core.info(`Waiting for ${expectedAsset}`);
+              core.info(`Waiting for ${missing.join(", ")}`);
               await new Promise((resolve) => setTimeout(resolve, 15_000));
             }
 

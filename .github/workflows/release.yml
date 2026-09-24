@@ -36,9 +36,19 @@ jobs:
             runner: macos-26
     env:
       VERSION: ${{ github.event.release.tag_name }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      TERMY_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+      TERMY_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Import Developer ID and notarization credentials
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+        run: ./scripts/setup-macos-signing.sh
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -52,14 +62,22 @@ jobs:
       - name: Install cargo-bundle
         run: cargo install cargo-bundle --locked
 
-      - name: Build DMG
-        run: ./scripts/build-dmg.sh --version "$VERSION" --arch "${{ matrix.arch }}" --target "${{ matrix.target }}" --no-layout
+      - name: Build, sign, and notarize DMG
+        run: ./scripts/build-dmg-signed.sh --version "$VERSION" --arch "${{ matrix.arch }}" --target "${{ matrix.target }}" --no-layout
+
+      - name: Remove signing credentials
+        if: always()
+        run: |
+          if [[ -n "${TERMY_SIGNING_DIR:-}" && -d "$TERMY_SIGNING_DIR" ]]; then
+            security delete-keychain "$TERMY_SIGNING_DIR/signing.keychain-db" || true
+            rm -rf "$TERMY_SIGNING_DIR"
+          fi
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: termy-dmg-${{ matrix.arch }}
-          path: dist/Termy-${{ env.VERSION }}-macos-${{ matrix.arch }}.dmg
+          path: dist/Termy-${{ env.VERSION }}-macos-${{ matrix.arch }}-signed.dmg
           if-no-files-found: error
 
   build-windows-setup:
