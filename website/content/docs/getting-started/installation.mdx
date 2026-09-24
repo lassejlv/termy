@@ -16,17 +16,10 @@ The fastest path is the [Termy download page](/download). It detects your platfo
 
 1. On the [download page](/download), choose **Apple silicon** for M-series Macs or **Intel** for older Macs.
 2. Open the `.dmg` and drag Termy to `/Applications`.
-3. Try to open Termy once.
+3. Open Termy from Applications.
 
-<Callout type="warn" title="Termy is not signed yet">
-  If macOS blocks the first launch, remove its quarantine attribute:
-
-  ```bash
-  sudo xattr -d com.apple.quarantine /Applications/Termy.app
-  ```
-
-  Then open Termy again. [See the full troubleshooting guide](/docs/getting-started/troubleshooting) if it still does not launch.
-</Callout>
+macOS DMGs from v0.2.75 onward are signed and notarized. If Termy does not open,
+[see the troubleshooting guide](/docs/getting-started/troubleshooting).
 
 ## Linux
 

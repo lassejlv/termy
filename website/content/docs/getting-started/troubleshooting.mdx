@@ -5,28 +5,19 @@ description: Common install and launch issues.
 
 ## macOS: app won't open
 
-Termy is not notarized yet. After downloading, macOS may show that the app is damaged or refuse to open it.
-
-First, make sure `Termy.app` is in `/Applications`. Then remove the quarantine attribute:
-
-```bash
-sudo xattr -d com.apple.quarantine /Applications/Termy.app
-```
-
-Open Termy again when the command finishes.
-
-### The command cannot find Termy
-
-The command assumes Termy is installed at `/Applications/Termy.app`. If you put it somewhere else, replace that path with the real location.
-
-The simplest fix is to open the downloaded `.dmg`, drag Termy into **Applications**, and run the command again.
+macOS DMGs from v0.2.75 onward are signed and notarized. If macOS prevents Termy
+from opening, first check that you downloaded the current release and dragged
+`Termy.app` from the `.dmg` into **Applications**.
 
 ### Termy is still blocked
 
 1. Remove any older copy of Termy from Applications.
 2. Download the newest `.dmg` from the [Termy download page](/download).
-3. Drag Termy into Applications.
-4. Run the quarantine command again.
+3. Drag Termy into Applications and try opening it again.
+4. If macOS still blocks it, [report the exact message](https://github.com/lassejlv/termy/issues/new).
+
+Releases before v0.2.75 used unsigned macOS DMGs. Upgrade to a current release
+instead of removing the download's quarantine attribute.
 
 ## Report an issue
 

@@ -170,7 +170,7 @@ function DownloadPage() {
                   className="mt-1 text-2xl font-medium leading-tight text-[#e8eeff]"
                   style={{ fontFamily: marketingMono }}
                 >
-                  Termy is not signed yet.
+                  This macOS build is unsigned.
                 </h2>
               </div>
             </div>
@@ -179,19 +179,10 @@ function DownloadPage() {
               id="macos-download-warning-description"
               className="mt-5 text-sm leading-relaxed text-[#787c99]"
             >
-              After moving Termy to Applications, macOS may prevent it from
-              opening. Run this command once in Terminal to remove the
-              quarantine attribute:
+              macOS may prevent this download from opening. Choose a signed
+              release if one is available, or continue if you specifically need
+              this unsigned build.
             </p>
-
-            <pre
-              className="mt-4 overflow-x-auto rounded-xl border border-white/[0.08] bg-[#0d0f17] px-4 py-3.5 text-xs leading-relaxed text-[#9ece6a]"
-              style={{ fontFamily: marketingMono }}
-            >
-              <code>
-                sudo xattr -d com.apple.quarantine /Applications/Termy.app
-              </code>
-            </pre>
 
             <a
               href="https://termy.sh/docs/getting-started/troubleshooting"
@@ -311,7 +302,8 @@ function AssetPanel({
                         onClick={(event) => {
                           if (
                             group.id === 'macos' &&
-                            (arch === 'arm64' || arch === 'x64')
+                            (arch === 'arm64' || arch === 'x64') &&
+                            !asset.name.toLowerCase().endsWith('-signed.dmg')
                           ) {
                             event.preventDefault();
                             onMacDownload(asset.name, asset.downloadUrl);

@@ -240,6 +240,31 @@ mod tests {
     }
 
     #[test]
+    fn selects_signed_macos_assets_and_checksum_manifest() {
+        let assets = vec![
+            asset("checksums.txt"),
+            asset("Termy-v0.2.75-macos-x86_64-signed.dmg"),
+            asset("Termy-v0.2.75-macos-arm64-signed.dmg"),
+        ];
+
+        for (arch, expected_name) in [
+            ("arm64", "Termy-v0.2.75-macos-arm64-signed.dmg"),
+            ("x86_64", "Termy-v0.2.75-macos-x86_64-signed.dmg"),
+        ] {
+            let selected = select_platform_asset(&assets, PlatformKind::MacOs, arch)
+                .expect("signed macOS asset");
+            assert_eq!(selected.name, expected_name);
+            assert_eq!(extension_for_asset_name(&selected.name), "dmg");
+            assert_eq!(
+                select_checksum_asset(&assets, &selected.name)
+                    .expect("checksum manifest")
+                    .name,
+                "checksums.txt"
+            );
+        }
+    }
+
+    #[test]
     fn selects_asset_specific_checksum_before_manifest() {
         let assets = vec![
             asset("checksums.txt"),

@@ -27,14 +27,9 @@ Termy is a fast, native terminal for macOS, Linux, and Windows. It combines GPU-
 
 Download the latest build from **[termy.sh/download](https://termy.sh/download)** or browse every artifact on **[GitHub Releases](https://github.com/lassejlv/termy/releases)**.
 
-> [!IMPORTANT]
-> macOS builds are not signed yet. After moving Termy to `/Applications`, run:
->
-> ```bash
-> sudo xattr -d com.apple.quarantine /Applications/Termy.app
-> ```
->
-> See [macOS troubleshooting](https://termy.sh/docs/getting-started/troubleshooting) if Gatekeeper still prevents Termy from opening.
+macOS DMGs from v0.2.75 onward are signed and notarized. Open the DMG and drag
+Termy to `/Applications`. See [macOS troubleshooting](https://termy.sh/docs/getting-started/troubleshooting)
+if the app still does not open.
 
 ### Build from source
 
