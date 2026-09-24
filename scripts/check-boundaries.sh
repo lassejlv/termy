@@ -129,6 +129,8 @@ require_crate_readme_metadata() {
 
 require_path "crates/desktop_app/Cargo.toml"
 require_path "scripts/build-dmg.sh"
+require_path "scripts/build-dmg-signed.sh"
+require_path "scripts/setup-macos-signing.sh"
 require_path "scripts/build-setup.ps1"
 require_path "scripts/build-linux.sh"
 require_path "scripts/check-platform-builds.sh"
@@ -142,12 +144,12 @@ while IFS= read -r manifest; do
   require_crate_readme_metadata "$crate_dir"
 done < <(find crates -mindepth 2 -maxdepth 2 -name Cargo.toml | sort)
 
-require_pattern './scripts/build-dmg\.sh' \
+require_pattern './scripts/build-dmg-signed\.sh' \
   ".github/workflows/release.yml" \
-  "release workflow must call scripts/build-dmg.sh"
-require_pattern 'dist/Termy-\$\{\{ env.VERSION \}\}-macos-\$\{\{ matrix.arch \}\}\.dmg' \
+  "release workflow must call scripts/build-dmg-signed.sh"
+require_pattern 'dist/Termy-\$\{\{ env.VERSION \}\}-macos-\$\{\{ matrix.arch \}\}-signed\.dmg' \
   ".github/workflows/release.yml" \
-  "release workflow must upload the documented macOS DMG path"
+  "release workflow must upload the documented signed macOS DMG path"
 require_pattern 'types: \[released\]' \
   ".github/workflows/finalize-stable-release.yml" \
   "stable release finalization must run for initial stable releases and prerelease promotions"

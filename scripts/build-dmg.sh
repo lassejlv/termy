@@ -257,6 +257,7 @@ OUTPUT_DMG="$DIST_DIR/${DMG_NAME}.dmg"
 
 require_cmd cargo
 require_cmd hdiutil
+require_cmd ditto
 cargo bundle --version >/dev/null 2>&1 || die "cargo-bundle not found. Install with: cargo install cargo-bundle"
 
 if [[ "$SIGN" -eq 1 ]]; then
@@ -309,7 +310,10 @@ ensure_app_icon "$APP_PATH"
 if [[ "$SIGN" -eq 1 ]]; then
   log "Signing app bundle with: $SIGN_IDENTITY"
   xattr -rc "$APP_PATH"
-  CODESIGN_ARGS=(--force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY")
+  # The bundled CLI is a separate executable. Sign it before the enclosing app.
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
+    "$APP_PATH/Contents/MacOS/termy-cli"
+  CODESIGN_ARGS=(--force --options runtime --timestamp --sign "$SIGN_IDENTITY")
   [[ -n "$ENTITLEMENTS" ]] && CODESIGN_ARGS+=(--entitlements "$ENTITLEMENTS")
   codesign "${CODESIGN_ARGS[@]}" "$APP_PATH"
   codesign --verify --deep --strict --verbose=2 "$APP_PATH"
@@ -318,7 +322,10 @@ fi
 log "Preparing DMG staging folder"
 rm -rf "$DMG_ROOT"
 mkdir -p "$DMG_ROOT" "$DIST_DIR"
-cp -R "$APP_PATH" "$DMG_ROOT/"
+ditto "$APP_PATH" "$DMG_ROOT/$APP_NAME.app"
+if [[ "$SIGN" -eq 1 ]]; then
+  codesign --verify --deep --strict --verbose=2 "$DMG_ROOT/$APP_NAME.app"
+fi
 ln -s /Applications "$DMG_ROOT/Applications"
 
 log "Creating temporary DMG"
@@ -403,7 +410,7 @@ if [[ "$NOTARIZE" -eq 1 ]]; then
   xcrun stapler validate "$OUTPUT_DMG"
 
   log "Assessing final DMG with Gatekeeper"
-  spctl --assess --type open --verbose=2 "$OUTPUT_DMG"
+  spctl --assess --type open --context context:primary-signature --verbose=2 "$OUTPUT_DMG"
 fi
 
 echo "Done: $OUTPUT_DMG"

@@ -11,13 +11,14 @@ Release packaging is rooted in `scripts/`. GitHub release workflows should call 
 - Linux tarball and AppImage: `scripts/build-linux.sh`
 - app icon generation: `scripts/generate-icon.sh`
 - release artifact CI: `.github/workflows/release.yml`
+- GitHub macOS signing setup: `docs/architecture/macos-release-signing.md`
 - stable release finalization and AUR dispatch: `.github/workflows/finalize-stable-release.yml`
 
 The app version used by packaging scripts comes from `crates/desktop_app/Cargo.toml` unless an explicit version is passed.
 
 ## Artifact Paths
 
-- macOS DMG: `dist/Termy-<version>-macos-<arch>[-signed].dmg`
+- macOS DMG: `dist/Termy-<version>-macos-<arch>[-signed].dmg` (GitHub releases require `-signed`)
 - Windows setup: `target/dist/Termy-<version>-windows-<arch>-Setup.exe`
 - Linux tarball: `target/dist/Termy-<version>-linux-<arch>.tar.gz`
 - Linux AppImage: `target/dist/Termy-<version>-linux-<arch>.AppImage`
@@ -34,6 +35,8 @@ just build-setup -- -Version 0.3.0 -Arch x64 -Target x86_64-pc-windows-msvc
 
 Use `scripts/build-dmg-signed.sh` when a Developer ID signing identity is required. Unsigned DMGs should use `scripts/build-dmg.sh` directly.
 
+The release workflow requires the Developer ID certificate and App Store Connect team API key described in [macOS release signing](macos-release-signing.md). Both macOS architectures must be signed and notarized before the release workflow attaches artifacts. Stable release finalization waits for those signed DMGs.
+
 ## Boundary Rules
 
 - Keep packaging scripts in `scripts/`.
@@ -47,7 +50,7 @@ Use `scripts/build-dmg-signed.sh` when a Developer ID signing identity is requir
 Run these checks after packaging or release workflow changes:
 
 ```sh
-bash -n scripts/build-dmg.sh scripts/build-dmg-signed.sh scripts/build-linux.sh
+bash -n scripts/build-dmg.sh scripts/build-dmg-signed.sh scripts/setup-macos-signing.sh scripts/build-linux.sh
 pwsh -NoProfile -Command '$null = [System.Management.Automation.Language.Parser]::ParseFile("scripts/build-setup.ps1", [ref]$null, [ref]$null)' # when PowerShell is available
 just check-boundaries
 ```
