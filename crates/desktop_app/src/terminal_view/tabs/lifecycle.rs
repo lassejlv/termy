@@ -112,6 +112,15 @@ impl TerminalView {
             CommandAction::FocusPaneDown => self.focus_pane_down(cx),
             CommandAction::FocusPaneNext => self.focus_pane_next(cx),
             CommandAction::FocusPanePrevious => self.focus_pane_previous(cx),
+            CommandAction::FocusPane1 => self.focus_pane_position(1, cx),
+            CommandAction::FocusPane2 => self.focus_pane_position(2, cx),
+            CommandAction::FocusPane3 => self.focus_pane_position(3, cx),
+            CommandAction::FocusPane4 => self.focus_pane_position(4, cx),
+            CommandAction::FocusPane5 => self.focus_pane_position(5, cx),
+            CommandAction::FocusPane6 => self.focus_pane_position(6, cx),
+            CommandAction::FocusPane7 => self.focus_pane_position(7, cx),
+            CommandAction::FocusPane8 => self.focus_pane_position(8, cx),
+            CommandAction::FocusPane9 => self.focus_pane_position(9, cx),
             CommandAction::ResizePaneLeft => self.resize_pane_left(cx),
             CommandAction::ResizePaneRight => self.resize_pane_right(cx),
             CommandAction::ResizePaneUp => self.resize_pane_up(cx),
@@ -1125,6 +1134,25 @@ impl TerminalView {
 
     pub(crate) fn focus_pane_previous(&mut self, cx: &mut Context<Self>) -> bool {
         self.focus_pane_cycle(-1, cx)
+    }
+
+    fn pane_id_at_position(panes: &[TerminalPane], position: usize) -> Option<&str> {
+        panes
+            .get(position.checked_sub(1)?)
+            .map(|pane| pane.id.as_str())
+    }
+
+    fn focus_pane_position(&mut self, position: usize, cx: &mut Context<Self>) -> bool {
+        let Some(tab) = self.session.tabs.get(self.session.active_tab) else {
+            return false;
+        };
+        // Use the same ordering as focus_pane_cycle for both native and tmux panes.
+        let Some(target_pane_id) =
+            Self::pane_id_at_position(&tab.panes, position).map(str::to_owned)
+        else {
+            return false;
+        };
+        self.focus_pane_target(&target_pane_id, cx)
     }
 
     pub(crate) fn resize_pane_left(&mut self, cx: &mut Context<Self>) -> bool {
@@ -2225,6 +2253,21 @@ mod tests {
         assert_eq!(TerminalView::adjacent_pane_index(0, 1, 1), None);
         assert_eq!(TerminalView::adjacent_pane_index(2, 2, 1), None);
         assert_eq!(TerminalView::adjacent_pane_index(0, 2, 0), None);
+    }
+
+    #[test]
+    fn numbered_pane_focus_uses_cycle_order_and_ignores_missing_positions() {
+        let panes = [
+            test_pane("first", 0, 0, 40, 20),
+            test_pane("third", 40, 0, 40, 20),
+            test_pane("second", 80, 0, 40, 20),
+        ];
+        assert_eq!(TerminalView::pane_id_at_position(&panes, 1), Some("first"));
+        assert_eq!(TerminalView::pane_id_at_position(&panes, 2), Some("third"));
+        assert_eq!(TerminalView::pane_id_at_position(&panes, 3), Some("second"));
+        assert_eq!(TerminalView::pane_id_at_position(&panes, 0), None);
+        assert_eq!(TerminalView::pane_id_at_position(&panes, 4), None);
+        assert_eq!(TerminalView::pane_id_at_position(&[], 1), None);
     }
 
     #[test]

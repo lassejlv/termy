@@ -125,6 +125,42 @@ pub fn default_keybinds_for_platform(platform: KeybindPlatform) -> Vec<DefaultKe
             action: CommandId::FocusPaneNext,
         },
         DefaultKeybind {
+            trigger: "secondary-alt-1",
+            action: CommandId::FocusPane1,
+        },
+        DefaultKeybind {
+            trigger: "secondary-alt-2",
+            action: CommandId::FocusPane2,
+        },
+        DefaultKeybind {
+            trigger: "secondary-alt-3",
+            action: CommandId::FocusPane3,
+        },
+        DefaultKeybind {
+            trigger: "secondary-alt-4",
+            action: CommandId::FocusPane4,
+        },
+        DefaultKeybind {
+            trigger: "secondary-alt-5",
+            action: CommandId::FocusPane5,
+        },
+        DefaultKeybind {
+            trigger: "secondary-alt-6",
+            action: CommandId::FocusPane6,
+        },
+        DefaultKeybind {
+            trigger: "secondary-alt-7",
+            action: CommandId::FocusPane7,
+        },
+        DefaultKeybind {
+            trigger: "secondary-alt-8",
+            action: CommandId::FocusPane8,
+        },
+        DefaultKeybind {
+            trigger: "secondary-alt-9",
+            action: CommandId::FocusPane9,
+        },
+        DefaultKeybind {
             trigger: "secondary-alt-left",
             action: CommandId::FocusPaneLeft,
         },
@@ -529,6 +565,59 @@ mod tests {
                 platform.as_str()
             );
         }
+    }
+
+    #[test]
+    fn numbered_pane_shortcuts_do_not_replace_numbered_tab_shortcuts() {
+        let panes = [
+            CommandId::FocusPane1,
+            CommandId::FocusPane2,
+            CommandId::FocusPane3,
+            CommandId::FocusPane4,
+            CommandId::FocusPane5,
+            CommandId::FocusPane6,
+            CommandId::FocusPane7,
+            CommandId::FocusPane8,
+            CommandId::FocusPane9,
+        ];
+        let tabs = [
+            CommandId::SwitchToTab1,
+            CommandId::SwitchToTab2,
+            CommandId::SwitchToTab3,
+            CommandId::SwitchToTab4,
+            CommandId::SwitchToTab5,
+            CommandId::SwitchToTab6,
+            CommandId::SwitchToTab7,
+            CommandId::SwitchToTab8,
+            CommandId::SwitchToTab9,
+        ];
+        for platform in KeybindPlatform::ALL {
+            let defaults = default_keybinds_for_platform(platform);
+            for (number, (pane, tab)) in (1..=9).zip(panes.into_iter().zip(tabs)) {
+                assert!(defaults.iter().any(|binding| {
+                    binding.trigger == format!("secondary-alt-{number}") && binding.action == pane
+                }));
+                assert!(defaults.iter().any(|binding| {
+                    binding.trigger == format!("secondary-{number}") && binding.action == tab
+                }));
+            }
+        }
+    }
+
+    #[test]
+    fn numbered_pane_shortcuts_can_override_tab_shortcuts() {
+        let (directives, warnings) = super::parse_keybind_directives_from_iter([KeybindLineRef {
+            line_number: 1,
+            value: "secondary-1=focus_pane_1",
+        }]);
+        assert!(warnings.is_empty());
+        let bindings = resolve_keybinds(super::default_resolved_keybinds(), &directives);
+        assert!(bindings.iter().any(|binding| {
+            binding.trigger == "secondary-1" && binding.action == CommandId::FocusPane1
+        }));
+        assert!(!bindings.iter().any(|binding| {
+            binding.trigger == "secondary-1" && binding.action == CommandId::SwitchToTab1
+        }));
     }
 
     #[test]

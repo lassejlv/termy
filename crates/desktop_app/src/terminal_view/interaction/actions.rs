@@ -1,6 +1,25 @@
 use super::*;
 use termy_core::command_core::{CommandCapabilities, CommandUnavailableReason};
 
+pub(in super::super) trait NumberedPaneAction: gpui::Action {
+    const COMMAND: CommandAction;
+}
+
+macro_rules! numbered_pane_actions {
+    ($($action:ident),+ $(,)?) => {
+        $(
+            impl NumberedPaneAction for commands::$action {
+                const COMMAND: CommandAction = CommandAction::$action;
+            }
+        )+
+    };
+}
+
+numbered_pane_actions!(
+    FocusPane1, FocusPane2, FocusPane3, FocusPane4, FocusPane5, FocusPane6, FocusPane7, FocusPane8,
+    FocusPane9,
+);
+
 impl TerminalView {
     fn shortcut_action_allowed_with_active_inline_input(action: CommandAction) -> bool {
         matches!(
@@ -212,6 +231,15 @@ impl TerminalView {
             | CommandAction::FocusPaneDown
             | CommandAction::FocusPaneNext
             | CommandAction::FocusPanePrevious
+            | CommandAction::FocusPane1
+            | CommandAction::FocusPane2
+            | CommandAction::FocusPane3
+            | CommandAction::FocusPane4
+            | CommandAction::FocusPane5
+            | CommandAction::FocusPane6
+            | CommandAction::FocusPane7
+            | CommandAction::FocusPane8
+            | CommandAction::FocusPane9
             | CommandAction::ResizePaneLeft
             | CommandAction::ResizePaneRight
             | CommandAction::ResizePaneUp
@@ -692,6 +720,15 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.execute_command_action(CommandAction::FocusPanePrevious, true, window, cx);
+    }
+
+    pub(in super::super) fn handle_focus_pane_position_action<A: NumberedPaneAction>(
+        &mut self,
+        _: &A,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(A::COMMAND, true, window, cx);
     }
 
     pub(in super::super) fn handle_resize_pane_left_action(

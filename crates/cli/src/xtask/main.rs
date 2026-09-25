@@ -147,6 +147,7 @@ fn render_keybindings_doc() -> String {
     }
 
     output.push_str("`secondary` maps to `cmd` on macOS and `ctrl` on non-macOS platforms.\n\n");
+    output.push_str("Numbered pane actions (`focus_pane_1` through `focus_pane_9`) target panes in the same order as `focus_pane_next`, within the active tab. A missing pane or already-focused pane is left unchanged. The default `secondary-alt-1` through `secondary-alt-9` shortcuts leave `secondary-1` through `secondary-9` available for tabs.\n\n");
     output.push_str("## Config Syntax\n\n");
     output.push_str("Supported forms:\n\n");
     output.push_str("- `keybind = clear`\n");
@@ -182,10 +183,13 @@ fn render_keybindings_doc() -> String {
     output.push_str("```txt\nkeybind = clear\nkeybind = cmd-p=toggle_command_palette\nkeybind = cmd-t=new_tab\nkeybind = cmd-w=close_pane_or_tab\nkeybind = cmd-c=copy\nkeybind = cmd-v=paste\n```\n\n");
     output.push_str("### 4) Use `secondary` for cross-platform configs\n\n");
     output.push_str("```txt\nkeybind = secondary-p=toggle_command_palette\nkeybind = secondary-t=new_tab\n```\n");
-    output.push_str("\n### 5) Run a plugin command\n\n");
+    output.push_str("\n### 5) Use Cmd+1/2/3 for panes instead of tabs (macOS)\n\n");
+    output.push_str("```txt\nkeybind = cmd-1=focus_pane_1\nkeybind = cmd-2=focus_pane_2\nkeybind = cmd-3=focus_pane_3\n```\n\n");
+    output.push_str("This overrides the default Cmd+1/2/3 tab bindings. Use `cmd-alt-1` through `cmd-alt-9` to keep both sets of shortcuts.\n");
+    output.push_str("\n### 6) Run a plugin command\n\n");
     output.push_str("```txt\nkeybind = secondary-g=plugin:git-tools/status\n```\n\n");
     output.push_str("Use the plugin and command IDs from the plugin manifest. Termy refreshes plugins before invoking the command.\n");
-    output.push_str("\n### 6) Run a named task directly\n\n");
+    output.push_str("\n### 7) Run a named task directly\n\n");
     output.push_str(
         "```txt\ntask.build.command = cargo build\ntask.build.keybind = secondary-shift-b\n```\n\n",
     );

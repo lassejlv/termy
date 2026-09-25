@@ -27,6 +27,15 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-d` -> `split_pane_vertical`
 - `secondary-shift-d` -> `split_pane_horizontal`
 - `secondary-o` -> `focus_pane_next`
+- `secondary-alt-1` -> `focus_pane_1`
+- `secondary-alt-2` -> `focus_pane_2`
+- `secondary-alt-3` -> `focus_pane_3`
+- `secondary-alt-4` -> `focus_pane_4`
+- `secondary-alt-5` -> `focus_pane_5`
+- `secondary-alt-6` -> `focus_pane_6`
+- `secondary-alt-7` -> `focus_pane_7`
+- `secondary-alt-8` -> `focus_pane_8`
+- `secondary-alt-9` -> `focus_pane_9`
 - `secondary-alt-left` -> `focus_pane_left`
 - `secondary-alt-right` -> `focus_pane_right`
 - `secondary-alt-up` -> `focus_pane_up`
@@ -71,6 +80,15 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-d` -> `split_pane_vertical`
 - `secondary-shift-d` -> `split_pane_horizontal`
 - `secondary-o` -> `focus_pane_next`
+- `secondary-alt-1` -> `focus_pane_1`
+- `secondary-alt-2` -> `focus_pane_2`
+- `secondary-alt-3` -> `focus_pane_3`
+- `secondary-alt-4` -> `focus_pane_4`
+- `secondary-alt-5` -> `focus_pane_5`
+- `secondary-alt-6` -> `focus_pane_6`
+- `secondary-alt-7` -> `focus_pane_7`
+- `secondary-alt-8` -> `focus_pane_8`
+- `secondary-alt-9` -> `focus_pane_9`
 - `secondary-alt-left` -> `focus_pane_left`
 - `secondary-alt-right` -> `focus_pane_right`
 - `secondary-alt-up` -> `focus_pane_up`
@@ -113,6 +131,15 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-d` -> `split_pane_vertical`
 - `secondary-shift-d` -> `split_pane_horizontal`
 - `secondary-o` -> `focus_pane_next`
+- `secondary-alt-1` -> `focus_pane_1`
+- `secondary-alt-2` -> `focus_pane_2`
+- `secondary-alt-3` -> `focus_pane_3`
+- `secondary-alt-4` -> `focus_pane_4`
+- `secondary-alt-5` -> `focus_pane_5`
+- `secondary-alt-6` -> `focus_pane_6`
+- `secondary-alt-7` -> `focus_pane_7`
+- `secondary-alt-8` -> `focus_pane_8`
+- `secondary-alt-9` -> `focus_pane_9`
 - `secondary-alt-left` -> `focus_pane_left`
 - `secondary-alt-right` -> `focus_pane_right`
 - `secondary-alt-up` -> `focus_pane_up`
@@ -155,6 +182,15 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-d` -> `split_pane_vertical`
 - `secondary-shift-d` -> `split_pane_horizontal`
 - `secondary-o` -> `focus_pane_next`
+- `secondary-alt-1` -> `focus_pane_1`
+- `secondary-alt-2` -> `focus_pane_2`
+- `secondary-alt-3` -> `focus_pane_3`
+- `secondary-alt-4` -> `focus_pane_4`
+- `secondary-alt-5` -> `focus_pane_5`
+- `secondary-alt-6` -> `focus_pane_6`
+- `secondary-alt-7` -> `focus_pane_7`
+- `secondary-alt-8` -> `focus_pane_8`
+- `secondary-alt-9` -> `focus_pane_9`
 - `secondary-alt-left` -> `focus_pane_left`
 - `secondary-alt-right` -> `focus_pane_right`
 - `secondary-alt-up` -> `focus_pane_up`
@@ -177,6 +213,8 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `ctrl-shift-a` -> `select_all`
 
 `secondary` maps to `cmd` on macOS and `ctrl` on non-macOS platforms.
+
+Numbered pane actions (`focus_pane_1` through `focus_pane_9`) target panes in the same order as `focus_pane_next`, within the active tab. A missing pane or already-focused pane is left unchanged. The default `secondary-alt-1` through `secondary-alt-9` shortcuts leave `secondary-1` through `secondary-9` available for tabs.
 
 ## Config Syntax
 
@@ -231,6 +269,15 @@ Related UI option:
 - `focus_pane_down`
 - `focus_pane_next`
 - `focus_pane_previous`
+- `focus_pane_1`
+- `focus_pane_2`
+- `focus_pane_3`
+- `focus_pane_4`
+- `focus_pane_5`
+- `focus_pane_6`
+- `focus_pane_7`
+- `focus_pane_8`
+- `focus_pane_9`
 - `resize_pane_left`
 - `resize_pane_right`
 - `resize_pane_up`
@@ -300,7 +347,17 @@ keybind = secondary-p=toggle_command_palette
 keybind = secondary-t=new_tab
 ```
 
-### 5) Run a plugin command
+### 5) Use Cmd+1/2/3 for panes instead of tabs (macOS)
+
+```txt
+keybind = cmd-1=focus_pane_1
+keybind = cmd-2=focus_pane_2
+keybind = cmd-3=focus_pane_3
+```
+
+This overrides the default Cmd+1/2/3 tab bindings. Use `cmd-alt-1` through `cmd-alt-9` to keep both sets of shortcuts.
+
+### 6) Run a plugin command
 
 ```txt
 keybind = secondary-g=plugin:git-tools/status
@@ -308,7 +365,7 @@ keybind = secondary-g=plugin:git-tools/status
 
 Use the plugin and command IDs from the plugin manifest. Termy refreshes plugins before invoking the command.
 
-### 6) Run a named task directly
+### 7) Run a named task directly
 
 ```txt
 task.build.command = cargo build

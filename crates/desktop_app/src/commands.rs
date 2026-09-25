@@ -643,6 +643,15 @@ define_commands!(
         )),
         None
     ),
+    (FocusPane1, TERMINAL_CONTEXT, None, None),
+    (FocusPane2, TERMINAL_CONTEXT, None, None),
+    (FocusPane3, TERMINAL_CONTEXT, None, None),
+    (FocusPane4, TERMINAL_CONTEXT, None, None),
+    (FocusPane5, TERMINAL_CONTEXT, None, None),
+    (FocusPane6, TERMINAL_CONTEXT, None, None),
+    (FocusPane7, TERMINAL_CONTEXT, None, None),
+    (FocusPane8, TERMINAL_CONTEXT, None, None),
+    (FocusPane9, TERMINAL_CONTEXT, None, None),
     (
         ResizePaneLeft,
         TERMINAL_CONTEXT,

@@ -25,7 +25,10 @@ pub(super) fn command_icon_path(id: CommandId) -> &'static str {
         SplitPaneVertical => "icons/command_palette/split-right.svg",
         SplitPaneHorizontal => "icons/command_palette/split-down.svg",
         FocusPaneLeft | FocusPaneRight | FocusPaneUp | FocusPaneDown | FocusPaneNext
-        | FocusPanePrevious => "icons/command_palette/focus-pane.svg",
+        | FocusPanePrevious | FocusPane1 | FocusPane2 | FocusPane3 | FocusPane4 | FocusPane5
+        | FocusPane6 | FocusPane7 | FocusPane8 | FocusPane9 => {
+            "icons/command_palette/focus-pane.svg"
+        }
         ResizePaneLeft | ResizePaneRight | ResizePaneUp | ResizePaneDown => {
             "icons/command_palette/resize-pane.svg"
         }
@@ -127,9 +130,9 @@ pub(super) fn command_category(id: CommandId) -> &'static str {
         | ToggleTabBarVisibility => "Tabs",
         SplitPaneVertical | SplitPaneHorizontal | ClosePane | ClosePaneOrTab | FocusPaneLeft
         | FocusPaneRight | FocusPaneUp | FocusPaneDown | FocusPaneNext | FocusPanePrevious
-        | ResizePaneLeft | ResizePaneRight | ResizePaneUp | ResizePaneDown | TogglePaneZoom => {
-            "Panes"
-        }
+        | FocusPane1 | FocusPane2 | FocusPane3 | FocusPane4 | FocusPane5 | FocusPane6
+        | FocusPane7 | FocusPane8 | FocusPane9 | ResizePaneLeft | ResizePaneRight
+        | ResizePaneUp | ResizePaneDown | TogglePaneZoom => "Panes",
         MinimizeWindow | ToggleWorkspaceSidebar => "Window",
         ManageTmuxSessions | ManageSavedLayouts | RunTask => "Sessions",
         OpenSearch

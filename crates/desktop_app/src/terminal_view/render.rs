@@ -3769,6 +3769,8 @@ impl Render for TerminalView {
                 )
                 .into_any()
         });
+        // Keep the existing long GPUI listener chain stable when adding actions.
+        #[rustfmt::skip]
         let root = div()
             .id("termy-root")
             .flex()
@@ -3865,6 +3867,33 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_focus_pane_up_action))
                     .on_action(cx.listener(Self::handle_focus_pane_down_action))
                     .on_action(cx.listener(Self::handle_focus_pane_previous_action))
+                    .on_action(cx.listener(
+                        Self::handle_focus_pane_position_action::<commands::FocusPane1>,
+                    ))
+                    .on_action(cx.listener(
+                        Self::handle_focus_pane_position_action::<commands::FocusPane2>,
+                    ))
+                    .on_action(cx.listener(
+                        Self::handle_focus_pane_position_action::<commands::FocusPane3>,
+                    ))
+                    .on_action(cx.listener(
+                        Self::handle_focus_pane_position_action::<commands::FocusPane4>,
+                    ))
+                    .on_action(cx.listener(
+                        Self::handle_focus_pane_position_action::<commands::FocusPane5>,
+                    ))
+                    .on_action(cx.listener(
+                        Self::handle_focus_pane_position_action::<commands::FocusPane6>,
+                    ))
+                    .on_action(cx.listener(
+                        Self::handle_focus_pane_position_action::<commands::FocusPane7>,
+                    ))
+                    .on_action(cx.listener(
+                        Self::handle_focus_pane_position_action::<commands::FocusPane8>,
+                    ))
+                    .on_action(cx.listener(
+                        Self::handle_focus_pane_position_action::<commands::FocusPane9>,
+                    ))
                     .on_action(cx.listener(Self::handle_resize_pane_left_action))
                     .on_action(cx.listener(Self::handle_resize_pane_right_action))
                     .on_action(cx.listener(Self::handle_resize_pane_up_action))
