@@ -10,6 +10,10 @@ mod tmux_sync;
 
 pub(super) use tmux_sync::{TmuxResizeScheduler, TmuxResizeWakeup};
 
+pub(crate) fn tmux_runtime_requested(config: &AppConfig) -> bool {
+    RuntimeKind::from_app_config(config).uses_tmux()
+}
+
 const TMUX_MOUSE_MODE_SUBSCRIPTION_NAME: &str = "termy_mouse_mode";
 const TMUX_MOUSE_MODE_SUBSCRIPTION_FORMAT: &str = concat!(
     "#{mouse_standard_flag}",
@@ -292,6 +296,20 @@ mod tests {
             RuntimeKind::from_runtime_options(true, true, false),
             RuntimeKind::Tmux
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn startup_capability_matches_windows_tmux_configuration() {
+        let mut config = AppConfig {
+            tmux_enabled: true,
+            ..AppConfig::default()
+        };
+        assert!(!tmux_runtime_requested(&config));
+        config.tmux_command_prefix = Some("wsl.exe -e".to_string());
+        assert!(tmux_runtime_requested(&config));
+        config.multiplexer_enabled = true;
+        assert!(!tmux_runtime_requested(&config));
     }
 
     #[test]

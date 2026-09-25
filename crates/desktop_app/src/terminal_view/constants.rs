@@ -75,8 +75,8 @@ pub(super) const SEARCH_SYNC_LINE_LIMIT: i32 = 512;
 pub(super) const TMUX_RESIZE_ERROR_TOAST_DEBOUNCE_MS: u64 = 2000;
 pub(super) const DEBUG_OVERLAY_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
 #[cfg(target_os = "windows")]
-pub(super) const TMUX_UNSUPPORTED_WINDOWS_TOAST: &str =
-    "tmux integration is unsupported on Windows; using native runtime instead.";
+pub(super) const TMUX_NEEDS_PREFIX_WINDOWS_TOAST: &str =
+    "tmux on Windows requires tmux_command_prefix (for example, wsl.exe -e); using native runtime.";
 pub(super) const INPUT_SCROLL_SUPPRESS_MS: u64 = 160;
 pub(super) const TOAST_COPY_FEEDBACK_MS: u64 = 1200;
 pub(super) const TOAST_TOP_INSET: f32 = 12.0;

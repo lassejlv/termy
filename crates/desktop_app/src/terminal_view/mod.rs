@@ -95,6 +95,8 @@ mod update_overlay;
 mod update_toasts;
 mod workspaces;
 
+pub(crate) use runtime::tmux_runtime_requested;
+
 use self::benchmark::{BENCHMARK_SAMPLE_INTERVAL, BenchmarkConfig, BenchmarkSession};
 use self::scrollbar::{
     TerminalScrollbarDragState, TerminalScrollbarHit, TerminalScrollbarMarkerCache,
@@ -3253,6 +3255,11 @@ impl TerminalView {
                 multiplexer.as_ref().map(|window| window.client()),
             );
         let resolved_runtime_kind = runtime.kind();
+        if resolved_runtime_kind != configured_runtime_kind {
+            // Preinstalled menus and shortcuts must follow the runtime we actually
+            // started, including a tmux preflight/control-session fallback.
+            keybindings::install_keybindings(cx, &config, resolved_runtime_kind.uses_tmux());
+        }
 
         let plugin_runtime = PluginRuntime::new(config_path.as_deref());
         crate::launch_probe::record_stage("terminal_created");
@@ -3444,9 +3451,11 @@ impl TerminalView {
             native_file_drop_enabled: false,
         };
         #[cfg(target_os = "windows")]
-        if config.tmux_enabled && !config.multiplexer_enabled {
-            // Surface explicit feedback when a synced/shared config requests tmux on Windows.
-            crate::ui::toast::warning(TMUX_UNSUPPORTED_WINDOWS_TOAST);
+        if config.tmux_enabled
+            && !config.multiplexer_enabled
+            && view.cached_tmux_command_prefix.is_empty()
+        {
+            crate::ui::toast::warning(TMUX_NEEDS_PREFIX_WINDOWS_TOAST);
         }
         let restored_native_workspace = if let Some(session) = live_session {
             match view.restore_stored_session(session, cx) {
@@ -3770,9 +3779,12 @@ impl TerminalView {
         self.macos_option_as_alt = config.macos_option_as_alt;
         self.progress_indicator_enabled = config.progress_indicator_enabled;
         #[cfg(target_os = "windows")]
-        if !self.tmux_enabled_config && config.tmux_enabled {
-            // Keep this visible on config reload so users understand why runtime did not switch.
-            crate::ui::toast::warning(TMUX_UNSUPPORTED_WINDOWS_TOAST);
+        if !self.tmux_enabled_config
+            && config.tmux_enabled
+            && !config.multiplexer_enabled
+            && config.tmux_command_prefix_argv().is_empty()
+        {
+            crate::ui::toast::warning(TMUX_NEEDS_PREFIX_WINDOWS_TOAST);
         }
         #[cfg(not(target_os = "windows"))]
         let next_runtime_kind = Self::runtime_kind_from_app_config(&config);

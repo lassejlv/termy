@@ -271,7 +271,7 @@ fn palette_visibility_filters_by_platform() {
 }
 
 #[test]
-fn windows_hides_tmux_commands_from_palette_entries() {
+fn windows_hides_tmux_commands_from_palette_without_tmux_runtime() {
     let entries = CommandAction::palette_entries();
     #[cfg(target_os = "windows")]
     {
@@ -310,6 +310,33 @@ fn windows_hides_tmux_commands_from_palette_entries() {
             entries
                 .iter()
                 .any(|entry| entry.action == CommandAction::SplitPaneVertical)
+        );
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_shows_tmux_commands_when_runtime_is_active() {
+    let entries = CommandAction::palette_entries_for_runtime(true);
+    for action in [
+        CommandAction::ManageTmuxSessions,
+        CommandAction::SplitPaneVertical,
+        CommandAction::ResizePaneLeft,
+    ] {
+        assert!(
+            entries.iter().any(|entry| entry.action == action),
+            "missing {action:?} from tmux command palette on Windows"
+        );
+    }
+    let file_entries = CommandAction::menu_entries_for_root_for_runtime(MenuRoot::File, true);
+    for action in [
+        CommandAction::ManageTmuxSessions,
+        CommandAction::SplitPaneVertical,
+        CommandAction::SplitPaneHorizontal,
+    ] {
+        assert!(
+            file_entries.iter().any(|entry| entry.action == action),
+            "missing {action:?} from tmux File menu on Windows"
         );
     }
 }

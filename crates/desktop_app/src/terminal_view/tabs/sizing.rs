@@ -959,8 +959,9 @@ mod tests {
 
     #[test]
     fn tab_strip_geometry_clamps_action_rail_for_narrow_viewport() {
-        let viewport_width =
-            TerminalView::titlebar_left_padding_for_platform() + TOP_STRIP_SIDE_PADDING + 24.0;
+        let viewport_width = TerminalView::titlebar_left_padding_for_platform()
+            + TerminalView::titlebar_right_padding_for_platform()
+            + 24.0;
         let geometry = TerminalView::tab_strip_geometry_for_viewport_width(viewport_width);
 
         assert_float_eq(geometry.row_width, 24.0);

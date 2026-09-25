@@ -391,8 +391,9 @@ mod tests {
 
     #[test]
     fn button_shrinks_to_narrow_action_rail() {
-        let viewport_width =
-            TerminalView::titlebar_left_padding_for_platform() + TOP_STRIP_SIDE_PADDING + 8.0;
+        let viewport_width = TerminalView::titlebar_left_padding_for_platform()
+            + TerminalView::titlebar_right_padding_for_platform()
+            + 8.0;
         let snapshot = TerminalView::tab_strip_layout_for_viewport_width(viewport_width);
         let geometry = snapshot.geometry;
         assert_float_eq(geometry.action_rail_width, 8.0);

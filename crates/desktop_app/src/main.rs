@@ -728,11 +728,7 @@ fn main() {
             crate::ui::toast::warning(message);
         }
         // Keep startup menus/keybinds aligned with the active runtime capability set.
-        let tmux_runtime_active = if cfg!(target_os = "windows") || app_config.multiplexer_enabled {
-            false
-        } else {
-            app_config.tmux_enabled
-        };
+        let tmux_runtime_active = terminal_view::tmux_runtime_requested(&app_config);
         keybindings::install_keybindings(cx, &app_config, tmux_runtime_active);
         launch_probe::record_stage("keybindings_installed");
         let startup_config = app_config;
@@ -750,14 +746,27 @@ fn main() {
         spawn_deeplink_listener(cx, deeplink_rx);
         if let Some(executable) = current_executable() {
             let open_tab_tx = deeplink_tx.clone();
-            if let Err(error) =
+            let register = move || {
                 crate::native_sdk::register_open_tab_here(&executable, move |directory| {
                     let url = deeplink::new_tab_deeplink_for_dir(&directory.to_string_lossy());
                     if let Err(error) = open_tab_tx.send(vec![url]) {
                         log::error!("Failed to enqueue Finder/file-manager tab: {error}");
                     }
                 })
+            };
+            #[cfg(target_os = "windows")]
+            if let Err(error) = std::thread::Builder::new()
+                .name("termy-explorer-integration".to_string())
+                .spawn(move || {
+                    if let Err(error) = register() {
+                        log::warn!("File manager integration was not registered: {error}");
+                    }
+                })
             {
+                log::warn!("Could not start Explorer integration registration: {error}");
+            }
+            #[cfg(not(target_os = "windows"))]
+            if let Err(error) = register() {
                 log::warn!("File manager integration was not registered: {error}");
             }
         }
@@ -1068,6 +1077,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[gpui::test]
     fn finder_service_reuses_open_window_for_selected_folders(cx: &mut TestAppContext) {
         let handled = RefCell::new(Vec::new());

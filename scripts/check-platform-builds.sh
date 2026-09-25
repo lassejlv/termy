@@ -69,6 +69,8 @@ run_native() {
       ;;
     MINGW*|MSYS*|CYGWIN*|Windows_NT)
       run_desktop_checks
+      log "Testing Windows desktop application"
+      cargo test --locked -p termy --bin termy
       log "Checking Windows setup script syntax"
       check_powershell_script
       ;;
