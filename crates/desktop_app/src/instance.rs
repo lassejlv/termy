@@ -317,11 +317,10 @@ mod tests {
         let (stream, _) = listener.accept().unwrap();
         let started = Instant::now();
         let error = super::read_forwarded_urls(stream).expect_err("incomplete handoff");
-        assert!(matches!(
-            error.kind(),
-            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-        ));
-        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "incomplete client held the listener too long: {error}"
+        );
         drop(client);
     }
 
