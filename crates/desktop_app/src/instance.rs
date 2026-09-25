@@ -6,11 +6,13 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const PROTOCOL_PREFIX: &str = "TERMY1 ";
 const CONNECT_ATTEMPTS: usize = 40;
 const CONNECT_WAIT: Duration = Duration::from_millis(100);
+const HANDOFF_READ_TIMEOUT: Duration = Duration::from_secs(1);
+const MAX_HANDOFF_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Endpoint {
@@ -151,14 +153,45 @@ fn read_port(home: &Path) -> Option<u16> {
 }
 
 fn write_forwarded_urls(stream: &mut TcpStream, urls: &[String]) -> io::Result<()> {
-    stream.write_all(encode_forward(urls).as_bytes())?;
+    let payload = encode_forward(urls);
+    if payload.len() > MAX_HANDOFF_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "instance payload exceeds size limit",
+        ));
+    }
+    stream.write_all(payload.as_bytes())?;
     stream.flush()?;
     stream.shutdown(Shutdown::Write)
 }
 
 fn read_forwarded_urls(mut stream: TcpStream) -> io::Result<Vec<String>> {
-    let mut buffer = String::new();
-    stream.read_to_string(&mut buffer)?;
+    let deadline = Instant::now() + HANDOFF_READ_TIMEOUT;
+    let mut bytes = Vec::new();
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "instance read timed out",
+            ));
+        }
+        stream.set_read_timeout(Some(remaining))?;
+        let mut chunk = [0u8; 4096];
+        let count = stream.read(&mut chunk)?;
+        if count == 0 {
+            break;
+        }
+        if bytes.len() + count > MAX_HANDOFF_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "instance payload exceeds size limit",
+            ));
+        }
+        bytes.extend_from_slice(&chunk[..count]);
+    }
+    let buffer = String::from_utf8(bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     decode_forward(&buffer)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid instance payload"))
 }
@@ -275,6 +308,60 @@ mod tests {
             urls
         );
         assert_eq!(super::read_port(home), Some(port));
+    }
+
+    #[test]
+    fn incomplete_handoff_does_not_block_the_listener_indefinitely() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        let error = super::read_forwarded_urls(stream).expect_err("incomplete handoff");
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        drop(client);
+    }
+
+    #[test]
+    fn slow_handoff_has_a_total_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let writer = std::thread::spawn(move || {
+            for _ in 0..8 {
+                if std::io::Write::write_all(&mut client, b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        });
+        let started = Instant::now();
+        let error = super::read_forwarded_urls(stream).expect_err("slow handoff");
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ));
+        assert!(started.elapsed() < Duration::from_secs(3));
+        writer.join().expect("slow client");
+    }
+
+    #[test]
+    fn oversized_handoff_is_rejected() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let mut client = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let urls = ["a".repeat(super::MAX_HANDOFF_BYTES)];
+        let write_error = super::write_forwarded_urls(&mut client, &urls)
+            .expect_err("sender must reject oversized handoff");
+        assert_eq!(write_error.kind(), std::io::ErrorKind::InvalidInput);
+        let payload = super::encode_forward(&urls);
+        std::io::Write::write_all(&mut client, payload.as_bytes()).unwrap();
+        drop(client);
+        let error = super::read_forwarded_urls(stream).expect_err("oversized handoff");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 
     #[test]

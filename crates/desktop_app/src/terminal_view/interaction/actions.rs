@@ -100,10 +100,11 @@ impl TerminalView {
         self.maybe_suppress_tab_switch_hint_for_action(action, cx);
 
         #[cfg(target_os = "windows")]
-        if action == CommandAction::ManageTmuxSessions || action.to_command_id().is_tmux_only() {
-            // Defensive guard: custom keybinds can still target tmux actions even when
-            // Windows UI entries are hidden.
-            crate::ui::toast::info("tmux integration is unsupported on Windows");
+        if action == CommandAction::ManageTmuxSessions
+            && !self.runtime_uses_tmux()
+            && self.cached_tmux_command_prefix.is_empty()
+        {
+            crate::ui::toast::info("Configure tmux_command_prefix to use tmux on Windows");
             self.notify_overlay(cx);
             return;
         }

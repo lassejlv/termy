@@ -13,6 +13,8 @@ forward to an already-running v0.2.61 instance, which used a marker file instead
 
 Additional windows start with a fresh session. The first terminal window owns native session restoration and persistence; extra windows do not overwrite its saved workspace. Managed tmux sessions in extra windows are independent and torn down when closed.
 
+On Windows, tmux requires `tmux_command_prefix` (for example, `wsl.exe -e`). When that runtime is active, its pane and session commands appear in the menus and command palette; without a prefix, Termy remains in native mode. Explorer's per-user "Open new Termy tab here" verbs are refreshed in the background when their registered executable path or text changes.
+
 Important internal areas:
 
 - `src/terminal_view/`: terminal surface, tabs, panes, search, command palette, input, rendering, persistence, and runtime coordination. `session.rs` owns coherent tab/workspace/pane state; `backend.rs` owns the core-native/tmux facade and the source-specific cell presentation policy.

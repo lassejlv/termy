@@ -27,7 +27,8 @@ pub(crate) fn app_menus(
 }
 
 fn build_menu(root: MenuRoot, capabilities: CommandCapabilities, simple_mode: bool) -> Menu {
-    let entries = CommandAction::menu_entries_for_root(root);
+    let entries =
+        CommandAction::menu_entries_for_root_for_runtime(root, capabilities.tmux_runtime_active);
     let mut items = Vec::new();
 
     #[cfg(target_os = "macos")]

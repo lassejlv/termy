@@ -219,7 +219,7 @@ impl TerminalView {
     fn command_palette_core_command_items_for_state(
         capabilities: CommandCapabilities,
     ) -> Vec<CommandPaletteItem> {
-        CommandAction::palette_entries()
+        CommandAction::palette_entries_for_runtime(capabilities.tmux_runtime_active)
             .into_iter()
             .map(|entry| {
                 Self::command_palette_command_item_for_state(
@@ -1950,6 +1950,23 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn tmux_runtime_exposes_windows_commands_in_palette() {
+        let native =
+            TerminalView::command_palette_core_command_items_for_state(test_caps(true, false));
+        let tmux =
+            TerminalView::command_palette_core_command_items_for_state(test_caps(true, true));
+        let is_manage = |item: &CommandPaletteItem| {
+            matches!(
+                item.kind,
+                CommandPaletteItemKind::Command(CommandAction::ManageTmuxSessions)
+            )
+        };
+        assert!(!native.iter().any(is_manage));
+        assert!(tmux.iter().any(is_manage));
+    }
+
     #[test]
     fn install_cli_command_is_present_and_tracks_availability_state() {
         let available_items =
@@ -2003,10 +2020,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        #[cfg(not(target_os = "windows"))]
         assert_eq!(filtered_actions, vec![CommandAction::ManageTmuxSessions]);
-        #[cfg(target_os = "windows")]
-        assert!(filtered_actions.is_empty());
     }
 
     #[test]

@@ -51,12 +51,18 @@ pub type MenuSection = u8;
 pub enum CommandPaletteVisibility {
     Always,
     MacOsOnly,
+    /// The tmux/pane command group is hidden on Windows until tmux is active.
     NotWindows,
 }
 
 impl CommandPaletteVisibility {
     pub fn is_visible(self) -> bool {
         self.is_visible_on_platform(cfg!(target_os = "macos"), cfg!(target_os = "windows"))
+    }
+
+    pub fn is_visible_for_runtime(self, tmux_runtime_active: bool) -> bool {
+        self.is_visible()
+            || (cfg!(target_os = "windows") && tmux_runtime_active && self == Self::NotWindows)
     }
 
     pub const fn is_visible_on_platform(self, is_macos: bool, is_windows: bool) -> bool {
@@ -95,12 +101,18 @@ impl MenuRoot {
 pub enum MenuVisibility {
     Always,
     MacOsOnly,
+    /// The tmux/pane command group is hidden on Windows until tmux is active.
     NotWindows,
 }
 
 impl MenuVisibility {
     pub fn is_visible(self) -> bool {
         self.is_visible_on_platform(cfg!(target_os = "macos"), cfg!(target_os = "windows"))
+    }
+
+    pub fn is_visible_for_runtime(self, tmux_runtime_active: bool) -> bool {
+        self.is_visible()
+            || (cfg!(target_os = "windows") && tmux_runtime_active && self == Self::NotWindows)
     }
 
     pub const fn is_visible_on_platform(self, is_macos: bool, is_windows: bool) -> bool {
@@ -248,12 +260,17 @@ macro_rules! define_commands {
                 CommandId::all_config_names()
             }
 
+            #[cfg(test)]
             pub fn palette_entries() -> Vec<CommandPaletteEntry> {
+                Self::palette_entries_for_runtime(false)
+            }
+
+            pub fn palette_entries_for_runtime(tmux_runtime_active: bool) -> Vec<CommandPaletteEntry> {
                 COMMAND_SPECS
                     .iter()
                     .filter_map(|spec| {
                         let palette = spec.palette?;
-                        if !palette.visibility.is_visible() {
+                        if !palette.visibility.is_visible_for_runtime(tmux_runtime_active) {
                             return None;
                         }
 
@@ -270,12 +287,20 @@ macro_rules! define_commands {
                 &MENU_ROOTS
             }
 
+            #[cfg(test)]
             pub fn menu_entries_for_root(root: MenuRoot) -> Vec<CommandMenuEntry> {
+                Self::menu_entries_for_root_for_runtime(root, false)
+            }
+
+            pub fn menu_entries_for_root_for_runtime(
+                root: MenuRoot,
+                tmux_runtime_active: bool,
+            ) -> Vec<CommandMenuEntry> {
                 let mut entries = COMMAND_SPECS
                     .iter()
                     .filter_map(|spec| {
                         let menu = spec.menu?;
-                        if menu.root != root || !menu.visibility.is_visible() {
+                        if menu.root != root || !menu.visibility.is_visible_for_runtime(tmux_runtime_active) {
                             return None;
                         }
 
