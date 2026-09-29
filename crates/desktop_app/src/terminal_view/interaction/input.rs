@@ -20,6 +20,24 @@ fn should_defer_key_down_to_ime(keystroke: &gpui::Keystroke) -> bool {
         )
 }
 
+// Windows reports AltGr as Ctrl+Alt, and gpui only strips those modifiers for a
+// hard-coded list of layouts (Danish, for one, is missing). The OS still
+// resolves the chord to its composed text in `key_char` (AltGr+2 -> "@"),
+// which a genuine Ctrl+Alt shortcut never produces, so such keystrokes are
+// text and must not trigger `secondary-alt-*` keybindings.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn is_windows_altgr_text_keystroke(keystroke: &gpui::Keystroke) -> bool {
+    let modifiers = keystroke.modifiers;
+    modifiers.control
+        && modifiers.alt
+        && !modifiers.platform
+        && !modifiers.function
+        && keystroke
+            .key_char
+            .as_deref()
+            .is_some_and(|text| !text.is_empty() && !text.chars().any(char::is_control))
+}
+
 fn shell_quote_path(path: &Path) -> String {
     let path_str = path.to_string_lossy();
     let mut quoted = String::with_capacity(path_str.len() + 2);
@@ -236,6 +254,31 @@ fn take_pending_key_release_action(
 }
 
 impl TerminalView {
+    /// Routes AltGr text chords straight to the terminal before gpui matches
+    /// them against Ctrl+Alt keybindings (e.g. `secondary-alt-2`).
+    #[cfg(target_os = "windows")]
+    pub(in super::super) fn intercept_windows_altgr_text(
+        cx: &mut Context<Self>,
+    ) -> gpui::Subscription {
+        let view = cx.weak_entity();
+        cx.intercept_keystrokes(move |event, window, cx| {
+            if !is_windows_altgr_text_keystroke(&event.keystroke) {
+                return;
+            }
+            let _ = view.update(cx, |view, cx| {
+                if !view.focus_handle.is_focused(window) || view.overlay_owns_terminal_input() {
+                    return;
+                }
+                let key_down = KeyDownEvent {
+                    keystroke: event.keystroke.clone(),
+                    is_held: false,
+                };
+                view.handle_key_down(&key_down, window, cx);
+                cx.stop_propagation();
+            });
+        })
+    }
+
     fn overlay_owns_terminal_input(&self) -> bool {
         overlay_owns_terminal_input_state(
             self.is_command_palette_open(),
@@ -939,10 +982,11 @@ mod tests {
     use super::{
         FileDropTarget, PendingKeyRelease, PendingKeyReleaseAction, classify_file_drop_target,
         clipboard_item_to_terminal_paste_input, dropped_paths_to_terminal_paste_input,
-        image_extension, kitty_png_clipboard_item, modifier_transition_events, shell_quote_paths,
-        should_defer_key_down_to_ime, should_prepare_terminal_input_write,
-        should_write_drop_to_target, take_deferred_ime_key_release,
-        take_pending_key_release_action, terminal_modifier_transition_events,
+        image_extension, is_windows_altgr_text_keystroke, kitty_png_clipboard_item,
+        modifier_transition_events, shell_quote_paths, should_defer_key_down_to_ime,
+        should_prepare_terminal_input_write, should_write_drop_to_target,
+        take_deferred_ime_key_release, take_pending_key_release_action,
+        terminal_modifier_transition_events,
     };
     use gpui::{Keystroke, Modifiers};
     use std::{
@@ -956,6 +1000,40 @@ mod tests {
             key: key.to_string(),
             key_char: key_char.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn altgr_text_chord_is_recognized_over_ctrl_alt_shortcut() {
+        let ctrl_alt = Modifiers {
+            control: true,
+            alt: true,
+            ..Modifiers::default()
+        };
+        // AltGr+2 on a Danish layout arrives as ctrl-alt-2 with "@" as text.
+        assert!(is_windows_altgr_text_keystroke(&keystroke(
+            "2",
+            Some("@"),
+            ctrl_alt
+        )));
+        // A real Ctrl+Alt shortcut carries no composed text.
+        assert!(!is_windows_altgr_text_keystroke(&keystroke(
+            "2", None, ctrl_alt
+        )));
+        assert!(!is_windows_altgr_text_keystroke(&keystroke(
+            "c",
+            Some("\u{3}"),
+            ctrl_alt
+        )));
+        // Plain Alt chords stay on the regular keybinding path.
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        assert!(!is_windows_altgr_text_keystroke(&keystroke(
+            "2",
+            Some("@"),
+            alt
+        )));
     }
 
     #[test]

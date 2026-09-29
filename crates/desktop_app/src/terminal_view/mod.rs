@@ -1361,6 +1361,8 @@ pub struct TerminalView {
     custom_colors: config::CustomColors,
     system_appearance: SystemAppearance,
     appearance_subscription: Option<gpui::Subscription>,
+    #[cfg(target_os = "windows")]
+    altgr_text_interceptor: Option<gpui::Subscription>,
     colors: TerminalColors,
     inactive_tab_scrollback: Option<usize>,
     tasks: Vec<TaskConfig>,
@@ -3291,6 +3293,8 @@ impl TerminalView {
             custom_colors: config.colors.clone(),
             system_appearance,
             appearance_subscription: None,
+            #[cfg(target_os = "windows")]
+            altgr_text_interceptor: None,
             colors,
             inactive_tab_scrollback: config.inactive_tab_scrollback,
             tasks: config.tasks.clone(),
@@ -3636,6 +3640,10 @@ impl TerminalView {
             Some(cx.observe_window_appearance(window, |view, window, cx| {
                 view.handle_window_appearance_change(window.appearance(), cx);
             }));
+        #[cfg(target_os = "windows")]
+        {
+            view.altgr_text_interceptor = Some(Self::intercept_windows_altgr_text(cx));
+        }
         view.schedule_persist_native_workspace(cx);
         crate::launch_probe::record_stage("view_created");
         view
