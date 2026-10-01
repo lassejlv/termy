@@ -135,6 +135,18 @@ install_finder_open_tab_service() {
   /usr/bin/plutil -lint "$service_contents/Info.plist" "$service_contents/document.wflow" >/dev/null
 }
 
+ensure_local_network_usage_description() {
+  local plist_path="$1/Contents/Info.plist"
+  local plist_buddy="/usr/libexec/PlistBuddy"
+
+  [[ -f "$plist_path" ]] || die "App bundle Info.plist not found at $plist_path"
+  [[ -x "$plist_buddy" ]] || die "PlistBuddy is required to patch $plist_path"
+
+  "$plist_buddy" -c "Delete :NSLocalNetworkUsageDescription" "$plist_path" >/dev/null 2>&1 || true
+  "$plist_buddy" -c "Add :NSLocalNetworkUsageDescription string Termy uses the local network to connect to devices and services on your LAN, such as SSH hosts." "$plist_path"
+  /usr/bin/plutil -lint "$plist_path" >/dev/null
+}
+
 ensure_app_icon() {
   local app_path="$1"
   local plist_path="$app_path/Contents/Info.plist"
@@ -300,6 +312,9 @@ ensure_termy_url_scheme "$APP_PATH"
 
 log "Registering folder Open With support in app bundle"
 ensure_folder_document_type "$APP_PATH"
+
+log "Declaring local network usage in app bundle"
+ensure_local_network_usage_description "$APP_PATH"
 
 log "Installing Finder Open new Termy tab here service"
 install_finder_open_tab_service "$APP_PATH"

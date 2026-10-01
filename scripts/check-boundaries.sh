@@ -218,6 +218,9 @@ require_pattern 'scripts/aur/\$\{APP_NAME_LOWER\}\.desktop' \
 require_pattern 'ensure_folder_document_type' \
   "scripts/build-dmg.sh" \
   "macOS DMG packaging must register folders for Open With"
+require_pattern 'NSLocalNetworkUsageDescription' \
+  "scripts/build-dmg.sh" \
+  "macOS DMG packaging must declare local network usage permission"
 require_pattern 'public.folder' \
   "scripts/build-dmg.sh" \
   "macOS DMG packaging must declare public.folder document support"
