@@ -1,0 +1,25 @@
+[package]
+name = "termy_pty"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Node-API addon behind the @termysh/pty npm package."
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+# The addon links against Node-API symbols that only exist inside a Node
+# process; it is tested from JavaScript (packages/pty).
+test = false
+doctest = false
+
+[dependencies]
+termy_core = { path = "../core", default-features = false, features = ["pty"] }
+napi = { version = "3.14", default-features = false, features = ["napi4"] }
+napi-derive = "3.6"
+
+[build-dependencies]
+napi-build = "2.6"

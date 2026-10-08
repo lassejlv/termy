@@ -56,7 +56,7 @@ fn dropping_a_hup_ignoring_child_has_bounded_shutdown() {
 #[test]
 fn child_environment_rejects_invalid_override_names() {
     for name in ["", "BAD=NAME"] {
-        let error = child_environment(&[(name.to_string(), "value".to_string())], None)
+        let error = child_environment(&[(name.to_string(), "value".to_string())], None, true)
             .expect_err("invalid environment name should fail");
         assert_eq!(error.kind(), ErrorKind::InvalidInput);
     }
@@ -68,6 +68,7 @@ fn child_environment_reports_the_actual_working_directory() {
     let environment = child_environment(
         &[("PWD".to_string(), "/stale/value".to_string())],
         Some(directory),
+        true,
     )
     .expect("working directory should be representable in the child environment");
     assert!(
@@ -827,4 +828,100 @@ fn child_resets_inherited_ignored_signals() {
         "the child inherited SIG_IGN instead of resetting SIG{signal_name}"
     );
     drop(terminal);
+}
+
+#[test]
+fn child_environment_without_inheritance_contains_only_overrides() {
+    let environment = child_environment(&[("ONLY".to_string(), "1".to_string())], None, false)
+        .expect("environment should build");
+    let entries = environment
+        .iter()
+        .map(|entry| entry.to_bytes().to_vec())
+        .collect::<Vec<_>>();
+    assert_eq!(entries, vec![b"ONLY=1".to_vec()]);
+}
+
+#[test]
+fn spawn_with_exit_reports_exit_codes_and_signals() {
+    let spawn = |script: &str| {
+        let (exit_tx, exit_rx) = std::sync::mpsc::channel();
+        let terminal = Transport::spawn_with_exit(
+            SpawnConfig {
+                program: "/bin/sh".to_string(),
+                args: vec!["-c".to_string(), script.to_string()],
+                working_directory: None,
+                environment: Vec::new(),
+            },
+            PtySize {
+                cols: 80,
+                rows: 24,
+                cell_width: 0.0,
+                cell_height: 0.0,
+            },
+            true,
+            |_| Vec::new(),
+            move |exit| {
+                let _ = exit_tx.send(exit);
+            },
+        )
+        .expect("shell should start");
+        (terminal, exit_rx)
+    };
+
+    let (_terminal, exit_rx) = spawn("exit 7");
+    let exit = exit_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("child should exit");
+    assert_eq!(
+        exit,
+        ChildExit {
+            code: Some(7),
+            signal: None
+        }
+    );
+
+    let (terminal, exit_rx) = spawn("sleep 30");
+    terminal.signal(15).expect("signal should be delivered");
+    let exit = exit_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("child should exit after SIGTERM");
+    assert_eq!(
+        exit,
+        ChildExit {
+            code: None,
+            signal: Some(15)
+        }
+    );
+}
+
+#[test]
+fn foreground_process_name_reports_the_running_program() {
+    let terminal = Transport::spawn(
+        SpawnConfig {
+            program: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "exec sleep 30".to_string()],
+            working_directory: None,
+            environment: Vec::new(),
+        },
+        PtySize {
+            cols: 80,
+            rows: 24,
+            cell_width: 0.0,
+            cell_height: 0.0,
+        },
+        |_| Vec::new(),
+        || {},
+    )
+    .expect("shell should start");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if terminal.foreground_process_name().as_deref() == Some("sleep") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "foreground process should become sleep"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

@@ -144,6 +144,11 @@ while IFS= read -r manifest; do
   require_crate_readme_metadata "$crate_dir"
 done < <(find crates -mindepth 2 -maxdepth 2 -name Cargo.toml | sort)
 
+# The @termysh/pty addon ships only termy_core's PTY layer.
+for forbidden_dep in gpui keyring ureq fontdb termy; do
+  check_forbidden_all_target_dep termy_pty "$forbidden_dep"
+done
+
 require_pattern './scripts/build-dmg-signed\.sh' \
   ".github/workflows/release.yml" \
   "release workflow must call scripts/build-dmg-signed.sh"

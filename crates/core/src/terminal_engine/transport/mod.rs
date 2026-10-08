@@ -31,6 +31,13 @@ pub(crate) struct SpawnConfig {
     pub(crate) environment: Vec<(String, String)>,
 }
 
+/// How a PTY child ended: an exit code, or the signal that terminated it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ChildExit {
+    pub(crate) code: Option<i32>,
+    pub(crate) signal: Option<i32>,
+}
+
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
 mod unix;
 #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]

@@ -23,6 +23,8 @@ mod osc_intercept;
 mod path_env;
 mod program_status;
 mod protocol;
+#[cfg(feature = "pty")]
+pub mod pty;
 pub use program_status::{ProgramState, ProgramStatusKind, ProgramStatusRecord};
 #[cfg(feature = "native")]
 pub mod remote;

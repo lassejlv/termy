@@ -20,6 +20,7 @@ WebAssembly. Use them to build a browser terminal or to replace xterm.js.
 | `@termysh/web` | Browser terminal with renderer, input, selection, links and images | You are building something new |
 | `@termysh/xterm` | xterm.js-compatible API on top of `@termysh/web` | You are replacing `@xterm/xterm` |
 | `@termysh/core` | WebAssembly engine with a typed headless API | You render yourself, run in a worker or Node, or test terminal output |
+| `@termysh/pty` | Pseudo-terminals for Node.js and Bun, a drop-in replacement for `node-pty` | Your server runs the shell or program the terminal shows |
 
 <Cards>
   <Card title="Connect to a shell" description="A complete PTY server and browser client over WebSocket." href="/docs/developer/web/connect" />
@@ -28,6 +29,7 @@ WebAssembly. Use them to build a browser terminal or to replace xterm.js.
   <Card title="Themes" description="Bundled Termy themes, xterm.js themes and overrides." href="/docs/developer/web/themes" />
   <Card title="Migrate from xterm.js" description="Swap the import and keep your existing code." href="/docs/developer/web/xterm" />
   <Card title="Headless core" description="Drive the engine directly from a worker, Node or your own renderer." href="/docs/developer/web/core" />
+  <Card title="PTY for Node.js" description="Run shells and programs on the server with @termysh/pty." href="/docs/developer/web/pty" />
   <Card title="Troubleshooting" description="Blank terminals, wasm loading errors and build failures." href="/docs/developer/web/troubleshooting" />
   <Card title="Live demo" description="Try the web terminal in your browser." href="/demo" />
 </Cards>

@@ -25,7 +25,7 @@ use super::limits::{
     MAX_WRITE_BACKLOG_ENTRIES as MAX_PENDING_WRITE_ENTRIES,
     MAX_WRITE_CHUNK_BYTES as MAX_WRITER_WRITE_CHUNK,
 };
-use super::{PtySize, SpawnConfig};
+use super::{ChildExit, PtySize, SpawnConfig};
 
 type Bool = i32;
 type Dword = u32;
@@ -725,8 +725,20 @@ impl Transport {
     pub(crate) fn spawn(
         config: SpawnConfig,
         size: PtySize,
-        mut on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
+        on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
         on_exit: impl FnOnce() + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::spawn_with_exit(config, size, true, on_output, move |_| on_exit())
+    }
+
+    /// Spawn like [`Self::spawn`], reporting the child's exit code. Without
+    /// `inherit_environment`, the child sees only `config.environment`.
+    pub(crate) fn spawn_with_exit(
+        config: SpawnConfig,
+        size: PtySize,
+        inherit_environment: bool,
+        mut on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
+        on_exit: impl FnOnce(ChildExit) + Send + 'static,
     ) -> io::Result<Self> {
         let api = conpty_api().ok_or_else(|| {
             io::Error::new(
@@ -745,7 +757,11 @@ impl Transport {
         let launch = resolve_launch_command(&config, &lookup_directory)?;
         let application = wide_nul(launch.application.as_os_str(), "terminal program")?;
         let mut command_line = launch.command_line;
-        let mut environment = child_environment(&config.environment, working_directory.as_deref())?;
+        let mut environment = child_environment(
+            &config.environment,
+            working_directory.as_deref(),
+            inherit_environment,
+        )?;
         let current_directory = working_directory
             .as_deref()
             .map(|path| wide_nul(path.as_os_str(), "working directory"))
@@ -824,6 +840,16 @@ impl Transport {
             pseudo_console,
         ))));
 
+        let exit_status = Arc::new(Mutex::new(None::<ChildExit>));
+        let reader_exit_status = exit_status.clone();
+        let on_exit = move || {
+            let exit = reader_exit_status
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+                .unwrap_or_default();
+            on_exit(exit);
+        };
         let reader_gate = gate.clone();
         let reader_writer = writer.clone();
         let reader_thread = thread::Builder::new()
@@ -888,7 +914,7 @@ impl Transport {
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .take();
                 if let Some(resources) = resources {
-                    run_control(resources, control_wake, control_state);
+                    run_control(resources, control_wake, control_state, &exit_status);
                 }
                 let _ = control_finished_sender.send(());
             });
@@ -932,6 +958,12 @@ impl Transport {
 
     pub(crate) fn child_pid(&self) -> u32 {
         self.child_pid
+    }
+
+    /// Terminate the child. Windows has no signals; the control thread ends
+    /// the process and closes its pseudoconsole.
+    pub(crate) fn terminate(&self) {
+        self.writer.close();
     }
 }
 
@@ -1052,7 +1084,12 @@ fn run_writer(
     protocol_replies.close(&control);
 }
 
-fn run_control(mut resources: ChildResources, wake: Arc<ControlEvent>, state: Arc<ControlState>) {
+fn run_control(
+    mut resources: ChildResources,
+    wake: Arc<ControlEvent>,
+    state: Arc<ControlState>,
+    exit_status: &Mutex<Option<ChildExit>>,
+) {
     loop {
         match resources.process_signaled() {
             Ok(true) => {
@@ -1092,6 +1129,13 @@ fn run_control(mut resources: ChildResources, wake: Arc<ControlEvent>, state: Ar
     if !resources.process_exited {
         let _ = resources.terminate_and_wait();
     }
+    *exit_status
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+        resources.exit_code().map(|code| ChildExit {
+            code: Some(code as i32),
+            signal: None,
+        });
     state.request_close();
     // ClosePseudoConsole intentionally runs on this control thread while the
     // dedicated reader keeps draining. Older Windows releases can block here
@@ -1297,87 +1341,7 @@ fn hresult_error(operation: &str, result: HResult) -> io::Error {
     ))
 }
 
-struct ChildResources {
-    process: Option<OwnedHandle>,
-    pseudo_console: Option<PseudoConsole>,
-    process_exited: bool,
-}
-
-impl ChildResources {
-    fn new(process: OwnedHandle, pseudo_console: PseudoConsole) -> Self {
-        Self {
-            process: Some(process),
-            pseudo_console: Some(pseudo_console),
-            process_exited: false,
-        }
-    }
-
-    fn process(&self) -> &OwnedHandle {
-        self.process
-            .as_ref()
-            .expect("child process handle remains owned until cleanup")
-    }
-
-    fn pseudo_console(&self) -> &PseudoConsole {
-        self.pseudo_console
-            .as_ref()
-            .expect("pseudoconsole remains owned until control cleanup")
-    }
-
-    fn process_signaled(&self) -> io::Result<bool> {
-        // SAFETY: the control thread owns this live process handle. A zero
-        // timeout only observes signal state and does not consume the handle.
-        match unsafe { WaitForSingleObject(self.process().raw(), 0) } {
-            WAIT_OBJECT_0 => Ok(true),
-            WAIT_TIMEOUT => Ok(false),
-            WAIT_FAILED => Err(io::Error::last_os_error()),
-            value => Err(io::Error::other(format!(
-                "WaitForSingleObject returned unexpected status 0x{value:08X}"
-            ))),
-        }
-    }
-
-    fn terminate_and_wait(&mut self) -> io::Result<()> {
-        if self.process_exited {
-            return Ok(());
-        }
-        // SAFETY: this wrapper owns the exact process created for the terminal.
-        // TerminateProcess is the Windows shutdown fallback when its HPCON
-        // session owner is dropped before the client exits naturally.
-        let terminated = unsafe { TerminateProcess(self.process().raw(), 1) };
-        if terminated == FALSE && !self.process_signaled().unwrap_or(false) {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: the exact child process handle remains live. After successful
-        // termination, waiting without a timeout completes process teardown.
-        let waited = unsafe { WaitForSingleObject(self.process().raw(), INFINITE) };
-        if waited != WAIT_OBJECT_0 {
-            return Err(if waited == WAIT_FAILED {
-                io::Error::last_os_error()
-            } else {
-                io::Error::other(format!(
-                    "WaitForSingleObject returned unexpected status 0x{waited:08X}"
-                ))
-            });
-        }
-        self.process_exited = true;
-        Ok(())
-    }
-
-    fn close_pseudo_console(&mut self) {
-        drop(self.pseudo_console.take());
-    }
-}
-
-impl Drop for ChildResources {
-    fn drop(&mut self) {
-        if !self.process_exited {
-            let _ = self.terminate_and_wait();
-        }
-        self.close_pseudo_console();
-        drop(self.process.take());
-    }
-}
+include!("windows/resources.rs");
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Default)]

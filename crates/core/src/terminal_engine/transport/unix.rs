@@ -24,7 +24,7 @@ use super::limits::{
     MAX_WRITE_BACKLOG_ENTRIES as MAX_WRITER_BACKLOG_ENTRIES,
     MAX_WRITE_CHUNK_BYTES as MAX_WRITER_WRITE_CHUNK,
 };
-use super::{PtySize, SpawnConfig};
+use super::{ChildExit, PtySize, SpawnConfig};
 
 const F_GETFL: c_int = 3;
 const F_SETFD: c_int = 2;
@@ -126,17 +126,20 @@ impl From<PtySize> for WinSize {
         Self {
             rows: size.rows,
             cols: size.cols,
-            pixel_width: size
-                .cell_width
-                .mul_add(f32::from(size.cols), 0.0)
-                .round()
-                .clamp(1.0, f32::from(u16::MAX)) as u16,
-            pixel_height: size
-                .cell_height
-                .mul_add(f32::from(size.rows), 0.0)
-                .round()
-                .clamp(1.0, f32::from(u16::MAX)) as u16,
+            pixel_width: window_pixels(size.cell_width, size.cols),
+            pixel_height: window_pixels(size.cell_height, size.rows),
         }
+    }
+}
+
+/// Pixel extent for `TIOCSWINSZ`; zero tells programs the cell size is unknown.
+fn window_pixels(cell: f32, cells: u16) -> u16 {
+    if cell > 0.0 {
+        cell.mul_add(f32::from(cells), 0.0)
+            .round()
+            .clamp(1.0, f32::from(u16::MAX)) as u16
+    } else {
+        0
     }
 }
 
@@ -162,6 +165,9 @@ unsafe extern "C" {
     fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
     fn kill(pid: c_int, signal: c_int) -> c_int;
     fn poll(descriptors: *mut PollFd, count: PollCount, timeout: c_int) -> c_int;
+    fn tcgetpgrp(fd: c_int) -> c_int;
+    #[cfg(target_os = "macos")]
+    fn proc_name(pid: c_int, buffer: *mut c_void, size: u32) -> c_int;
     #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
     fn signal(signal: c_int, handler: usize) -> usize;
     #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
@@ -212,6 +218,8 @@ pub(crate) struct Transport {
     writer: WriterHandle,
     child_pid: c_int,
     alive: Arc<AtomicBool>,
+    /// A CLOEXEC duplicate of the PTY master, used only for foreground queries.
+    control: File,
 }
 
 #[derive(Clone)]
@@ -624,8 +632,20 @@ impl Transport {
     pub(crate) fn spawn(
         config: SpawnConfig,
         size: PtySize,
-        mut on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
+        on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
         on_exit: impl FnOnce() + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::spawn_with_exit(config, size, true, on_output, move |_| on_exit())
+    }
+
+    /// Spawn like [`Self::spawn`], reporting how the child ended. Without
+    /// `inherit_environment`, the child sees only `config.environment`.
+    pub(crate) fn spawn_with_exit(
+        config: SpawnConfig,
+        size: PtySize,
+        inherit_environment: bool,
+        mut on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
+        on_exit: impl FnOnce(ChildExit) + Send + 'static,
     ) -> io::Result<Self> {
         let program_path = resolve_program(&config)?;
         let program = c_string_os(program_path.as_os_str(), "terminal program")?;
@@ -645,8 +665,11 @@ impl Transport {
             .as_ref()
             .map(|path| c_string_os(path.as_os_str(), "working directory"))
             .transpose()?;
-        let environment =
-            child_environment(&config.environment, config.working_directory.as_deref())?;
+        let environment = child_environment(
+            &config.environment,
+            config.working_directory.as_deref(),
+            inherit_environment,
+        )?;
         let mut environment_pointers = environment
             .iter()
             .map(|entry| entry.as_ptr())
@@ -732,8 +755,11 @@ impl Transport {
             terminate_and_reap(pid);
             return Err(error);
         }
-        let mut reader = match master_file.try_clone() {
-            Ok(reader) => reader,
+        let (mut reader, control) = match master_file
+            .try_clone()
+            .and_then(|reader| Ok((reader, master_file.try_clone()?)))
+        {
+            Ok(files) => files,
             Err(error) => {
                 drop(master_file);
                 terminate_and_reap(pid);
@@ -770,6 +796,8 @@ impl Transport {
         let reader_writer = writer.clone();
         let alive = Arc::new(AtomicBool::new(true));
         let reader_alive = alive.clone();
+        let exit_status = Arc::new(Mutex::new(None::<ChildExit>));
+        let reader_exit_status = exit_status.clone();
 
         let reader_thread = thread::Builder::new()
             .name("termy-native-pty".to_string())
@@ -845,7 +873,12 @@ impl Transport {
                     }
                 }
                 if !reader_alive.load(Ordering::Acquire) {
-                    on_exit();
+                    let exit = reader_exit_status
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .take()
+                        .unwrap_or_default();
+                    on_exit(exit);
                 }
             });
         if let Err(error) = reader_thread {
@@ -858,7 +891,11 @@ impl Transport {
         let watcher_thread = thread::Builder::new()
             .name("termy-native-pty-child".to_string())
             .spawn(move || {
-                wait_for_child(pid);
+                let status = wait_for_child(pid);
+                *exit_status
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some(child_exit_from_wait_status(status));
                 watcher_alive.store(false, Ordering::Release);
                 let _ = shutdown_writer.write(&[1]);
             });
@@ -872,6 +909,7 @@ impl Transport {
             writer,
             child_pid: pid,
             alive,
+            control,
         })
     }
 
@@ -903,6 +941,66 @@ impl Transport {
     pub(crate) fn child_pid(&self) -> u32 {
         self.child_pid as u32
     }
+
+    /// Send `signal` to the child process while it is running.
+    pub(crate) fn signal(&self, signal: i32) -> io::Result<()> {
+        if !self.alive.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        // SAFETY: `child_pid` is the exact child created by forkpty; the watcher
+        // has not reaped it while `alive` is set.
+        if unsafe { kill(self.child_pid, signal) } < 0 {
+            let error = io::Error::last_os_error();
+            // ESRCH: the child exited between the check and the signal.
+            if error.raw_os_error() != Some(3) {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    /// Name of the PTY's foreground process group leader, such as `vim`.
+    pub(crate) fn foreground_process_name(&self) -> Option<String> {
+        // SAFETY: `control` is an owned, open descriptor for the PTY master.
+        let group = unsafe { tcgetpgrp(self.control.as_raw_fd()) };
+        if group <= 0 {
+            return None;
+        }
+        process_name(group)
+    }
+}
+
+/// Decode a `waitpid` status. Stopped children are not reported because the
+/// watcher waits without `WUNTRACED`.
+fn child_exit_from_wait_status(status: c_int) -> ChildExit {
+    let signal = status & 0x7f;
+    if signal == 0 {
+        ChildExit {
+            code: Some((status >> 8) & 0xff),
+            signal: None,
+        }
+    } else {
+        ChildExit {
+            code: None,
+            signal: Some(signal),
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn process_name(pid: c_int) -> Option<String> {
+    let name = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    let name = name.trim_end_matches('\n');
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn process_name(pid: c_int) -> Option<String> {
+    let mut buffer = [0u8; 256];
+    // SAFETY: the buffer is writable for its full, stated length.
+    let length = unsafe { proc_name(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+    let length = usize::try_from(length).ok().filter(|length| *length > 0)?;
+    Some(String::from_utf8_lossy(&buffer[..length.min(buffer.len())]).into_owned())
 }
 
 fn set_nonblocking(file: &File) -> io::Result<()> {
@@ -1291,7 +1389,7 @@ fn terminate_and_reap(pid: c_int) {
     }
 }
 
-fn wait_for_child(pid: c_int) {
+fn wait_for_child(pid: c_int) -> c_int {
     // SAFETY: the dedicated watcher is the sole waiter for the exact child PID
     // returned by forkpty.
     unsafe {
@@ -1299,6 +1397,7 @@ fn wait_for_child(pid: c_int) {
         while waitpid(pid, &mut status, 0) < 0
             && io::Error::last_os_error().kind() == ErrorKind::Interrupted
         {}
+        status
     }
 }
 
@@ -1352,107 +1451,7 @@ impl Drop for Transport {
     }
 }
 
-fn c_string(value: &str, label: &str) -> io::Result<CString> {
-    CString::new(value).map_err(|_| {
-        io::Error::new(
-            ErrorKind::InvalidInput,
-            format!("{label} cannot contain NUL bytes"),
-        )
-    })
-}
-
-fn c_string_os(value: &OsStr, label: &str) -> io::Result<CString> {
-    CString::new(value.as_bytes()).map_err(|_| {
-        io::Error::new(
-            ErrorKind::InvalidInput,
-            format!("{label} cannot contain NUL bytes"),
-        )
-    })
-}
-
-fn child_environment(
-    overrides: &[(String, String)],
-    working_directory: Option<&Path>,
-) -> io::Result<Vec<CString>> {
-    let mut environment = std::env::vars_os().collect::<BTreeMap<OsString, OsString>>();
-    for (name, value) in overrides {
-        if name.is_empty() || name.as_bytes().contains(&b'=') {
-            return Err(io::Error::new(
-                ErrorKind::InvalidInput,
-                "terminal environment names cannot be empty or contain '='",
-            ));
-        }
-        environment.insert(OsString::from(name), OsString::from(value));
-    }
-    if let Some(working_directory) = working_directory {
-        environment.insert(
-            OsString::from("PWD"),
-            working_directory.as_os_str().to_os_string(),
-        );
-    }
-
-    environment
-        .into_iter()
-        .map(|(name, value)| {
-            let mut entry = Vec::with_capacity(name.as_bytes().len() + value.as_bytes().len() + 1);
-            entry.extend_from_slice(name.as_bytes());
-            entry.push(b'=');
-            entry.extend_from_slice(value.as_bytes());
-            CString::new(entry).map_err(|_| {
-                io::Error::new(
-                    ErrorKind::InvalidInput,
-                    "terminal environment cannot contain NUL bytes",
-                )
-            })
-        })
-        .collect()
-}
-
-fn resolve_program(config: &SpawnConfig) -> io::Result<PathBuf> {
-    let program = PathBuf::from(&config.program);
-    if config.program.as_bytes().contains(&b'/') {
-        return Ok(program);
-    }
-
-    let child_directory = match config.working_directory.as_deref() {
-        Some(directory) if directory.is_absolute() => directory.to_path_buf(),
-        Some(directory) => std::env::current_dir()?.join(directory),
-        None => std::env::current_dir()?,
-    };
-
-    let path = config
-        .environment
-        .iter()
-        .rev()
-        .find(|(name, _)| name == "PATH")
-        .map(|(_, value)| OsString::from(value))
-        .or_else(|| std::env::var_os("PATH"))
-        .unwrap_or_default();
-    for directory in std::env::split_paths(&path) {
-        let directory = if directory.is_absolute() {
-            directory
-        } else {
-            child_directory.join(directory)
-        };
-        let Ok(candidate) = directory.join(&program).canonicalize() else {
-            continue;
-        };
-        if candidate
-            .metadata()
-            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-        {
-            return Ok(candidate);
-        }
-    }
-
-    Err(io::Error::new(
-        ErrorKind::NotFound,
-        format!(
-            "terminal program '{}' was not found in PATH",
-            config.program
-        ),
-    ))
-}
+include!("unix/launch.rs");
 
 #[cfg(test)]
 #[path = "unix_tests/mod.rs"]

@@ -13,8 +13,8 @@ browser                                  server
 ```
 
 This page builds that with Node, [`ws`](https://github.com/websockets/ws) and
-[`node-pty`](https://github.com/microsoft/node-pty). Any language with a PTY
-library works the same way.
+[`@termysh/pty`](/docs/developer/web/pty). `node-pty` works with the same code,
+and any language with a PTY library works the same way.
 
 <Callout type="warn">
   A WebSocket connected to a shell gives full command execution to anyone who
@@ -38,12 +38,12 @@ other:
 ## Server
 
 ```sh
-npm install ws node-pty
+npm install ws @termysh/pty
 ```
 
 ```js title="server.mjs"
 import { WebSocketServer } from 'ws'
-import pty from 'node-pty'
+import pty from '@termysh/pty'
 
 // Local development only: anyone who can reach this port gets a shell.
 const wss = new WebSocketServer({ host: '127.0.0.1', port: 8787 })

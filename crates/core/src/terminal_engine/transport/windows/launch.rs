@@ -357,8 +357,14 @@ fn wide_nul(value: &OsStr, label: &str) -> io::Result<Vec<u16>> {
 fn child_environment(
     overrides: &[(String, String)],
     working_directory: Option<&Path>,
+    inherit: bool,
 ) -> io::Result<Vec<u16>> {
-    build_environment_block(std::env::vars_os().collect(), overrides, working_directory)
+    let inherited = if inherit {
+        std::env::vars_os().collect()
+    } else {
+        Vec::new()
+    };
+    build_environment_block(inherited, overrides, working_directory)
 }
 
 fn build_environment_block(
@@ -544,4 +550,5 @@ unsafe extern "system" {
         milliseconds: Dword,
     ) -> Dword;
     fn TerminateProcess(process: Handle, exit_code: u32) -> Bool;
+    fn GetExitCodeProcess(process: Handle, exit_code: *mut Dword) -> Bool;
 }

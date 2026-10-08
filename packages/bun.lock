@@ -16,6 +16,10 @@
       "name": "@termysh/core",
       "version": "0.1.0",
     },
+    "pty": {
+      "name": "@termysh/pty",
+      "version": "0.1.0",
+    },
     "web": {
       "name": "@termysh/web",
       "version": "0.1.0",
@@ -76,6 +80,8 @@
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.1", "", {}, "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw=="],
 
     "@termysh/core": ["@termysh/core@workspace:core"],
+
+    "@termysh/pty": ["@termysh/pty@workspace:pty"],
 
     "@termysh/web": ["@termysh/web@workspace:web"],
 

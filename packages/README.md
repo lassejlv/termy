@@ -9,6 +9,7 @@ code the desktop app runs, compiled to WebAssembly.
 | [`@termysh/core`](core) | wasm engine + typed headless API | You render yourself, run in a worker/Node, or test terminal output |
 | [`@termysh/web`](web) | Browser terminal: canvas renderer, input, selection, links, images | New code |
 | [`@termysh/xterm`](xterm) | xterm.js-compatible `Terminal` on top of `@termysh/web` | Replacing `@xterm/xterm` in existing code |
+| [`@termysh/pty`](pty) | Native pseudo-terminals for Node.js and Bun, node-pty compatible | Running the shell or program on the server |
 
 ## Quick start
 
@@ -187,6 +188,11 @@ packages/
     renderer/               canvas.ts (rows), images.ts (kitty), glyphs.ts, metrics.ts
     theme.ts, options.ts, selection.ts, links.ts, input/keys.ts
   xterm/src/                terminal.ts (adapter), buffer.ts, addons.ts, options.ts, types.ts
+  pty/
+    src/                    native.ts (binary loader), terminal.ts (node-pty API), types.ts
+    scripts/                platforms.mjs, build-native.mjs, prepare-publish.mjs
+    test/                   pty.test.ts (vitest), smoke.mjs (dependency-free, for Alpine)
+crates/pty/                 termy_pty: Node-API addon over termy_core::pty
   demo/                     side-by-side web/xterm demo page
 ```
 
@@ -198,10 +204,12 @@ Requires Rust with `wasm32-unknown-unknown`, `wasm-bindgen-cli` 0.2.128
 ```sh
 cd packages
 bun install
-bun run build        # wasm + all three packages
+bun run build        # wasm + every package (the pty addon builds separately)
 bun run typecheck
 bun run test
 cargo test -p termy_wasm
+bun run build:pty-native   # @termysh/pty addon for this machine
+bunx vitest run pty
 python3 -m http.server -d . 4719   # then open http://localhost:4719/demo/
 ```
 
@@ -209,9 +217,18 @@ python3 -m http.server -d . 4719   # then open http://localhost:4719/demo/
 
 Publishing is manual and independent of desktop releases: run
 **Publish npm packages** (`.github/workflows/npm-publish.yml`) from the Actions
-tab with a version and dist-tag. It sets all three package versions, builds
+tab with a version and dist-tag. It sets every package version, builds
 with `wasm-opt`, runs the tests and publishes with provenance using the
 `NPM_TOKEN` secret. Use `dry_run` to check the tarballs first.
+
+`@termysh/pty` ships a native addon. The publish workflow first runs
+`.github/workflows/pty-native.yml`, which builds `crates/pty` for all eight
+platforms (Linux with cargo-zigbuild against glibc 2.17 and musl) and tests it
+on each runner that can execute it. `pty/scripts/prepare-publish.mjs` then
+turns the binaries into `@termysh/pty-<platform>` packages, adds them to
+`@termysh/pty`'s `optionalDependencies`, and they publish before
+`@termysh/pty` itself. The same workflow runs on pull requests that touch the
+PTY code.
 
 See [program status](../docs/program-status.md) for OSC 7501 record semantics.
 Web hosts call `term.processExited()` when the attached process exits to expire

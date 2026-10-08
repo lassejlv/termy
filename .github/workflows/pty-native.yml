@@ -1,0 +1,131 @@
+name: PTY native
+
+# Builds and tests the @termysh/pty addon for every published platform.
+# npm-publish.yml calls this workflow and publishes the uploaded binaries.
+on:
+  workflow_call:
+  pull_request:
+    paths:
+      - crates/pty/**
+      - crates/core/Cargo.toml
+      - crates/core/src/pty.rs
+      - crates/core/src/terminal_engine/transport/**
+      - packages/pty/**
+      - Cargo.lock
+      - .github/workflows/pty-native.yml
+  push:
+    branches: [main]
+    paths:
+      - crates/pty/**
+      - crates/core/Cargo.toml
+      - crates/core/src/pty.rs
+      - crates/core/src/terminal_engine/transport/**
+      - packages/pty/**
+      - Cargo.lock
+      - .github/workflows/pty-native.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: PTY ${{ matrix.key }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # test: vitest runs the full suite on the runner, alpine runs the
+          # smoke test in a musl container, none means a cross build only.
+          - { key: darwin-arm64, target: aarch64-apple-darwin, runner: macos-latest, test: vitest }
+          - { key: darwin-x64, target: x86_64-apple-darwin, runner: macos-latest, test: none }
+          - { key: linux-x64-gnu, target: x86_64-unknown-linux-gnu, runner: ubuntu-24.04, zig: true, test: vitest }
+          - { key: linux-arm64-gnu, target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm, zig: true, test: vitest }
+          - { key: linux-x64-musl, target: x86_64-unknown-linux-musl, runner: ubuntu-24.04, zig: true, test: alpine }
+          - { key: linux-arm64-musl, target: aarch64-unknown-linux-musl, runner: ubuntu-24.04-arm, zig: true, test: alpine }
+          - { key: win32-x64-msvc, target: x86_64-pc-windows-msvc, runner: windows-latest, test: vitest }
+          - { key: win32-arm64-msvc, target: aarch64-pc-windows-msvc, runner: windows-latest, test: none }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: ${{ matrix.target }}
+
+      # zig links Linux binaries against glibc 2.17 and builds musl targets.
+      - name: Setup Zig
+        if: matrix.zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+
+      - name: Install cargo-zigbuild
+        if: matrix.zig
+        uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
+        with:
+          tool: cargo-zigbuild@0.23.4
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Build addon
+        working-directory: packages/pty
+        shell: bash
+        run: |
+          args=(--target "${{ matrix.target }}")
+          if [[ "${{ matrix.zig }}" == "true" ]]; then args+=(--zig --glibc 2.17); fi
+          node scripts/build-native.mjs "${args[@]}"
+
+      - name: Upload addon
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pty-${{ matrix.key }}
+          path: packages/pty/termy-pty.${{ matrix.key }}.node
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Setup Bun
+        if: matrix.test != 'none'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+
+      - name: Build package
+        if: matrix.test != 'none'
+        working-directory: packages
+        run: |
+          bun install --frozen-lockfile
+          bun run --filter '@termysh/pty' build
+
+      - name: Typecheck
+        if: matrix.key == 'linux-x64-gnu'
+        working-directory: packages
+        run: bunx tsc -p pty --noEmit
+
+      - name: Test
+        if: matrix.test == 'vitest'
+        working-directory: packages
+        run: bunx vitest run pty
+
+      - name: Smoke test (Node)
+        if: matrix.test == 'vitest'
+        working-directory: packages/pty
+        run: node test/smoke.mjs
+
+      - name: Smoke test (Bun)
+        if: matrix.test == 'vitest'
+        working-directory: packages/pty
+        run: bun test/smoke.mjs
+
+      - name: Smoke test (Alpine)
+        if: matrix.test == 'alpine'
+        run: docker run --rm -v "$PWD:/w" -w /w/packages/pty node:22-alpine node test/smoke.mjs

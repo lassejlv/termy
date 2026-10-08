@@ -12,7 +12,7 @@ pub mod media;
 mod parser;
 mod queries;
 mod sync;
-#[cfg(feature = "native")]
+#[cfg(feature = "pty")]
 pub(crate) mod transport;
 mod types;
 #[cfg(test)]

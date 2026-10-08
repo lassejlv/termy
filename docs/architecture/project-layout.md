@@ -55,6 +55,11 @@ The default binary is `termy-cli`. Run repository tooling with
 They are published manually by `.github/workflows/npm-publish.yml`, separate
 from desktop releases.
 
+`crates/pty` (`termy_pty`) is the Node-API addon behind `@termysh/pty`, a
+node-pty replacement. It wraps `termy_core::pty` (the `pty` feature: the native
+PTY process layer with no other dependencies). Prebuilt binaries ship as
+per-platform npm packages; see `packages/pty/README.md`.
+
 ## Repository support
 
 `docs/` contains contributor documentation; `website/` contains public docs.

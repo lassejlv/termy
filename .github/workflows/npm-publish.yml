@@ -28,7 +28,11 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  pty-native:
+    uses: ./.github/workflows/pty-native.yml
+
   publish:
+    needs: pty-native
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
@@ -67,12 +71,23 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Download PTY addons
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: pty-*
+          path: packages/pty/binaries
+          merge-multiple: true
+
       - name: Test wasm bindings
         working-directory: .
         run: cargo test -p termy_wasm
 
       - name: Set version
-        run: node scripts/set-version.mjs "${{ inputs.version }}"
+        run: |
+          node scripts/set-version.mjs "${{ inputs.version }}"
+          node pty/scripts/prepare-publish.mjs pty/binaries
+          # The tests below load the addon for this runner.
+          cp pty/binaries/termy-pty.linux-x64-gnu.node pty/
 
       - name: Build
         env:
@@ -92,7 +107,9 @@ jobs:
         run: |
           flags=(--access public --provenance --tag "$DIST_TAG")
           if [[ "$DRY_RUN" == "true" ]]; then flags+=(--dry-run); fi
-          # Dependency order: core, then web, then xterm.
-          for pkg in core web xterm; do
+          # Dependency order: core, then web, then xterm; PTY platform
+          # binaries before @termysh/pty, which lists them as optional.
+          for pkg in core web xterm pty/npm/*; do
             (cd "$pkg" && npm publish "${flags[@]}")
           done
+          (cd pty && npm publish "${flags[@]}")

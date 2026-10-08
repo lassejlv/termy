@@ -13,6 +13,7 @@ default = ["native"]
 # to build only the headless engine (parser, grid, input encoding, themes), e.g.
 # for wasm32-unknown-unknown.
 native = [
+  "pty",
   "dep:bincode",
   "dep:dirs",
   "dep:flume",
@@ -28,6 +29,9 @@ native = [
   "dep:url",
   "dep:uuid",
 ]
+# Only the native PTY process layer (`termy_core::pty`), with no extra
+# dependencies. Used by the @termysh/pty Node addon.
+pty = []
 
 [dependencies]
 anyhow = { workspace = true }

@@ -1,6 +1,6 @@
 use std::io;
 
-use super::{PtySize, SpawnConfig};
+use super::{ChildExit, PtySize, SpawnConfig};
 
 pub(crate) struct Transport;
 
@@ -21,6 +21,16 @@ impl Transport {
         Err(unsupported())
     }
 
+    pub(crate) fn spawn_with_exit(
+        _config: SpawnConfig,
+        _size: PtySize,
+        _inherit_environment: bool,
+        _on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
+        _on_exit: impl FnOnce(ChildExit) + Send + 'static,
+    ) -> io::Result<Self> {
+        Err(unsupported())
+    }
+
     pub(crate) fn write(&self, _input: &[u8]) -> io::Result<()> {
         Err(unsupported())
     }
@@ -35,5 +45,12 @@ impl Transport {
     }
     pub(crate) fn child_pid(&self) -> u32 {
         0
+    }
+    pub(crate) fn signal(&self, _signal: i32) -> io::Result<()> {
+        Err(unsupported())
+    }
+    pub(crate) fn terminate(&self) {}
+    pub(crate) fn foreground_process_name(&self) -> Option<String> {
+        None
     }
 }

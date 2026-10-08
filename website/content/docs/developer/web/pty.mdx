@@ -1,0 +1,193 @@
+---
+title: PTY for Node.js
+description: Run programs on pseudo-terminals from Node.js and Bun with @termysh/pty, a drop-in replacement for node-pty.
+---
+
+<Callout type="info">
+  `@termysh/pty` is new and pre-1.0. Pin a version and test upgrades.
+</Callout>
+
+`@termysh/pty` starts programs on a pseudo-terminal (PTY) from Node.js or Bun.
+It runs on the same native process layer the Termy app uses for its own
+sessions: `forkpty` on macOS and Linux, ConPTY on Windows. Its API matches
+[`node-pty`](https://github.com/microsoft/node-pty), so existing code keeps
+working.
+
+What it does differently:
+
+- **Prebuilt binaries.** Nothing compiles at install time, and there are no
+  install scripts to approve.
+- **Backpressure.** Output waits for JavaScript instead of piling up in
+  memory, and `pause()` stops reading, so a fast program blocks rather than
+  flooding your server.
+- **Exit after output.** `onExit` fires once, after the last byte of output,
+  with the exit code and terminating signal.
+
+## Install
+
+```sh
+npm install @termysh/pty
+```
+
+| Platform | Architectures |
+| --- | --- |
+| macOS 11+ | arm64, x64 |
+| Linux, glibc 2.17+ | x64, arm64 |
+| Linux, musl (Alpine) | x64, arm64 |
+| Windows 10 1809+ | x64, arm64 |
+
+Node.js 18 or later, or Bun. npm installs the binary for your platform as an
+optional dependency named `@termysh/pty-<platform>`; installing with
+`--omit=optional` skips it and `spawn` then throws.
+
+## Run a program
+
+```ts
+import { spawn } from '@termysh/pty'
+
+const shell = spawn(process.env.SHELL ?? 'bash', [], {
+  name: 'xterm-256color',
+  cols: 80,
+  rows: 24,
+  cwd: process.env.HOME,
+  env: { ...process.env, COLORTERM: 'truecolor' },
+})
+
+shell.onData((data) => process.stdout.write(data))
+shell.onExit(({ exitCode, signal }) => console.log('exited', exitCode, signal))
+
+shell.write('ls\r')
+shell.resize(120, 40)
+shell.kill() // SIGHUP, like closing a terminal window
+```
+
+`spawn` throws when the program can't start: it isn't found, isn't
+executable, or `cwd` doesn't exist.
+
+## Migrate from node-pty
+
+```sh
+npm uninstall node-pty
+npm install @termysh/pty
+```
+
+```diff
+-import * as pty from 'node-pty'
++import * as pty from '@termysh/pty'
+```
+
+`spawn`, `fork`, `createTerminal`, the default export and the `IPty`,
+`IPtyForkOptions`, `IWindowsPtyForkOptions`, `IDisposable` and `IEvent` types
+match node-pty, including the EventEmitter-style `on('data')` and
+`on('exit')`.
+
+Differences:
+
+- `uid` and `gid` throw. Run the parent process as the target user instead.
+- `open()`, which creates a PTY pair without a process, is not provided.
+- Windows always uses ConPTY. winpty is not supported; `useConpty`,
+  `useConptyDll` and `conptyInheritCursor` are accepted and ignored.
+- `write` after the program exits is dropped silently. More than 8 MiB of
+  input that the program has not read yet throws.
+
+## Options
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `name` | `env.TERM`, then `xterm` | Exported as `TERM` on Unix |
+| `cols`, `rows` | `80`, `24` | Initial size, 1 to 65535 |
+| `cwd` | `process.cwd()` | Working directory, also exported as `PWD` on Unix |
+| `env` | `process.env` | The child's whole environment |
+| `encoding` | `'utf8'` | Decode output to strings; `null` emits `Buffer`s |
+| `handleFlowControl` | `false` | Treat writes of `flowControlPause` (`\x13`) and `flowControlResume` (`\x11`) as `pause()` and `resume()` |
+
+When `env` is left out, the child inherits `process.env` without `TMUX`,
+`TMUX_PANE`, `STY`, `WINDOW`, `WINDOWID`, `TERMCAP`, `COLUMNS` and `LINES`,
+which describe the parent's own terminal session. Pass `env` explicitly to
+control exactly what the child sees.
+
+## The IPty object
+
+| Member | Description |
+| --- | --- |
+| `pid` | Process id |
+| `cols`, `rows` | Current size |
+| `process` | The foreground program, such as `vim` while it runs in a shell. The spawned file name on Windows |
+| `onData(listener)` | Output; returns a disposable |
+| `onExit(listener)` | `{ exitCode, signal }`, once, after all output |
+| `write(data)` | Input, as a string (UTF-8) or `Buffer` |
+| `resize(cols, rows, pixelSize?)` | Resize. `pixelSize` is `{ width, height }` of the whole terminal, for programs that size images |
+| `kill(signal?)` | Send a signal, `SIGHUP` by default |
+| `pause()`, `resume()` | Stop and restart reading output |
+
+On Unix, a normal exit reports `{ exitCode: n, signal: 0 }` and a program
+ended by a signal reports `{ exitCode: 0, signal: n }`. On Windows, `kill()`
+terminates the program (exit code `1`), passing a signal throws, and
+`onExit` reports only `exitCode`.
+
+## Backpressure and pause
+
+Output reaches JavaScript through a small bounded queue. When your
+`onData` handlers fall behind, the native reader stops reading from the PTY;
+the kernel buffer then fills and the program blocks on its next write. Memory
+use stays flat no matter how fast the program prints.
+
+`pause()` stops reading entirely, which is useful when a slow client is
+connected, for example a Node stream:
+
+```ts
+socket.on('drain', () => shell.resume())
+shell.onData((data) => {
+  if (!socket.write(data)) shell.pause()
+})
+```
+
+## Read the screen on the server
+
+`@termysh/pty` delivers raw bytes. To know what is on the screen, for tests,
+for an AI agent driving an interactive program, or to snapshot a session,
+feed the output to [`@termysh/core`](/docs/developer/web/core):
+
+```ts
+import { init, TermyCore } from '@termysh/core'
+import { spawn } from '@termysh/pty'
+
+await init()
+const screen = new TermyCore({ cols: 80, rows: 24 })
+const app = spawn('htop', [], { name: 'xterm-256color', cols: 80, rows: 24, encoding: null })
+
+app.onData((bytes) => {
+  screen.write(bytes)
+  // Programs wait for answers to their terminal queries; send them back.
+  const replies = screen.takeReplies()
+  if (replies.length) app.write(Buffer.from(replies))
+})
+
+// Later:
+screen.lineText(0) // first line of the screen
+```
+
+Answer queries in one place only. When a browser terminal is attached, it
+answers them, so don't also send `takeReplies()` from the server.
+
+## Bundlers and Electron
+
+The addon is a native `.node` file that bundlers can't inline. Mark
+`@termysh/pty` as external (esbuild `--external:@termysh/pty`, webpack
+`externals`, Vite `ssr.external`). In Electron, unpack native files from the
+asar archive with `asarUnpack: ['**/*.node']`.
+
+To load a binary from a custom location, set the `TERMY_PTY_NATIVE`
+environment variable to its absolute path before importing the package.
+
+## Troubleshooting
+
+- **`@termysh/pty: no native binary for <platform>`**: the optional
+  dependency wasn't installed. Reinstall without `--omit=optional` or
+  `--no-optional`, and make sure the lockfile was created on a machine that
+  records optional dependencies for all platforms (npm 7+ does).
+- **`spawn` throws `No such file or directory`**: the program isn't on the
+  child's `PATH`, which comes from `env` when you pass it. Slim and Alpine
+  images often have only `/bin/sh`, not `bash`.
+- **Windows: `spawn` throws that ConPTY is unavailable**: ConPTY needs Windows
+  10 version 1809 or later. Check with `isSupported()`.

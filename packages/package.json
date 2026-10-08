@@ -2,12 +2,13 @@
   "name": "termysh-packages",
   "private": true,
   "type": "module",
-  "workspaces": ["core", "web", "xterm"],
+  "workspaces": ["core", "web", "xterm", "pty"],
   "scripts": {
     "build:wasm": "node core/scripts/build-wasm.mjs",
-    "build": "bun run build:wasm && bun run --filter '@termysh/core' build && bun run --filter '@termysh/web' build && bun run --filter '@termysh/xterm' build",
-    "typecheck": "tsc -p core --noEmit && tsc -p web --noEmit && tsc -p xterm --noEmit",
-    "test": "vitest run"
+    "build": "bun run build:wasm && bun run --filter '@termysh/core' build && bun run --filter '@termysh/web' build && bun run --filter '@termysh/xterm' build && bun run --filter '@termysh/pty' build",
+    "typecheck": "tsc -p core --noEmit && tsc -p web --noEmit && tsc -p xterm --noEmit && tsc -p pty --noEmit",
+    "test": "vitest run",
+    "build:pty-native": "bun run --filter '@termysh/pty' build:native"
   },
   "devDependencies": {
     "@types/node": "^22",

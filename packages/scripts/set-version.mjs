@@ -11,7 +11,7 @@ if (!version || !/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(version)) {
   process.exit(1)
 }
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-for (const dir of ['core', 'web', 'xterm']) {
+for (const dir of ['core', 'web', 'xterm', 'pty']) {
   const file = join(root, dir, 'package.json')
   const pkg = JSON.parse(readFileSync(file, 'utf8'))
   pkg.version = version
