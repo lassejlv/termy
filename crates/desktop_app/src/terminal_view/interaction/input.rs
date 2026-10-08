@@ -110,15 +110,20 @@ fn write_clipboard_image_to_temp_file(image: &gpui_kit::Image) -> std::io::Resul
 fn clipboard_item_to_terminal_paste_input(
     item: &ClipboardItem,
 ) -> std::io::Result<Option<Vec<u8>>> {
-    // GPUI now exposes file clipboard entries directly. Its text fallback
-    // concatenates paths without separators or shell quoting.
-    if !item
-        .entries()
+    clipboard_entries_to_terminal_paste_input(item.entries())
+}
+
+fn clipboard_entries_to_terminal_paste_input(
+    entries: &[gpui_kit::ClipboardEntry],
+) -> std::io::Result<Option<Vec<u8>>> {
+    // A copied file may also carry a plain-text display name. Paste the file
+    // paths when a file list is present. Without one, text and images follow
+    // the previous order: text first, then a temporary file for an image.
+    let has_files = entries
         .iter()
-        .any(|entry| matches!(entry, gpui_kit::ClipboardEntry::String(_)))
-    {
-        let paths: Vec<_> = item
-            .entries()
+        .any(|entry| matches!(entry, gpui_kit::ClipboardEntry::ExternalPaths(_)));
+    if has_files {
+        let paths: Vec<_> = entries
             .iter()
             .filter_map(|entry| match entry {
                 gpui_kit::ClipboardEntry::ExternalPaths(paths) => Some(paths.paths()),
@@ -131,12 +136,18 @@ fn clipboard_item_to_terminal_paste_input(
             return Ok(Some(shell_quote_paths(&paths).into_bytes()));
         }
     }
-    if let Some(text) = item.text() {
+
+    let mut text = String::new();
+    for entry in entries {
+        if let gpui_kit::ClipboardEntry::String(value) = entry {
+            text.push_str(value.text());
+        }
+    }
+    if !text.is_empty() {
         return Ok(Some(text.into_bytes()));
     }
 
-    let Some(entry) = item
-        .entries()
+    let Some(entry) = entries
         .iter()
         .find(|entry| matches!(entry, gpui_kit::ClipboardEntry::Image(_)))
     else {
@@ -963,11 +974,12 @@ impl TerminalView {
 mod tests {
     use super::{
         FileDropTarget, PendingKeyRelease, PendingKeyReleaseAction, classify_file_drop_target,
-        clipboard_item_to_terminal_paste_input, dropped_paths_to_terminal_paste_input,
-        image_extension, kitty_png_clipboard_item, modifier_transition_events, shell_quote_paths,
-        should_defer_key_down_to_ime, should_prepare_terminal_input_write,
-        should_write_drop_to_target, take_deferred_ime_key_release,
-        take_pending_key_release_action, terminal_modifier_transition_events,
+        clipboard_entries_to_terminal_paste_input, clipboard_item_to_terminal_paste_input,
+        dropped_paths_to_terminal_paste_input, image_extension, kitty_png_clipboard_item,
+        modifier_transition_events, shell_quote_paths, should_defer_key_down_to_ime,
+        should_prepare_terminal_input_write, should_write_drop_to_target,
+        take_deferred_ime_key_release, take_pending_key_release_action,
+        terminal_modifier_transition_events,
     };
     use gpui_kit::{Keystroke, Modifiers};
     use std::{
@@ -1135,6 +1147,33 @@ mod tests {
         assert_eq!(
             clipboard_item_to_terminal_paste_input(&item).unwrap(),
             Some(b"'/tmp/a b.txt' '/tmp/it'\\''s.txt'".to_vec())
+        );
+    }
+
+    #[test]
+    fn clipboard_file_paths_win_over_finder_display_names() {
+        let paths =
+            gpui_kit::ExternalPaths([PathBuf::from("/tmp/q7n4w2.kpx")].into_iter().collect());
+        let entries = [
+            gpui_kit::ClipboardEntry::ExternalPaths(paths),
+            gpui_kit::ClipboardEntry::String("q7n4w2.kpx".to_string().into()),
+        ];
+        assert_eq!(
+            clipboard_entries_to_terminal_paste_input(&entries).unwrap(),
+            Some(b"'/tmp/q7n4w2.kpx'".to_vec())
+        );
+    }
+
+    #[test]
+    fn clipboard_image_with_text_still_pastes_the_text() {
+        let image = gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, vec![1, 2, 3, 4]);
+        let entries = [
+            gpui_kit::ClipboardEntry::String("screenshot".to_string().into()),
+            gpui_kit::ClipboardEntry::Image(image),
+        ];
+        assert_eq!(
+            clipboard_entries_to_terminal_paste_input(&entries).unwrap(),
+            Some(b"screenshot".to_vec())
         );
     }
 
