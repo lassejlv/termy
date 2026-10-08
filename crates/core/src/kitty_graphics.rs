@@ -173,6 +173,13 @@ pub enum KittyGraphicsScreen {
 }
 
 impl KittyGraphicsScreen {
+    fn index(self) -> usize {
+        match self {
+            Self::Primary => 0,
+            Self::Alternate => 1,
+        }
+    }
+
     pub fn from_alternate_screen(alternate_screen: bool) -> Self {
         if alternate_screen {
             Self::Alternate
@@ -256,6 +263,8 @@ pub struct KittyGraphicsApplyResult {
 pub struct KittyGraphicsState {
     images: HashMap<u32, StoredImage>,
     placements: Vec<Placement>,
+    // Maintained on insertion/removal so ordinary text feeds never scan images.
+    virtual_placements: [usize; 2],
     insertion_order: VecDeque<u32>,
     pending: Option<PendingUpload>,
     next_anonymous_id: u32,
@@ -671,27 +680,24 @@ impl KittyGraphicsState {
     }
 
     pub fn has_virtual_placements(&self) -> bool {
-        self.placements
-            .iter()
-            .any(|placement| matches!(placement.location, PlacementLocation::Virtual))
+        self.virtual_placements.iter().any(|count| *count != 0)
     }
 
     pub(crate) fn has_virtual_placements_on_screen(&self, screen: KittyGraphicsScreen) -> bool {
-        self.placements.iter().any(|placement| {
-            placement.screen == screen && matches!(placement.location, PlacementLocation::Virtual)
-        })
+        self.virtual_placements[screen.index()] != 0
     }
 
     pub fn reset(&mut self) -> bool {
         let changed = !self.placements.is_empty() || self.pending.is_some();
         self.placements.clear();
+        self.virtual_placements = [0; 2];
         self.pending = None;
         changed
     }
 
     pub fn clear_visible_on_screen(&mut self, screen: KittyGraphicsScreen) -> bool {
         let before = self.placements.len();
-        self.placements.retain(|placement| {
+        self.retain_placements(|placement| {
             placement.screen != screen || matches!(placement.location, PlacementLocation::Virtual)
         });
         self.remove_orphaned_relative_placements();
@@ -719,7 +725,7 @@ impl KittyGraphicsState {
         let viewport_start = i64::try_from(history_size).unwrap_or(i64::MAX);
         let viewport_end = viewport_start.saturating_add(i64::try_from(rows).unwrap_or(i64::MAX));
         let before = self.placements.len();
-        self.placements.retain(|placement| {
+        self.retain_placements(|placement| {
             if placement.screen != screen {
                 return true;
             }
@@ -770,7 +776,7 @@ impl KittyGraphicsState {
                 *anchor_line = anchor_line.saturating_sub(lines);
             }
         }
-        self.placements.retain(|placement| {
+        self.retain_placements(|placement| {
             placement.screen != screen
                 || !matches!(
                     placement.location,
@@ -1149,19 +1155,39 @@ impl KittyGraphicsState {
         Ok((placement, advance))
     }
 
+    fn retain_placements(&mut self, mut keep: impl FnMut(&Placement) -> bool) {
+        let counts = &mut self.virtual_placements;
+        self.placements.retain(|placement| {
+            if keep(placement) {
+                return true;
+            }
+            if matches!(placement.location, PlacementLocation::Virtual) {
+                counts[placement.screen.index()] -= 1;
+            }
+            false
+        });
+    }
+
     fn commit_placement(&mut self, placement: Placement) {
         if placement.placement_id != 0 {
-            self.placements.retain(|existing| {
+            self.retain_placements(|existing| {
                 existing.screen != placement.screen
                     || existing.image_id != placement.image_id
                     || existing.placement_id != placement.placement_id
             });
         }
         self.next_placement_serial = placement.placement_serial;
+        if matches!(placement.location, PlacementLocation::Virtual) {
+            self.virtual_placements[placement.screen.index()] += 1;
+        }
         self.placements.push(placement);
         if self.placements.len() > MAX_PLACEMENTS {
             let overflow = self.placements.len() - MAX_PLACEMENTS;
-            self.placements.drain(..overflow);
+            for removed in self.placements.drain(..overflow) {
+                if matches!(removed.location, PlacementLocation::Virtual) {
+                    self.virtual_placements[removed.screen.index()] -= 1;
+                }
+            }
             self.remove_orphaned_relative_placements();
         }
     }
@@ -1278,8 +1304,7 @@ impl KittyGraphicsState {
         if let Some(image) = self.images.remove(&image_id) {
             self.stored_bytes = self.stored_bytes.saturating_sub(image.byte_len());
         }
-        self.placements
-            .retain(|placement| placement.image_id != image_id);
+        self.retain_placements(|placement| placement.image_id != image_id);
         self.remove_orphaned_relative_placements();
         self.insertion_order.retain(|id| *id != image_id);
     }

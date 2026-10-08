@@ -125,7 +125,11 @@ impl Grid {
             self.cursor.col = col;
         }
         let blank = self.blank();
-        Self::clear_wide_at(&mut self.screen_mut().rows[row], col, &blank);
+        let (cleared_start, cleared_end) =
+            Self::clear_wide_at(&mut self.screen_mut().rows[row], col, &blank);
+        // A narrower grapheme leaves an erased spacer outside the new write.
+        // Mark it before put_cell can wrap or scroll, even with a hidden cursor.
+        self.mark(row, cleared_start, cleared_end);
         if insert_mode && width < old_width {
             self.cursor.col = col + width;
             self.delete_chars(old_width - width);

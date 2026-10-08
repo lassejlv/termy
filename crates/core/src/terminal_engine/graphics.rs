@@ -417,6 +417,42 @@ mod tests {
     }
 
     #[test]
+    fn height_resize_keeps_images_with_text_when_history_is_evicted() {
+        for history in [0, 2, 20] {
+            for alternate in [false, true] {
+                let mut engine = Engine::new(
+                    Size { cols: 10, rows: 4 },
+                    Options {
+                        scrollback_history: history,
+                    },
+                );
+                engine.feed(b"0\r\n1\r\n2\r\n3\r\n4\r\n5");
+                engine.feed(
+                    b"\x1b[3;1H\x1b_Ga=T,f=32,s=1,v=1,i=7,c=1,r=1,C=1;AQID/w==\x1b\\\x1b[4;1H",
+                );
+                assert_eq!(engine.viewport_row(2).unwrap()[0].character, '4');
+                assert_eq!(engine.graphics_placements()[0].viewport_row, 2);
+                if alternate {
+                    engine.feed(b"\x1b[?1049h");
+                }
+                engine.resize(Size { cols: 10, rows: 3 });
+                if alternate {
+                    engine.feed(b"\x1b[?1049l");
+                }
+                assert_eq!(engine.viewport_row(1).unwrap()[0].character, '4');
+                assert_eq!(
+                    engine.graphics_placements()[0].viewport_row,
+                    1,
+                    "history={history}, alternate={alternate}"
+                );
+                engine.resize(Size { cols: 10, rows: 4 });
+                let row = engine.graphics_placements()[0].viewport_row as usize;
+                assert_eq!(engine.viewport_row(row).unwrap()[0].character, '4');
+            }
+        }
+    }
+
+    #[test]
     fn visible_clear_removes_placements_but_retains_images_for_reuse() {
         let mut engine = Engine::new(Size { cols: 10, rows: 3 }, Options::default());
         engine.feed(b"\x1b_Ga=T,f=32,s=1,v=1,i=7,c=1,r=1,C=1;AQID/w==\x1b\\");

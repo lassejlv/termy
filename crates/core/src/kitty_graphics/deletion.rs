@@ -107,8 +107,7 @@ impl KittyGraphicsState {
             .map(|placement| placement.placement_serial)
             .collect();
         let before = self.placements.len();
-        self.placements
-            .retain(|placement| !removed.contains(&placement.placement_serial));
+        self.retain_placements(|placement| !removed.contains(&placement.placement_serial));
         self.remove_orphaned_relative_placements();
         if free {
             for id in ids {

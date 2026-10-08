@@ -636,3 +636,82 @@ fn reads_and_removes_safe_temporary_file_transfers() {
     assert!(!path.exists());
     assert_eq!(state.render_placements(0, 0, 24, 80).len(), 1);
 }
+
+#[test]
+fn virtual_placement_presence_follows_screen_replacement_deletion_and_reset() {
+    let mut state = KittyGraphicsState::default();
+    state.apply(
+        command("a=t,f=32,s=1,v=1,i=1,q=2", &[1, 2, 3, 255]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    let primary = KittyGraphicsScreen::Primary;
+    let alternate = KittyGraphicsScreen::Alternate;
+    let assert_presence = |state: &KittyGraphicsState, primary_present, alternate_present| {
+        assert_eq!(
+            state.has_virtual_placements_on_screen(primary),
+            primary_present
+        );
+        assert_eq!(
+            state.has_virtual_placements_on_screen(alternate),
+            alternate_present
+        );
+        assert_eq!(
+            state.has_virtual_placements(),
+            primary_present || alternate_present
+        );
+    };
+    for screen in [primary, alternate] {
+        state.apply_on_screen(command("a=p,i=1,p=1,U=1,q=2", &[]), 0, 0, 0, size(), screen);
+    }
+    assert_presence(&state, true, true);
+    // Replacing the same ID on one screen must not affect the other screen.
+    state.apply(command("a=p,i=1,p=1,C=1,q=2", &[]), 0, 0, 0, size());
+    assert_presence(&state, false, true);
+    state.apply(command("a=p,i=1,p=2,U=1,q=2", &[]), 0, 0, 0, size());
+    state.apply(command("a=p,i=1,p=3,U=1,q=2", &[]), 0, 0, 0, size());
+    state.apply(command("a=d,d=i,i=1,p=2,q=2", &[]), 0, 0, 0, size());
+    assert_presence(&state, true, true);
+    // Viewport clears and scrolling leave virtual prototypes available.
+    state.clear_visible_on_screen(primary);
+    state.scroll_up_without_history_on_screen(100, primary);
+    assert_presence(&state, true, true);
+    state.apply(command("a=d,d=I,i=1,q=2", &[]), 0, 0, 0, size());
+    assert_presence(&state, false, false);
+    state.apply(
+        command("a=T,f=32,s=1,v=1,i=2,U=1,q=2", &[1, 2, 3, 255]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    assert_presence(&state, true, false);
+    state.reset();
+    assert_presence(&state, false, false);
+}
+
+#[test]
+fn evicted_virtual_placements_stop_requiring_placeholder_scans() {
+    let mut state = KittyGraphicsState::default();
+    state.apply(
+        command("a=T,f=32,s=1,v=1,i=1,U=1,q=2", &[1, 2, 3, 255]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    assert!(state.has_virtual_placements());
+    for _ in 0..MAX_PLACEMENTS {
+        state.apply(command("a=p,i=1,C=1,q=2", &[]), 0, 0, 0, size());
+    }
+    assert!(state.has_placements());
+    assert!(!state.has_virtual_placements());
+    // Exercise image eviction too, as that uses a different removal path.
+    state.apply(command("a=p,i=1,p=1,U=1,q=2", &[]), 0, 0, 0, size());
+    assert!(state.has_virtual_placements());
+    state.remove_image(1);
+    assert!(!state.has_virtual_placements());
+    assert!(!state.has_placements());
+}

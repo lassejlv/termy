@@ -1,0 +1,478 @@
+{
+  "baseline_revision": "d801370d",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+  "rust": "1.99.0",
+  "build": "release --no-default-features",
+  "iterations": 100000,
+  "grid": [
+    120,
+    40
+  ],
+  "source": "scripts/terminal-engine-audit/graphics-text.rs",
+  "source_sha256": "6eca047428c5e158370276edf78c1f73ded6da1de25d59b1296ad6e956f6ae6c",
+  "binary_sha256": {
+    "baseline": "cc1f3305dac19097ead8452bb6a44c3fc1f1c6986b5bd8093d25de3e77f8dcf7",
+    "candidate": "b3b36a11b6157d0f9c8d947a64aa111ad5c1c304e2e13ccb5faac238632bbfa0"
+  },
+  "summary": [
+    {
+      "placements": 0,
+      "baseline_median_us": 5344.0,
+      "candidate_median_us": 5075.0,
+      "speedup": 1.0530049261083745
+    },
+    {
+      "placements": 64,
+      "baseline_median_us": 6962.0,
+      "candidate_median_us": 5330.5,
+      "speedup": 1.3060688490760717
+    },
+    {
+      "placements": 512,
+      "baseline_median_us": 30268.5,
+      "candidate_median_us": 5109.5,
+      "speedup": 5.923965162931793
+    },
+    {
+      "placements": 4096,
+      "baseline_median_us": 258030.0,
+      "candidate_median_us": 5147.0,
+      "speedup": 50.132115795609096
+    }
+  ],
+  "runs": [
+    {
+      "index": 0,
+      "label": "baseline",
+      "samples": [
+        {
+          "round": 0,
+          "placements": 0,
+          "elapsed_us": 4830
+        },
+        {
+          "round": 0,
+          "placements": 64,
+          "elapsed_us": 6458
+        },
+        {
+          "round": 0,
+          "placements": 512,
+          "elapsed_us": 28936
+        },
+        {
+          "round": 0,
+          "placements": 4096,
+          "elapsed_us": 265210
+        },
+        {
+          "round": 1,
+          "placements": 4096,
+          "elapsed_us": 296499
+        },
+        {
+          "round": 1,
+          "placements": 512,
+          "elapsed_us": 30254
+        },
+        {
+          "round": 1,
+          "placements": 64,
+          "elapsed_us": 6821
+        },
+        {
+          "round": 1,
+          "placements": 0,
+          "elapsed_us": 4999
+        },
+        {
+          "round": 2,
+          "placements": 0,
+          "elapsed_us": 5410
+        },
+        {
+          "round": 2,
+          "placements": 64,
+          "elapsed_us": 7268
+        },
+        {
+          "round": 2,
+          "placements": 512,
+          "elapsed_us": 29378
+        },
+        {
+          "round": 2,
+          "placements": 4096,
+          "elapsed_us": 245617
+        },
+        {
+          "round": 3,
+          "placements": 4096,
+          "elapsed_us": 246823
+        },
+        {
+          "round": 3,
+          "placements": 512,
+          "elapsed_us": 30283
+        },
+        {
+          "round": 3,
+          "placements": 64,
+          "elapsed_us": 6664
+        },
+        {
+          "round": 3,
+          "placements": 0,
+          "elapsed_us": 5279
+        },
+        {
+          "round": 4,
+          "placements": 0,
+          "elapsed_us": 5409
+        },
+        {
+          "round": 4,
+          "placements": 64,
+          "elapsed_us": 7106
+        },
+        {
+          "round": 4,
+          "placements": 512,
+          "elapsed_us": 30474
+        },
+        {
+          "round": 4,
+          "placements": 4096,
+          "elapsed_us": 240326
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "label": "candidate",
+      "samples": [
+        {
+          "round": 0,
+          "placements": 0,
+          "elapsed_us": 5190
+        },
+        {
+          "round": 0,
+          "placements": 64,
+          "elapsed_us": 5317
+        },
+        {
+          "round": 0,
+          "placements": 512,
+          "elapsed_us": 5252
+        },
+        {
+          "round": 0,
+          "placements": 4096,
+          "elapsed_us": 11035
+        },
+        {
+          "round": 1,
+          "placements": 4096,
+          "elapsed_us": 6234
+        },
+        {
+          "round": 1,
+          "placements": 512,
+          "elapsed_us": 6383
+        },
+        {
+          "round": 1,
+          "placements": 64,
+          "elapsed_us": 7946
+        },
+        {
+          "round": 1,
+          "placements": 0,
+          "elapsed_us": 4834
+        },
+        {
+          "round": 2,
+          "placements": 0,
+          "elapsed_us": 4689
+        },
+        {
+          "round": 2,
+          "placements": 64,
+          "elapsed_us": 4615
+        },
+        {
+          "round": 2,
+          "placements": 512,
+          "elapsed_us": 4661
+        },
+        {
+          "round": 2,
+          "placements": 4096,
+          "elapsed_us": 4853
+        },
+        {
+          "round": 3,
+          "placements": 4096,
+          "elapsed_us": 4660
+        },
+        {
+          "round": 3,
+          "placements": 512,
+          "elapsed_us": 5262
+        },
+        {
+          "round": 3,
+          "placements": 64,
+          "elapsed_us": 4961
+        },
+        {
+          "round": 3,
+          "placements": 0,
+          "elapsed_us": 4978
+        },
+        {
+          "round": 4,
+          "placements": 0,
+          "elapsed_us": 4763
+        },
+        {
+          "round": 4,
+          "placements": 64,
+          "elapsed_us": 5300
+        },
+        {
+          "round": 4,
+          "placements": 512,
+          "elapsed_us": 4967
+        },
+        {
+          "round": 4,
+          "placements": 4096,
+          "elapsed_us": 4917
+        }
+      ]
+    },
+    {
+      "index": 2,
+      "label": "candidate",
+      "samples": [
+        {
+          "round": 0,
+          "placements": 0,
+          "elapsed_us": 4919
+        },
+        {
+          "round": 0,
+          "placements": 64,
+          "elapsed_us": 4968
+        },
+        {
+          "round": 0,
+          "placements": 512,
+          "elapsed_us": 4875
+        },
+        {
+          "round": 0,
+          "placements": 4096,
+          "elapsed_us": 5079
+        },
+        {
+          "round": 1,
+          "placements": 4096,
+          "elapsed_us": 4674
+        },
+        {
+          "round": 1,
+          "placements": 512,
+          "elapsed_us": 4835
+        },
+        {
+          "round": 1,
+          "placements": 64,
+          "elapsed_us": 5344
+        },
+        {
+          "round": 1,
+          "placements": 0,
+          "elapsed_us": 5172
+        },
+        {
+          "round": 2,
+          "placements": 0,
+          "elapsed_us": 6647
+        },
+        {
+          "round": 2,
+          "placements": 64,
+          "elapsed_us": 6458
+        },
+        {
+          "round": 2,
+          "placements": 512,
+          "elapsed_us": 6078
+        },
+        {
+          "round": 2,
+          "placements": 4096,
+          "elapsed_us": 5999
+        },
+        {
+          "round": 3,
+          "placements": 4096,
+          "elapsed_us": 6067
+        },
+        {
+          "round": 3,
+          "placements": 512,
+          "elapsed_us": 4885
+        },
+        {
+          "round": 3,
+          "placements": 64,
+          "elapsed_us": 5708
+        },
+        {
+          "round": 3,
+          "placements": 0,
+          "elapsed_us": 5231
+        },
+        {
+          "round": 4,
+          "placements": 0,
+          "elapsed_us": 5300
+        },
+        {
+          "round": 4,
+          "placements": 64,
+          "elapsed_us": 5369
+        },
+        {
+          "round": 4,
+          "placements": 512,
+          "elapsed_us": 5473
+        },
+        {
+          "round": 4,
+          "placements": 4096,
+          "elapsed_us": 5215
+        }
+      ]
+    },
+    {
+      "index": 3,
+      "label": "baseline",
+      "samples": [
+        {
+          "round": 0,
+          "placements": 0,
+          "elapsed_us": 7067
+        },
+        {
+          "round": 0,
+          "placements": 64,
+          "elapsed_us": 6463
+        },
+        {
+          "round": 0,
+          "placements": 512,
+          "elapsed_us": 33541
+        },
+        {
+          "round": 0,
+          "placements": 4096,
+          "elapsed_us": 267465
+        },
+        {
+          "round": 1,
+          "placements": 4096,
+          "elapsed_us": 270211
+        },
+        {
+          "round": 1,
+          "placements": 512,
+          "elapsed_us": 30915
+        },
+        {
+          "round": 1,
+          "placements": 64,
+          "elapsed_us": 9134
+        },
+        {
+          "round": 1,
+          "placements": 0,
+          "elapsed_us": 7745
+        },
+        {
+          "round": 2,
+          "placements": 0,
+          "elapsed_us": 6160
+        },
+        {
+          "round": 2,
+          "placements": 64,
+          "elapsed_us": 8304
+        },
+        {
+          "round": 2,
+          "placements": 512,
+          "elapsed_us": 35475
+        },
+        {
+          "round": 2,
+          "placements": 4096,
+          "elapsed_us": 376637
+        },
+        {
+          "round": 3,
+          "placements": 4096,
+          "elapsed_us": 250850
+        },
+        {
+          "round": 3,
+          "placements": 512,
+          "elapsed_us": 29134
+        },
+        {
+          "round": 3,
+          "placements": 64,
+          "elapsed_us": 6609
+        },
+        {
+          "round": 3,
+          "placements": 0,
+          "elapsed_us": 5063
+        },
+        {
+          "round": 4,
+          "placements": 0,
+          "elapsed_us": 5124
+        },
+        {
+          "round": 4,
+          "placements": 64,
+          "elapsed_us": 7103
+        },
+        {
+          "round": 4,
+          "placements": 512,
+          "elapsed_us": 28923
+        },
+        {
+          "round": 4,
+          "placements": 4096,
+          "elapsed_us": 247403
+        }
+      ]
+    }
+  ],
+  "allocation_benchmark_stdout": "terminal_engine: 32 byte cells, 120x40, 1000 history rows, 32 MiB per case\nplain scroll / 64KiB: 157.3 MiB/s; 0 allocations; 0 allocated bytes; 4017 KiB retained process heap; 4017 KiB peak process heap\n  settled history: 900 KiB retained process heap; 362 us compaction\nstyled TUI / 64KiB: 140.8 MiB/s; 0 allocations; 0 allocated bytes; 219 KiB retained process heap; 219 KiB peak process heap\n  settled history: 219 KiB retained process heap; 0 us compaction\nUnicode / 64KiB: 102.9 MiB/s; 0 allocations; 0 allocated bytes; 4017 KiB retained process heap; 4017 KiB peak process heap\n  settled history: 759 KiB retained process heap; 362 us compaction\nvaried Unicode / 64KiB: 125.3 MiB/s; 0 allocations; 0 allocated bytes; 4130 KiB retained process heap; 4130 KiB peak process heap\n  settled history: 1215 KiB retained process heap; 399 us compaction\ncombining / 64KiB: 76.9 MiB/s; 0 allocations; 0 allocated bytes; 4017 KiB retained process heap; 4017 KiB peak process heap\n  settled history: 673 KiB retained process heap; 497 us compaction\nplain scroll / 1 byte: 20.5 MiB/s; 0 allocations; 0 allocated bytes; 4017 KiB retained process heap; 4017 KiB peak process heap\n  settled history: 900 KiB retained process heap; 461 us compaction\n",
+  "candidate_source_sha256": {
+    "crates/core/src/kitty_graphics.rs": "8dc75bc438337fd0a9b343f3d0c9d52985e024216a84eeddeae88f17bea5fef3",
+    "crates/core/src/kitty_graphics/deletion.rs": "443bef071c71d3ea33ede3564f182dde597238adbd669a161a87bf364e4279a1",
+    "crates/core/src/kitty_graphics/placement.rs": "ea0b3f1602cb9ef7193473648b217a06fbaf18adfbdcd1605ca6af501ae49f69",
+    "crates/core/src/terminal_engine/grid.rs": "fcaabbf3b6dfe5d1ed631b2506c49413c820e978a6f38751e149b4aacd8ab6c2",
+    "crates/core/src/terminal_engine/grid/print.rs": "1fd5f62204eb4ebf92918a0878468ab36ddd388d7a2ebd9e146a8713b553b64d",
+    "crates/core/src/terminal_engine/media/shared_memory.rs": "e914863b626522be7cd5edf5527234455bf984bbadf84efdfed73753587fa64d"
+  }
+}

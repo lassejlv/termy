@@ -167,3 +167,35 @@ fn overlong_combining_suffix_still_prints_the_next_base() {
     assert!(row[0].combining().len() <= super::types::MAX_COMBINING_BYTES);
     assert_eq!(row[2].character, 'X');
 }
+
+#[test]
+fn text_presentation_damages_the_erased_wide_spacer_with_a_hidden_cursor() {
+    for prefix in ["", "abc"] {
+        for visible in [true, false] {
+            let mut term = engine(5);
+            if !visible {
+                term.feed(b"\x1b[?25l");
+            }
+            term.feed(prefix.as_bytes());
+            term.feed("⌚".as_bytes());
+            let spacer = prefix.len() + 1;
+            assert_eq!(
+                term.viewport_row(0).unwrap()[spacer].flags,
+                Cell::WIDE_SPACER
+            );
+            term.take_damage();
+            term.feed("\u{fe0e}".as_bytes());
+            assert_eq!(term.viewport_row(0).unwrap()[spacer], Cell::default());
+            let damage = term.take_damage();
+            assert!(
+                match &damage {
+                    super::Damage::Full => true,
+                    super::Damage::Partial(spans) => spans
+                        .iter()
+                        .any(|span| { span.row == 0 && span.start <= spacer && spacer < span.end }),
+                },
+                "erased spacer omitted from {damage:?}, visible={visible}, prefix={prefix:?}"
+            );
+        }
+    }
+}
