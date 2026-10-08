@@ -881,6 +881,9 @@ impl TerminalView {
                             TerminalEvent::Exit => {
                                 exited_panes.push((entry.id, tab.id, pane.id.clone()));
                             }
+                            TerminalEvent::ProgramStatus(records) => {
+                                pane.program_status = records;
+                            }
                             TerminalEvent::Progress(state) => {
                                 pane.progress_state = state;
                             }

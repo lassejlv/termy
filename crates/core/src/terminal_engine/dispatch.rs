@@ -28,6 +28,7 @@ pub(super) struct State {
     pub(super) default_cursor_shape: CursorShape,
     pub(super) cursor_shape_overridden: bool,
     pub(super) cell_pixels: (u16, u16),
+    pub(super) program_status: crate::program_status::ProgramStatus,
     title: String,
     title_stack: Vec<String>,
     keyboard_stack: [Vec<u8>; 2],
@@ -59,6 +60,7 @@ impl State {
             default_cursor_shape: CursorShape::Block,
             cursor_shape_overridden: false,
             cell_pixels: (9, 18),
+            program_status: crate::program_status::ProgramStatus::default(),
             title: String::new(),
             title_stack: Vec::new(),
             keyboard_stack: [Vec::new(), Vec::new()],
@@ -464,6 +466,7 @@ impl Handler for State {
             ([], b'Z') => self.reply(b"\x1b[?62;22c"),
             ([], b'c') => {
                 self.grid.reset();
+                self.program_status.clear();
                 self.grid.cursor.shape = self.default_cursor_shape;
                 self.cursor_shape_overridden = false;
                 self.modes = Modes::default();
@@ -782,7 +785,14 @@ impl Handler for State {
                     });
                 }
             }
-            133 => self.event(Event::ShellIntegration(rest.to_owned())),
+            133 => {
+                if rest.split(';').next() == Some("A") {
+                    self.program_status.finish();
+                }
+                self.event(Event::ShellIntegration(rest.to_owned()));
+            }
+            7501 if rest == "?" => self.reply(b"\x1b]7501;?\x1b\\"),
+            7501 => self.program_status.report(rest),
             _ => {}
         }
         if self.palette_revision != palette_revision {

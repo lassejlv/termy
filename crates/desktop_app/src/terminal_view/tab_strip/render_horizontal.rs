@@ -204,12 +204,15 @@ impl TerminalView {
                     font_family_key,
                 ));
             }
-            let (tab_title, pinned, progress_state) = {
+            let (tab_title, pinned, progress_state, program_status) = {
                 let tab = &self.session.tabs[index];
                 (
                     tab.title.clone(),
                     tab.pinned,
                     tab.aggregate_progress_state(),
+                    self.progress_indicator_enabled
+                        .then(|| tab.program_status_state())
+                        .flatten(),
                 )
             };
             let anim_progress = new_tab_anim
@@ -301,6 +304,7 @@ impl TerminalView {
                     open_anim_progress: anim_progress,
                     hover_progress: self.tab_strip.hover_progress(index, now),
                     progress_state,
+                    program_status,
                 },
                 font_family,
                 colors,

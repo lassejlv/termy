@@ -1034,6 +1034,13 @@ fn ffi_event_from_event(event: TerminalEvent) -> TermyFfiEvent {
                 ..TermyFfiEvent::default()
             }
         }
+        TerminalEvent::ProgramStatus(records) => TermyFfiEvent {
+            kind: 13,
+            payload: ffi_bytes_from_string(
+                serde_json::to_string(&records).expect("status records serialize"),
+            ),
+            ..TermyFfiEvent::default()
+        },
         TerminalEvent::WorkingDirectory(path) => TermyFfiEvent {
             kind: 12,
             payload: ffi_bytes_from_string(path),
@@ -5391,4 +5398,28 @@ mod tests {
         assert_eq!(unsafe { termy_buffer_free(bytes) }, TermyFfiStatus::Ok);
         assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
     }
+}
+
+#[cfg(test)]
+#[test]
+fn program_status_ffi_event_has_json_snapshot_and_empty_clear() {
+    let mut engine = crate::terminal_engine::Engine::new(Default::default(), Default::default());
+    engine.feed(b"\x1b]7501;state=blocked:kind=auth:app=deploy:msg=SGk=\x07");
+    let event = ffi_event_from_event(TerminalEvent::ProgramStatus(engine.program_status()));
+    assert_eq!(event.kind, 13);
+    // SAFETY: the event owns this live allocation until free_bytes below.
+    let bytes = unsafe { std::slice::from_raw_parts(event.payload.ptr, event.payload.len) };
+    let json: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(json[0]["state"], "blocked");
+    assert_eq!(json[0]["kind"], "auth");
+    assert_eq!(json[0]["msg"], "Hi");
+    assert!(json[0]["progress"].is_null());
+    free_bytes(event.payload);
+    let event = ffi_event_from_event(TerminalEvent::ProgramStatus(vec![]));
+    // SAFETY: the clear event owns this live allocation until free_bytes below.
+    assert_eq!(
+        unsafe { std::slice::from_raw_parts(event.payload.ptr, event.payload.len) },
+        b"[]"
+    );
+    free_bytes(event.payload);
 }

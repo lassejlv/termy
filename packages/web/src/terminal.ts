@@ -3,6 +3,7 @@ import {
   type MouseButton,
   type MouseEventKind,
   type ProgressKind,
+  type ProgramStatusRecord,
   TermyCore,
   type TermyEvent,
   type TerminalModes,
@@ -121,6 +122,7 @@ export class Terminal implements IDisposable {
   readonly #onWriteParsed = new Emitter<void>()
   readonly #onCwdChange = new Emitter<string>()
   readonly #onProgress = new Emitter<ProgressEvent>()
+  readonly #onProgramStatus = new Emitter<ProgramStatusRecord[]>()
   readonly #onClipboard = new Emitter<ClipboardEvent>()
   readonly #onShellIntegration = new Emitter<string>()
   readonly #onFocus = new Emitter<void>()
@@ -146,6 +148,8 @@ export class Terminal implements IDisposable {
   readonly onCwdChange: IEvent<string> = this.#onCwdChange.event
   /** OSC 9;4 progress. */
   readonly onProgress: IEvent<ProgressEvent> = this.#onProgress.event
+  /** Coalesced OSC 7501 record snapshot, including inherited apps. */
+  readonly onProgramStatus: IEvent<ProgramStatusRecord[]> = this.#onProgramStatus.event
   /** OSC 52 clipboard writes, whether or not `allowClipboardWrite` is on. */
   readonly onClipboard: IEvent<ClipboardEvent> = this.#onClipboard.event
   /** OSC 133 shell integration marks. */
@@ -304,6 +308,7 @@ export class Terminal implements IDisposable {
       this.#onWriteParsed,
       this.#onCwdChange,
       this.#onProgress,
+      this.#onProgramStatus,
       this.#onClipboard,
       this.#onShellIntegration,
       this.#onFocus,
@@ -444,6 +449,14 @@ export class Terminal implements IDisposable {
       core.clearScrollback()
       this.clearSelection()
       this.#renderer?.invalidate()
+      this.#afterOutput()
+    })
+  }
+
+  /** Call after process exit; preserves done/error records and emits the new snapshot. */
+  processExited(): void {
+    this.#whenReady(() => {
+      this.#core!.processExited()
       this.#afterOutput()
     })
   }
@@ -735,6 +748,9 @@ export class Terminal implements IDisposable {
         break
       case 'cwd':
         this.#onCwdChange.fire(event.cwd)
+        break
+      case 'programStatus':
+        this.#onProgramStatus.fire(event.records)
         break
       case 'progress':
         this.#onProgress.fire({ state: event.state, value: event.value })

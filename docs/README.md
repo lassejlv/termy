@@ -27,6 +27,7 @@ scorecard, testing strategy, and decomposition plans.
 - [Configuration](configuration.md) — generated; do not edit directly.
 - [Keybindings](keybindings.md) — generated; do not edit directly.
 - [libtermy](libtermy.md)
+- [Program status (OSC 7501)](program-status.md): reporting task state, desktop indicators, and embedding APIs.
 - [Plugin runtime](plugins.md)
 
 Repository benchmarks should be reproducible from the commands in

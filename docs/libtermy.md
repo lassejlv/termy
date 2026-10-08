@@ -183,6 +183,7 @@ Event kind values:
 - `10`: shell command finished
 - `11`: progress
 - `12`: working directory
+- `13`: [OSC 7501 program status](program-status.md), a UTF-8 JSON record snapshot in `payload`
 
 Progress state values:
 

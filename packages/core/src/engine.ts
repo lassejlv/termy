@@ -48,7 +48,19 @@ export interface Damage {
 
 export type ProgressKind = 'clear' | 'progress' | 'error' | 'indeterminate' | 'warning'
 
+/** OSC 7501 snapshot record. `app` includes nearest-ancestor inheritance. */
+export interface ProgramStatusRecord {
+  id: string
+  state: 'idle' | 'working' | 'done' | 'blocked' | 'error'
+  kind: 'permission' | 'question' | 'auth' | null
+  progress: number | null
+  app: string | null
+  title: string | null
+  msg: string | null
+}
+
 export type TermyEvent =
+  | { type: 'programStatus'; records: ProgramStatusRecord[] }
   | { type: 'bell' }
   | { type: 'title'; title: string }
   | { type: 'resetTitle' }
@@ -185,6 +197,11 @@ export class TermyCore {
   /** Protocol replies (device attributes, cursor reports, color queries). */
   takeReplies(): Uint8Array {
     return this.#engine.take_replies()
+  }
+
+  /** Expire active OSC 7501 records when the host process exits. */
+  processExited(): void {
+    this.#engine.process_exited()
   }
 
   takeEvents(): TermyEvent[] {

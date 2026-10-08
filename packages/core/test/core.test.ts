@@ -65,3 +65,26 @@ describe('themes and glyphs', () => {
     expect(glyphPlan(0x61, [0, 0, 0, 0], 9, 18, 14)).toBeUndefined()
   })
 })
+
+describe('OSC 7501 program status', () => {
+  it('exposes inherited snapshots and expires only active records on process exit', () => {
+    const term = new TermyCore({ cols: 20, rows: 4 })
+    term.write('\x1b]7501;?\x07\x1b]7501;state=working:app=deploy\x07')
+    term.write('\x1b]7501;state=done:id=child:msg=SGk=\x1b\\')
+    expect(new TextDecoder().decode(term.takeReplies())).toBe('\x1b]7501;?\x1b\\')
+    const events = term.takeEvents()
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ type: 'programStatus', records: [
+      { id: '', state: 'working', app: 'deploy', progress: null },
+      { id: 'child', state: 'done', app: 'deploy', msg: 'Hi' },
+    ] })
+    term.processExited()
+    expect(term.takeEvents()).toMatchObject([{ type: 'programStatus', records: [
+      { id: 'child', state: 'done', app: null, msg: 'Hi' },
+    ] }])
+    term.write('\x1bc')
+    expect(term.takeEvents()).toContainEqual({ type: 'programStatus', records: [] })
+    expect(term.takeEvents()).toEqual([])
+    term.dispose()
+  })
+})

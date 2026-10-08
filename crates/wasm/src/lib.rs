@@ -107,12 +107,23 @@ impl TermyEngine {
     /// Drained events as plain objects: `{ type, ... }`.
     pub fn take_events(&mut self) -> js_sys::Array {
         let events = js_sys::Array::new();
+        if let Some(records) = self.engine.take_program_status() {
+            let json = serde_json::json!({ "type": "programStatus", "records": records });
+            if let Ok(event) = js_sys::JSON::parse(&json.to_string()) {
+                events.push(&event);
+            }
+        }
         while let Some(event) = self.engine.pop_event() {
             if let Some(object) = event_object(event) {
                 events.push(&object);
             }
         }
         events
+    }
+
+    /// Call when the host transport reports process exit, then drain events.
+    pub fn process_exited(&mut self) {
+        self.engine.process_exited();
     }
 
     pub fn mode_bits(&self) -> u32 {

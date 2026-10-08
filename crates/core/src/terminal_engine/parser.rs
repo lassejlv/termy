@@ -106,6 +106,7 @@ pub(super) struct Parser {
     discarded: bool,
     string: Vec<u8>,
     string_len: usize,
+    string_wire_len: usize,
     collect_strings: bool,
     apc_limit: usize,
     utf8_value: u32,
@@ -126,6 +127,7 @@ impl Default for Parser {
             discarded: false,
             string: Vec::new(),
             string_len: 0,
+            string_wire_len: 0,
             collect_strings: true,
             apc_limit: MAX_STRING_BYTES,
             utf8_value: 0,
@@ -240,7 +242,9 @@ impl Parser {
                 0x18 | 0x1a => self.cancel(),
                 0x1b => self.state = State::StringEscape(kind),
                 0x07 if kind == StringKind::Osc => self.finish_string(handler, kind, true),
-                0x00..=0x1f | 0x7f if kind == StringKind::Osc => {}
+                0x00..=0x1f | 0x7f if kind == StringKind::Osc => {
+                    self.string_wire_len = self.string_wire_len.saturating_add(1);
+                }
                 _ => self.append_string(kind, &[byte]),
             },
             State::StringEscape(kind) => {
@@ -429,6 +433,7 @@ impl Parser {
     }
 
     fn append_string(&mut self, kind: StringKind, bytes: &[u8]) {
+        self.string_wire_len = self.string_wire_len.saturating_add(bytes.len());
         if self.discarded || kind == StringKind::Ignore {
             return;
         }
@@ -476,7 +481,12 @@ impl Parser {
     #[cold]
     #[inline(never)]
     fn finish_string(&mut self, handler: &mut impl Handler, kind: StringKind, bell: bool) {
-        if !self.discarded {
+        // OSC 7501 bounds the entire wire sequence, including ignored controls.
+        // Conservatively count the longer ST terminator even when BEL was used.
+        let oversized_status = kind == StringKind::Osc
+            && self.string.starts_with(b"7501;")
+            && self.string_wire_len > 4092;
+        if !self.discarded && !oversized_status {
             match kind {
                 StringKind::Osc => handler.osc_terminated(&self.string, bell),
                 StringKind::Dcs => handler.dcs(&self.string),
@@ -499,6 +509,7 @@ impl Parser {
 
     fn clear_string(&mut self) {
         self.string_len = 0;
+        self.string_wire_len = 0;
         // Large APC transfers must not permanently raise every session's
         // retained heap. Ordinary OSC/DCS buffers still reuse their allocation.
         if self.string.capacity() > MAX_STRING_BYTES {

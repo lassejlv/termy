@@ -36,6 +36,8 @@ typedef enum {
   TERMY_FFI_EVENT_SHELL_COMMAND_FINISHED = 10,
   TERMY_FFI_EVENT_PROGRESS = 11,
   TERMY_FFI_EVENT_WORKING_DIRECTORY = 12,
+  /* UTF-8 JSON array of OSC 7501 records in payload; replaces the prior snapshot. */
+  TERMY_FFI_EVENT_PROGRAM_STATUS = 13,
 } TermyFfiEventKind;
 
 typedef enum {

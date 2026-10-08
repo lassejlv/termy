@@ -370,3 +370,56 @@ fn restoring_private_modes_applies_screen_and_clipboard_side_effects() {
         ))
     );
 }
+
+#[test]
+fn osc_7501_fragmented_reports_detection_and_screen_lifetime() {
+    let input = b"\x1b]7501;?\x07\x1b[c\x1b]7501;state=blocked:app=deploy:kind=auth:progress=42:msg=SGk\x1b\\";
+    for split in 0..=input.len() {
+        let mut engine = engine(8, 2);
+        engine.feed(&input[..split]);
+        engine.feed(&input[split..]);
+        assert_eq!(replies(&mut engine), b"\x1b]7501;?\x1b\\\x1b[?62;22c");
+        let records = engine.take_program_status().unwrap();
+        assert_eq!(records[0].state, crate::ProgramState::Blocked);
+        assert_eq!(records[0].msg.as_deref(), Some("Hi"));
+        assert_eq!(records[0].progress, Some(42));
+        engine.feed(b"\x1b[?1049h\x1b[!p\x1b[?1049l");
+        assert_eq!(engine.program_status(), records);
+        assert_eq!(engine.take_program_status(), None);
+        engine.feed(b"\x1b]7501;state=done:id=child\x07\x1b]133;A;click_events=1\x07");
+        let records = engine.take_program_status().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].state, crate::ProgramState::Done);
+        engine.feed(b"\x1b]7501;state=working\x07");
+        engine.process_exited();
+        assert_eq!(engine.take_program_status(), Some(records));
+        engine.feed(b"\x1bc");
+        assert_eq!(engine.take_program_status(), Some(vec![]));
+        assert_eq!(text(&engine, 0), "        ");
+    }
+}
+
+#[test]
+fn osc_7501_snapshot_survives_event_overflow_and_osc9_is_independent() {
+    let mut engine = engine(8, 2);
+    engine.feed(b"\x1b]7501;state=blocked:kind=question:msg=SGk=\x07\x1b]9;4;1;20\x07");
+    engine.feed(&vec![7; 2048]);
+    assert_eq!(
+        engine.take_program_status().unwrap()[0].kind,
+        Some(crate::ProgramStatusKind::Question)
+    );
+    engine.feed(b"\x1b]7501;state=clear\x1b\\");
+    assert_eq!(engine.take_program_status(), Some(vec![]));
+}
+
+#[test]
+fn osc_7501_sequence_limit_includes_ignored_control_bytes() {
+    let mut engine = engine(8, 2);
+    engine.feed(b"\x1b]7501;state=done");
+    engine.feed(&vec![0; 4096]);
+    engine.feed(b"\x07ok");
+    assert!(engine.program_status().is_empty());
+    assert_eq!(text(&engine, 0), "ok      ");
+    engine.feed(b"\x1b]7501;state=done\x07");
+    assert_eq!(engine.program_status().len(), 1);
+}

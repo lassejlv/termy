@@ -647,6 +647,9 @@ pub enum TerminalEvent {
     // Working directory (OSC 7)
     /// Working directory changed
     WorkingDirectory(String),
+
+    /// Coalesced OSC 7501 snapshot, with inherited apps resolved.
+    ProgramStatus(Vec<crate::ProgramStatusRecord>),
 }
 
 /// Host-provided callback used to schedule terminal event draining.

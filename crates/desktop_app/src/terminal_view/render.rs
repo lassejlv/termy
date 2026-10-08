@@ -1839,7 +1839,7 @@ impl TerminalView {
             .is_some_and(|tab| {
                 tab.panes
                     .iter()
-                    .any(|pane| pane.progress_state.is_indeterminate())
+                    .any(|pane| pane.effective_progress_state().is_indeterminate())
             })
     }
 
@@ -3236,7 +3236,8 @@ impl Render for TerminalView {
                 }
 
                 let link_hovered = is_active_pane && self.hovered_link.is_some();
-                let pane_progress_loader = self.pane_progress_loader_element(pane.progress_state);
+                let pane_progress_loader =
+                    self.pane_progress_loader_element(pane.effective_progress_state());
                 pane_layers.push(
                     div()
                         .id(pane.cached_element_ids.pane.clone())
@@ -3254,6 +3255,7 @@ impl Render for TerminalView {
                         .child(terminal_grid)
                         .children(kitty_above_text)
                         .children(pane_progress_loader)
+                        .children(self.pane_program_status_element(pane))
                         .into_any_element(),
                 );
 
@@ -4352,6 +4354,7 @@ mod tests {
             degraded: false,
             tmux_mouse_mode: None,
             progress_state: ProgressState::default(),
+            program_status: Vec::new(),
             terminal: Terminal::new_tmux(
                 size,
                 TerminalOptions {
