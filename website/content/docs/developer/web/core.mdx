@@ -53,12 +53,18 @@ protocol), then send the bytes to your host:
 ```ts
 import { Modifier } from '@termysh/core'
 
-term.encodeKey('up', undefined, 0)                      // '\x1b[A' or '\x1bOA'
-term.encodeKey('c', 'c', Modifier.Ctrl)                 // '\x03'
-term.encodePaste(text)                                  // bracketed when enabled
-term.encodeMouse('press', 'left', col, row, 0)          // undefined unless tracking
+term.encodeKey('up', undefined, 0)                      // bytes of '\x1b[A', or '\x1bOA' in application cursor mode
+term.encodeKey('c', 'c', Modifier.Ctrl)                 // bytes of '\x03'
+term.encodeKey('enter', '\r', 0)                        // bytes of '\r'
+term.encodePaste(text)                                  // bracketed when the program enabled it
+term.encodeMouse('press', 'left', col, row, 0)          // undefined unless the program tracks the mouse
 term.encodeFocus(true)
 ```
+
+Every encoder returns a `Uint8Array` (or `undefined` when the input produces
+no bytes). Send it to the host as is. `key` is a Termy key name such as
+`enter`, `up`, `f5` or `a`, and `text` is the character the key produced.
+Combine modifiers with `|`, for example `Modifier.Ctrl | Modifier.Shift`.
 
 Protocol replies (device attributes, cursor position reports, color queries)
 are collected after each write; forward them to the host too:
@@ -68,8 +74,54 @@ term.write(output)
 const replies = term.takeReplies()
 if (replies.length) host.send(replies)
 for (const event of term.takeEvents()) {
-  // { type: 'title' | 'bell' | 'cwd' | 'progress' | 'clipboard' | 'shellIntegration', ... }
+  switch (event.type) {
+    case 'title': setTitle(event.title); break
+    case 'resetTitle': setTitle(''); break
+    case 'bell': ring(); break
+    case 'cwd': setCwd(event.cwd); break
+    case 'progress': setProgress(event.state, event.value); break
+    case 'programStatus': setStatus(event.records); break // OSC 7501
+    case 'clipboard': copy(event.data); break             // OSC 52, data is base64
+    case 'shellIntegration': mark(event.payload); break   // OSC 133
+  }
 }
+```
+
+When the host process exits, call `term.processExited()` so working or blocked
+[program status](/docs/using-termy/program-status) records expire.
+
+## Reading text
+
+```ts
+term.lineText(0)              // first line of the live screen
+term.lineText(term.rows - 1)  // last line of the live screen
+term.lineText(-1)             // newest scrollback line
+term.historySize              // number of scrollback lines
+term.lineWrapped(0)           // whether line 0 soft-wraps into line 1
+```
+
+Line numbers here are relative to the live screen: `0` to `rows - 1` is the
+screen and negative numbers reach back into scrollback, down to
+`-historySize`. (`@termysh/web` uses absolute line numbers instead, starting
+from the oldest scrollback line.)
+
+## Testing terminal output
+
+Because the core runs in Node and Bun with no setup, you can assert on what a
+program draws:
+
+```ts
+import { init, TermyCore } from '@termysh/core'
+import { expect, test } from 'vitest'
+
+await init()
+
+test('renders a progress line', () => {
+  const term = new TermyCore({ cols: 40, rows: 5 })
+  term.write('Downloading...\r\x1b[2KDone\r\n')
+  expect(term.lineText(0)).toBe('Done')
+  term.dispose()
+})
 ```
 
 ## Images and glyphs

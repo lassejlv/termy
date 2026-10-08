@@ -70,7 +70,7 @@ The adapter accepts a few extra options:
 | `termyTheme` | Start from a bundled Termy theme; `theme` then overrides individual colors |
 | `images` | Render kitty graphics (default `true`) |
 | `allowClipboardWrite` | Let OSC 52 write the clipboard |
-| `autoFit` | Follow the container without `FitAddon` |
+| `autoFit` | Follow the container without `FitAddon`. Off by default, as in xterm.js |
 | `padding`, `copyOnSelect` | As in `@termysh/web` |
 
 `term.termy` is the underlying `@termysh/web` terminal, and `term.ready`
@@ -81,7 +81,10 @@ resolves once the engine is loaded.
 - Writes made before the WebAssembly module loads are queued; they render
   once it is ready.
 - Not supported yet: `registerDecoration`, custom `registerLinkProvider`
-  providers, `parser.register*Handler` hooks and character joiners. They are
-  accepted and do nothing.
+  providers and character joiners. They are accepted and do nothing.
+- There is no `term.parser`, so `parser.register*Handler` hooks are not
+  available. Code that calls them throws; remove it, or use
+  `term.termy.onTitleChange`, `onCwdChange`, `onProgress` and the other
+  `@termysh/web` events for the common OSC sequences.
 - `buffer.normal` cannot read the main screen while a full-screen app is using
   the alternate screen.

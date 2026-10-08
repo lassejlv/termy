@@ -1,0 +1,115 @@
+---
+title: Troubleshooting the web terminal
+description: Fix blank terminals, WebAssembly loading errors, build failures and PTY problems.
+---
+
+Find the symptom, then apply the fix.
+
+## Nothing appears
+
+- **The container has no height.** The terminal fills the element passed to
+  `open` (`width: 100%; height: 100%`). Give that element a height, for
+  example `height: 400px`, or `flex: 1` inside a sized flex container.
+- **`open` was never called**, or was called on an element that is not in the
+  document.
+- **The wasm module failed to load.** Check the console and `term.ready`,
+  which rejects with the error:
+
+  ```ts
+  term.ready.catch((error) => console.error('Termy failed to load', error))
+  ```
+
+## `expected magic word 00 61 73 6d`
+
+The request for `termy.wasm` returned something other than the wasm file,
+usually an HTML page from a dev server or single-page-app fallback. Open the
+network tab and find the `termy.wasm` request:
+
+- In the Vite 7 (or earlier) dev server, the URL points into
+  `node_modules/.vite/deps`. Exclude `@termysh/core` from pre-bundling; see
+  [Vite](/docs/developer/web/frameworks#vite).
+- With esbuild or a custom setup, `termy.wasm` was not copied next to the
+  bundle. Copy it, or pass its URL with the `wasm` option; see
+  [Serve the wasm file](/docs/developer/web/frameworks#serve-the-wasm-file).
+
+## `instantiateStreaming failed because your server does not serve Wasm with application/wasm MIME type`
+
+This is a warning, not an error. The module still loads, more slowly.
+Configure your server to send `Content-Type: application/wasm` for `.wasm`
+files.
+
+## `Refused to compile or instantiate WebAssembly module`
+
+Your Content Security Policy blocks WebAssembly. Add `'wasm-unsafe-eval'` to
+`script-src`; see
+[Content Security Policy](/docs/developer/web/frameworks#content-security-policy).
+
+## Build fails on `node:fs/promises`
+
+webpack reports
+`UnhandledSchemeError: Reading from "node:fs/promises" is not handled by plugins`
+and esbuild reports `Could not resolve "node:fs/promises"`. The import only
+runs in Node and Bun. Ignore it in the browser build; see
+[Next.js](/docs/developer/web/frameworks#nextjs),
+[webpack](/docs/developer/web/frameworks#webpack) or
+[esbuild](/docs/developer/web/frameworks#esbuild).
+
+## `@termysh/core: call await init() before creating a terminal`
+
+Something used the engine before the wasm module loaded:
+
+- With `@termysh/core`, `await init()` before `new TermyCore()`,
+  `builtinThemeIds()` or `builtinTheme()`.
+- With `@termysh/web`, `await term.ready` (or create the terminal with
+  `await Terminal.create()`) before calling `builtinThemeIds()` or
+  `builtinTheme()`.
+
+## `@termysh/web: terminal is already open`
+
+`open` was called twice on the same terminal. In React this usually means
+the terminal was created outside the effect, or the effect has no cleanup.
+Create the terminal inside `useEffect` and call `term.dispose()` in the
+cleanup; see [React](/docs/developer/web/frameworks#react).
+
+## Programs hang, or draw only after a key press
+
+Programs such as `vim`, `htop` and shells with rich prompts send queries
+(cursor position, device attributes, background color) and wait for the
+answer. The terminal answers through `onData`. Send everything `onData`
+emits to the PTY, not only keystrokes.
+
+With `@termysh/core`, call `takeReplies()` after every `write` and send the
+bytes to the PTY.
+
+## Output wraps at the wrong width
+
+The PTY still has its old size. Send every `onResize` to the server and call
+the PTY's resize, and send the current size once the connection opens. See
+[Connect to a shell](/docs/developer/web/connect#browser).
+
+## Colors look washed out
+
+Programs decide whether to use 24-bit color from the environment. Spawn the
+PTY with `TERM=xterm-256color` and `COLORTERM=truecolor`.
+
+## `posix_spawnp failed` from node-pty
+
+node-pty's `spawn-helper` binary lost its execute permission, which happens
+when the package manager skipped node-pty's install scripts. Allow them (npm
+prints the command to approve install scripts) and reinstall, or restore the
+permission:
+
+```sh
+chmod +x node_modules/node-pty/prebuilds/*/spawn-helper
+```
+
+## Copy and paste
+
+On macOS, Cmd+C and Cmd+V copy and paste. Elsewhere, use Ctrl+Shift+C and
+Ctrl+Shift+V; plain Ctrl+C goes to the program as an interrupt. To select text
+while a program tracks the mouse, hold Shift.
+
+## Report a bug
+
+If none of this fixes it, [open an issue](https://github.com/termylabs/termy/issues)
+with the package versions, browser, bundler, and a minimal reproduction.

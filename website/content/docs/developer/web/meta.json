@@ -1,5 +1,5 @@
 {
   "title": "Web terminal",
-  "pages": ["index", "options", "themes", "xterm", "core"],
+  "pages": ["index", "connect", "frameworks", "options", "themes", "xterm", "core", "troubleshooting"],
   "defaultOpen": false
 }

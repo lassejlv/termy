@@ -1,0 +1,206 @@
+---
+title: Frameworks and bundlers
+description: Use @termysh/web with React, Next.js, Vue, Vite, webpack and esbuild, and serve the WebAssembly file.
+---
+
+`@termysh/core` loads `termy.wasm` with
+`new URL('./termy.wasm', import.meta.url)`. Most bundlers see that pattern,
+copy the file into your build and rewrite the URL. Where one does not, either
+apply the setting below or [serve the file yourself](#serve-the-wasm-file).
+
+| Bundler | Setup |
+| --- | --- |
+| Vite 8 | None |
+| Vite 7 and earlier | Exclude `@termysh/core` from dependency pre-bundling |
+| Next.js (Turbopack, the default) | None |
+| Next.js with `--webpack`, webpack 5 | Ignore `node:fs/promises` in the browser build |
+| esbuild | Mark `node:fs/promises` external and copy `termy.wasm` next to the bundle |
+
+The `node:fs/promises` import only runs in Node and Bun, where `init()` reads
+`termy.wasm` from disk. Browser builds never execute it, but webpack and
+esbuild still try to resolve it.
+
+## React
+
+```tsx title="TerminalView.tsx"
+'use client' // Next.js App Router only
+
+import { useEffect, useRef } from 'react'
+import { Terminal } from '@termysh/web'
+
+export function TerminalView({ url }: { url: string }) {
+  const container = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const term = new Terminal({ theme: 'tokyo-night', fontSize: 13 })
+    term.open(container.current!)
+
+    const socket = new WebSocket(url)
+    socket.binaryType = 'arraybuffer'
+    socket.onmessage = (event) => {
+      if (event.data instanceof ArrayBuffer) term.write(new Uint8Array(event.data))
+    }
+    const input = term.onData((data) => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'input', data }))
+    })
+
+    return () => {
+      input.dispose()
+      socket.close()
+      term.dispose()
+    }
+  }, [url])
+
+  return <div ref={container} style={{ height: 400 }} />
+}
+```
+
+- Create the terminal in `useEffect`, not during render. Creating and opening
+  a terminal is a side effect, and `open` needs the DOM.
+- Return a cleanup that calls `dispose()`. React Strict Mode mounts effects
+  twice in development, and the cleanup keeps that from leaving a second
+  terminal behind.
+- Keep the `Terminal` in the effect or in a ref, not in state. Re-rendering
+  must not create a new terminal.
+- Change options with `term.setOptions` instead of recreating the terminal.
+
+The full message protocol for this socket is in
+[Connect to a shell](/docs/developer/web/connect).
+
+## Next.js
+
+Use the React component above in a client component (`'use client'`).
+Importing `@termysh/web` during server rendering is safe; nothing touches the
+DOM until `open` runs in the effect.
+
+With Turbopack, the default bundler in Next.js 16, no configuration is needed.
+If you build with webpack (`next build --webpack`), the build fails with
+`UnhandledSchemeError: Reading from "node:fs/promises" is not handled by plugins`.
+Ignore that import in the browser build:
+
+```js title="next.config.mjs"
+export default {
+  webpack(config, { webpack, isServer }) {
+    if (!isServer) {
+      config.plugins.push(new webpack.IgnorePlugin({ resourceRegExp: /^node:fs\/promises$/ }))
+    }
+    return config
+  },
+}
+```
+
+## Vue
+
+```vue title="TerminalView.vue"
+<script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { Terminal } from '@termysh/web'
+
+const container = ref<HTMLDivElement>()
+let term: Terminal | undefined
+
+onMounted(() => {
+  term = new Terminal({ theme: 'tokyo-night' })
+  term.open(container.value!)
+})
+onBeforeUnmount(() => term?.dispose())
+</script>
+
+<template>
+  <div ref="container" style="height: 400px" />
+</template>
+```
+
+Svelte, Solid and other frameworks follow the same pattern: create and `open`
+the terminal once the element is mounted, and `dispose` it on unmount.
+
+## Vite
+
+Vite 8 needs no configuration.
+
+In Vite 7 and earlier, production builds work, but the dev server pre-bundles
+dependencies into `node_modules/.vite/deps` and the wasm URL then points at a
+file that does not exist. The dev server answers with its HTML page, and
+loading fails with an error such as
+`WebAssembly.instantiate(): expected magic word 00 61 73 6d`. Exclude
+`@termysh/core` from pre-bundling:
+
+```ts title="vite.config.ts"
+import { defineConfig } from 'vite'
+
+export default defineConfig({
+  optimizeDeps: { exclude: ['@termysh/core'] },
+})
+```
+
+## webpack
+
+webpack 5 emits `termy.wasm` as an asset, but fails on the Node-only import.
+Ignore it:
+
+```js title="webpack.config.js"
+const webpack = require('webpack')
+
+module.exports = {
+  // ...
+  plugins: [new webpack.IgnorePlugin({ resourceRegExp: /^node:fs\/promises$/ })],
+}
+```
+
+## esbuild
+
+esbuild does not copy assets referenced with `new URL(..., import.meta.url)`.
+Mark the Node-only import external and copy the wasm file next to your
+bundle:
+
+```sh
+esbuild src/main.ts --bundle --format=esm --outdir=dist --external:node:fs/promises
+cp node_modules/@termysh/core/dist/termy.wasm dist/
+```
+
+The bundle must be an ES module (`--format=esm`) so `import.meta.url` points
+at it. To put the file somewhere else, pass its URL with the `wasm` option.
+
+## Serve the wasm file
+
+To control where `termy.wasm` comes from (a CDN, a fixed path, a cache-busted
+name), copy `node_modules/@termysh/core/dist/termy.wasm` to your static
+assets and pass its URL:
+
+```ts
+new Terminal({ wasm: '/assets/termy.wasm' })
+```
+
+With Vite you can let the bundler emit it and give you the URL:
+
+```ts
+import wasmUrl from '@termysh/core/termy.wasm?url'
+
+new Terminal({ wasm: wasmUrl })
+```
+
+The `wasm` option, and `init`, also accept a `URL`, a `Response`, a promise of
+one, bytes, or a compiled `WebAssembly.Module`. The module loads once per page;
+later terminals reuse it.
+
+Serve the file with `Content-Type: application/wasm`. With another type it
+still loads, but more slowly, and logs a warning that
+`WebAssembly.instantiateStreaming` failed.
+
+## Content Security Policy
+
+If your site sends a Content Security Policy, allow WebAssembly to compile and
+allow the request for the file:
+
+```
+Content-Security-Policy: script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'
+```
+
+Add the origin that serves `termy.wasm` to `connect-src` if it is not your
+own.
+
+## Workers, Node and Bun
+
+`@termysh/web` needs a DOM. For a terminal without one (in a web worker, in
+Node or Bun, or in tests), use [`@termysh/core`](/docs/developer/web/core). In
+Node and Bun, `await init()` finds `termy.wasm` on disk with no setup.

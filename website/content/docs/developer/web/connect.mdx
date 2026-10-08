@@ -1,0 +1,157 @@
+---
+title: Connect to a shell
+description: Run a real shell in the browser with a PTY server, a WebSocket and @termysh/web.
+---
+
+The terminal does no I/O of its own. A program runs on a server inside a
+pseudo-terminal (PTY), and you move bytes between the two:
+
+```
+browser                                  server
+@termysh/web  ── input, resize (JSON) ──▶  WebSocket ──▶ PTY ──▶ shell
+              ◀── output (bytes) ────────  WebSocket ◀── PTY ◀──
+```
+
+This page builds that with Node, [`ws`](https://github.com/websockets/ws) and
+[`node-pty`](https://github.com/microsoft/node-pty). Any language with a PTY
+library works the same way.
+
+<Callout type="warn">
+  A WebSocket connected to a shell gives full command execution to anyone who
+  can reach it. The server below listens on `127.0.0.1` for local development.
+  Before you expose a server like this, authenticate every connection, check
+  the `Origin` header, and use TLS (`wss://`).
+</Callout>
+
+## The protocol
+
+Keep output and control messages apart so neither can be mistaken for the
+other:
+
+| Direction | Frame | Content |
+| --- | --- | --- |
+| Server to browser | Binary | Raw PTY output |
+| Server to browser | Text | `{ "type": "exit", "exitCode": number }` |
+| Browser to server | Text | `{ "type": "input", "data": string }` |
+| Browser to server | Text | `{ "type": "resize", "cols": number, "rows": number }` |
+
+## Server
+
+```sh
+npm install ws node-pty
+```
+
+```js title="server.mjs"
+import { WebSocketServer } from 'ws'
+import pty from 'node-pty'
+
+// Local development only: anyone who can reach this port gets a shell.
+const wss = new WebSocketServer({ host: '127.0.0.1', port: 8787 })
+
+wss.on('connection', (socket) => {
+  const shell = pty.spawn(process.env.SHELL || 'bash', [], {
+    name: 'xterm-256color',
+    cols: 80,
+    rows: 24,
+    cwd: process.env.HOME,
+    env: { ...process.env, COLORTERM: 'truecolor' },
+  })
+
+  // Output: binary frames, raw bytes.
+  shell.onData((data) => socket.send(Buffer.from(data)))
+  shell.onExit(({ exitCode }) => {
+    socket.send(JSON.stringify({ type: 'exit', exitCode }))
+    socket.close()
+  })
+
+  // Input and control: text frames, JSON.
+  socket.on('message', (raw, isBinary) => {
+    if (isBinary) return
+    const message = JSON.parse(raw.toString())
+    if (message.type === 'input') shell.write(message.data)
+    if (message.type === 'resize') shell.resize(message.cols, message.rows)
+  })
+  socket.on('close', () => shell.kill())
+})
+```
+
+`TERM=xterm-256color` matches what the Termy desktop app sets. `COLORTERM`
+tells programs that truecolor works.
+
+## Browser
+
+```ts title="client.ts"
+import { Terminal } from '@termysh/web'
+
+const term = new Terminal({ theme: 'tokyo-night', fontSize: 13 })
+term.open(document.getElementById('terminal')!)
+
+const socket = new WebSocket('ws://127.0.0.1:8787')
+socket.binaryType = 'arraybuffer'
+
+const send = (message: object) => {
+  if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(message))
+}
+
+socket.onopen = () => send({ type: 'resize', cols: term.cols, rows: term.rows })
+
+socket.onmessage = (event) => {
+  if (event.data instanceof ArrayBuffer) {
+    term.write(new Uint8Array(event.data))
+    return
+  }
+  const message = JSON.parse(event.data)
+  if (message.type === 'exit') {
+    term.processExited()
+    term.write(`\r\n[process exited with code ${message.exitCode}]\r\n`)
+  }
+}
+
+term.onData((data) => send({ type: 'input', data }))
+term.onResize(({ cols, rows }) => send({ type: 'resize', cols, rows }))
+```
+
+What each part does:
+
+- `binaryType = 'arraybuffer'` makes output arrive as bytes. Writing bytes
+  instead of decoded strings keeps multi-byte characters that are split across
+  frames intact.
+- The resize on `onopen` gives the PTY the terminal's real size. `autoFit`
+  may have resized the grid before the socket opened.
+- `onData` carries keys, pastes and protocol replies. Forward all of it.
+- `processExited()` tells the terminal the program is gone, so any
+  [program status](/docs/using-termy/program-status) it reported as working or
+  blocked expires instead of staying stuck.
+
+## Clean up
+
+When the view closes, close the socket and dispose of the terminal. The server
+kills the shell when the socket closes.
+
+```ts
+socket.close()
+term.dispose()
+```
+
+## Other transports
+
+Only the transport changes; the terminal side stays the same: `write` what
+the program prints, send what `onData` (or `onBytes`) emits, and forward
+`onResize`.
+
+- **Server-sent events plus `fetch`:** stream output down, `POST` input up.
+- **WebRTC data channel:** useful for peer-to-peer terminals.
+- **A program in the page:** for an in-browser shell, call `term.write` with
+  its output and handle `onData` yourself. The [live demo](/demo) works this
+  way.
+- **Headless:** to drive a PTY without a browser, for tests or server-side
+  snapshots, use [`@termysh/core`](/docs/developer/web/core). Forward
+  `takeReplies()` to the PTY after every write.
+
+## Binary mouse reports
+
+If a program enables legacy X10 mouse reporting without the UTF-8 or SGR
+extensions, some reports are not valid UTF-8. They arrive on `onBinary`
+instead of `onData`. Most programs use SGR mouse reporting and never trigger
+this. To forward every byte with no special cases, send `onBytes` as a binary
+frame and write it to the PTY as a `Buffer`.

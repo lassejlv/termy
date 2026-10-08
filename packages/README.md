@@ -41,8 +41,10 @@ calls made before it is ready (`write`, `resize`, `paste`, ...) are queued.
 ### Loading the wasm
 
 By default `termy.wasm` is resolved next to `@termysh/core`'s module via
-`new URL('./termy.wasm', import.meta.url)`, which Vite, webpack 5, Rspack,
-esbuild and Node handle. To host it yourself:
+`new URL('./termy.wasm', import.meta.url)`. Vite 8, Next.js (Turbopack) and
+Node/Bun need no setup; Vite 7, webpack 5 and esbuild need one setting each
+(see [Frameworks and bundlers](https://termy.sh/docs/developer/web/frameworks),
+source in `website/content/docs/developer/web/`). To host it yourself:
 
 ```ts
 import wasmUrl from '@termysh/core/termy.wasm?url' // Vite
