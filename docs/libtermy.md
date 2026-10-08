@@ -1,6 +1,13 @@
 # libtermy
 
-`libtermy` is the embeddable Termy terminal engine. The first cut is split into:
+The public embedding guide is on the [website](https://termy.sh/docs/developer/libtermy).
+It includes Rust and C quick starts, rendering and input contracts, ownership,
+troubleshooting, and an [agent guide](https://termy.sh/docs/developer/libtermy/agents).
+The website sources are in `website/content/docs/developer/libtermy/`.
+This repository note is a compact source-oriented overview; use the matching
+`termy.h` and Rust exports for the revision you embed.
+
+`libtermy` is the embeddable Termy terminal engine. It exposes two embedding surfaces:
 
 - `termy_core`: Rust API for a single headless terminal surface.
 - `termy_core::ffi`: C ABI wrapper over `termy_core`.
@@ -8,8 +15,8 @@
 The core API owns PTY startup, terminal parsing, input writes, resize, event
 draining, damage snapshots, renderer-neutral frame snapshots, and canonical
 special-glyph geometry. It does not
-depend on GPUI and does not expose Termy's app chrome, tabs, panes, or tmux
-session model as part of the public v1 surface.
+depend on GPUI and does not provide app chrome, tabs, pane layout, or a
+session-manager UI.
 
 `termy_core` can also load Termy's normal config format through the existing
 headless `termy_core::config_core` parser. Config loading returns the full parsed
@@ -44,7 +51,7 @@ let frame = terminal.snapshot();
 `TermyFrame` contains a flat row-major `Vec<TermyCell>`, cursor state, scroll
 state, and cell colors as simple RGBA bytes.
 
-Rust renderers that need more than the stable flat-cell contract can use
+Rust renderers that need more than the compact flat-cell contract can use
 `Terminal::render_read`. Its `TerminalRenderRead` contains coherent viewport
 metadata, a revisioned live palette, complete cell text, exact underline style
 and color, ordered viewport scroll damage, and a render generation. For a
@@ -60,8 +67,9 @@ The underlying terminal engine is not part of the Rust embedding contract.
 `termy_core` 0.2 removes `Terminal::with_term`,
 `TerminalOptions::term_config`, and the raw backend conversion helpers. Use `TerminalColor`,
 `TerminalRenderCell`, `TerminalQueryColors`, and the public `Terminal` methods
-instead. This is an intentional Rust source break; the flat frame types and C
-ABI remain unchanged.
+instead. This is an intentional Rust source break; the flat frame model remains
+available. This is a beta API: build headers, libraries, and bindings from the
+same revision rather than assuming ABI stability.
 
 Use `termy_core::measure_cell(font_family, font_size, line_height)` or
 `termy_core::measure_cell_from_config(&app_config)` to derive the
@@ -198,7 +206,11 @@ Cursor style values:
 - `1`: line
 - `2`: block
 
-Search returns visible-frame matches only. Each `TermyFfiSearchMatch` reports the
-row, inclusive start and end columns, and the visible line text that matched.
+Terminal search covers scrollback and the live screen. Each
+`TermyFfiSearchMatch` reports a zero-based row from the oldest retained buffer
+row, inclusive start and end columns, and matching line text. Convert to a
+viewport row using `row - (history_size - display_offset)` with checked or signed
+arithmetic. The standalone Rust `search_frame` helpers only search their supplied
+frame.
 
 The C ABI header is at `crates/core/include/termy.h`.

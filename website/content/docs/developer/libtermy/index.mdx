@@ -1,0 +1,129 @@
+---
+title: libtermy overview
+description: Build a native terminal with Termy's engine. Start here for Rust and C integration, rendering contracts, and agent-readable documentation.
+---
+
+`libtermy` is the embeddable terminal engine used by Termy. The Rust crate is
+`termy_core`; its C ABI is declared in `termy.h`. It provides terminal parsing,
+PTY sessions, scrollback, input encoding, events, search, and renderer-neutral
+frames. Your application provides the window, renderer, and platform integration.
+
+<Callout type="info">
+  libtermy is in beta. Pin a Termy commit, build the library and bindings from
+  that same revision, and validate upgrades. Neither Rust source compatibility
+  nor C struct layouts are guaranteed between releases.
+</Callout>
+
+## Choose an API
+
+| What you are building | Start with | Session owner |
+| --- | --- | --- |
+| Native Rust application | [Rust quick start](/docs/developer/libtermy/rust) | libtermy can launch and own the PTY |
+| C, C++, Swift, Objective-C, or another FFI host | [C ABI quick start](/docs/developer/libtermy/c) | libtermy can launch and own the PTY |
+| Remote terminal, replay viewer, or externally managed session | Display-only examples in either quick start | Your transport feeds output and receives input/replies |
+| Browser terminal or Node.js PTY | [Web terminal packages](/docs/developer/web) | See the package-specific guides |
+| Coding agent implementing an integration | [Agent integration guide](/docs/developer/libtermy/agents) | Choose explicitly before writing code |
+
+## What is available in beta
+
+| libtermy owns | Your host owns |
+| --- | --- |
+| VT parsing, grid state, scrollback, terminal modes | Windows, tabs, panes, focus, and accessibility |
+| Native PTY startup, input writes, and resize | Session lifecycle and application shutdown policy |
+| Full frames, dirty spans, cursor and scroll metadata | Retained cell storage, text shaping, GPU resources, and drawing |
+| Keyboard and mouse protocol encoding | OS event translation, IME, shortcuts, selection, and paste policy |
+| Theme resolution and measured cell dimensions | Font availability, scale conversion, padding, and layout |
+| Shell, title, bell, progress, and clipboard requests | Application chrome and clipboard permission decisions |
+| Search, OSC 8 links, special-glyph geometry, Kitty image placements | Search navigation, URL opening, geometry painting, and image compositing |
+
+A terminal handle represents one terminal surface. Creating one does not create
+a visible widget. Owning a PTY and rendering its output are separate jobs.
+
+## Rust quick start
+
+Begin with a deterministic [display-only Rust example](/docs/developer/libtermy/rust#parse-output-without-starting-a-shell),
+then switch to a PTY-backed terminal. The Rust guide includes configuration,
+launch parameters, and an event-draining example.
+
+### Rich Rust rendering and the engine boundary
+
+The compact frame API works across Rust and C. Rust also exposes complete cell
+text, underline styles, live palette revisions, and generation-checked reads.
+Use the [rendering guide](/docs/developer/libtermy/rendering#rich-rust-rendering)
+to choose a contract. The internal terminal engine is private; do not import
+backend implementation types into an embedder.
+
+### Display-only terminals
+
+Feed process output into `feed_output`; send user input to the external session
+owner. `write` does nothing without an owned PTY. Protocol replies also need a
+route back to the external process. See [events and replies](/docs/developer/libtermy/events).
+
+## C ABI quick start
+
+[Build the shared library and run a complete C example](/docs/developer/libtermy/c).
+The guide also covers PTY creation, linking, Swift bindings, and status handling.
+There is no separate prebuilt native SDK distribution documented here: build
+`termy_core` and vendor the matching header from the same checkout.
+
+## Drive the render loop
+
+1. Load configuration, measure cells, and create a terminal with a nonzero grid.
+2. Request and retain one full frame.
+3. Schedule terminal work when output, input, resize, or host timers require it.
+4. Drain events and protocol replies; continue while the drain reports more work.
+5. Take a frame update, patch the retained grid, and update cursor/scroll metadata.
+6. Paint affected content, then return to idle.
+
+Read [rendering and damage](/docs/developer/libtermy/rendering) before implementing
+step 5. Full-frame cells are row-major; partial-frame cells are in dirty-span
+order. They are not interchangeable arrays.
+
+### Shared special-glyph plans
+
+Use the shared glyph geometry for supported block, box-drawing, sextant,
+Braille, rounded-corner, and diagonal characters. The
+[geometry and graphics section](/docs/developer/libtermy/rendering#special-glyph-geometry)
+explains row context, sparse plans, and pixel snapping.
+
+### Kitty clipboard callbacks from C
+
+Clipboard callbacks are synchronous and borrowed data expires when the callback
+returns. See [clipboard integration](/docs/developer/libtermy/events#kitty-osc-5522-clipboard)
+for permission handling and reply lifetimes.
+
+### Batched special-glyph plans from C
+
+Patch the retained full grid first, then build a sparse plan with
+`termy_cells_build_glyph_render_plan`. Plan entries address that full grid.
+See [rendering](/docs/developer/libtermy/rendering#special-glyph-geometry).
+
+## Input, search, and links
+
+[Input and navigation](/docs/developer/libtermy/input) covers mode-aware keyboard
+and mouse encoding, bracketed paste, viewport coordinates, scrollback search,
+and link lookup. Encoders return bytes; your host must send them.
+
+## Ownership and threading
+
+Serialize calls to each C terminal handle. Only the wake-channel wait and notify
+functions have a documented concurrency exception. Read the
+[ownership and API reference](/docs/developer/libtermy/reference) before building
+bindings; it lists allocation/free pairs, status codes, and safe shutdown order.
+
+## Beta expectations
+
+Keep your dependency revision, header, binary, and generated bindings together.
+Do not interpret a familiar function name as a promise of unchanged struct
+layout. The Rust 0.2 API removed raw-backend access including `Terminal::with_term`
+and `TerminalOptions::term_config`; use the public renderer-neutral types.
+
+## Validate an integration
+
+The [troubleshooting guide](/docs/developer/libtermy/troubleshooting) provides a
+smoke-test matrix and checks for blank frames, stale redraws, bad coordinates,
+missing replies, and teardown crashes.
+
+Agents can read [this page as Markdown](/docs/developer/libtermy.md), the
+[documentation index](/llms.txt), or the [full documentation text](/llms-full.txt).
+Every guide in this section also has a `.md` URL.

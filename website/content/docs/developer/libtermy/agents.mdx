@@ -1,0 +1,125 @@
+---
+title: Integration guide for agents
+description: A compact implementation contract, source map, reading order, and acceptance checklist for coding agents embedding libtermy.
+---
+
+Use this page to establish the integration contract before generating code.
+`libtermy` is the product name; `termy_core` is the Rust crate and shared-library
+name. It is a terminal engine, not a ready-made native UI widget.
+
+## Read the documentation as text
+
+The website exposes the same documentation to humans and agents:
+
+- [Documentation index](/llms.txt): page discovery.
+- [Full documentation](/llms-full.txt): all documentation in one response.
+- [libtermy overview](/docs/developer/libtermy.md): the section entry point.
+- [This agent guide](/docs/developer/libtermy/agents.md): the implementation contract.
+
+Append `.md` to any guide URL for its Markdown representation. For a focused
+integration, read the overview, your language quick start, rendering, events,
+and ownership reference; use the full dump only when broader context helps.
+
+## Establish these decisions first
+
+| Decision | What to record in the implementation |
+| --- | --- |
+| Revision | The exact Termy commit used for crate, header, binary, and bindings |
+| API | Rust or C ABI; rich cell text requirements may affect the choice |
+| Session ownership | Owned PTY or display-only external transport |
+| Rendering | UI toolkit, retained grid, coordinate scale, font source |
+| Scheduling | Terminal owner thread, output notification path, host timers |
+| Host policy | Clipboard access, URL schemes, paste behavior, shutdown behavior |
+
+Infer decisions from the existing host when possible. Do not add a new terminal
+parser, GUI framework, or session manager merely to make an example work.
+
+## Integration contract
+
+1. Use `termy_core` public exports or the checked-out `termy.h`. Do not invent
+   constructors from an older example or import private engine types.
+2. Start with a display-only parser smoke test. It makes build, ABI, and frame
+   failures independent of shell startup.
+3. Measure cells through core/config and create a nonzero grid. Keep pixel/point
+   conversion consistent with drawing and hit testing.
+4. Feed process output to `feed_output`; send input to `write` only for an owned
+   PTY. Display-only input and protocol replies go to the external transport.
+5. Establish a full retained frame. Full cells are row-major. Partial cells are
+   concatenated in dirty-span order, with inclusive span bounds.
+6. Choose one consuming damage API per render cycle. Do not drain damage before
+   requesting the incremental frame that was supposed to contain it.
+7. Update cursor and scroll metadata even when there is no cell damage. Resize,
+   appearance changes, and lost renderer resources require appropriate redraws.
+8. Encode keys and mouse events with the current terminal modes. Encoders do not
+   send their results; empty results are valid.
+9. Drain events and protocol requests, then continue or reschedule while
+   `has_more` is true. A wakeup is coalesced work notification.
+10. Serialize calls per C handle. Only wake wait/notify have a concurrency
+    exception. Callback data is borrowed; read replies must be synchronous.
+11. Free returned allocations with the matching libtermy free function. Free
+    nested payloads through their batch, never independently.
+12. On shutdown, stop new work, wake and join the waiter, cancel queued handle
+    users, then free. Never rely on a finalizer racing with a waiter.
+
+## Source map for a checkout
+
+Paths below are relative to the Termy repository. If documentation and source
+at your pinned revision differ, inspect the implementation and its tests before
+changing the host.
+
+| Source | What to verify |
+| --- | --- |
+| `crates/core/Cargo.toml` | Crate version, features, library artifact types |
+| `crates/core/include/termy.h` | C signatures, struct layouts, callbacks, concurrency contract |
+| `crates/core/src/lib.rs` | Public Rust exports |
+| `crates/core/src/runtime.rs` | Constructors, events, damage, visitors, terminal methods |
+| `crates/core/src/frame.rs` | Compact and rich frame fields |
+| `crates/core/src/ffi/mod.rs` | Numeric mappings, output ownership, C-to-Rust behavior |
+| `crates/core/src/config.rs` | Config loading, diagnostics, appearance resolution |
+| `crates/core/src/keyboard.rs`, `mouse_protocol.rs` | Input names and mode-aware encoding |
+| `crates/core/src/protocol/` | Reply routing and clipboard contracts |
+| `crates/core/src/glyph_geometry.rs` | Shared special-glyph plans |
+| `crates/core/tests/display_terminal.rs` | Deterministic parser/runtime examples |
+| `crates/core/tests/ffi_export_guard.rs` | Export/header guard checks |
+
+Internal runtime and engine files are useful for verification, not a public
+embedding dependency. Keep host code on the supported boundary.
+
+## A task prompt you can reuse
+
+```text
+Integrate libtermy into the existing host using the pinned Termy checkout.
+Read /docs/developer/libtermy/agents.md and the Rust or C quick start first.
+Use public termy_core exports or the matching termy.h; preserve the host UI stack.
+
+Implement a display-only smoke test, then the required session transport.
+Retain a full frame and patch partial cells in inclusive dirty-span order.
+Drain events and route protocol replies to the process that produced the output.
+Use current-mode input encoders and measured cell dimensions.
+Document allocation ownership, the terminal owner thread, and shutdown order.
+
+Verify parser output, incremental updates, resize, input, scrollback search,
+protocol replies, and teardown. Report which checks actually ran, which are
+platform-specific, and any unsupported rendering or clipboard behavior.
+```
+
+## Validation and completion criteria
+
+For changes to core or its ABI in a Termy checkout, start with:
+
+```sh
+cargo test -p termy_core
+cargo build --release -p termy_core --lib
+```
+
+For a host integration, compile and run the host against the newly built library;
+a successful core build does not prove the host's callbacks or renderer work.
+Use the [smoke-test matrix](/docs/developer/libtermy/troubleshooting#integration-smoke-tests).
+Document the revision, platforms tested, and limits such as compact-cell Unicode
+representation. Do not label an integration complete after only constructing a
+handle or receiving one wakeup.
+
+When updating these website pages, run `bun run types:check` and `bun run build`
+from `website/`. They are discovered by the documentation loader and included in
+search and the LLM routes. Check both the human page and its `.md` response when
+moving or adding a guide.

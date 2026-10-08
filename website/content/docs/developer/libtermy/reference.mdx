@@ -1,0 +1,133 @@
+---
+title: Ownership and API reference
+description: Find C allocation/free pairs, thread and callback rules, status codes, and the Rust-to-C API map.
+---
+
+The [C header](https://github.com/termylabs/termy/blob/main/crates/core/include/termy.h)
+is authoritative for signatures and layouts. The
+[Rust exports](https://github.com/termylabs/termy/blob/main/crates/core/src/lib.rs)
+identify the public Rust API. Generate local Rust documentation for your pinned
+checkout with `cargo doc -p termy_core --no-deps`.
+
+## API map
+
+| Task | Rust | C |
+| --- | --- | --- |
+| Load user config | `load_config_from_default_path` | `termy_config_load_default` |
+| Parse config text | `load_config_from_contents` | `termy_config_from_contents` |
+| Launch PTY | `Terminal::new` and launch variants | `termy_terminal_new_with_options` |
+| Create parser without PTY | `Terminal::new_display` | `termy_display_terminal_new` |
+| Deliver process output | `feed_output` | `termy_terminal_feed_output` |
+| Send input to owned PTY | `write` | `termy_terminal_write` |
+| Change dimensions | `resize` | `termy_terminal_resize` |
+| Read full compact frame | `snapshot` | `termy_terminal_snapshot` |
+| Consume compact update | `frame_update` | `termy_terminal_take_frame_update` |
+| Consume damage only | `take_damage_snapshot` | `termy_terminal_take_damage` |
+| Read rich text and palette | `render_read`, visitors | No equivalent rich-cell C API |
+| Encode keyboard event | `keystroke_to_input_with_options` | `termy_terminal_encode_key_with_options` |
+| Encode mouse event | `encode_mouse_report` | `termy_terminal_encode_mouse` |
+| Drain events and replies | `drain_events` with `TerminalReplyHost` | `termy_terminal_drain_events_with_clipboard` |
+| Search buffer | `search_with_options` | `termy_terminal_search_with_options` |
+| Find OSC 8 link | `hyperlink_at` | `termy_terminal_hyperlink_at` |
+| Scroll viewport | `scroll_display`, `scroll_to_bottom` | `termy_terminal_scroll_display`, `termy_terminal_scroll_to_bottom` |
+| Change history limit | `set_scrollback_history` | `termy_terminal_set_scrollback_history` |
+| Clear history | `clear_scrollback` | `termy_terminal_clear_scrollback` |
+| Plan special glyphs | `terminal_glyph_plan` | `termy_cells_build_glyph_render_plan` |
+| Read image placements | `kitty_graphics_snapshot` | `termy_terminal_kitty_graphics_placements` |
+
+C constructors without a config use runtime defaults; they do not implicitly
+load all of the user's application settings. Choose the config-aware
+constructor when you want that behavior.
+
+## Allocation ownership
+
+Zero-initialize output structs and check the returned status before reading
+them. Free an existing successful result before reusing its output variable:
+the next call does not release the previous allocation for you.
+
+| Owned result | Matching release | Nested data owned by that result |
+| --- | --- | --- |
+| `TermyFfiTerminal *` | `termy_terminal_free` | Terminal and wake channel |
+| `TermyFfiConfig *` | `termy_config_free` | Parsed configuration |
+| `TermyFfiFrame` | `termy_frame_free` | Cell array |
+| `TermyFfiFrameUpdate` | `termy_frame_update_free` | Cell and dirty-span arrays |
+| `TermyFfiDamage` | `termy_damage_free` | Dirty-span array |
+| `TermyFfiGlyphRenderPlan` | `termy_glyph_render_plan_free` | Entries, rectangles, strokes |
+| `TermyFfiEventBatch` | `termy_event_batch_free` | Events and each event's payload |
+| `TermyFfiSearchBatch` | `termy_search_batch_free` | Matches and each match's line |
+| `TermyFfiHyperlink` | `termy_hyperlink_free` | URI bytes |
+| `TermyFfiConfigDiagnosticBatch` | `termy_config_diagnostics_free` | Diagnostics and their messages |
+| `TermyFfiRenderConfig` | `termy_render_config_free` | Font-family and active-theme bytes |
+| `TermyFfiKittyGraphicsBatch` | `termy_kitty_graphics_batch_free` | Placements and their PNG buffers |
+| Standalone `TermyFfiBytes` | `termy_buffer_free` | Its byte buffer |
+
+Never free a nested byte field separately from its owning batch. Do not edit
+returned allocation pointers, lengths, or capacities; the free functions need
+them to reconstruct Rust-owned allocations. Copying an owning C struct does not
+create another owned allocation: freeing both copies double-frees the same data.
+
+`TermyFfiByteSlice` is borrowed and has no free function. Its lifetime comes from
+the call or callback that supplies it. Standalone `TermyFfiBytes` from an encoder
+or config string getter is owned; `TermyFfiBytes` inside a batch belongs to that
+batch. The containing API determines ownership, not just the field's type.
+
+## Threading and shutdown
+
+A `TermyFfiTerminal` handle is not internally synchronized at the FFI boundary.
+Serialize every call taking that handle, including reads and encoding calls.
+Separate handles can be driven independently. The only documented exceptions
+are `termy_terminal_wait_for_wakeup` and `termy_terminal_notify_wakeup`, which
+access the wake channel rather than terminal state.
+
+A safe shutdown sequence for a host with a waiter is:
+
+1. Stop scheduling new terminal work and set the host's shutdown flag.
+2. Let any in-flight serialized terminal call finish.
+3. Call `termy_terminal_notify_wakeup` so the waiter can observe shutdown.
+4. Join the waiter; ensure queued callbacks/tasks cannot access the handle.
+5. Call `termy_terminal_free` exactly once and clear the host pointer.
+
+Notify alone is insufficient: the waiter must exit rather than immediately
+waiting again. Never free while any call, including a blocking wait, is still
+using the handle. Clipboard callbacks cannot re-enter it even on the same thread.
+
+Rust types have their own synchronization and borrowing contracts; the C
+concurrency rule is not a substitute for reading the Rust method docs. In
+particular, locked visitors must not re-enter the same terminal.
+
+## Status codes
+
+| Status | Value | Interpretation |
+| --- | --- | --- |
+| `TERMY_FFI_OK` | `0` | Call succeeded; check result fields for empty/no-result cases |
+| `TERMY_FFI_NULL` | `1` | A required pointer was null |
+| `TERMY_FFI_INVALID_UTF8` | `2` | Text input was not valid UTF-8 |
+| `TERMY_FFI_SPAWN_FAILED` | `3` | Terminal child startup failed |
+| `TERMY_FFI_CONFIG_LOAD_FAILED` | `4` | Configuration could not be loaded |
+| `TERMY_FFI_UNKNOWN_KEY` | `5` | A key/value kind was unsupported by that API |
+| `TERMY_FFI_WRITE_FAILED` | `6` | An operation reporting write failure failed |
+| `TERMY_FFI_SERIALIZE_FAILED` | `7` | Serialization failed |
+| `TERMY_FFI_PANICKED` | `8` | A Rust panic was caught at the ABI boundary |
+| `TERMY_FFI_INVALID_ARGUMENT` | `9` | Arguments were rejected |
+
+Not every function returns every status. For example, `OK` from an encoder can
+mean no bytes were produced; `OK` from a search can mean no matches. Function
+success is not proof that the child has processed input or exited successfully.
+
+On failure, do not consume the output as a successful result. Report the API
+name and status, and use a controlled teardown/recreation policy after an
+unexpected panic. Panic catching does not make invalid pointers, mismatched
+headers, or concurrent handle access safe.
+
+## Adjacent host APIs
+
+The header also exposes settings persistence, CLI installation, native config
+getters, and tmux control helpers. They are not required to embed one terminal.
+Settings and installation calls have filesystem side effects. A tmux control
+handle is a different type with its own lifetime: close it with
+`termy_tmux_control_close`, release notification batches with
+`termy_tmux_control_notifications_free`, and release standalone command output
+with `termy_buffer_free`.
+
+Keep session-manager features separate from the terminal frame loop. Use the
+matching header and implementation when adopting these additional APIs.

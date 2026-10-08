@@ -1,0 +1,172 @@
+---
+title: C ABI quick start
+description: Build and link libtermy, run a complete C example, create a PTY, and bridge the API to Swift or another native host.
+---
+
+The C ABI lives in `termy_core`; the public header is
+[`crates/core/include/termy.h`](https://github.com/termylabs/termy/blob/main/crates/core/include/termy.h).
+Use that header to generate bindings. Do not reconstruct its structs from prose:
+field order, `bool`, `size_t`, alignment, and pointer width are part of the ABI.
+
+## Build the library
+
+From a Termy checkout at your chosen revision:
+
+```sh
+cargo build --release -p termy_core --lib
+```
+
+With Cargo's default target directory, the native shared library is:
+
+| Platform | Output |
+| --- | --- |
+| macOS | `target/release/libtermy_core.dylib` |
+| Linux | `target/release/libtermy_core.so` |
+| Windows | `target/release/termy_core.dll` |
+
+An explicit `--target` adds a target-triple directory. `CARGO_TARGET_DIR` changes
+the base directory. Match the library architecture to your host process.
+The crate builds `rlib` and `cdylib` artifacts; it does not declare a `staticlib`.
+
+## Run a deterministic example
+
+Save this as `example.c` in the repository root. It parses known output without
+starting a shell and prints `hello from libtermy` from the returned cells.
+
+```c title="example.c"
+#include "termy.h"
+#include <stdio.h>
+
+int main(void) {
+    int result = 1;
+    TermyFfiTerminal *terminal = NULL;
+    TermyFfiFrameUpdate update = {0};
+    TermyFfiSize size = termy_size_default();
+    size.cols = 80;
+    size.rows = 24;
+
+    TermyFfiStatus status = termy_display_terminal_new(size, &terminal);
+    if (status != TERMY_FFI_OK) goto cleanup;
+
+    const uint8_t output[] = "\x1b[32mhello from libtermy\x1b[0m\r\n";
+    status = termy_terminal_feed_output(terminal, output, sizeof(output) - 1);
+    if (status != TERMY_FFI_OK) goto cleanup;
+
+    status = termy_terminal_take_frame_update(terminal, true, &update);
+    if (status != TERMY_FFI_OK) goto cleanup;
+    if (update.damage_kind != 1 || update.cells_len != 80 * 24) goto cleanup;
+
+    // This example prints ASCII only. A renderer must handle Unicode scalars.
+    for (size_t col = 0; col < sizeof("hello from libtermy") - 1; ++col) {
+        putchar((int)update.cells_ptr[col].codepoint);
+    }
+    putchar('\n');
+    result = 0;
+
+cleanup:
+    if (status != TERMY_FFI_OK) fprintf(stderr, "libtermy status: %d\n", status);
+    termy_frame_update_free(&update);
+    termy_terminal_free(terminal);
+    return result;
+}
+```
+
+Compile and run on macOS or Linux from the repository root:
+
+```sh
+cc -std=c11 -Wall -Wextra example.c \
+  -I crates/core/include -L target/release -ltermy_core \
+  -Wl,-rpath,"$PWD/target/release" -o example
+./example
+```
+
+The absolute runtime search path is for local development. For distribution,
+package the shared library with the application and configure the platform's
+runtime library search path. On Windows, use the import library produced by your
+selected toolchain and make the matching DLL available to the application.
+
+## Create a PTY with configuration
+
+For an interactive session, replace the display-only constructor with
+`termy_terminal_new_with_options`. The following helper returns a newly owned
+terminal or a status code; it does not build a GUI or run a render loop.
+
+```c
+#include "termy.h"
+
+TermyFfiStatus create_terminal(TermyFfiTerminal **out_terminal) {
+    TermyFfiConfig *config = NULL;
+    TermyFfiRenderConfig render = {0};
+    TermyFfiStatus status = termy_config_load_default(&config);
+    if (status != TERMY_FFI_OK) return status;
+
+    status = termy_config_render_config_for_appearance(config, 1, &render);
+    if (status == TERMY_FFI_OK) {
+        TermyFfiSize size = termy_size_default();
+        size.cols = 100;
+        size.rows = 30;
+        size.cell_width = render.cell_width;
+        size.cell_height = render.cell_height;
+
+        TermyFfiTerminalOptions options = {0};
+        options.config = config;
+        // Optional UTF-8 working directory, startup command, and env overrides.
+        status = termy_terminal_new_with_options(size, &options, out_terminal);
+    }
+    termy_render_config_free(&render);
+    termy_config_free(config);
+    return status;
+}
+```
+
+Appearance `0` is light and `1` is dark. Use the real system appearance in your
+application. The constructor copies the launch data; the config and input
+buffers need only remain valid during the call. An environment entry consists
+of separate key/value pointers and byte lengths, not `KEY=value` strings.
+
+Write input with `termy_terminal_write`, drain events, and obtain frames after
+output arrives. Sending input and immediately taking a snapshot does not wait
+for a child process to answer.
+
+## Display-only scheduling
+
+`termy_display_terminal_new` creates a parser/grid with no PTY and **no C wake
+channel**. Schedule work from your transport's output callback: feed the bytes,
+drain protocol replies, then request an update. Do not build a display-only
+render loop around `termy_terminal_wait_for_wakeup`; it has no channel to wait on.
+
+For a PTY-backed handle, one dedicated waiter may call
+`termy_terminal_wait_for_wakeup`. Marshal its notification onto the thread that
+serially drives the handle. See [threading and shutdown](/docs/developer/libtermy/reference#threading-and-shutdown).
+
+## Swift and other bindings
+
+For Swift, expose the header through a bridging header or a Clang module. A
+minimal module map beside a vendored `termy.h` can contain:
+
+```text title="module.modulemap"
+module CLibTermy {
+    header "termy.h"
+    link "termy_core"
+    export *
+}
+```
+
+Configure your target's import/header and library search paths, then import
+`CLibTermy`. This imports the C ABI; libtermy does not provide a SwiftUI terminal
+view. Wrap the opaque handle in one owner that serializes calls and performs the
+explicit shutdown sequence before releasing it.
+
+Across Swift, Go, Python, or C++ bindings:
+
+- Keep borrowed input bytes alive for the complete call. Lengths are byte counts,
+  not Unicode character counts; buffers are not implicitly NUL-terminated.
+- Copy returned data into host-owned storage before calling its matching free
+  function, or keep the owning batch alive until consumption finishes.
+- Preserve the complete returned pointer/length/capacity tuple until freeing it.
+- Keep callbacks and their user-data owners alive for the synchronous drain.
+- Use `termy_*_free`; never release Rust allocations with a host allocator.
+
+The [reference](/docs/developer/libtermy/reference) lists ownership pairs and
+status codes. A successful encoder may return an empty buffer; success does not
+always mean there are bytes to send.

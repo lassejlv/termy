@@ -1,0 +1,160 @@
+---
+title: Rust quick start
+description: Parse output, start a PTY, drain events, and choose the public Rust embedding API.
+---
+
+The crate is `termy_core`, not `libtermy`. Use Rust stable with edition 2024
+support and the repository's native build prerequisites. The default `native`
+feature includes the runtime used by these examples. Disabling default features
+is not a drop-in replacement for a native terminal integration.
+
+## Add the dependency
+
+For a project next to your Termy checkout:
+
+```toml title="Cargo.toml"
+[package]
+name = "libtermy-example"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+termy_core = { path = "../termy/crates/core" }
+```
+
+For a Git dependency, use
+`termy_core = { git = "https://github.com/termylabs/termy", rev = "YOUR_TESTED_COMMIT" }`
+instead. Replace the placeholder with the full commit you tested and commit your
+lockfile. Examples on this website describe the current source; check the
+matching source when targeting an older revision.
+
+## Parse output without starting a shell
+
+This complete program feeds known bytes directly to the parser. It avoids shell
+startup timing and is a useful first check of your build and frame handling.
+
+```rust title="src/main.rs"
+use termy_core::{
+    Terminal, TerminalDamageSnapshot, TerminalSize,
+    load_config_from_contents, measure_cell_from_config,
+};
+
+fn main() {
+    let loaded = load_config_from_contents("");
+    let metrics = measure_cell_from_config(&loaded.app_config);
+    let size = TerminalSize {
+        cols: 80,
+        rows: 24,
+        cell_width: metrics.cell_width,
+        cell_height: metrics.cell_height,
+    };
+    let terminal = Terminal::new_display(size, Some(&loaded.runtime_config));
+    terminal.feed_output(b"\x1b[32mhello from libtermy\x1b[0m\r\n");
+
+    let frame = terminal.frame_update(true);
+    assert!(matches!(frame.damage, TerminalDamageSnapshot::Full));
+    assert_eq!(frame.cells.len(), 80 * 24);
+    let first_line: String = frame.cells[..80].iter().map(|cell| cell.char).collect();
+    println!("{}", first_line.trim_end());
+}
+```
+
+Run it with `cargo run`. It prints `hello from libtermy`. The escape sequences
+change terminal state; they do not appear in the cell text.
+
+A display-only terminal has no child process. `feed_output` parses bytes coming
+**from** a process; `write` sends bytes **to** an owned PTY and is a no-op here.
+For a remote session, send encoded input through your transport and implement
+`TerminalReplyHost::protocol_reply` to forward terminal responses as well.
+
+## Start a native PTY
+
+Add `anyhow = "1"` and `flume = "0.11"` to the dependency table. This example
+opens a shell, sends a command, and looks for its output for up to three seconds.
+The command uses POSIX shell syntax, so adapt it for a Windows shell.
+
+```rust title="src/main.rs"
+use std::time::{Duration, Instant};
+use termy_core::{
+    Terminal, TerminalClipboardTarget, TerminalEvent, TerminalSize,
+    load_config_from_default_path, measure_cell_from_config,
+};
+
+fn main() -> anyhow::Result<()> {
+    let loaded = load_config_from_default_path()?;
+    let metrics = measure_cell_from_config(&loaded.app_config);
+    let (wakeup_tx, wakeup_rx) = flume::bounded(1);
+    let terminal = Terminal::new(
+        TerminalSize {
+            cols: 80,
+            rows: 24,
+            cell_width: metrics.cell_width,
+            cell_height: metrics.cell_height,
+        },
+        None, // optional working directory
+        Some(wakeup_tx),
+        None, // optional shell-integration title policy
+        Some(&loaded.runtime_config),
+        None, // optional startup command
+    )?;
+
+    // No clipboard access in this example.
+    let mut reply_host = |_target: TerminalClipboardTarget| None::<String>;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    terminal.write(b"printf '\\154\\151\\142\\164\\145\\162\\155\\171\\055\\157\\153\\012'\r");
+    // Octal output avoids matching the shell's echo of the command itself.
+    let mut exited = false;
+    while Instant::now() < deadline {
+        let _ = wakeup_rx.recv_timeout(Duration::from_millis(100));
+        loop {
+            let (events, has_more) = terminal.drain_events(&mut reply_host);
+            exited |= events.iter().any(|event| matches!(event, TerminalEvent::Exit));
+            if !has_more {
+                break;
+            }
+        }
+        if !terminal.search("libtermy-ok").is_empty() {
+            println!("PTY output received");
+            return Ok(());
+        }
+        if exited {
+            anyhow::bail!("shell exited before producing the expected output");
+        }
+    }
+    anyhow::bail!("no expected output before the deadline")
+}
+```
+
+The timeout is an example failure bound, not a rendering cadence. A GUI should
+post wakeups to its event loop, drain work, request an incremental frame, and
+return to idle. A wakeup is a hint that work is available, not a promise that a
+particular command finished.
+
+## Choose launch and wakeup controls
+
+| API | Use it when |
+| --- | --- |
+| `Terminal::new` | You want the configured shell and a `flume::Sender<()>` wakeup channel |
+| `Terminal::new_with_wakeup_notifier` | Your event loop can be scheduled by a `TerminalWakeupNotifier` callback |
+| `Terminal::new_with_launch_and_wakeup_notifier` | You need the typed `TerminalLaunch` contract |
+| `Terminal::new_display` | You own output delivery and redraw scheduling |
+| `Terminal::new_display_with_wakeup_notifier` | Your display-only host wants notifications when output is committed |
+
+Keep wakeup callbacks short: schedule work on the terminal-owning thread rather
+than performing rendering or nested terminal calls inside the notifier.
+
+## Choose a rendering contract
+
+- `snapshot()` returns a complete compact row-major frame for simple readers.
+- `frame_update(true)` establishes a complete frame; subsequent
+  `frame_update(false)` calls return damage-scoped cells.
+- `render_read` returns rich text and palette data for Rust renderers.
+- Generation-checked visitors support copying only damaged rich cells.
+
+Read [rendering and damage](/docs/developer/libtermy/rendering) for the exact
+layouts. Do not use internal `terminal_engine` or backend types as an integration
+shortcut. `Terminal::with_term`, `TerminalOptions::term_config`, and older raw
+conversion helpers are not part of the current Rust API.
+
+Continue with [configuration and sizing](/docs/developer/libtermy/configuration),
+then [events and protocol replies](/docs/developer/libtermy/events).

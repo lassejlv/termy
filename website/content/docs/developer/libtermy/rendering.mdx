@@ -1,0 +1,179 @@
+---
+title: Rendering and damage
+description: Apply full and incremental frames correctly, render rich text and special glyphs, and schedule image updates.
+---
+
+libtermy returns terminal state, not pixels. A renderer retains a grid, patches
+updates, shapes ordinary text, draws terminal geometry and images, and manages
+cursor/selection overlays. Start with correct full frames, then add incremental
+updates using the contracts below.
+
+## Full frames and partial updates
+
+`Terminal::snapshot()` / `termy_terminal_snapshot` returns a full compact frame.
+`frame_update(force_full)` / `termy_terminal_take_frame_update` returns cells
+plus damage. Force a full frame for initialization, dimension changes, or cache
+recovery.
+
+| Damage | Rust | C `damage_kind` | Cell layout |
+| --- | --- | --- | --- |
+| No cell damage | `Partial` with empty spans | `0` | No cells to patch |
+| Full | `Full` | `1` | `rows * cols` cells in row-major order |
+| Partial | `Partial(spans)` | `2` | Concatenated cells for each span, in span order |
+
+Each dirty span is `(row, left_col, right_col)` with **inclusive** columns. Its
+length is `right_col - left_col + 1`. A cell does not carry its own coordinates.
+
+For an 80-column grid, spans `(2, 3, 5)` and `(7, 10, 11)` correspond to five
+source cells. Copy the first three to retained indices 163–165, and the next two
+to 570–571. Do not index the five-cell source array by those absolute indices.
+
+## Patch a retained Rust frame
+
+This complete helper assumes the first update is forced full. It also copies
+cursor and scroll metadata when no cells changed.
+
+```rust
+use termy_core::{TerminalDamageSnapshot, TermyFrame, TermyFrameUpdate};
+
+pub fn apply_update(retained: &mut Option<TermyFrame>, update: TermyFrameUpdate) {
+    let TermyFrameUpdate {
+        cols, rows, cells, cursor, display_offset, history_size, damage,
+    } = update;
+    match damage {
+        TerminalDamageSnapshot::Full => {
+            assert_eq!(cells.len(), usize::from(cols) * usize::from(rows));
+            *retained = Some(TermyFrame {
+                cols, rows, cells, cursor, display_offset, history_size,
+            });
+        }
+        TerminalDamageSnapshot::Partial(spans) => {
+            let frame = retained.as_mut().expect("request a full frame first");
+            assert_eq!((frame.cols, frame.rows), (cols, rows));
+            let mut source = 0;
+            for span in spans {
+                assert!(span.row < usize::from(rows));
+                assert!(span.left_col <= span.right_col);
+                assert!(span.right_col < usize::from(cols));
+                let count = span.right_col - span.left_col + 1;
+                let destination = span.row * usize::from(cols) + span.left_col;
+                frame.cells[destination..destination + count]
+                    .copy_from_slice(&cells[source..source + count]);
+                source += count;
+            }
+            assert_eq!(source, cells.len());
+            frame.cursor = cursor;
+            frame.display_offset = display_offset;
+            frame.history_size = history_size;
+        }
+    }
+}
+```
+
+In a GUI, recover from a lost cache or dimension mismatch by requesting a new
+full frame. The assertions above make integration mistakes visible during
+bring-up. C hosts use the same algorithm with `cells_ptr`, `spans_ptr`, and
+`damage_kind`, then call `termy_frame_update_free` after copying the data.
+
+<Callout type="warn">
+  Damage reads consume pending damage. Do not call `take_damage_snapshot` /
+  `termy_terminal_take_damage` and then expect `frame_update(false)` to return
+  that same damage. Choose one damage-consumption path per render cycle.
+</Callout>
+
+Cursor movement, host selection, focus, blink, and animation can require a
+repaint independently of new text. Track old and new cursor rectangles and copy
+metadata even on an empty update. A host timer may need to repaint without a PTY
+wakeup.
+
+## Interpret compact cells
+
+| Field | Rendering meaning |
+| --- | --- |
+| Rust `char` / C `codepoint` | One Unicode scalar, not a complete grapheme string |
+| `fg`, `bg` | Resolved RGBA cell colors |
+| `uses_terminal_default_bg` | Distinguishes default background from explicit cell backgrounds |
+| `render_text` | Whether to draw the cell's text; background painting is independent |
+| `wide_character_spacer` | Trailing space occupied by a wide character; do not draw a second glyph |
+| `bold`, `italic`, `underline`, `strikethrough` | Compact text styling flags |
+| `line_wrapped` | Wrapping information; preserve it when implementing selection/copy |
+
+The C cursor styles on this revision are `1` line/bar and `2` block. Check the
+matching header and implementation when supporting other revisions. Respect
+cursor visibility, including a hidden cursor while viewing history.
+
+The compact format cannot represent all combining text or underline variants.
+If those are requirements, use rich Rust reads or explicitly account for the C
+surface's limitations. Do not claim that `codepoint` contains a complete grapheme.
+
+## Rich Rust rendering
+
+`Terminal::render_read(force_full)` returns a coherent `TerminalRenderRead` with
+viewport metadata, a live palette, rich cells, damage, scroll operations, and a
+generation. Its `cells` vector is a **full row-major viewport**, even when its
+damage is partial. This differs from `frame_update(false)`.
+
+`TerminalRenderCell` exposes complete cell text, indexed/default/RGB colors,
+underline color and style, dim/inverse/hidden state, and wide-cell flags. Resolve
+`TerminalRenderColor` using the read's palette and configured fallbacks. A live
+palette revision can change how cached cells look.
+
+For a damage-first renderer:
+
+1. Call `take_render_damage_snapshot` to capture damage and its generation.
+2. Account for ordered viewport scroll operations and palette revision changes.
+3. Use `visit_viewport_ranges_at_generation` for the affected spans.
+4. If it returns `false`, discard that attempt and take a fresh coherent read;
+   a forced full read is a simple recovery path.
+
+`visit_viewport_cells` and `visit_viewport_ranges_at_generation` permit reentrant
+callbacks. The `_locked` variants and `visit_line_cells` hold the backend lock;
+their callbacks must not call back into the same terminal. Use the snapshot
+variants when callback reentrancy is required.
+
+## Special-glyph geometry
+
+Use `terminal_glyph_plan` with `TerminalGlyphMetrics` and
+`TerminalGlyphNeighbors` to render supported block elements, box drawing,
+sextants, Braille, rounded corners, and diagonals. If no plan is returned, shape
+the character normally. `TerminalGlyphNeighbors::from_row` preserves the
+context-sensitive distinction between long Braille runs and short spinners.
+
+C hosts should:
+
+1. Patch the retained full row-major cell buffer.
+2. Pass that buffer, dimensions, measured metrics, and dirty spans to
+   `termy_cells_build_glyph_render_plan`.
+3. Draw entries using their absolute `cell_index` and ranges into the rectangle
+   and stroke arrays.
+4. Release the batch with `termy_glyph_render_plan_free`.
+
+Zero spans requests a **full glyph plan**, not an empty plan. Skip this call for
+an update with no cell damage unless a full rebuild is intended. Keep full row
+context available, and invalidate neighboring cached geometry when a change can
+affect a context-sensitive run; rebuilding the affected row is a simple policy.
+
+Primitive coordinates are normalized to a cell. Transform them into the host's
+coordinate system and snap in device pixels. Rectangle snap kinds are nearest
+(`1`) and outward (`2`); stroke width is a fraction of cell width. Do not font-shape
+and draw a geometry plan over the same glyph.
+
+## Kitty graphics
+
+Images are separate from the compact cell array. In Rust, use
+`kitty_graphics_snapshot` for a revision and placements. In C, use
+`termy_terminal_kitty_graphics_revision` and
+`termy_terminal_kitty_graphics_placements`; release the batch with
+`termy_kitty_graphics_batch_free`.
+
+Placements include PNG bytes, image identity/generation, source crop, display
+size, viewport position, offsets, z-order, clipping, virtual-cell coordinates,
+and `next_frame_delay_ms`. Preserve signed viewport and column offsets when
+clipping; converting a negative value to an unsigned index can put an image far
+outside the viewport. Respect the placement transform and clipping fields
+instead of stretching every PNG over its occupied cells.
+
+An animated placement's nonzero `next_frame_delay_ms` requires a host timer to
+fetch refreshed placements and redraw. Zero means static. A terminal that is not
+receiving new text can still need an image repaint. The batch owns its PNG
+buffers; copy bytes needed by asynchronous decoders before freeing it.

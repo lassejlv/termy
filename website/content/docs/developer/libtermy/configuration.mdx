@@ -1,0 +1,107 @@
+---
+title: Configuration and sizing
+description: Load configuration with diagnostics, resolve appearance, measure cells, and keep the terminal grid and renderer in sync.
+---
+
+Configuration has two consumers: the terminal runtime needs shell, environment,
+scrollback, and query colors; the renderer needs fonts, colors, cursor settings,
+and dimensions. Loading configuration alone does not apply every setting to an
+existing terminal or to your UI.
+
+## Load and inspect configuration
+
+| Source | Rust | C |
+| --- | --- | --- |
+| User's default config path | `load_config_from_default_path` | `termy_config_load_default` |
+| Explicit file | `load_config_from_path` | `termy_config_load_path` |
+| In-memory config text | `load_config_from_contents` | `termy_config_from_contents` |
+
+A missing default config uses defaults without creating a file. A missing
+explicit path is a load error. In-memory loading does not write settings.
+Rust's `LoadedTermyConfig` includes `app_config`, `runtime_config`, `diagnostics`,
+`path`, and `loaded_from_disk`.
+
+A successful load may still contain parse diagnostics. Show those to the user
+rather than silently treating fallback values as their intended configuration.
+In C, call `termy_config_diagnostics` and release the result with
+`termy_config_diagnostics_free`.
+
+| Diagnostic kind | Meaning |
+| --- | --- |
+| `1` | Unknown section |
+| `2` | Unknown root key |
+| `3` | Unknown color key |
+| `4` | Invalid syntax |
+| `5` | Invalid value |
+| `6` | Duplicate root key |
+
+Use the [configuration reference](/docs/reference/configuration-reference) for
+accepted keys. A native embedder need not implement Termy's tabs, updater, or
+other app-level settings just because the config parser exposes them.
+
+## Measure the terminal cells
+
+Rust hosts can call `measure_cell_from_config(&loaded.app_config)` or
+`measure_cell(font_family, font_size, line_height)`. C hosts obtain measured
+`cell_width` and `cell_height` in `TermyFfiRenderConfig` through
+`termy_config_render_config_for_appearance`.
+
+Use those dimensions for both the grid and rendering. Match the renderer's font
+and size to the resolved config; substituting a font without remeasuring can
+misalign text, mouse hit testing, and terminal size replies.
+
+Given available content dimensions after subtracting host chrome and padding:
+
+```text
+cols = floor(content_width / cell_width)
+rows = floor(content_height / cell_height)
+```
+
+Use finite positive cell dimensions, clamp rows and columns to at least 1 and to
+the `uint16_t`/`u16` range, and avoid resizing while the view has no usable size.
+Keep cell measurements and content dimensions in one coordinate space. Apply
+logical-to-device scaling consistently instead of mixing points and pixels.
+
+## Resolve appearance and colors
+
+C hosts use `termy_config_render_config_for_appearance(config, appearance, ...)`:
+`0` selects light appearance and `1` selects dark. The simpler
+`termy_config_render_config` uses dark appearance. Release the returned font and
+theme data through `termy_render_config_free`, not by freeing its nested strings.
+
+The render config includes foreground, background, cursor color, font family,
+font size, line height, padding, opacity, cursor style/blink, and measured cells.
+Some additional fields describe optional host UI behaviors; they are not a
+renderer implementation.
+
+To change a live C terminal's query colors, call
+`termy_terminal_apply_config_colors_for_appearance`. Resolving a render config
+does not itself update the terminal. Refresh host drawing resources and request
+a full frame when the visual configuration changes.
+
+In Rust, use `runtime_config_from_app_config_with_theme` when constructing a
+runtime for a specific `SystemAppearance`. For an existing terminal, resolve
+colors with `resolve_theme_colors_from_app_config`, convert with
+`terminal_query_colors_from_resolved_theme`, and apply with `set_query_colors`.
+That updates query colors, not every runtime or application setting.
+
+## Resize a live terminal
+
+On a window resize or a font/scale change:
+
+1. Resolve the current cell metrics and available content area.
+2. Compute the new nonzero grid dimensions.
+3. Call `Terminal::resize` (requires mutable access) or `termy_terminal_resize`.
+4. In a display-only integration, also resize the external session through its
+   transport; libtermy cannot resize a PTY it does not own.
+5. Replace the retained cell buffer from a forced full frame, then repaint.
+
+Update image and glyph transforms along with text metrics. Do not patch a
+partial update into a buffer allocated for different dimensions.
+
+## Choose where settings are saved
+
+The `termy_settings_*` functions in the C header are conveniences for Termy's
+user configuration and can write to disk. They are separate from parsing an
+in-memory config. Use your own persistence layer if the embedder should have
+independent settings; do not call setters as a side effect of showing a preview.

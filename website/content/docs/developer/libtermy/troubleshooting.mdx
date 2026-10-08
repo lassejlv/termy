@@ -1,0 +1,88 @@
+---
+title: Troubleshooting and validation
+description: Diagnose blank terminals, incorrect incremental updates, input problems, missing replies, and native host shutdown failures.
+---
+
+Begin with the deterministic display-only example for
+[Rust](/docs/developer/libtermy/rust#parse-output-without-starting-a-shell) or
+[C](/docs/developer/libtermy/c#run-a-deterministic-example). Once it produces the
+expected cells, introduce the PTY, event loop, and renderer one at a time.
+
+## Common failures
+
+| Symptom | Check | Next action |
+| --- | --- | --- |
+| Unresolved symbols or loader failure | Library path, architecture, target triple, matched header/binary | Rebuild the library at the pinned revision and correct link/runtime search paths |
+| PTY constructor fails | Shell executable, working directory, environment, platform prerequisites | Record the status/error and try a valid shell and directory |
+| First frame is blank | Did the process output arrive? Was the first frame forced full? | Feed known bytes to a display terminal to separate timing from parsing |
+| Display-only input does nothing | Is the host calling `write` instead of its transport? | Send encoded bytes to the external process |
+| Display-only loop spins | C display handles have no wake channel | Schedule from transport delivery rather than a wake wait |
+| Content corrupts after an incremental update | Span ordering and inclusive right bounds | Apply spans sequentially into a retained full grid |
+| Text stops repainting | Damage consumed twice, wakeups disabled, or unhandled `has_more` | Use one damage path and reschedule pending work |
+| Cursor remains at its old position | Empty cell updates discarded | Update metadata and invalidate old/new cursor bounds |
+| CJK characters appear twice | Wide spacer cells rendered as text | Skip spacer text and preserve its occupied cell |
+| Combining text/underline variants are lost | Compact cell format used for rich typography | Use rich Rust reads where those details are required |
+| Glyph geometry appears everywhere on idle | Zero spans passed to the glyph planner | Zero spans means full plan; skip idle planning |
+| Colors disagree with application queries | Host colors changed without updating terminal query colors | Apply the same resolved appearance to runtime and renderer |
+| Search highlights jump or wrap | Search buffer rows treated as viewport rows | Convert using history size/display offset and refresh stale results |
+| Remote application stalls on terminal queries | Display-only replies discarded | Drain with a reply host/callback and forward bytes to the transport |
+| Clipboard reads never complete | Read reply deferred until after callback return | Reply synchronously; handle asynchronous permission UI separately |
+| Crash during teardown | Handle freed while waiter/task still used it | Stop work, notify, join, cancel queued users, then free |
+| Memory grows after each frame | Missing batch free, or output variable overwritten | Audit every successful allocation and its owner |
+| Animated image freezes | No timer after output becomes idle | Schedule from nonzero `next_frame_delay_ms` and refresh placements |
+
+## Integration smoke tests
+
+Use deterministic parser fixtures where possible; exercise PTY behavior
+separately. These checks test the host's integration, not just that the library
+compiled.
+
+| Scenario | Expected evidence |
+| --- | --- |
+| Known ASCII plus ANSI color output | Correct cell text and colors in the first full frame |
+| Second output chunk modifying a small area | Patched retained grid matches a fresh full snapshot |
+| Cursor move without ordinary text | Cursor redraws without stale pixels |
+| Resize smaller and larger | New dimensions, full retained buffer, aligned hit testing |
+| Wide and combining text | No duplicate wide glyphs; documented compact/rich text behavior |
+| Box drawing and long/short Braille runs | Correct geometry and intentional spinner shaping |
+| Keyboard press/repeat/release | Bytes follow the active application's negotiated mode |
+| Bracketed paste enabled and disabled | Exactly one correctly delimited or plain payload |
+| Mouse reporting enabled and disabled | Application receives reports only when appropriate |
+| Enough output to create history | Scrolling works; search finds off-screen text with correct highlights |
+| Device/color query in a display terminal | Reply reaches the external process, not the parser input |
+| Clipboard denied and supported paths | Prompt policy respected and requests always completed |
+| Several queued event batches | `has_more` is honored without starving the UI |
+| Close while a waiter is blocked | Waiter exits before handle destruction, with no late callbacks |
+| Kitty static/animated image, if supported by host | Correct clipping, placement, resource release, and timed redraw |
+
+For the incremental-frame check, compare dimensions, every retained cell, and
+cursor/scroll metadata against `snapshot()`. Include a scroll and a resize;
+comparing only the first full frame does not validate patching.
+
+## Focused repository checks
+
+From the Termy repository root:
+
+```sh
+cargo test -p termy_core --test display_terminal
+cargo test -p termy_core --test ffi_export_guard
+cargo test -p termy_core
+cargo build --release -p termy_core --lib
+```
+
+Run checks relevant to the code you changed. Website-only documentation edits
+can be validated with `bun run types:check` and `bun run build` from `website/`,
+plus compilation of changed examples. After an ABI change, rebuild the library
+before testing host examples so stale binaries cannot hide a mismatch.
+
+## Report a reproducible integration issue
+
+Include the pinned Termy commit, OS and architecture, Rust/C API choice, PTY or
+display-only mode, grid/cell dimensions, and the smallest output byte sequence
+that reproduces the problem. For rendering bugs, describe the frame API,
+damage kind/spans, and expected versus actual retained cells. For FFI failures,
+include the function name and status code.
+
+Remove credentials and private terminal content from reproductions. State which
+core tests and host checks ran; separate a parser result from a visual result
+and a tested platform from an assumed one.

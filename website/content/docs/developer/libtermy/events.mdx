@@ -1,0 +1,141 @@
+---
+title: Events and protocol replies
+description: Drain events, forward display-only replies, integrate clipboard permissions, and schedule terminal work without busy polling.
+---
+
+Terminal output can change more than the cell grid. Event draining updates
+application chrome and services protocol requests from programs inside the
+terminal. A renderer that only takes frames can miss this work.
+
+## Drain until the current work is handled
+
+Rust calls `terminal.drain_events(&mut reply_host)` and receives `(events,
+has_more)`. C calls `termy_terminal_drain_events` or the callback-enabled
+`termy_terminal_drain_events_with_clipboard` and receives a `TermyFfiEventBatch`.
+
+Process each batch, preserve `has_more`, free the batch, then repeat if needed.
+Under sustained output, use a host-side time budget and reschedule unfinished
+work instead of starving the UI. Do not wait for a new output notification when
+a batch already told you there is more work.
+
+A C batch owns every event's `payload`. Copy any title or other payload you need
+after `termy_event_batch_free`. Payloads have explicit byte lengths and are not
+NUL-terminated strings.
+
+## Event reference
+
+Use the named `TERMY_FFI_EVENT_*` constants from the header. Numeric values below
+help when implementing generated bindings or inspecting traces.
+
+| Kind | Event | Host action |
+| --- | --- | --- |
+| `1` | Wakeup | Schedule terminal work/redraw |
+| `2` | Title | Update the title from UTF-8 `payload` |
+| `3` | Reset title | Restore the host's fallback title |
+| `4` | Bell | Apply the user's bell/notification preference |
+| `5` | Exit | Mark the session exited and apply host close policy |
+| `6` | Clipboard store | Apply policy to the OSC 52 text in `payload` |
+| `7` | Shell prompt start | Update prompt lifecycle state |
+| `8` | Shell command start | Update command-input state |
+| `9` | Shell command executing | Mark command execution |
+| `10` | Shell command finished | Read the shell command's `exit_code` |
+| `11` | Progress | Read `progress_state` and `progress_value` |
+| `12` | Working directory | Update host metadata from UTF-8 `payload` |
+| `13` | Program status | Replace the previous snapshot with the JSON array in `payload` |
+
+Shell lifecycle events require the application/shell to emit the corresponding
+integration sequences; do not infer that every session will produce them.
+`Exit` is not an exact process-exit-code API. The command-finished event is a
+separate shell integration event, and its C representation uses `-1` when the
+shell did not supply an exit code.
+
+Progress states are `0` clear, `1` in progress, `2` error, `3` indeterminate, and
+`4` warning. For program-status records, see
+[program status](/docs/using-termy/program-status). Treat that event as a complete
+replacement snapshot rather than appending its records forever.
+
+## Display-only protocol replies
+
+Programs can query terminal capabilities, colors, cursor/size information, or
+clipboard state. PTY-backed terminals send generated replies to their owned
+child. A display-only terminal needs the host to forward reply bytes to the
+external process.
+
+A minimal Rust reply host can collect replies for the transport to send after
+the drain returns:
+
+```rust
+use termy_core::{TerminalClipboardTarget, TerminalReplyHost};
+
+#[derive(Default)]
+pub struct ReplyHost {
+    pub pending_replies: Vec<u8>,
+}
+
+impl TerminalReplyHost for ReplyHost {
+    fn load_clipboard(&mut self, _target: TerminalClipboardTarget) -> Option<String> {
+        None // No clipboard access in this example.
+    }
+
+    fn protocol_reply(&mut self, bytes: &[u8]) {
+        self.pending_replies.extend_from_slice(bytes);
+    }
+}
+```
+
+In C, provide the `protocol_reply_callback` to
+`termy_terminal_drain_events_with_clipboard`. Copy the callback's borrowed slice
+into a transport queue before returning. Do not feed reply bytes back into
+`termy_terminal_feed_output`; they are input for the external process.
+
+## Kitty OSC 5522 clipboard
+
+Kitty clipboard requests can read and write arbitrary MIME formats. The host
+owns clipboard access and permission policy. Rust implements the
+`TerminalReplyHost` clipboard methods. C uses the callback-enabled event drain.
+Missing read callbacks deny access; missing write callbacks report unsupported.
+
+C callback rules:
+
+1. Requests, MIME lists, and write-content slices are borrowed only for the
+   callback. Copy anything your host needs to keep.
+2. A read callback must invoke the supplied reply callback before returning.
+   libtermy copies the response slices during that invocation.
+3. A write callback returns a `TermyFfiClipboardWriteResponse` directly.
+4. Never retain the read reply function or `reply_user_data` for later use.
+5. Never re-enter the same terminal handle from a clipboard or protocol-reply
+   callback. Keep using the callback-enabled drain for subsequent batches.
+
+If your platform requires an asynchronous permission prompt, do not hold the
+borrowed callback open across it. Return an appropriate denied/busy result under
+your policy and obtain permission separately for future requests. Marshal drain
+work to the thread your platform clipboard API requires.
+
+Requests include location, MIME types/content, optional application name, and
+permission state. Result status values are success (`0`), denied (`1`),
+unsupported (`2`), busy (`3`), invalid data (`4`), and I/O error (`5`). These are
+clipboard result codes, distinct from `TermyFfiStatus` function return values.
+
+Before an ordinary paste, query
+`termy_terminal_kitty_clipboard_paste_events_enabled` and, if enabled, call
+`termy_terminal_send_kitty_clipboard_paste_event` with the available MIME types.
+Clipboard location is `1` clipboard or `2` primary selection. Rust display-only
+hosts can use `kitty_clipboard_paste_notification` to obtain notification bytes
+for their transport; do not assume an owned-PTY send helper delivers them.
+
+## Wakeups and scheduling
+
+PTY wakeups are coalesced. One notification can represent several writes or
+several queued events; one write does not necessarily produce one notification.
+
+For C PTY handles, `termy_terminal_wait_for_wakeup` blocks up to `timeout_ms`;
+zero polls. It reports whether a signal was received through `out_woke`. Avoid
+calling a blocking wait on the UI thread. A dedicated waiter should post to the
+terminal's serialized owner and check a host-owned shutdown flag after waking.
+
+The C display-only constructor has no wake channel. Its transport should
+schedule drains and frames after feeding output. Rust provides
+`new_display_with_wakeup_notifier` if notification-based scheduling is needed.
+
+Before freeing a C handle with a waiter, stop new work, notify the waiter, join
+it, and only then free. See the [ownership contract](/docs/developer/libtermy/reference#threading-and-shutdown).

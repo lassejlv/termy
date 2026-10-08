@@ -1,0 +1,146 @@
+---
+title: Input, search, and navigation
+description: Translate host input, handle bracketed paste and mouse modes, and navigate scrollback with correct coordinates.
+---
+
+Input flows from the host to the application running inside the terminal. Output
+flows from that application into libtermy. Keeping those directions separate is
+especially important for display-only sessions.
+
+## Keyboard input
+
+Use the current terminal keyboard mode when encoding a key. It can change while
+an application runs, so do not cache one mode forever or hardcode arrow-key
+escape sequences.
+
+```rust
+use termy_core::{Terminal, TerminalKeyEventKind, TermyKeystroke, keystroke_to_input};
+
+pub fn send_key(terminal: &Terminal, key: &TermyKeystroke, kind: TerminalKeyEventKind) {
+    if let Some(bytes) = keystroke_to_input(key, kind, terminal.keyboard_mode(), true) {
+        terminal.write(&bytes);
+    }
+}
+```
+
+This helper is for an owned PTY. For display-only sessions, send the returned
+bytes to the external transport instead. Translate native events into
+`TermyKeystroke`: `key` is the logical key name, `key_char` is optional produced
+text, and `modifiers` describes control, alt, shift, platform, and function keys.
+Use names such as `enter`, `backspace`, `left`, and `right` supported by the
+[encoder](https://github.com/termylabs/termy/blob/main/crates/core/src/keyboard.rs).
+
+In C, fill `TermyFfiKeystroke` and call `termy_terminal_encode_key` or
+`termy_terminal_encode_key_with_options`. `event_kind` is `1` press, `2` repeat,
+and `3` release. The encoder returns an owned `TermyFfiBytes`: write or forward
+it, then call `termy_buffer_free`. An empty result is valid, for example when a
+release event does not need reporting.
+
+Use the options variant for macOS Option-as-Alt behavior. Do not bypass the
+mode-aware encoder with an unconditional ESC prefix; enhanced keyboard modes
+can require a different representation. Handle application shortcuts and IME
+composition in the host so committed text is not sent twice.
+
+## Paste
+
+Query `bracketed_paste_mode()` or `termy_terminal_bracketed_paste_mode` at paste
+time. If enabled, wrap the approved paste payload in these delimiters:
+
+```text
+ESC [ 2 0 0 ~   payload   ESC [ 2 0 1 ~
+```
+
+In byte notation, those are `\x1b[200~` and `\x1b[201~`. If disabled, send the
+payload without wrappers. Writing bytes does not automatically add these
+markers. Decide how to handle newlines and control characters at the host's
+paste-policy layer, and send one consistently ordered paste operation.
+
+If Kitty clipboard paste notifications are enabled, report the available MIME
+formats as described in [events and clipboard](/docs/developer/libtermy/events#kitty-osc-5522-clipboard).
+A paste notification does not replace the actual paste payload.
+
+## Mouse input
+
+Convert pointer coordinates to zero-based viewport cell coordinates after
+subtracting padding and host chrome. Clamp or reject positions outside the
+grid. libtermy handles the terminal protocol's coordinate encoding.
+
+Rust uses `encode_mouse_report` with `terminal.mouse_mode()`, event kind,
+position, and modifiers. C uses `termy_terminal_encode_mouse`, which reads the
+current mode internally.
+
+| C `TermyFfiMouseInput.kind` | Meaning |
+| --- | --- |
+| `1` | Press |
+| `2` | Release |
+| `3` | Drag |
+| `4` | Move |
+| `5`, `6` | Wheel up, down |
+| `7`, `8` | Wheel left, right |
+
+For press/release/drag, `button` is `1` left, `2` middle, or `3` right. An empty
+encoded result means nothing should be sent for that event/mode combination.
+The host decides whether a gesture should instead select text or scroll history.
+Mouse reporting and local scrollback navigation are separate actions.
+
+## Scrollback and coordinate spaces
+
+`scroll_display(delta)` / `termy_terminal_scroll_display` moves the viewport:
+positive values move into older history, negative values move toward the live
+bottom. Use `scroll_to_bottom` to return to live output. Repaint when the method
+reports a change.
+
+| Coordinate | Meaning |
+| --- | --- |
+| Frame/dirty-span/mouse row | Zero-based row in the visible viewport |
+| `display_offset` | Distance in rows above the live bottom; zero is live output |
+| `history_size` | Number of retained history rows |
+| Terminal search result `row` | Zero-based row in history plus the live screen, oldest row first |
+| Rust buffer-line visitors | Signed engine-neutral line coordinates; see `line_bounds()` |
+
+For a coherent buffer state, the oldest visible search row is
+`history_size - display_offset`. Convert a search result to a viewport row with:
+
+```text
+viewport_row = result.row - (history_size - display_offset)
+```
+
+Do that subtraction in a signed type or check bounds first; a result above the
+viewport must not underflow an unsigned index. Draw a highlight only when the
+result lies within the visible row range. Re-run searches after output, resize,
+or history trimming changes the buffer; result rows are not persistent IDs.
+
+## Search
+
+`Terminal::search` and `termy_terminal_search` search history **and** the live
+screen. The default is case-insensitive literal matching. Use
+`search_with_options` / `termy_terminal_search_with_options` for case-sensitive
+or regular-expression queries.
+
+Results contain the buffer row, inclusive `start_col` and `end_col`, and line
+text. C result lines are owned by the search batch; release the entire result
+with `termy_search_batch_free`. Rust's `search_shared_with_options` shares line
+strings between matches on the same row, reducing duplication for large results.
+
+Empty queries and invalid regular expressions currently return no matches. If
+your UI needs to distinguish invalid syntax from zero results, validate the
+pattern separately. Searches operate on individual buffer rows; do not promise
+multiline matching across wrapped rows.
+
+The standalone Rust `search_frame` helpers only search the frame you pass in.
+That narrower behavior is different from searching a `Terminal`.
+
+## Links and selection
+
+`hyperlink_at(row, col)` / `termy_terminal_hyperlink_at` looks up OSC 8 hyperlinks
+at a **viewport** position. C reports whether a link was found separately from
+its status code; release a returned link with `termy_hyperlink_free`. Rust also
+exposes `link_at` for broader detected-link information.
+
+Opening a link is a host action. Validate terminal-provided URL schemes against
+your allowed schemes before passing a target to the OS. A terminal-provided
+working directory or link should not automatically execute a command.
+
+Selection gestures, highlight painting, copy behavior, and accessibility are
+host responsibilities. Preserve wide-cell and wrapping information when
+assembling selected text; slicing UTF-8 by terminal column is not valid.
