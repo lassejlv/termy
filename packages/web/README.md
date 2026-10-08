@@ -46,7 +46,8 @@ term.onData((data) => socket.send(JSON.stringify({ type: 'input', data })))
 term.onResize(({ cols, rows }) => socket.send(JSON.stringify({ type: 'resize', cols, rows })))
 ```
 
-A complete Node server with `node-pty` and `ws` is in
+Run the PTY with [`@termysh/pty`](https://www.npmjs.com/package/@termysh/pty)
+(a drop-in `node-pty` replacement). A complete Node server with `ws` is in
 [Connect to a shell](https://termy.sh/docs/developer/web/connect).
 
 ## Essentials
@@ -118,9 +119,10 @@ Every docs page is also available as Markdown by adding `.md` to its URL, and
 [`llms-full.txt`](https://termy.sh/llms-full.txt) has all of them in one file.
 
 Related packages: [`@termysh/xterm`](https://www.npmjs.com/package/@termysh/xterm)
-(xterm.js-compatible API) and
+(xterm.js-compatible API),
 [`@termysh/core`](https://www.npmjs.com/package/@termysh/core) (headless
-engine).
+engine) and [`@termysh/pty`](https://www.npmjs.com/package/@termysh/pty)
+(server-side pseudo-terminals).
 
 ## License
 

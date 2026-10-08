@@ -94,6 +94,10 @@ for (const event of term.takeEvents()) {
 
 Call `term.processExited()` when the program exits.
 
+To run the program itself from Node.js or Bun, use
+[`@termysh/pty`](https://www.npmjs.com/package/@termysh/pty) and feed its
+output to `write`; its README shows the full loop.
+
 ## Testing terminal output
 
 ```ts
