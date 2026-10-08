@@ -935,7 +935,7 @@ impl SettingsWindow {
             div()
                 .text_size(px(SETTINGS_INPUT_TEXT_SIZE))
                 .text_color(text_muted)
-                .child("Search settings...")
+                .child("Search")
                 .into_any_element()
         }
     }
@@ -946,14 +946,16 @@ impl SettingsWindow {
         is_active: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let bg_input = self.bg_input();
+        // `NSSearchField`: an opaque fill so the focus ring around it stays
+        // a ring instead of tinting the whole field.
+        let bg_input = Self::composite_over(self.native().fill, self.bg_secondary());
         let border_color = self.card_border_color();
         let accent = self.accent();
         let focus_ring = self.input_focus_ring();
         div()
             .id("settings-sidebar-search-input")
-            .h(px(34.0))
-            .px_3()
+            .h(px(28.0))
+            .px(px(8.0))
             .rounded(px(SETTINGS_INPUT_RADIUS))
             .bg(bg_input)
             .border_1()
@@ -1122,9 +1124,10 @@ impl SettingsWindow {
         let active_bg = self.sidebar_selection_bg();
         let hover_bg = self.bg_hover();
         let text_primary = self.text_primary();
-        let text_secondary = self.text_secondary();
-        let selection_accent = self.accent_with_alpha(0.95);
+        let on_accent = self.native().on_accent;
 
+        // Selected rows fill with the accent and invert their text, as in
+        // System Settings; the colored tile keeps its own color.
         div()
             .id(SharedString::from(label))
             .relative()
@@ -1135,31 +1138,8 @@ impl SettingsWindow {
             .flex()
             .items_center()
             .gap(px(10.0))
-            .bg(if is_active {
-                active_bg
-            } else {
-                Rgba {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.0,
-                }
-            })
+            .when(is_active, |s| s.bg(active_bg))
             .when(!is_active, |s| s.hover(|s| s.bg(hover_bg)))
-            .when(is_active, |s| {
-                s.child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top(px(SIDEBAR_SELECTED_ACCENT_INSET_Y))
-                        .w(px(SIDEBAR_SELECTED_ACCENT_WIDTH))
-                        .h(px((SIDEBAR_ITEM_HEIGHT
-                            - (SIDEBAR_SELECTED_ACCENT_INSET_Y * 2.0))
-                            .max(0.0)))
-                        .rounded_full()
-                        .bg(selection_accent),
-                )
-            })
             .child(self.render_section_tile(
                 section,
                 SIDEBAR_ICON_TILE_SIZE,
@@ -1169,17 +1149,8 @@ impl SettingsWindow {
             ))
             .child(
                 div()
-                    .text_sm()
-                    .font_weight(if is_active {
-                        gpui_kit::FontWeight::MEDIUM
-                    } else {
-                        gpui_kit::FontWeight::NORMAL
-                    })
-                    .text_color(if is_active {
-                        text_primary
-                    } else {
-                        text_secondary
-                    })
+                    .text_size(px(13.0))
+                    .text_color(if is_active { on_accent } else { text_primary })
                     .child(label),
             )
             .on_mouse_down(

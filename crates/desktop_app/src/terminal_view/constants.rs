@@ -29,10 +29,10 @@ pub(super) const COMMAND_PALETTE_LIST_PADDING_Y: f32 = 8.0;
 pub(super) const COMMAND_PALETTE_ROW_HEIGHT: f32 = 36.0;
 pub(super) const COMMAND_PALETTE_SCROLLBAR_WIDTH: f32 = 8.0;
 pub(super) const COMMAND_PALETTE_SCROLLBAR_MIN_THUMB_HEIGHT: f32 = 18.0;
-pub(super) const COMMAND_PALETTE_INPUT_HEAD_HEIGHT: f32 = 48.0;
-pub(super) const COMMAND_PALETTE_INPUT_TEXT_SIZE: f32 = 15.0;
+pub(super) const COMMAND_PALETTE_INPUT_HEAD_HEIGHT: f32 = 54.0;
+pub(super) const COMMAND_PALETTE_INPUT_TEXT_SIZE: f32 = 18.0;
 pub(super) const COMMAND_PALETTE_ROW_ICON_SIZE: f32 = 13.0;
-pub(super) const COMMAND_PALETTE_ICON_TILE_SIZE: f32 = 24.0;
+pub(super) const COMMAND_PALETTE_ICON_TILE_SIZE: f32 = 22.0;
 pub(super) const COMMAND_PALETTE_ICON_TILE_RADIUS: f32 = 6.0;
 pub(super) const COMMAND_PALETTE_EMPTY_TILE_SIZE: f32 = 32.0;
 pub(super) const COMMAND_PALETTE_EMPTY_TILE_RADIUS: f32 = 9.0;
@@ -40,15 +40,12 @@ pub(super) const COMMAND_PALETTE_EMPTY_ICON_SIZE: f32 = 18.0;
 pub(super) const COMMAND_PALETTE_ROW_PADDING_X: f32 = 10.0;
 pub(super) const COMMAND_PALETTE_ROW_CATEGORY_MAX_WIDTH: f32 = 96.0;
 pub(super) const COMMAND_PALETTE_BREADCRUMB_MAX_WIDTH: f32 = 220.0;
-/// Gap between the keycaps of one keystroke, and between keystrokes of a
-/// multi-stroke binding.
-pub(super) const COMMAND_PALETTE_KEYCAP_GAP: f32 = 2.0;
+/// Gap between the keystrokes of a multi-stroke binding.
 pub(super) const COMMAND_PALETTE_KEYSTROKE_GAP: f32 = 6.0;
 /// Shown on rows that are unavailable but carry no more specific reason.
 pub(super) const COMMAND_PALETTE_UNAVAILABLE_HINT: &str = "unavailable";
 pub(super) const COMMAND_PALETTE_FOOTER_HEIGHT: f32 = 34.0;
 pub(super) const COMMAND_PALETTE_SCRIM_ALPHA: f32 = 0.16;
-pub(super) const COMMAND_PALETTE_DIVIDER_ALPHA: f32 = 0.08;
 pub(super) const COMMAND_PALETTE_TOP_OFFSET: f32 = 60.0;
 pub(super) const TERMINAL_SCROLLBAR_GUTTER_WIDTH: f32 = 12.0;
 pub(super) const TERMINAL_SCROLLBAR_TRACK_WIDTH: f32 = 12.0;
@@ -88,14 +85,7 @@ pub(super) const OVERLAY_PANEL_ALPHA_FLOOR_RATIO: f32 = 0.72;
 pub(super) const OVERLAY_PRIMARY_TEXT_ALPHA: f32 = 0.95;
 pub(super) const OVERLAY_MUTED_TEXT_ALPHA: f32 = 0.62;
 pub(super) const COMMAND_PALETTE_PANEL_SOLID_ALPHA: f32 = 0.90;
-pub(super) const COMMAND_PALETTE_ROW_SELECTED_BG_ALPHA: f32 = 0.13;
-pub(super) const COMMAND_PALETTE_MATCH_TEXT_ALPHA: f32 = 1.0;
-pub(super) const COMMAND_PALETTE_ICON_TILE_IDLE_ALPHA: f32 = 0.16;
-pub(super) const COMMAND_PALETTE_ICON_TILE_SELECTED_ALPHA: f32 = 0.26;
-pub(super) const COMMAND_PALETTE_SHORTCUT_BG_ALPHA: f32 = 0.08;
-pub(super) const COMMAND_PALETTE_SHORTCUT_TEXT_ALPHA: f32 = 0.80;
 pub(super) const COMMAND_PALETTE_PANEL_BG_ALPHA: f32 = 0.98;
-pub(super) const COMMAND_PALETTE_INPUT_SELECTION_ALPHA: f32 = 0.28;
 pub(super) const COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA: f32 = 0.10;
 pub(super) const COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA: f32 = 0.42;
 pub(super) const SEARCH_BAR_BG_ALPHA: f32 = 0.92;

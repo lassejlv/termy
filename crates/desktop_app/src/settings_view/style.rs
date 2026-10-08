@@ -1,6 +1,24 @@
 use super::*;
+use crate::ui::native::{NativePalette, tile_gradient, with_alpha};
+use gpui_kit::rgba;
 
 impl SettingsWindow {
+    /// AppKit semantic colors for this window, picked from the theme ground
+    /// so light themes get the light appearance.
+    pub(super) fn native(&self) -> NativePalette {
+        NativePalette::for_background(self.colors.background)
+            .with_increased_contrast(self.config.chrome_contrast)
+    }
+
+    /// The opaque surface under the material, as `windowBackgroundColor`.
+    fn native_surface(&self) -> Rgba {
+        if self.native().dark {
+            rgba(0x1e1e1eff)
+        } else {
+            rgba(0xececec_ff)
+        }
+    }
+
     pub(super) fn background_opacity_factor(&self) -> f32 {
         self.effective_background_opacity()
     }
@@ -22,17 +40,6 @@ impl SettingsWindow {
             .clamp(0.0, 1.0)
     }
 
-    fn scaled_chrome_surface_alpha(&self, base_alpha: f32) -> f32 {
-        self.scaled_background_alpha(self.chrome_contrast_profile().surface_alpha(base_alpha))
-    }
-
-    fn scaled_chrome_neutral_alpha(&self, base_alpha: f32) -> f32 {
-        self.scaled_background_alpha(
-            self.chrome_contrast_profile()
-                .panel_neutral_alpha(base_alpha),
-        )
-    }
-
     fn scaled_chrome_accent_alpha(&self, base_alpha: f32) -> f32 {
         self.scaled_background_alpha(
             self.chrome_contrast_profile()
@@ -51,100 +58,95 @@ impl SettingsWindow {
         }
     }
 
+    /// The content pane, `windowBackgroundColor` under the window's opacity.
     pub(super) fn bg_primary(&self) -> Rgba {
-        let mut c = self.colors.background;
-        c.a = self.scaled_background_alpha(c.a);
+        let mut c = self.native_surface();
+        c.a = self.scaled_background_alpha(1.0);
         c
     }
 
+    /// The sidebar, a step darker than the content as in System Settings.
     pub(super) fn bg_secondary(&self) -> Rgba {
-        let mut c = self.colors.background;
-        c.a = self.adaptive_chrome_panel_alpha(0.7);
+        let native = self.native();
+        let overlay = if native.dark {
+            rgba(0x00000033)
+        } else {
+            rgba(0x0000000a)
+        };
+        let mut c = Self::composite_over(overlay, self.native_surface());
+        c.a = self.adaptive_chrome_panel_alpha(0.92);
         c
     }
 
     pub(super) fn bg_card(&self) -> Rgba {
-        let mut c = self.colors.background;
-        c.a = self.adaptive_chrome_panel_alpha(0.5);
-        c
+        self.bg_primary()
     }
 
+    /// A grouped form section, `quaternarySystemFill` over the window.
     pub(super) fn bg_elevated(&self) -> Rgba {
-        let mut c = self.colors.foreground;
-        c.a = self.scaled_chrome_surface_alpha(0.045);
-        c
+        self.native().group
     }
 
-    /// Soft outline for grouped setting cards — lighter than `border_color` so
-    /// cards read as a gentle inset surface rather than a boxed-in panel.
+    /// The hairline around a grouped section.
     pub(super) fn card_border_color(&self) -> Rgba {
-        let mut c = self.colors.foreground;
-        c.a = self.scaled_chrome_neutral_alpha(0.14);
-        c
+        self.native().separator
     }
 
-    /// Hairline between rows inside a card. Subtler than the card outline so the
-    /// inset separators recede the way native macOS grouped lists do.
+    /// Hairline between rows inside a grouped section.
     pub(super) fn row_separator_color(&self) -> Rgba {
-        let mut c = self.colors.foreground;
-        c.a = self.scaled_chrome_neutral_alpha(0.08);
-        c
+        self.native().separator
     }
 
-    /// Accent-tinted fill behind the selected sidebar item.
+    /// The selected sidebar row, filled with the accent as in System Settings.
     pub(super) fn sidebar_selection_bg(&self) -> Rgba {
-        self.accent_with_alpha(0.16)
+        self.native().blue
     }
 
+    /// `textBackgroundColor` for fields sitting inside a grouped section.
+    /// Opaque, so a focus ring drawn around a field never tints through it.
     pub(super) fn bg_input(&self) -> Rgba {
-        let mut c = self.colors.background;
-        c.a = self.adaptive_chrome_panel_alpha(0.36);
-        c
+        let native = self.native();
+        if native.dark {
+            let group = Self::composite_over(native.group, self.native_surface());
+            Self::composite_over(rgba(0xffffff0d), group)
+        } else {
+            rgba(0xffffffff)
+        }
     }
 
     pub(super) fn bg_hover(&self) -> Rgba {
-        let mut c = self.colors.foreground;
-        c.a = self.scaled_chrome_surface_alpha(0.1);
-        c
+        self.native().fill
     }
 
     pub(super) fn text_primary(&self) -> Rgba {
-        self.colors.foreground
+        self.native().label
     }
 
+    /// Body text one step below the label, for unselected sidebar rows.
     pub(super) fn text_secondary(&self) -> Rgba {
-        let mut c = self.colors.foreground;
-        c.a = 0.82;
-        c
+        let native = self.native();
+        with_alpha(native.label, native.label.a * 0.86)
     }
 
     pub(super) fn text_muted(&self) -> Rgba {
-        let mut c = self.colors.foreground;
-        c.a = 0.68;
-        c
+        self.native().secondary
     }
 
     pub(super) fn border_color(&self) -> Rgba {
-        let mut c = self.colors.foreground;
-        c.a = self.scaled_chrome_neutral_alpha(0.24);
-        c
+        self.native().stroke
     }
 
     pub(super) fn accent(&self) -> Rgba {
-        self.colors.cursor
+        self.native().blue
     }
 
     pub(super) fn accent_with_alpha(&self, alpha: f32) -> Rgba {
-        let mut c = self.colors.cursor;
-        c.a = self.scaled_chrome_accent_alpha(alpha);
-        c
+        with_alpha(self.native().blue, self.scaled_chrome_accent_alpha(alpha))
     }
 
-    /// Soft halo drawn around a focused text field or search box.
+    /// The focus ring macOS draws around a focused text field or search box.
     pub(super) fn input_focus_ring(&self) -> Rgba {
-        let mut c = self.colors.cursor;
-        c.a = self.chrome_contrast_profile().accent_alpha(0.22);
-        c
+        with_alpha(self.native().blue, 0.5)
     }
 
     /// Zero-blur spread shadow that reads as a focus ring around a control.
@@ -162,32 +164,27 @@ impl SettingsWindow {
     /// Pulled from the active theme's ANSI palette so every theme keeps the
     /// tiles readable; the two neutral sections use the foreground instead.
     pub(super) fn section_tint(&self, section: SettingsSection) -> Rgba {
-        let mut c = match section {
-            SettingsSection::Advanced | SettingsSection::Keybindings => self.colors.foreground,
-            SettingsSection::Appearance => self.colors.ansi[4],
-            SettingsSection::Colors => self.colors.ansi[1],
-            SettingsSection::ThemeStore => self.colors.ansi[5],
-            SettingsSection::Plugins => self.colors.ansi[3],
-            SettingsSection::Terminal => self.colors.cursor,
-            SettingsSection::Ssh => self.colors.ansi[2],
-            SettingsSection::Tabs => self.colors.ansi[6],
-        };
-        c.a = 1.0;
-        c
-    }
-
-    pub(super) fn section_tile_bg(&self, section: SettingsSection, emphasized: bool) -> Rgba {
-        let mut c = self.section_tint(section);
-        let base = if emphasized { 0.26 } else { 0.16 };
-        c.a = self.chrome_contrast_profile().accent_alpha(base);
-        c
-    }
-
-    pub(super) fn section_tile_icon(&self, section: SettingsSection) -> Rgba {
+        let native = self.native();
         match section {
-            SettingsSection::Advanced | SettingsSection::Keybindings => self.text_secondary(),
-            _ => self.section_tint(section),
+            SettingsSection::Advanced | SettingsSection::Keybindings => native.gray,
+            SettingsSection::Appearance => native.blue,
+            SettingsSection::Colors => native.red,
+            SettingsSection::ThemeStore => native.purple,
+            SettingsSection::Plugins => native.orange,
+            SettingsSection::Terminal => rgba(0x3a3a3cff),
+            SettingsSection::Ssh => native.green,
+            SettingsSection::Tabs => rgba(0x5ac8faff),
         }
+    }
+
+    /// Tiles are solid system colors with a white glyph, like the rows in
+    /// System Settings.
+    pub(super) fn section_tile_bg(&self, section: SettingsSection, _emphasized: bool) -> Rgba {
+        self.section_tint(section)
+    }
+
+    pub(super) fn section_tile_icon(&self, _section: SettingsSection) -> Rgba {
+        self.native().on_accent
     }
 
     /// Rounded, tinted square holding a section glyph.
@@ -204,7 +201,14 @@ impl SettingsWindow {
             .w(px(tile_size))
             .h(px(tile_size))
             .rounded(px(tile_radius))
-            .bg(self.section_tile_bg(section, emphasized))
+            .bg(tile_gradient(self.section_tile_bg(section, emphasized)))
+            .shadow(vec![gpui_kit::BoxShadow {
+                inset: false,
+                color: gpui_kit::black().opacity(0.18),
+                offset: point(px(0.0), px(0.5)),
+                blur_radius: px(1.0),
+                spread_radius: px(0.0),
+            }])
             .flex()
             .items_center()
             .justify_center()
@@ -263,14 +267,10 @@ impl SettingsWindow {
     }
 
     pub(super) fn settings_scrollbar_style(&self) -> ScrollbarPaintStyle {
-        let mut track = self.colors.foreground;
-        track.a = self.scaled_chrome_neutral_alpha(SETTINGS_SCROLLBAR_TRACK_ALPHA);
-
-        let mut thumb = self.colors.foreground;
-        thumb.a = self.scaled_chrome_neutral_alpha(SETTINGS_SCROLLBAR_THUMB_ALPHA);
-
-        let mut active_thumb = self.colors.foreground;
-        active_thumb.a = self.scaled_chrome_neutral_alpha(SETTINGS_SCROLLBAR_THUMB_ACTIVE_ALPHA);
+        let label = self.native().label;
+        let track = with_alpha(label, SETTINGS_SCROLLBAR_TRACK_ALPHA * 0.5);
+        let thumb = with_alpha(label, SETTINGS_SCROLLBAR_THUMB_ALPHA);
+        let active_thumb = with_alpha(label, SETTINGS_SCROLLBAR_THUMB_ACTIVE_ALPHA);
 
         ScrollbarPaintStyle {
             width: SETTINGS_SCROLLBAR_WIDTH,

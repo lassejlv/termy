@@ -1,14 +1,32 @@
 use gpui_kit::{Bounds, Hsla, Pixels, Rgba, Size, point, px, size};
 
+/// Only a TUI that paints its own background (see `tui_paints_grid_border`)
+/// may recolor the padding. Apps drawn on the terminal theme, like Claude Code
+/// and Codex, otherwise tint it whenever a diff or dialog covers most cells.
+pub(super) fn tui_paints_grid_border(
+    grid: Size<usize>,
+    painted: impl Fn(usize, usize) -> bool,
+) -> bool {
+    let last_row = grid.height.saturating_sub(1);
+    let last_col = grid.width.saturating_sub(1);
+    (0..grid.height).all(|row| {
+        if row == 0 || row == last_row {
+            (0..grid.width).all(|col| painted(row, col))
+        } else {
+            grid.width == 0 || (painted(row, 0) && painted(row, last_col))
+        }
+    })
+}
+
 /// Let an opaque viewport majority fill the TUI's padding. A tab, status bar, or
 /// hovered corner must not recolor the entire surface. With no majority, retain
 /// the configured background, including its transparency.
 pub(super) fn tui_surface_background(
-    alternate_screen: bool,
+    tui_paints_border: bool,
     backgrounds: impl Iterator<Item = Hsla> + Clone,
     configured_background: Rgba,
 ) -> Rgba {
-    if !alternate_screen {
+    if !tui_paints_border {
         return configured_background;
     }
 
@@ -115,6 +133,34 @@ mod tests {
             tui_surface_background(true, [Hsla { a: 0.5, ..tui }].into_iter(), theme),
             theme,
         );
+    }
+
+    #[test]
+    fn only_tuis_that_paint_the_whole_border_may_recolor_the_padding() {
+        // An indented diff covering most of a Claude Code screen, above a
+        // status line on the theme background.
+        let mut painted = vec![vec![false; 10]; 6];
+        for row in &mut painted[..4] {
+            row[2..].fill(true);
+        }
+        let paints_border = |painted: &[Vec<bool>]| {
+            tui_paints_grid_border(size(10, 6), |row, col| painted[row][col])
+        };
+        assert!(!paints_border(&painted));
+
+        for row in &mut painted {
+            row.fill(true);
+        }
+        assert!(paints_border(&painted));
+        painted[3][9] = false;
+        assert!(!paints_border(&painted));
+        painted[3][9] = true;
+        painted[3][5] = false;
+        assert!(paints_border(&painted), "interior cells do not matter");
+
+        assert!(tui_paints_grid_border(size(0, 0), |_, _| unreachable!()));
+        assert!(tui_paints_grid_border(size(1, 1), |_, _| true));
+        assert!(!tui_paints_grid_border(size(1, 1), |_, _| false));
     }
 
     #[test]

@@ -96,7 +96,7 @@ inspector_height = 280
 # Font family used in terminal UI
 # font_family = Menlo
 # Font family used for tabs, command palette, and settings UI (not the terminal cells)
-# ui_font_family = Menlo
+# ui_font_family = .SystemUIFont
 # Terminal font size in pixels
 font_size = 14
 # Terminal line height multiplier (0.8 to 2.5)

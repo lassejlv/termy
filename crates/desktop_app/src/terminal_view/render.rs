@@ -1,5 +1,5 @@
 use super::scrollbar as terminal_scrollbar;
-use super::surface::{terminal_edge_backgrounds, tui_surface_background};
+use super::surface::{terminal_edge_backgrounds, tui_paints_grid_border, tui_surface_background};
 use super::*;
 use crate::ui::scrollbar::{self as ui_scrollbar, ScrollbarPaintStyle};
 use gpui_kit::prelude::FluentBuilder;
@@ -3034,18 +3034,31 @@ impl Render for TerminalView {
                     terminal_display_offset = pane_display_offset;
                 }
 
-                let fullscreen_tui = !multi_pane && alternate_screen_mode;
+                let tui_paints_border = !multi_pane
+                    && alternate_screen_mode
+                    && tui_paints_grid_border(
+                        Size {
+                            width: cols,
+                            height: rows,
+                        },
+                        |row, col| {
+                            pane_cells
+                                .get(row)
+                                .and_then(|cells| cells.get(col))
+                                .is_some_and(|cell| !cell.uses_terminal_default_bg)
+                        },
+                    );
                 let pane_surface_bg = tui_surface_background(
-                    fullscreen_tui,
+                    tui_paints_border,
                     pane_cells
                         .iter()
                         .flat_map(|row| row.iter().map(|cell| cell.bg)),
                     terminal_surface_bg,
                 );
-                if fullscreen_tui && pane_surface_bg != terminal_surface_bg {
+                if pane_surface_bg != terminal_surface_bg {
                     terminal_area_background = Some(pane_surface_bg);
                 }
-                let edge_cells = fullscreen_tui.then(|| Arc::clone(&pane_cells));
+                let edge_cells = tui_paints_border.then(|| Arc::clone(&pane_cells));
 
                 let hovered_link_range = if is_active_pane {
                     self.hovered_link

@@ -464,7 +464,7 @@ impl Default for AppConfig {
             window_height: 820.0,
             inspector_height: 280.0,
             font_family: crate::config_core::constants::DEFAULT_FONT_FAMILY.to_string(),
-            ui_font_family: crate::config_core::constants::DEFAULT_FONT_FAMILY.to_string(),
+            ui_font_family: crate::config_core::constants::DEFAULT_UI_FONT_FAMILY.to_string(),
             font_size: 14.0,
             line_height: crate::config_core::constants::DEFAULT_LINE_HEIGHT,
             cursor_style: CursorStyle::default(),

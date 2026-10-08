@@ -53,12 +53,12 @@ tmux terminals use the same behavior.
 
 ## UI
 
-Full-screen terminal apps such as OpenCode use the entire content area when
-running in a single pane. Termy removes the shell's horizontal and vertical
-padding while the alternate screen is active, then restores your configured
-padding when the app exits. Opaque app backgrounds extend into Termy's title
-bar, and matching colors fill the window edges so a different terminal theme
-does not leave a contrasting border. Window controls and tabs remain available.
+Full-screen terminal apps that paint their own background, such as OpenCode,
+extend it into the padding around the grid when running in a single pane, so a
+different terminal theme does not leave a contrasting border. Apps that leave
+any edge cell on the terminal's default background, such as Claude Code and
+Codex, keep your theme's padding even while a diff or dialog fills most of the
+screen. Window controls and tabs remain available.
 
 | Key | Default | Description |
 | --- | ------- | ----------- |

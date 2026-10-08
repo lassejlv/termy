@@ -50,24 +50,17 @@ use input_mode::KeyInputMode;
 const SIDEBAR_WIDTH: f32 = 208.0;
 // Section icons sit in a small tinted tile, the way macOS System Settings
 // colour-codes its sidebar; the glyph itself is smaller than the tile.
-const SIDEBAR_ICON_SIZE: f32 = 14.0;
-const SIDEBAR_ICON_TILE_SIZE: f32 = 24.0;
-const SIDEBAR_ICON_TILE_RADIUS: f32 = 6.0;
-const SIDEBAR_ITEM_HEIGHT: f32 = 34.0;
-const SIDEBAR_ITEM_RADIUS: f32 = 8.0;
+const SIDEBAR_ICON_SIZE: f32 = 12.0;
+const SIDEBAR_ICON_TILE_SIZE: f32 = 20.0;
+const SIDEBAR_ICON_TILE_RADIUS: f32 = 5.0;
+const SIDEBAR_ITEM_HEIGHT: f32 = 28.0;
+const SIDEBAR_ITEM_RADIUS: f32 = 6.0;
 // Larger tile beside each section title so the content column echoes the
 // sidebar's colour coding.
 const SECTION_ICON_TILE_SIZE: f32 = 32.0;
 const SECTION_ICON_TILE_RADIUS: f32 = 9.0;
 const SECTION_ICON_SIZE: f32 = 18.0;
-// Knob travel when a switch flips; the just-toggled switch is the only one
-// animated so opening the window never sweeps every knob at once.
-const SETTINGS_SWITCH_ANIMATION_MS: u64 = 180;
 const SETTINGS_INPUT_FOCUS_RING_WIDTH: f32 = 3.0;
-// Accent bar marking the selected sidebar item; mirrors the active-tab and
-// command-palette selection indicators so the chrome speaks one language.
-const SIDEBAR_SELECTED_ACCENT_WIDTH: f32 = 2.0;
-const SIDEBAR_SELECTED_ACCENT_INSET_Y: f32 = 8.0;
 const SIDEBAR_GROUP_GAP: f32 = 16.0;
 const SIDEBAR_GROUP_LABEL_SIZE: f32 = 11.0;
 // Settings content is constrained and centered like native macOS System
@@ -86,22 +79,18 @@ const SETTINGS_SCROLLBAR_TRACK_ALPHA: f32 = 0.10;
 const SETTINGS_SCROLLBAR_THUMB_ALPHA: f32 = 0.42;
 const SETTINGS_SCROLLBAR_THUMB_ACTIVE_ALPHA: f32 = 0.58;
 const SETTINGS_OVERLAY_PANEL_ALPHA_FLOOR_RATIO: f32 = 0.72;
-const SETTINGS_SWITCH_WIDTH: f32 = 38.0;
-const SETTINGS_SWITCH_HEIGHT: f32 = 22.0;
-const SETTINGS_SWITCH_KNOB_SIZE: f32 = 18.0;
 const SETTINGS_SEARCH_PREVIEW_LIMIT: usize = 6;
 const SETTINGS_SLIDER_VALUE_WIDTH: f32 = 60.0;
 const SETTINGS_OPACITY_STEP_RATIO: f32 = 0.05;
 const SETTINGS_CONTROL_INNER_PADDING: f32 = 8.0;
 const SETTINGS_OPACITY_CONTROL_GAP: f32 = 6.0;
-const SETTINGS_CARD_RADIUS: f32 = 12.0;
+const SETTINGS_CARD_RADIUS: f32 = 10.0;
 const SETTINGS_INPUT_RADIUS: f32 = 7.0;
 const SETTINGS_BUTTON_RADIUS: f32 = 6.0;
-const SETTINGS_SWITCH_RADIUS: f32 = 11.0;
 // Section title and subtitle sizes now live in `crate::design_system::metrics`.
 const CARD_GAP: f32 = 22.0;
-const CARD_ROW_PADDING_X: f32 = 16.0;
-const CARD_ROW_PADDING_Y: f32 = 11.0;
+const CARD_ROW_PADDING_X: f32 = 12.0;
+const CARD_ROW_PADDING_Y: f32 = 9.0;
 const CONTENT_GUTTER_X: f32 = 32.0;
 const CONTENT_GUTTER_Y: f32 = 24.0;
 static NEXT_BACKGROUND_OPACITY_PREVIEW_OWNER_ID: AtomicU64 = AtomicU64::new(1);
@@ -168,7 +157,6 @@ pub struct SettingsWindow {
     hovered_setting_action: Option<SharedString>,
     hovered_reset_section: Option<SettingsSection>,
     // Switch that was toggled most recently, so only its knob animates.
-    switch_animation: Option<(SharedString, std::time::Instant)>,
     scroll_animation_token: u64,
     colors: TerminalColors,
     system_appearance: SystemAppearance,
@@ -276,7 +264,6 @@ impl SettingsWindow {
             scrollbar_lane_bounds: None,
             hovered_setting_action: None,
             hovered_reset_section: None,
-            switch_animation: None,
             scroll_animation_token: 0,
             colors,
             system_appearance,

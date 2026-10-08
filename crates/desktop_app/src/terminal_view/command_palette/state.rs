@@ -325,6 +325,8 @@ impl CommandPaletteItem {
 #[derive(Clone, Debug)]
 pub(in super::super) struct CommandPaletteState {
     open: bool,
+    /// Counts openings, so each one replays the enter motion.
+    open_generation: u64,
     mode: CommandPaletteMode,
     pub(super) command_intent: CommandPaletteCommandIntent,
     pub(super) tmux_session_intent: TmuxSessionIntent,
@@ -366,6 +368,7 @@ impl CommandPaletteState {
     pub(in super::super) fn new(show_keybinds: bool) -> Self {
         Self {
             open: false,
+            open_generation: 0,
             mode: CommandPaletteMode::Commands,
             command_intent: CommandPaletteCommandIntent::Browse,
             tmux_session_intent: TmuxSessionIntent::AttachOrSwitch,
@@ -409,8 +412,15 @@ impl CommandPaletteState {
     }
 
     pub(super) fn open(&mut self, mode: CommandPaletteMode) {
+        if !self.open {
+            self.open_generation = self.open_generation.wrapping_add(1);
+        }
         self.open = true;
         self.set_mode(mode);
+    }
+
+    pub(super) fn open_generation(&self) -> u64 {
+        self.open_generation
     }
 
     pub(super) fn close(&mut self) {

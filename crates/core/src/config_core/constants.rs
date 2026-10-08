@@ -10,6 +10,12 @@ pub const DEFAULT_FONT_FAMILY: &str = "Menlo";
 pub const DEFAULT_FONT_FAMILY: &str = "Consolas";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub const DEFAULT_FONT_FAMILY: &str = "monospace";
+/// Default chrome font (tabs, command palette, settings): the system UI font
+/// on macOS so the chrome reads as native; the terminal font elsewhere.
+#[cfg(target_os = "macos")]
+pub const DEFAULT_UI_FONT_FAMILY: &str = ".SystemUIFont";
+#[cfg(not(target_os = "macos"))]
+pub const DEFAULT_UI_FONT_FAMILY: &str = DEFAULT_FONT_FAMILY;
 pub(crate) const DEFAULT_TERM: &str = "xterm-256color";
 pub(crate) const DEFAULT_COLORTERM: &str = "truecolor";
 pub(crate) const DEFAULT_TMUX_ENABLED: bool = false;
