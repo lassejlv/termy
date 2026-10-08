@@ -30,3 +30,5 @@ export { Emitter, toDisposable, type IDisposable, type IEvent } from './emitter.
 export type { BufferPoint, SelectionRange } from './selection.ts'
 export { translateKey, type TermyKey } from './input/keys.ts'
 export { builtinTheme, builtinThemeIds, init, initSync, isInitialized, type WasmSource } from '@termysh/core'
+
+export type { ProgramStatusRecord } from '@termysh/core'

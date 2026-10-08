@@ -197,7 +197,7 @@ fn authentication_and_pre_authentication_message_limit() {
         Hello { version: u32, token: String },
     }
     let bad_greeting = bincode::serialize(&Greeting::Hello {
-        version: 1,
+        version: value["version"].as_u64().unwrap() as u32,
         token: "wrong token".into(),
     })
     .unwrap();
@@ -375,5 +375,72 @@ sleep 30
     fs::write(host.root.join("detached"), b"").unwrap();
     wait_until(|| fs::read(host.root.join("cursor")).is_ok_and(|bytes| bytes.len() == 6));
     assert_eq!(fs::read(host.root.join("cursor")).unwrap(), b"\x1b[1;1R");
+    host.client.close(&id).unwrap();
+}
+
+#[test]
+fn program_status_survives_reattach_and_expires_active_records_on_exit() {
+    let host = Host::new();
+    let (id, terminal) = host
+        .client
+        .create(
+            PaneLaunch {
+                size: TerminalSize::default(),
+                working_directory: None,
+                shell_integration: None,
+                config: TerminalRuntimeConfig::default(),
+                launch: Some(TerminalLaunch::Program {
+                    program: "/bin/sh".into(),
+                    args: vec![
+                        "-c".into(),
+                        r#"stty -echo
+printf '\033]7501;state=working:app=deploy\007\033]7501;state=done:id=child:msg=SGk=\007'
+read finish
+"#
+                        .into(),
+                    ],
+                }),
+            },
+            None,
+        )
+        .unwrap();
+    let mut latest = vec![];
+    wait_until(|| {
+        for event in terminal.drain_events(&mut |_| None).0 {
+            if let TerminalEvent::ProgramStatus(records) = event {
+                latest = records;
+            }
+        }
+        latest.len() == 2
+    });
+    assert_eq!(latest[1].app.as_deref(), Some("deploy"));
+    drop(terminal);
+    let terminal = host.client.attach(&id, None).unwrap();
+    let mut attached = vec![];
+    wait_until(|| {
+        for event in terminal.drain_events(&mut |_| None).0 {
+            if let TerminalEvent::ProgramStatus(records) = event {
+                attached = records;
+            }
+        }
+        attached.len() == 2
+    });
+    assert_eq!(attached, latest);
+    terminal.write(b"done\n");
+    let mut exited = false;
+    wait_until(|| {
+        for event in terminal.drain_events(&mut |_| None).0 {
+            match event {
+                TerminalEvent::ProgramStatus(records) => latest = records,
+                TerminalEvent::Exit => exited = true,
+                _ => {}
+            }
+        }
+        exited
+    });
+    assert_eq!(latest.len(), 1);
+    assert_eq!(latest[0].state, ProgramState::Done);
+    assert_eq!(latest[0].msg.as_deref(), Some("Hi"));
+    assert_eq!(latest[0].app, None); // removed parent no longer supplies app
     host.client.close(&id).unwrap();
 }

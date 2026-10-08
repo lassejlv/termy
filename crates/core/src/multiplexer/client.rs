@@ -192,11 +192,7 @@ impl SessionClient {
                             }
                             Update::Events(events) => {
                                 let mut pending = reader_shared.pending.lock().unwrap();
-                                ensure!(
-                                    pending.events.len() + events.len() <= 1024,
-                                    "session event queue overflow"
-                                );
-                                pending.events.extend(events);
+                                pending.extend_events(events)?;
                             }
                             Update::Host { id, request } => reader_shared
                                 .pending
@@ -321,6 +317,21 @@ struct Pending {
     wakeup: bool,
     events: Vec<TerminalEvent>,
     hosts: Vec<(u64, RemoteHostRequest)>,
+}
+
+impl Pending {
+    fn extend_events(&mut self, events: Vec<TerminalEvent>) -> anyhow::Result<()> {
+        for event in events {
+            // A snapshot replaces the previous one even for a suspended UI.
+            if matches!(event, TerminalEvent::ProgramStatus(_)) {
+                self.events
+                    .retain(|old| !matches!(old, TerminalEvent::ProgramStatus(_)));
+            }
+            ensure!(self.events.len() < 1024, "session event queue overflow");
+            self.events.push(event);
+        }
+        Ok(())
+    }
 }
 
 struct ClientState {
@@ -487,5 +498,24 @@ impl RemoteTransport for ClientTerminal {
         if enabled && self.has_pending_events() {
             self.shared.notify();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn program_status_snapshots_do_not_accumulate_for_slow_clients() {
+        let mut pending = Pending::default();
+        pending.extend_events(vec![TerminalEvent::Bell]).unwrap();
+        for _ in 0..2048 {
+            pending
+                .extend_events(vec![TerminalEvent::ProgramStatus(vec![])])
+                .unwrap();
+        }
+        assert_eq!(pending.events.len(), 2);
+        assert!(matches!(pending.events[0], TerminalEvent::Bell));
+        assert!(matches!(pending.events[1], TerminalEvent::ProgramStatus(_)));
     }
 }

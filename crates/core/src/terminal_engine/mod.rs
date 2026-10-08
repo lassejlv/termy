@@ -170,6 +170,27 @@ impl Engine {
         true
     }
 
+    /// Current OSC 7501 records, oldest update first, with inherited apps resolved.
+    pub fn program_status(&self) -> Vec<crate::ProgramStatusRecord> {
+        self.state.program_status.snapshot()
+    }
+
+    pub(crate) fn has_program_status_changes(&self) -> bool {
+        self.state.program_status.has_changes()
+    }
+
+    /// Coalesced status snapshot, independent of the bounded transient event queue.
+    /// An empty snapshot means that the final record was cleared.
+    pub fn take_program_status(&mut self) -> Option<Vec<crate::ProgramStatusRecord>> {
+        self.state.program_status.take_changed()
+    }
+
+    /// Hosts must call this when the process attached to this terminal exits.
+    pub fn process_exited(&mut self) {
+        self.stop_synchronized_update();
+        self.state.program_status.finish();
+    }
+
     pub fn size(&self) -> Size {
         self.state.grid.size()
     }

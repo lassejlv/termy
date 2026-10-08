@@ -14,6 +14,7 @@ export {
   type MouseEventKind,
   type PixelRect,
   type ProgressKind,
+  type ProgramStatusRecord,
   type TermyCoreOptions,
   type TermyEvent,
   type TerminalModes,

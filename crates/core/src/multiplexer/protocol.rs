@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::io::{Read, Write};
 use std::sync::Arc;
 
-pub(crate) const VERSION: u32 = 1;
+// Version 2 adds the OSC 7501 snapshot event to the bincode event enum.
+pub(crate) const VERSION: u32 = 2;
 const MAX_MESSAGE_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -200,12 +200,15 @@ impl TerminalView {
             }));
 
         for index in 0..self.session.tabs.len() {
-            let (tab_title, pinned, progress_state) = {
+            let (tab_title, pinned, progress_state, program_status) = {
                 let tab = &self.session.tabs[index];
                 (
                     tab.title.clone(),
                     tab.pinned,
                     tab.aggregate_progress_state(),
+                    self.progress_indicator_enabled
+                        .then(|| tab.program_status_state())
+                        .flatten(),
                 )
             };
             let is_active = index == self.session.active_tab;
@@ -290,6 +293,7 @@ impl TerminalView {
                     open_anim_progress: None,
                     hover_progress: self.tab_strip.hover_progress(index, now),
                     progress_state,
+                    program_status,
                 },
                 font_family,
                 colors,

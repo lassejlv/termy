@@ -1460,3 +1460,38 @@ fn preferred_utf8_locale_falls_back_for_c_or_posix() {
 }
 
 mod input_and_launch;
+
+#[test]
+fn program_status_reports_are_coalesced_and_clear_through_public_events() {
+    let terminal = Terminal::new_display(test_terminal_size(), None);
+    terminal.feed_output(
+        b"\x1b]7501;?\x07\x1b]7501;state=working:app=cargo\x07\x1b]7501;state=done:msg=SGk=\x07",
+    );
+    let mut host = RecordingReplyHost::default();
+    let (events, _) = terminal.drain_events(&mut host);
+    assert_eq!(host.protocol_replies, b"\x1b]7501;?\x1b\\");
+    let snapshots: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            TerminalEvent::ProgramStatus(records) => Some(records),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0][0].state, crate::ProgramState::Done);
+    assert_eq!(snapshots[0][0].app, None);
+    terminal.feed_output(b"\x1b]133;A\x07");
+    let (events, _) = terminal.drain_events(&mut host);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, TerminalEvent::ProgramStatus(_)))
+    );
+    terminal.feed_output(b"\x1bc");
+    let (events, _) = terminal.drain_events(&mut host);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, TerminalEvent::ProgramStatus(records) if records.is_empty()))
+    );
+}

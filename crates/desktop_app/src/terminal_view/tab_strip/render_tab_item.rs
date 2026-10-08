@@ -25,6 +25,7 @@ pub(super) struct TabItemRenderInput {
     pub(super) open_anim_progress: Option<f32>,
     pub(super) hover_progress: f32,
     pub(super) progress_state: ProgressState,
+    pub(super) program_status: Option<termy_core::ProgramState>,
 }
 
 #[cfg(test)]
@@ -393,11 +394,12 @@ impl TerminalView {
                     .flex()
                     .items_center()
                     .justify_start()
-                    .children(Self::render_progress_dot(
-                        &input.progress_state,
-                        colors,
-                        anim,
-                    ))
+                    .children(if let Some(state) = input.program_status {
+                        Some(Self::render_program_status_badge(state, colors))
+                    } else {
+                        Self::render_progress_dot(&input.progress_state, colors, anim)
+                            .map(IntoElement::into_any_element)
+                    })
                     .into_any_element(),
             )
         } else {
@@ -565,6 +567,7 @@ mod tests {
             open_anim_progress: None,
             hover_progress: 0.0,
             progress_state: ProgressState::default(),
+            program_status: None,
         }
     }
 

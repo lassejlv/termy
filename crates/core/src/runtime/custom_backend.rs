@@ -632,6 +632,7 @@ impl CustomBackend {
                     state.append_replies(&replies);
                     state.generation = state.generation.wrapping_add(1);
                 }
+                state.engine.process_exited();
                 state.queue(PendingEvent::Terminal(TerminalEvent::Exit));
                 drop(state);
                 exit.notify();
@@ -811,15 +812,20 @@ impl CustomBackend {
         host: &mut impl TerminalReplyHost,
     ) -> (Vec<TerminalEvent>, bool) {
         let wakeup = self.shared.wakeup_queued.swap(false, Ordering::AcqRel);
-        let (batch, has_more) = {
+        let (batch, has_more, program_status) = {
             let mut state = self.shared.state();
             let count = state.events.len().min(EVENT_BATCH);
             let batch: Vec<_> = (0..count).filter_map(|_| state.pop_event()).collect();
-            (batch, !state.events.is_empty())
+            let program_status = state.engine.take_program_status();
+            (batch, !state.events.is_empty(), program_status)
         };
         let mut events = Vec::with_capacity(batch.len() + usize::from(wakeup));
         if wakeup {
             events.push(TerminalEvent::Wakeup);
+        }
+        // Deliver current state before Exit; it is not subject to queue overflow.
+        if let Some(records) = program_status {
+            events.push(TerminalEvent::ProgramStatus(records));
         }
         for event in batch {
             match event {
@@ -885,6 +891,7 @@ impl CustomBackend {
         self.shared.wakeup_queued.load(Ordering::Acquire)
             || !state.events.is_empty()
             || !state.replies.is_empty()
+            || state.engine.has_program_status_changes()
     }
     pub(super) fn set_query_colors(&mut self, colors: TerminalQueryColors) {
         let mut state = self.shared.state();

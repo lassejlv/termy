@@ -7853,6 +7853,7 @@ name = "termy_wasm"
 version = "0.1.0"
 dependencies = [
  "js-sys",
+ "serde_json",
  "termy_core",
  "wasm-bindgen",
  "web-time",

@@ -109,7 +109,7 @@ Events return an `IDisposable`:
 `onData`, `onBinary`, `onBytes`, `onResize`, `onTitleChange`, `onBell`,
 `onSelectionChange`, `onScroll`, `onRender`, `onKey`, `onCursorMove`,
 `onWriteParsed`, `onCwdChange` (OSC 7), `onProgress` (OSC 9;4),
-`onClipboard` (OSC 52), `onShellIntegration` (OSC 133), `onFocus`, `onBlur`.
+`onProgramStatus` (OSC 7501), `onClipboard` (OSC 52), `onShellIntegration` (OSC 133), `onFocus`, `onBlur`.
 
 Lines are absolute: `0` is the oldest scrollback line and `historySize` is the
 first live-screen line (the same convention as xterm.js `buffer` rows).
@@ -162,7 +162,7 @@ Termy theme instead.
 Inherited from the desktop engine: VT100-VT520 and xterm control sequences,
 256-color and truecolor, styled and colored underlines (`4:3`, `58`), OSC 8
 hyperlinks, OSC 4/10/11/12 color set and query, OSC 7 cwd, OSC 52 clipboard,
-OSC 133 shell integration, OSC 9;4 progress, synchronized output (2026),
+OSC 133 shell integration, OSC 9;4 progress, OSC 7501 program status, synchronized output (2026),
 bracketed paste, focus events, X10/normal/button/any mouse tracking with
 default/UTF-8/SGR encodings, the kitty keyboard protocol (all flags, including
 release events) and the kitty graphics protocol (RGBA/RGB/PNG, placements,
@@ -210,3 +210,7 @@ Publishing is manual and independent of desktop releases: run
 tab with a version and dist-tag. It sets all three package versions, builds
 with `wasm-opt`, runs the tests and publishes with provenance using the
 `NPM_TOKEN` secret. Use `dry_run` to check the tarballs first.
+
+See [program status](../docs/program-status.md) for OSC 7501 record semantics.
+Web hosts call `term.processExited()` when the attached process exits to expire
+working/blocked records while preserving completed results.

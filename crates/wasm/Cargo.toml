@@ -17,6 +17,7 @@ termy_core = { path = "../core", default-features = false }
 wasm-bindgen = "=0.2.128"
 js-sys = "0.3"
 web-time = "1"
+serde_json = { workspace = true }
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false

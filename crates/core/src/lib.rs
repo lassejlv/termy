@@ -21,7 +21,9 @@ mod mouse_protocol;
 mod osc_intercept;
 #[cfg(feature = "native")]
 mod path_env;
+mod program_status;
 mod protocol;
+pub use program_status::{ProgramState, ProgramStatusKind, ProgramStatusRecord};
 #[cfg(feature = "native")]
 pub mod remote;
 #[cfg(feature = "native")]

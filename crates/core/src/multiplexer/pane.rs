@@ -172,6 +172,7 @@ fn sticky_key(event: &TerminalEvent) -> Option<u8> {
         TerminalEvent::Title(_) | TerminalEvent::ResetTitle => Some(0),
         TerminalEvent::WorkingDirectory(_) => Some(1),
         TerminalEvent::Progress(_) => Some(2),
+        TerminalEvent::ProgramStatus(_) => Some(4),
         TerminalEvent::ShellPromptStart
         | TerminalEvent::ShellCommandStart
         | TerminalEvent::ShellCommandExecuting

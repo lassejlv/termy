@@ -1,0 +1,35 @@
+---
+title: Program status
+description: See when terminal programs are working, waiting for you, finished, or failed.
+---
+
+Termy supports the [OSC 7501 Program Status Protocol](https://www.superlogical.com/rex/docs/build/program-status).
+Programs that emit these reports can show a status badge in their tab and a
+message on their pane, including progress and requests for approval, an answer,
+or sign-in.
+
+The **Progress Indicators** setting (`progress_indicator_enabled = true`)
+controls these indicators. Blocked tasks take priority, followed by failures,
+completed tasks, and work in progress. Idle tasks have no badge. These reports
+do not trigger system notifications or sounds.
+
+## Report status from a script
+
+```sh
+status() {
+  printf '\033]7501;state=%s:msg=%s\033\\' "$1" "$(printf '%s' "$2" | base64 | tr -d '\n')"
+}
+status working "Running checks"
+# Run your command here, then report its result:
+status done "Checks passed"
+# Remove the status when it is no longer needed:
+status clear ""
+```
+
+A new shell prompt clears working and blocked statuses. Completed and failed
+statuses remain until replaced or cleared. Programs can use slash-separated
+`id` values for multiple tasks, such as `build/tests`; clearing a parent also
+clears its children. Full terminal reset clears every status.
+
+Status is retained when reattaching to Termy's native multiplexer. External
+multiplexers must forward OSC 7501 for reports and support detection to work.

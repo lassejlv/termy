@@ -80,6 +80,7 @@ mod multiplexer_session;
 mod overlay_view;
 mod persistence;
 mod plugin_ui;
+mod program_status;
 mod render;
 mod render_cache;
 mod runtime;
@@ -1021,6 +1022,7 @@ struct TerminalPane {
     // Progress reported by this pane's shell via OSC 9;4; the tab strip shows
     // the per-tab aggregate (TerminalTab::aggregate_progress_state).
     progress_state: ProgressState,
+    program_status: Vec<termy_core::ProgramStatusRecord>,
     render_cache: RefCell<TerminalPaneRenderCache>,
     /// Tracks the previous alternate-screen state so that transitions can be
     /// detected during `sync_terminal_size` and a SIGWINCH nudge sent.
@@ -1082,6 +1084,7 @@ impl TerminalPane {
             degraded: false,
             tmux_mouse_mode: None,
             progress_state: ProgressState::default(),
+            program_status: Vec::new(),
             terminal,
             render_cache: RefCell::new(TerminalPaneRenderCache::default()),
             last_alternate_screen: Cell::new(false),
@@ -1150,7 +1153,7 @@ impl TerminalTab {
         let mut in_progress_count = 0u32;
         let mut has_indeterminate = false;
         for pane in &self.panes {
-            match pane.progress_state {
+            match pane.effective_progress_state() {
                 ProgressState::Error(percent) => return ProgressState::Error(percent),
                 ProgressState::Warning(percent) => warning = warning.or(Some(percent)),
                 ProgressState::InProgress(percent) => {
@@ -4207,6 +4210,10 @@ impl TerminalView {
                         }
                         // Progress indicator (OSC 9;4) — tracked per pane; the
                         // tab strip shows the per-tab aggregate.
+                        TerminalEvent::ProgramStatus(records) => {
+                            self.session.tabs[tab_index].panes[pane_index].program_status = records;
+                            should_redraw = true;
+                        }
                         TerminalEvent::Progress(state) => {
                             if self.progress_indicator_enabled
                                 && self.session.tabs[tab_index].panes[pane_index].progress_state
