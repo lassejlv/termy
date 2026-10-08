@@ -156,7 +156,7 @@ impl KittyGraphicsState {
                 })
                 .collect();
             let before = self.placements.len();
-            self.placements.retain(|placement| {
+            self.retain_placements(|placement| {
                 let PlacementLocation::Relative {
                     parent_image_id,
                     parent_placement_id,

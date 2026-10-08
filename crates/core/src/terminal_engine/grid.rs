@@ -1072,22 +1072,21 @@ impl Grid {
 
     pub(super) fn set_history_limit(&mut self, limit: usize) {
         self.release_history_read_cache();
-        let previous = self.history.len();
         self.requested_history_limit = limit.min(MAX_HISTORY_ROWS);
         self.history_limit = Self::bounded_history(self.size, limit);
         self.trim_history();
-        let removed = previous.saturating_sub(self.history.len());
-        if removed != 0 {
-            self.effect(GridEffect::ClearHistory { removed });
-        }
         self.mark_full_damage();
     }
 
     fn trim_history(&mut self) {
+        let removed = self.history.len().saturating_sub(self.history_limit);
         while self.history.len() > self.history_limit {
             self.history.pop_front();
         }
         self.display_offset = self.display_offset.min(self.history.len());
+        if removed != 0 {
+            self.effect(GridEffect::ClearHistory { removed });
+        }
     }
 
     pub(super) fn soft_reset(&mut self, cursor_shape: CursorShape) {

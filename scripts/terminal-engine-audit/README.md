@@ -25,6 +25,11 @@ rustc --edition=2024 -O scripts/terminal-engine-audit/compaction.rs \
   virtual placement prototype. Five alternating pairs at three grid sizes
   expose viewport scans during chunk assembly. The prototype has no printed
   Unicode placeholders; image decode is included, rendering is not.
+- `graphics-text.rs`: perform 100,000 two-byte text feeds on the alternate
+  screen with 0, 64, 512 or 4,096 direct placements retained on the primary
+  screen. Five rounds alternate case order; setup and warmup are excluded.
+  This exposes image-placement scans in ordinary text parsing even when no
+  images are visible.
 
 Finish all builds before timing. Run one probe at a time, alternate baseline
 and candidate order, and retain the raw output. Use

@@ -10,44 +10,13 @@ pub fn read_graphics_shared_memory(
 
 #[cfg(unix)]
 mod platform {
-    use std::{
-        ffi::{CString, c_char, c_int, c_void},
-        fs::File,
-        os::fd::FromRawFd,
-    };
-
-    #[cfg_attr(target_os = "linux", link(name = "rt"))]
-    unsafe extern "C" {
-        fn shm_open(name: *const c_char, flags: c_int, ...) -> c_int;
-        fn shm_unlink(name: *const c_char) -> c_int;
-        fn mmap(
-            address: *mut c_void,
-            length: usize,
-            protection: c_int,
-            flags: c_int,
-            fd: c_int,
-            offset: i64,
-        ) -> *mut c_void;
-        fn munmap(address: *mut c_void, length: usize) -> c_int;
-        fn getpagesize() -> c_int;
-    }
+    use std::{ffi::CString, fs::File, os::fd::FromRawFd};
 
     struct SharedObject(CString);
     impl Drop for SharedObject {
         fn drop(&mut self) {
             // SAFETY: The owned CString remains valid throughout this call.
-            unsafe {
-                shm_unlink(self.0.as_ptr());
-            }
-        }
-    }
-    struct Mapping(*mut c_void, usize);
-    impl Drop for Mapping {
-        fn drop(&mut self) {
-            // SAFETY: This is the exact successful mapping and its original length.
-            unsafe {
-                munmap(self.0, self.1);
-            }
+            unsafe { libc::shm_unlink(self.0.as_ptr()) };
         }
     }
 
@@ -57,10 +26,9 @@ mod platform {
         size: Option<u64>,
         limit: usize,
     ) -> Result<Vec<u8>, String> {
-        use std::os::fd::AsRawFd;
         let name = CString::new(name).map_err(|_| "EINVAL:invalid shared-memory name")?;
-        // SAFETY: A NUL-terminated name, O_RDONLY (zero), and no O_CREAT.
-        let fd = unsafe { shm_open(name.as_ptr(), 0) };
+        // SAFETY: A NUL-terminated name, read-only access, and no O_CREAT.
+        let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) };
         if fd < 0 {
             return Err("ENOENT:unable to open shared-memory object".into());
         }
@@ -84,66 +52,129 @@ mod platform {
         if length == 0 {
             return Ok(Vec::new());
         }
-        // SAFETY: getpagesize has no arguments or ownership requirements.
-        let page = unsafe { getpagesize() }.max(1) as u64;
+        read_range(&file, offset, length as usize)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn read_range(file: &File, offset: u64, length: usize) -> Result<Vec<u8>, String> {
+        use std::os::unix::fs::FileExt;
+        // The producer can truncate the object after metadata validation, even
+        // after unlink. A descriptor read returns EOF instead of faulting in a
+        // userspace memcpy from an invalidated mapping.
+        let mut bytes = vec![0; length];
+        file.read_exact_at(&mut bytes, offset)
+            .map_err(|_| "EIO:unable to read shared-memory range")?;
+        Ok(bytes)
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    struct Mapping(*mut libc::c_void, usize);
+    #[cfg(any(target_os = "macos", test))]
+    impl Drop for Mapping {
+        fn drop(&mut self) {
+            // SAFETY: This is the exact successful mapping and its original length.
+            unsafe { libc::munmap(self.0, self.1) };
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn read_range(file: &File, offset: u64, length: usize) -> Result<Vec<u8>, String> {
+        use std::os::fd::AsRawFd;
+        unsafe extern "C" {
+            static mach_task_self_: u32;
+            fn mach_vm_read_overwrite(
+                task: u32,
+                address: u64,
+                size: u64,
+                data: u64,
+                out_size: *mut u64,
+            ) -> i32;
+        }
+        // Darwin POSIX shared-memory descriptors do not support pread. Let
+        // the kernel copy the mapping so inaccessible pages produce an error,
+        // rather than dereferencing externally owned storage in Rust.
+        // SAFETY: sysconf has no pointer arguments or ownership requirements.
+        let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(1) as u64;
         let aligned = offset / page * page;
         let skip = (offset - aligned) as usize;
         let map_len = skip
-            .checked_add(length as usize)
+            .checked_add(length)
             .ok_or("EFBIG:shared-memory range overflow")?;
-        // SAFETY: Bounds were checked against the descriptor's object size. The
-        // mapping is read-only, page aligned, and kept alive until the copy ends.
+        let aligned =
+            libc::off_t::try_from(aligned).map_err(|_| "EFBIG:shared-memory offset overflow")?;
+        // SAFETY: The descriptor is live and the offset page aligned. The
+        // producer may change the backing storage, so we never dereference it.
         let address = unsafe {
-            mmap(
+            libc::mmap(
                 std::ptr::null_mut(),
                 map_len,
-                1,
-                1,
+                libc::PROT_READ,
+                libc::MAP_SHARED,
                 file.as_raw_fd(),
-                aligned as i64,
+                aligned,
             )
         };
-        if address as isize == -1 {
+        if address == libc::MAP_FAILED {
             return Err("EIO:unable to map shared-memory object".into());
         }
         let mapping = Mapping(address, map_len);
-        // SAFETY: The bounded range lies inside the live read-only mapping.
-        Ok(
-            unsafe {
-                std::slice::from_raw_parts(mapping.0.cast::<u8>().add(skip), length as usize)
-            }
-            .to_vec(),
-        )
+        let mut bytes = vec![0; length];
+        let mut copied = 0;
+        // SAFETY: The kernel reads our live mapping into an exclusively owned
+        // buffer of exactly `length` bytes. It reports mapping faults via the
+        // return code; `copied` is writable for the duration of the call.
+        let status = unsafe {
+            mach_vm_read_overwrite(
+                mach_task_self_,
+                (mapping.0 as usize + skip) as u64,
+                length as u64,
+                bytes.as_mut_ptr() as u64,
+                &mut copied,
+            )
+        };
+        if status != 0 || copied != length as u64 {
+            return Err("EIO:unable to read shared-memory range".into());
+        }
+        Ok(bytes)
     }
 
     #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
     mod tests {
         use super::*;
         use std::os::fd::AsRawFd;
-        unsafe extern "C" {
-            fn ftruncate(fd: c_int, length: i64) -> c_int;
-        }
 
         #[test]
         fn kitty_shared_memory_reads_an_unaligned_range_and_unlinks_it() {
             let name = CString::new(format!("/termy-kitty-{}", std::process::id())).unwrap();
-            #[cfg(target_os = "linux")]
-            let flags = 2 | 64 | 128;
-            #[cfg(target_os = "macos")]
-            let flags = 2 | 0x200 | 0x800;
             // SAFETY: A unique name, read/write + create/exclusive flags and mode 0600.
-            let fd = unsafe { shm_open(name.as_ptr(), flags, 0o600u32) };
+            let fd = unsafe {
+                libc::shm_open(
+                    name.as_ptr(),
+                    libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+                    0o600,
+                )
+            };
             assert!(fd >= 0);
             // SAFETY: The new file descriptor is owned by this test.
             let file = unsafe { File::from_raw_fd(fd) };
             let _cleanup = SharedObject(name.clone());
             // SAFETY: Resize our own shared object before mapping it.
-            assert_eq!(unsafe { ftruncate(file.as_raw_fd(), 8) }, 0);
+            assert_eq!(unsafe { libc::ftruncate(file.as_raw_fd(), 8) }, 0);
             // SAFETY: The object is eight bytes long and opened read/write.
-            let address = unsafe { mmap(std::ptr::null_mut(), 8, 3, 1, file.as_raw_fd(), 0) };
-            assert_ne!(address as isize, -1);
+            let address = unsafe {
+                libc::mmap(
+                    std::ptr::null_mut(),
+                    8,
+                    libc::PROT_READ | libc::PROT_WRITE,
+                    libc::MAP_SHARED,
+                    file.as_raw_fd(),
+                    0,
+                )
+            };
+            assert_ne!(address, libc::MAP_FAILED);
             let mapping = Mapping(address, 8);
-            // SAFETY: Write exactly the bounds of the live writable mapping.
+            // SAFETY: Our exclusively owned object has no other writers and is
+            // not truncated while this test initializes its eight bytes.
             unsafe {
                 std::slice::from_raw_parts_mut(mapping.0.cast::<u8>(), 8)
                     .copy_from_slice(&[9, 1, 2, 3, 255, 8, 7, 6]);
@@ -152,8 +183,20 @@ mod platform {
                 read(name.as_bytes(), 1, Some(4), 16).unwrap(),
                 [1, 2, 3, 255]
             );
-            // SAFETY: Read-only open without creation; the terminal must have unlinked it.
-            assert!(unsafe { shm_open(name.as_ptr(), 0) } < 0);
+            // SAFETY: Read-only open without creation; read must have unlinked it.
+            assert!(unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) } < 0);
+        }
+
+        #[test]
+        fn shared_memory_copy_returns_an_error_after_backing_storage_is_truncated() {
+            let file = tempfile::tempfile().unwrap();
+            file.set_len(8192).unwrap();
+            let validated_length = file.metadata().unwrap().len() as usize;
+            // Reproduce the race deterministically at the boundary between
+            // validation and copying. A regular file also allows truncation on
+            // Darwin, whose shared-memory objects cannot be resized after creation.
+            file.set_len(0).unwrap();
+            assert!(read_range(&file, 1, validated_length - 1).is_err());
         }
     }
 }

@@ -31,6 +31,7 @@ by native, display-only, tmux and persistent Termy sessions.
   increase lookup work beyond four entries or change immutable cell metadata.
 - `grid/print.rs` joins streaming emoji/grapheme sequences and adjusts their
   column width, including right-margin promotion and one-column reflow.
+  Width changes damage erased spacer cells even when the cursor is hidden.
   `grid/row.rs` packs cold history into scalar/flag arrays, style runs, and shared
   metadata while leaving active rows dense.
 - `dispatch.rs` applies control sequences and owns modes, palette changes,
@@ -44,7 +45,14 @@ by native, display-only, tmux and persistent Termy sessions.
 - `graphics.rs` applies image commands and ordered scroll/clear effects inside
   the same parser commits as text. Upload chunks do not scan the viewport for
   Unicode placeholders; visual mutations invalidate placeholder placement state.
+  Virtual placement counts are maintained per screen, so checking for
+  placeholders during ordinary text feeds does not scan retained images. History
+  evicted during height resize moves image anchors with the retained text.
   Animation revision polling allocates nothing.
+- `media/shared_memory.rs` copies bounded image transfers into owned storage.
+  Linux descriptor reads handle concurrent truncation as an error. macOS uses
+  a kernel-mediated mapping copy because its shared-memory descriptors do not
+  support descriptor reads.
 - `transport/` provides bounded native PTY input/output on Unix and Windows.
   The runtime maintenance thread sleeps until a synchronized-output deadline or
   a pending history-compaction step. History compaction starts 250 ms after the
@@ -82,7 +90,10 @@ The Unicode, CJK rendering, memory, and native presented-frame measurements are
 documented in the [follow-up report](../../../../docs/engineering/unicode-history-performance-2026-10-05.md).
 The [October 7 audit report](../../../../docs/engineering/terminal-engine-audit-fixes-2026-10-07.md)
 records the subsequent correctness fixes, targeted regression measurements, and
-remaining throughput and presentation limitations.
+remaining throughput and presentation limitations. The
+[October 8 review fixes](../../../../docs/engineering/terminal-engine-review-fixes-2026-10-08.md)
+cover shared-memory truncation, resize image anchors, grapheme damage and retained
+placement lookup costs.
 
 ```sh
 cargo test -p termy_core terminal_engine
