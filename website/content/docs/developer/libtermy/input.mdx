@@ -28,7 +28,7 @@ bytes to the external transport instead. Translate native events into
 `TermyKeystroke`: `key` is the logical key name, `key_char` is optional produced
 text, and `modifiers` describes control, alt, shift, platform, and function keys.
 Use names such as `enter`, `backspace`, `left`, and `right` supported by the
-[encoder](https://github.com/termylabs/termy/blob/main/crates/core/src/keyboard.rs).
+[encoder](https://github.com/lassejlv/termy/blob/main/crates/core/src/keyboard.rs).
 
 In C, fill `TermyFfiKeystroke` and call `termy_terminal_encode_key` or
 `termy_terminal_encode_key_with_options`. `event_kind` is `1` press, `2` repeat,
