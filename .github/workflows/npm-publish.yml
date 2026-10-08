@@ -30,6 +30,7 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: packages
@@ -51,7 +52,8 @@ jobs:
         run: |
           # Must match the wasm-bindgen version pinned in crates/wasm/Cargo.toml.
           cargo install wasm-bindgen-cli --version 0.2.128 --locked
-          sudo apt-get update && sudo apt-get install -y binaryen
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 install -y binaryen
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
