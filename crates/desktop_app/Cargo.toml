@@ -1,7 +1,7 @@
 [package]
 name = "termy"
 default-run = "termy"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 edition = "2024"
 
 [package.metadata]
