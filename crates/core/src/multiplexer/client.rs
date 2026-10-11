@@ -15,6 +15,7 @@ use std::{
 struct Connection {
     stream: Mutex<TcpStream>,
     conditional_layout_updates: bool,
+    viewport_replies: bool,
 }
 
 impl Connection {
@@ -23,6 +24,7 @@ impl Connection {
         Ok(Self {
             stream: Mutex::new(stream),
             conditional_layout_updates: capabilities.conditional_layout_updates,
+            viewport_replies: capabilities.viewport_replies,
         })
     }
     fn request(&self, request: Request) -> anyhow::Result<Response> {
@@ -164,6 +166,7 @@ impl SessionClient {
                 let mut legacy_cache = LegacyGraphicsCache::default();
                 let result = (|| -> anyhow::Result<()> {
                     loop {
+                        let mut tab_chrome = false;
                         match read_message(&mut stream)? {
                             Update::State(mut state) => {
                                 validate_state(&state)?;
@@ -191,8 +194,19 @@ impl SessionClient {
                                 reader_shared.publish_state(state);
                             }
                             Update::Events(events) => {
-                                let mut pending = reader_shared.pending.lock().unwrap();
-                                pending.extend_events(events)?;
+                                tab_chrome = events.iter().any(|event| {
+                                    matches!(
+                                        event,
+                                        TerminalEvent::ProgramStatus(_)
+                                            | TerminalEvent::Title(_)
+                                            | TerminalEvent::ResetTitle
+                                    )
+                                });
+                                reader_shared
+                                    .pending
+                                    .lock()
+                                    .unwrap()
+                                    .extend_events(events)?;
                             }
                             Update::Host { id, request } => reader_shared
                                 .pending
@@ -201,7 +215,11 @@ impl SessionClient {
                                 .hosts
                                 .push((id, request)),
                         }
-                        reader_shared.notify();
+                        if tab_chrome {
+                            reader_shared.notify_tab_chrome();
+                        } else {
+                            reader_shared.notify();
+                        }
                     }
                 })();
                 if let Err(error) = result {
@@ -381,6 +399,13 @@ impl ClientState {
             wakeup.notify();
         }
     }
+    // Titles and program status drive tab chrome, which stays visible for
+    // hidden tabs, so they wake the host even while render wakeups are suspended.
+    fn notify_tab_chrome(&self) {
+        if let Some(wakeup) = &self.wakeup {
+            wakeup.notify();
+        }
+    }
     fn fail(&self, error: &anyhow::Error) {
         if self.closing.load(Ordering::Acquire) || self.disconnected.swap(true, Ordering::AcqRel) {
             return;
@@ -417,6 +442,33 @@ impl Drop for ClientTerminal {
     }
 }
 
+impl ClientTerminal {
+    // The host publishes the new frame before replying, so selection waits for
+    // one subscription update rather than attaching for a second full state.
+    fn viewport_request(&self, command: RemoteCommand) -> anyhow::Result<RemoteReply> {
+        let result = (|| {
+            let Response::Viewport {
+                changed,
+                generation,
+            } = self.rpc.request(Request::ViewportCommand {
+                pane: self.id.clone(),
+                command,
+            })?
+            else {
+                bail!("invalid terminal viewport response");
+            };
+            if changed {
+                self.shared.wait_for_generation(generation)?;
+            }
+            Ok(RemoteReply::Changed(changed))
+        })();
+        if let Err(error) = &result {
+            self.shared.fail(error);
+        }
+        result
+    }
+}
+
 impl RemoteTransport for ClientTerminal {
     fn state(&self) -> Arc<RemoteState> {
         Arc::clone(&self.shared.state.lock().unwrap())
@@ -428,6 +480,9 @@ impl RemoteTransport for ClientTerminal {
                 | RemoteCommand::ScrollToBottom
                 | RemoteCommand::ClearScrollback
         );
+        if changes_viewport && self.rpc.viewport_replies {
+            return self.viewport_request(command);
+        }
         match self.rpc.request(Request::Command {
             pane: self.id.clone(),
             command,

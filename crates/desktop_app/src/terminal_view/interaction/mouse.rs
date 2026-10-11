@@ -1,6 +1,10 @@
 use super::*;
 
 const SELECTION_DRAG_AUTOSCROLL_MAX_LINES: i32 = 3;
+// Autoscroll runs on a timer rather than per mouse-move event: its speed no
+// longer depends on the pointer's event rate, and multiplexer panes make at
+// most one blocking viewport round trip per tick.
+const SELECTION_DRAG_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(33);
 const CURSOR_MOVE_PREVIEW_MS: u64 = 75;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -769,29 +773,71 @@ impl TerminalView {
             return false;
         }
 
-        let mut changed = false;
         if allow_autoscroll {
-            let delta_lines = self.selection_drag_autoscroll_lines(position);
-            if delta_lines != 0
-                && self
-                    .active_terminal()
-                    .is_some_and(|terminal| terminal.scroll_display(delta_lines))
-            {
-                self.sync_content_scroll_baseline();
-                self.mark_terminal_scrollbar_activity(cx);
-                changed = true;
+            self.selection_autoscroll_pointer = Some(position);
+            if self.selection_drag_autoscroll_lines(position) != 0 {
+                self.ensure_selection_autoscroll(cx);
             }
         }
 
-        if self.update_selection_head_from_position(position, true) {
-            changed = true;
-        }
-
+        let changed = self.update_selection_head_from_position(position, true);
         if changed {
             self.clear_hovered_link();
             cx.notify();
         }
         changed
+    }
+
+    /// Scrolls one step toward the drag pointer. Returns false once the
+    /// pointer is back inside the pane, the drag ended, or history is exhausted.
+    fn selection_autoscroll_tick(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(position) = self
+            .selection_autoscroll_pointer
+            .filter(|_| self.selection_dragging)
+        else {
+            return false;
+        };
+        let delta_lines = self.selection_drag_autoscroll_lines(position);
+        if delta_lines == 0
+            || !self
+                .active_terminal()
+                .is_some_and(|terminal| terminal.scroll_display(delta_lines))
+        {
+            return false;
+        }
+        self.sync_content_scroll_baseline();
+        self.mark_terminal_scrollbar_activity(cx);
+        self.update_selection_head_from_position(position, true);
+        self.clear_hovered_link();
+        cx.notify();
+        true
+    }
+
+    fn ensure_selection_autoscroll(&mut self, cx: &mut Context<Self>) {
+        if self.selection_autoscroll_running || !self.selection_autoscroll_tick(cx) {
+            return;
+        }
+        self.selection_autoscroll_running = true;
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                cx.background_executor()
+                    .timer(SELECTION_DRAG_AUTOSCROLL_INTERVAL)
+                    .await;
+                let Ok(keep_running) = cx.update(|cx| {
+                    this.update(cx, |view, cx| {
+                        let keep_running = view.selection_autoscroll_tick(cx);
+                        view.selection_autoscroll_running = keep_running;
+                        keep_running
+                    })
+                }) else {
+                    break;
+                };
+                if !keep_running {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     fn finish_selection_drag_at_position(

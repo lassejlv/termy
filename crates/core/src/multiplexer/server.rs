@@ -52,6 +52,7 @@ pub fn serve(root: &Path) -> anyhow::Result<()> {
     let endpoint = Endpoint {
         conditional_layout_updates: true,
         graphics_stream: true,
+        viewport_replies: true,
         version: VERSION,
         port: address.port(),
         token: token.clone(),
@@ -116,6 +117,13 @@ impl Server {
             }
             Request::Command { pane, command } => {
                 Response::Reply(self.pane(&pane)?.command(command)?)
+            }
+            Request::ViewportCommand { pane, command } => {
+                let (changed, generation) = self.pane(&pane)?.viewport_command(command)?;
+                Response::Viewport {
+                    changed,
+                    generation,
+                }
             }
             Request::HostReply { pane, id, reply } => {
                 self.pane(&pane)?.host_reply(id, reply);

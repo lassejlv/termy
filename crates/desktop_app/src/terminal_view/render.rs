@@ -510,6 +510,7 @@ struct ResolvedCellColors {
     fg: gpui_kit::Rgba,
     bg: gpui_kit::Rgba,
     uses_terminal_default_bg: bool,
+    bg_matches_theme: bool,
 }
 
 fn resolve_core_color(
@@ -583,6 +584,16 @@ fn resolve_cell_colors<'a>(
         bg_source,
         termy_core::TerminalRenderColor::DefaultBackground
     );
+    let theme_bg = resolve_core_color(
+        termy_core::TerminalRenderColor::DefaultBackground,
+        context.colors,
+        context.core_palette,
+    );
+    let same_channel = |a: f32, b: f32| (a - b).abs() <= 0.5 / 255.0;
+    let bg_matches_theme = uses_terminal_default_bg
+        || (same_channel(bg.r, theme_bg.r)
+            && same_channel(bg.g, theme_bg.g)
+            && same_channel(bg.b, theme_bg.b));
     let dim = cell.dim;
     let character = cell.text.chars().next().unwrap_or('\0');
 
@@ -612,6 +623,7 @@ fn resolve_cell_colors<'a>(
         fg,
         bg,
         uses_terminal_default_bg,
+        bg_matches_theme,
     }
 }
 
@@ -914,6 +926,7 @@ impl TerminalView {
             fg: resolved_colors.fg.into(),
             bg: resolved_colors.bg.into(),
             uses_terminal_default_bg: resolved_colors.uses_terminal_default_bg,
+            bg_matches_theme: resolved_colors.bg_matches_theme,
             bold: text_attributes.bold,
             italic: text_attributes.italic,
             underline,
@@ -1007,6 +1020,7 @@ impl TerminalView {
             fg: default_fg.into(),
             bg: default_bg.into(),
             uses_terminal_default_bg: true,
+            bg_matches_theme: true,
             bold: false,
             italic: false,
             underline: None,
@@ -1839,7 +1853,7 @@ impl TerminalView {
             .is_some_and(|tab| {
                 tab.panes
                     .iter()
-                    .any(|pane| pane.effective_progress_state().is_indeterminate())
+                    .any(|pane| pane.progress_state.is_indeterminate())
             })
     }
 
@@ -3041,11 +3055,14 @@ impl Render for TerminalView {
                             width: cols,
                             height: rows,
                         },
+                        // Claude Code paints its blank cells with the queried
+                        // theme color. Those must not count as a TUI-owned
+                        // border, or a large diff wins the padding vote.
                         |row, col| {
                             pane_cells
                                 .get(row)
                                 .and_then(|cells| cells.get(col))
-                                .is_some_and(|cell| !cell.uses_terminal_default_bg)
+                                .is_some_and(|cell| !cell.bg_matches_theme)
                         },
                     );
                 let pane_surface_bg = tui_surface_background(
@@ -3249,8 +3266,7 @@ impl Render for TerminalView {
                 }
 
                 let link_hovered = is_active_pane && self.hovered_link.is_some();
-                let pane_progress_loader =
-                    self.pane_progress_loader_element(pane.effective_progress_state());
+                let pane_progress_loader = self.pane_progress_loader_element(pane.progress_state);
                 pane_layers.push(
                     div()
                         .id(pane.cached_element_ids.pane.clone())
@@ -3267,10 +3283,24 @@ impl Render for TerminalView {
                         .children(kitty_below_text)
                         .child(terminal_grid)
                         .children(kitty_above_text)
-                        .children(pane_progress_loader)
-                        .children(self.pane_program_status_element(pane))
                         .into_any_element(),
                 );
+                // Span the pane's full surface, like the scrollbar: the content
+                // box (and a lone pane's frame) is inset by terminal padding,
+                // which left a gap before the track.
+                if let Some(loader) = pane_progress_loader {
+                    let surface = pane_layout.scrollbar_surface;
+                    pane_layers.push(
+                        div()
+                            .absolute()
+                            .left(px(surface.origin_x))
+                            .top(px(surface.origin_y))
+                            .w(px(surface.width))
+                            .h(px(TERMINAL_PROGRESS_LOADER_HEIGHT))
+                            .child(loader)
+                            .into_any_element(),
+                    );
+                }
 
                 if multi_pane && pane_active_border_alpha > f32::EPSILON {
                     let mut border = blend_rgb_only(colors.cursor, colors.foreground, 0.32);
@@ -4143,6 +4173,7 @@ mod tests {
             fg: gpui_kit::Hsla::transparent_black(),
             bg: gpui_kit::Hsla::transparent_black(),
             uses_terminal_default_bg: false,
+            bg_matches_theme: false,
             bold: false,
             italic: false,
             underline: None,
@@ -4850,7 +4881,27 @@ mod tests {
             context,
         );
         assert!(!rgb_background.uses_terminal_default_bg);
+        assert!(!rgb_background.bg_matches_theme);
         assert!((rgb_background.bg.a - 1.0).abs() <= f32::EPSILON);
+
+        // An explicit color equal to the theme background (an app painting
+        // back its OSC 11 reply) still reads as the theme for padding.
+        let theme = context.colors.background;
+        let channel = |value: f32| (value * 255.0).round() as u8;
+        let queried_theme_background = resolve_cell_colors(
+            &test_term_cell(
+                termy_core::TerminalRenderColor::DefaultForeground,
+                termy_core::TerminalRenderColor::Rgb(TerminalColor {
+                    r: channel(theme.r),
+                    g: channel(theme.g),
+                    b: channel(theme.b),
+                }),
+                termy_core::TerminalRenderCell::default(),
+            ),
+            context,
+        );
+        assert!(!queried_theme_background.uses_terminal_default_bg);
+        assert!(queried_theme_background.bg_matches_theme);
     }
 
     #[test]

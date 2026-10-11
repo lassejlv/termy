@@ -64,6 +64,48 @@ fn display_terminal_notifier_coalesces_until_events_are_drained() {
 }
 
 #[test]
+fn hidden_terminal_wakes_only_for_tab_chrome_changes() {
+    let notifications = Arc::new(AtomicU64::new(0));
+    let notification_count = notifications.clone();
+    let terminal = Terminal::new_display_with_wakeup_notifier(
+        test_terminal_size(),
+        None,
+        Some(TerminalWakeupNotifier::new(move || {
+            notification_count.fetch_add(1, Ordering::Relaxed);
+        })),
+    );
+    terminal.set_wakeup_enabled(false);
+    let baseline = notifications.load(Ordering::Relaxed);
+
+    terminal.feed_output(b"output");
+    assert_eq!(notifications.load(Ordering::Relaxed), baseline);
+
+    terminal.feed_output(b"\x1b]7501;state=working:app=claude-code\x07");
+    assert_eq!(notifications.load(Ordering::Relaxed), baseline + 1);
+
+    let mut reply_host = RecordingReplyHost::default();
+    let (events, _) = terminal.drain_events(&mut reply_host);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, TerminalEvent::ProgramStatus(records) if records[0].state == crate::ProgramState::Working))
+    );
+    terminal.feed_output(b"more output");
+    assert_eq!(notifications.load(Ordering::Relaxed), baseline + 1);
+
+    terminal.feed_output(b"\x1b]2;background title\x07");
+    assert_eq!(notifications.load(Ordering::Relaxed), baseline + 2);
+    let (events, _) = terminal.drain_events(&mut reply_host);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, TerminalEvent::Title(title) if title == "background title"))
+    );
+    terminal.feed_output(b"even more output");
+    assert_eq!(notifications.load(Ordering::Relaxed), baseline + 2);
+}
+
+#[test]
 fn remote_screen_identity_matches_cells_during_concurrent_output() {
     let terminal = Terminal::new_display(test_terminal_size(), None);
     {

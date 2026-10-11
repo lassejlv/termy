@@ -55,6 +55,12 @@ pub(crate) enum Request {
         replacement: String,
     },
     SubscribeGraphics(String),
+    /// Scroll or clear the viewport, publish the new frame immediately and
+    /// reply with its generation. Gated by `Endpoint::viewport_replies`.
+    ViewportCommand {
+        pane: String,
+        command: RemoteCommand,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -66,6 +72,7 @@ pub(crate) enum Response {
     Layout(Option<String>),
     Error(String),
     LayoutUpdated(bool),
+    Viewport { changed: bool, generation: u64 },
 }
 
 #[derive(Serialize, Deserialize)]

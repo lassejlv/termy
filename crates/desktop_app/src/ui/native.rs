@@ -10,8 +10,8 @@
 //! whatever theme background sits underneath.
 
 use gpui_kit::{
-    App, BoxShadow, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, Rgba,
-    RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
+    App, BoxShadow, ElementId, InteractiveElement as _, IntoElement, ParentElement as _,
+    RenderOnce, Rgba, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
     base::{Transition, transition},
     div, point,
     prelude::FluentBuilder as _,
@@ -50,13 +50,16 @@ const fn motion(millis: u64, x1: f32, y1: f32, x2: f32, y2: f32) -> Motion {
 /// [`POPOVER_SCALE`] with a hint of overshoot, the way `NSPopover` does.
 pub(crate) const CARD_IN: Motion = motion(220, 0.25, 1.04, 0.3, 1.0);
 /// The scale a popover grows from as it appears.
+#[allow(dead_code)]
 pub(crate) const POPOVER_SCALE: f32 = 0.96;
 /// A selection gliding between neighbors (active tab capsule, palette row):
 /// a plain ease-out, so quick sweeps never wobble.
+#[allow(dead_code)]
 pub(crate) const SELECTION_MOVE: Motion = motion(200, 0.25, 0.8, 0.25, 1.0);
 /// A switch's thumb sliding across, settling with a hint of spring.
 pub(crate) const SWITCH: Motion = motion(260, 0.3, 1.12, 0.4, 1.0);
 /// A page or window fading in.
+#[allow(dead_code)]
 pub(crate) const PAGE_IN: Motion = motion(180, 0.25, 0.1, 0.25, 1.0);
 
 /// Samples `curve` at `t` (0–1).
@@ -204,6 +207,7 @@ impl NativePalette {
     }
 
     /// The highlight behind a keyboard-focused row that is not selected.
+    #[allow(dead_code)]
     pub(crate) fn hover(&self) -> Rgba {
         self.fill
     }
@@ -288,12 +292,12 @@ pub(crate) struct MacSwitch {
 }
 
 /// A switch, off and enabled until told otherwise.
-pub(crate) fn mac_switch(id: impl Into<ElementId>, palette: NativePalette) -> MacSwitch {
+pub(crate) fn mac_switch(id: impl Into<ElementId>, palette: &NativePalette) -> MacSwitch {
     MacSwitch {
         id: id.into(),
         checked: false,
         disabled: false,
-        palette,
+        palette: *palette,
         label: None,
         on_change: None,
     }
@@ -305,12 +309,14 @@ impl MacSwitch {
         self
     }
 
+    #[allow(dead_code)]
     pub(crate) fn disabled(mut self, disabled: bool) -> Self {
         self.disabled = disabled;
         self
     }
 
     /// What VoiceOver reads when the row doesn't name the switch.
+    #[allow(dead_code)]
     pub(crate) fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
         self.label = Some(label.into());
         self
@@ -385,7 +391,9 @@ impl RenderOnce for MacSwitch {
         gpui_kit::base::Switch::new(self.id)
             .checked(self.checked)
             .disabled(self.disabled)
-            .when_some(self.label, |switch, label| switch.accessibility_label(label))
+            .when_some(self.label, |switch, label| {
+                switch.accessibility_label(label)
+            })
             .when_some(on_change, |switch, on_change| {
                 switch.on_change(move |checked, _, window, cx| on_change(checked, window, cx))
             })

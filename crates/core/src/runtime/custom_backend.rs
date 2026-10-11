@@ -104,6 +104,8 @@ struct State {
     history_pending_since: Option<Instant>,
     // Whether the pending deadline is the idle delay rather than the cap.
     history_quiet: bool,
+    // A title event was queued since the last feed or commit woke the host.
+    title_changed: bool,
 }
 
 enum PendingEvent {
@@ -146,9 +148,18 @@ impl Shared {
     }
 
     fn notify(&self) {
-        if !self.wakeup_enabled.load(Ordering::Acquire) {
-            return;
+        if self.wakeup_enabled.load(Ordering::Acquire) {
+            self.queue_wakeup();
         }
+    }
+
+    // Titles and program status drive tab chrome, which stays visible for
+    // hidden tabs, so they wake the host even while render wakeups are suspended.
+    fn notify_tab_chrome(&self) {
+        self.queue_wakeup();
+    }
+
+    fn queue_wakeup(&self) {
         if !self.wakeup_queued.swap(true, Ordering::AcqRel) {
             crate::render_metrics::increment_runtime_wakeup_count();
             if let Some(notifier) = &self.notifier {
@@ -171,12 +182,16 @@ impl Shared {
             state.defer_history_compaction(Instant::now());
         }
         let should_notify = !state.engine.modes().synchronized_update || !state.events.is_empty();
+        let tab_chrome_changed = state.take_tab_chrome_changed();
         // Publish while the engine lock still protects this deadline: a later
         // feed must not have its timer replaced by an earlier feed's deadline.
         self.schedule_maintenance(&state);
         drop(state);
         if should_notify {
             self.notify();
+        }
+        if tab_chrome_changed {
+            self.notify_tab_chrome();
         }
         replies
     }
@@ -238,6 +253,7 @@ impl State {
             history_deadline: None,
             history_pending_since: None,
             history_quiet: true,
+            title_changed: false,
         }
     }
 
@@ -343,6 +359,10 @@ impl State {
         replies
     }
 
+    fn take_tab_chrome_changed(&mut self) -> bool {
+        std::mem::take(&mut self.title_changed) || self.engine.has_program_status_changes()
+    }
+
     fn engine_event(&mut self, event: engine::Event) {
         let event = match event {
             engine::Event::KittyClipboard(packet) => {
@@ -354,8 +374,14 @@ impl State {
                 return;
             }
             engine::Event::Bell => TerminalEvent::Bell,
-            engine::Event::Title(title) => TerminalEvent::Title(title),
-            engine::Event::ResetTitle => TerminalEvent::ResetTitle,
+            engine::Event::Title(title) => {
+                self.title_changed = true;
+                TerminalEvent::Title(title)
+            }
+            engine::Event::ResetTitle => {
+                self.title_changed = true;
+                TerminalEvent::ResetTitle
+            }
             engine::Event::Progress(progress) => TerminalEvent::Progress(progress),
             engine::Event::WorkingDirectory(path) => TerminalEvent::WorkingDirectory(path),
             engine::Event::ShellIntegration(value) => {

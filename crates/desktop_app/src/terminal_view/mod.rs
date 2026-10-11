@@ -1153,7 +1153,7 @@ impl TerminalTab {
         let mut in_progress_count = 0u32;
         let mut has_indeterminate = false;
         for pane in &self.panes {
-            match pane.effective_progress_state() {
+            match pane.progress_state {
                 ProgressState::Error(percent) => return ProgressState::Error(percent),
                 ProgressState::Warning(percent) => warning = warning.or(Some(percent)),
                 ProgressState::InProgress(percent) => {
@@ -1326,6 +1326,10 @@ pub struct TerminalView {
     selection_head: Option<SelectionPos>,
     selection_dragging: bool,
     selection_moved: bool,
+    /// Last pointer position of a selection drag, read by the autoscroll timer
+    /// so scrolling continues while the pointer rests outside the pane.
+    selection_autoscroll_pointer: Option<gpui_kit::Point<Pixels>>,
+    selection_autoscroll_running: bool,
     kitty_image_selection: Option<KittyImageSelection>,
     /// Tracks the active terminal's display_offset as observed from the UI thread.
     /// Updated after every user-initiated scroll and after each content-scroll adjustment,
@@ -3293,6 +3297,8 @@ impl TerminalView {
             selection_head: None,
             selection_dragging: false,
             selection_moved: false,
+            selection_autoscroll_pointer: None,
+            selection_autoscroll_running: false,
             kitty_image_selection: None,
             content_scroll_baseline: 0,
             pending_cursor_move_click: None,
@@ -4208,12 +4214,13 @@ impl TerminalView {
                                 }
                             }
                         }
-                        // Progress indicator (OSC 9;4) — tracked per pane; the
-                        // tab strip shows the per-tab aggregate.
+                        // Program status (OSC 7501) — shown only as a tab badge.
                         TerminalEvent::ProgramStatus(records) => {
                             self.session.tabs[tab_index].panes[pane_index].program_status = records;
                             should_redraw = true;
                         }
+                        // Progress indicator (OSC 9;4) — tracked per pane; the
+                        // tab strip shows the per-tab aggregate.
                         TerminalEvent::Progress(state) => {
                             if self.progress_indicator_enabled
                                 && self.session.tabs[tab_index].panes[pane_index].progress_state

@@ -91,6 +91,7 @@ impl Shared {
                             state.engine.drain_replies(&mut replies);
                             state.generation = state.generation.wrapping_add(1);
                         }
+                        let tab_chrome_changed = committed && state.take_tab_chrome_changed();
                         shared.schedule_maintenance(&state);
                         drop(state);
                         if !replies.is_empty() {
@@ -109,6 +110,9 @@ impl Shared {
                         }
                         if committed {
                             shared.notify();
+                        }
+                        if tab_chrome_changed {
+                            shared.notify_tab_chrome();
                         }
                         break;
                     }
