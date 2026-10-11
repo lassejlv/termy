@@ -46,6 +46,9 @@ pub struct CellRenderInfo {
     pub fg: Hsla,
     pub bg: Hsla,
     pub uses_terminal_default_bg: bool,
+    /// The background is the theme color, by default or by an explicit color
+    /// that resolves to it (apps that query OSC 11 and paint it back).
+    pub bg_matches_theme: bool,
     pub bold: bool,
     pub italic: bool,
     pub underline: Option<TerminalUnderline>,
@@ -2188,6 +2191,7 @@ mod tests {
             fg: test_color(0.4, 0.5, 0.6),
             bg: test_color(0.0, 0.0, 0.0),
             uses_terminal_default_bg: false,
+            bg_matches_theme: false,
             bold: false,
             italic: false,
             underline: None,
