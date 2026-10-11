@@ -1326,6 +1326,10 @@ pub struct TerminalView {
     selection_head: Option<SelectionPos>,
     selection_dragging: bool,
     selection_moved: bool,
+    /// Last pointer position of a selection drag, read by the autoscroll timer
+    /// so scrolling continues while the pointer rests outside the pane.
+    selection_autoscroll_pointer: Option<gpui_kit::Point<Pixels>>,
+    selection_autoscroll_running: bool,
     kitty_image_selection: Option<KittyImageSelection>,
     /// Tracks the active terminal's display_offset as observed from the UI thread.
     /// Updated after every user-initiated scroll and after each content-scroll adjustment,
@@ -3293,6 +3297,8 @@ impl TerminalView {
             selection_head: None,
             selection_dragging: false,
             selection_moved: false,
+            selection_autoscroll_pointer: None,
+            selection_autoscroll_running: false,
             kitty_image_selection: None,
             content_scroll_baseline: 0,
             pending_cursor_move_click: None,

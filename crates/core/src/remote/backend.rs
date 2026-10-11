@@ -458,6 +458,20 @@ impl RemoteBackend {
         }
     }
     pub(crate) fn link_at(&self, row: usize, col: usize) -> Option<DetectedViewportLink> {
+        let state = self.transport.state();
+        let cols = usize::from(state.render.metadata.cols);
+        if col >= cols || row >= usize::from(state.render.metadata.rows) {
+            return None;
+        }
+        // Mirror the host: a blank cell without an OSC 8 link never starts a
+        // link, so skip the round trip for most hover positions.
+        let cell = &state.render.cells[row * cols + col];
+        let base = cell.text.as_str().chars().next().unwrap_or(' ');
+        if !cell.hyperlink
+            && (cell.hidden || base == '\0' || base.is_control() || base.is_whitespace())
+        {
+            return None;
+        }
         match self.request(RemoteCommand::Link { row, col }) {
             Some(RemoteReply::Link(link)) => link,
             _ => None,
