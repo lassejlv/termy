@@ -1839,7 +1839,7 @@ impl TerminalView {
             .is_some_and(|tab| {
                 tab.panes
                     .iter()
-                    .any(|pane| pane.effective_progress_state().is_indeterminate())
+                    .any(|pane| pane.progress_state.is_indeterminate())
             })
     }
 
@@ -3249,8 +3249,7 @@ impl Render for TerminalView {
                 }
 
                 let link_hovered = is_active_pane && self.hovered_link.is_some();
-                let pane_progress_loader =
-                    self.pane_progress_loader_element(pane.effective_progress_state());
+                let pane_progress_loader = self.pane_progress_loader_element(pane.progress_state);
                 pane_layers.push(
                     div()
                         .id(pane.cached_element_ids.pane.clone())
@@ -3267,10 +3266,24 @@ impl Render for TerminalView {
                         .children(kitty_below_text)
                         .child(terminal_grid)
                         .children(kitty_above_text)
-                        .children(pane_progress_loader)
-                        .children(self.pane_program_status_element(pane))
                         .into_any_element(),
                 );
+                // Span the pane's full surface, like the scrollbar: the content
+                // box (and a lone pane's frame) is inset by terminal padding,
+                // which left a gap before the track.
+                if let Some(loader) = pane_progress_loader {
+                    let surface = pane_layout.scrollbar_surface;
+                    pane_layers.push(
+                        div()
+                            .absolute()
+                            .left(px(surface.origin_x))
+                            .top(px(surface.origin_y))
+                            .w(px(surface.width))
+                            .h(px(TERMINAL_PROGRESS_LOADER_HEIGHT))
+                            .child(loader)
+                            .into_any_element(),
+                    );
+                }
 
                 if multi_pane && pane_active_border_alpha > f32::EPSILON {
                     let mut border = blend_rgb_only(colors.cursor, colors.foreground, 0.32);
