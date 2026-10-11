@@ -164,6 +164,7 @@ impl SessionClient {
                 let mut legacy_cache = LegacyGraphicsCache::default();
                 let result = (|| -> anyhow::Result<()> {
                     loop {
+                        let mut tab_chrome = false;
                         match read_message(&mut stream)? {
                             Update::State(mut state) => {
                                 validate_state(&state)?;
@@ -191,8 +192,19 @@ impl SessionClient {
                                 reader_shared.publish_state(state);
                             }
                             Update::Events(events) => {
-                                let mut pending = reader_shared.pending.lock().unwrap();
-                                pending.extend_events(events)?;
+                                tab_chrome = events.iter().any(|event| {
+                                    matches!(
+                                        event,
+                                        TerminalEvent::ProgramStatus(_)
+                                            | TerminalEvent::Title(_)
+                                            | TerminalEvent::ResetTitle
+                                    )
+                                });
+                                reader_shared
+                                    .pending
+                                    .lock()
+                                    .unwrap()
+                                    .extend_events(events)?;
                             }
                             Update::Host { id, request } => reader_shared
                                 .pending
@@ -201,7 +213,11 @@ impl SessionClient {
                                 .hosts
                                 .push((id, request)),
                         }
-                        reader_shared.notify();
+                        if tab_chrome {
+                            reader_shared.notify_tab_chrome();
+                        } else {
+                            reader_shared.notify();
+                        }
                     }
                 })();
                 if let Err(error) = result {
@@ -378,6 +394,13 @@ impl ClientState {
         if self.wakeup_enabled.load(Ordering::Acquire)
             && let Some(wakeup) = &self.wakeup
         {
+            wakeup.notify();
+        }
+    }
+    // Titles and program status drive tab chrome, which stays visible for
+    // hidden tabs, so they wake the host even while render wakeups are suspended.
+    fn notify_tab_chrome(&self) {
+        if let Some(wakeup) = &self.wakeup {
             wakeup.notify();
         }
     }

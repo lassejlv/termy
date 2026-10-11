@@ -819,6 +819,8 @@ impl Terminal {
         self.backend.child_pid()
     }
 
+    /// Suspends render wakeups for a hidden terminal. Title changes and OSC 7501
+    /// program status still wake the host so tab chrome can follow them.
     pub fn set_wakeup_enabled(&self, enabled: bool) {
         self.backend.set_wakeup_enabled(enabled);
     }
