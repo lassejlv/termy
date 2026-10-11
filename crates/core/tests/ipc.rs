@@ -49,21 +49,29 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
 
 #[test]
 fn scrolling_reply_updates_viewport_before_selection_reads() {
-    assert_scrolling_reply_updates_viewport(false);
+    assert_scrolling_reply_updates_viewport(&[]);
 }
 
 #[test]
 fn legacy_scrolling_reply_updates_viewport_before_selection_reads() {
-    assert_scrolling_reply_updates_viewport(true);
+    assert_scrolling_reply_updates_viewport(&["graphics_stream"]);
 }
 
-fn assert_scrolling_reply_updates_viewport(legacy_graphics: bool) {
+#[test]
+fn attach_scrolling_reply_updates_viewport_before_selection_reads() {
+    // Hosts without viewport replies still use the attach-and-wait fallback.
+    assert_scrolling_reply_updates_viewport(&["viewport_replies"]);
+}
+
+fn assert_scrolling_reply_updates_viewport(missing_capabilities: &[&str]) {
     let host = Host::new();
-    if legacy_graphics {
+    if !missing_capabilities.is_empty() {
         let path = host.root.join("endpoint.json");
         let mut endpoint: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        endpoint.as_object_mut().unwrap().remove("graphics_stream");
+        for capability in missing_capabilities {
+            endpoint.as_object_mut().unwrap().remove(*capability);
+        }
         fs::write(path, serde_json::to_vec(&endpoint).unwrap()).unwrap();
     }
     let (id, terminal) = host.client.create(
@@ -93,7 +101,7 @@ fn assert_scrolling_reply_updates_viewport(legacy_graphics: bool) {
         assert_eq!(terminal.scroll_state().0, 0);
     }
     eprintln!(
-        "20 acknowledged viewport changes (legacy graphics: {legacy_graphics}): {:?}",
+        "20 acknowledged viewport changes (without {missing_capabilities:?}): {:?}",
         started.elapsed()
     );
     // Once output and scrolling stop, read-only RPCs must not keep publishing

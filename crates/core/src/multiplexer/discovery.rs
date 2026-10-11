@@ -19,6 +19,8 @@ pub(crate) struct Endpoint {
     pub conditional_layout_updates: bool,
     #[serde(default)]
     pub graphics_stream: bool,
+    #[serde(default)]
+    pub viewport_replies: bool,
 }
 
 pub(crate) fn prepare_root(root: &Path) -> anyhow::Result<()> {

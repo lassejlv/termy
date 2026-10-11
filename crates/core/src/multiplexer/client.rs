@@ -15,6 +15,7 @@ use std::{
 struct Connection {
     stream: Mutex<TcpStream>,
     conditional_layout_updates: bool,
+    viewport_replies: bool,
 }
 
 impl Connection {
@@ -23,6 +24,7 @@ impl Connection {
         Ok(Self {
             stream: Mutex::new(stream),
             conditional_layout_updates: capabilities.conditional_layout_updates,
+            viewport_replies: capabilities.viewport_replies,
         })
     }
     fn request(&self, request: Request) -> anyhow::Result<Response> {
@@ -440,6 +442,33 @@ impl Drop for ClientTerminal {
     }
 }
 
+impl ClientTerminal {
+    // The host publishes the new frame before replying, so selection waits for
+    // one subscription update rather than attaching for a second full state.
+    fn viewport_request(&self, command: RemoteCommand) -> anyhow::Result<RemoteReply> {
+        let result = (|| {
+            let Response::Viewport {
+                changed,
+                generation,
+            } = self.rpc.request(Request::ViewportCommand {
+                pane: self.id.clone(),
+                command,
+            })?
+            else {
+                bail!("invalid terminal viewport response");
+            };
+            if changed {
+                self.shared.wait_for_generation(generation)?;
+            }
+            Ok(RemoteReply::Changed(changed))
+        })();
+        if let Err(error) = &result {
+            self.shared.fail(error);
+        }
+        result
+    }
+}
+
 impl RemoteTransport for ClientTerminal {
     fn state(&self) -> Arc<RemoteState> {
         Arc::clone(&self.shared.state.lock().unwrap())
@@ -451,6 +480,9 @@ impl RemoteTransport for ClientTerminal {
                 | RemoteCommand::ScrollToBottom
                 | RemoteCommand::ClearScrollback
         );
+        if changes_viewport && self.rpc.viewport_replies {
+            return self.viewport_request(command);
+        }
         match self.rpc.request(Request::Command {
             pane: self.id.clone(),
             command,

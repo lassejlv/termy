@@ -14,6 +14,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 enum Work {
     Wake,
     Command(RemoteCommand, Sender<RemoteReply>),
+    Viewport(RemoteCommand, Sender<(bool, u64)>),
     Refresh(Sender<Arc<RemoteState>>),
     Close,
 }
@@ -128,6 +129,17 @@ impl Pane {
         let (tx, rx) = flume::bounded(1);
         self.tx
             .send_timeout(Work::Command(command, tx), REQUEST_TIMEOUT)?;
+        rx.recv_timeout(REQUEST_TIMEOUT)
+            .context("terminal session did not answer")
+    }
+
+    /// Runs a viewport command and, when it changes the view, publishes that
+    /// frame before replying. The client waits for the returned generation
+    /// instead of attaching again for a second full state.
+    pub(crate) fn viewport_command(&self, command: RemoteCommand) -> anyhow::Result<(bool, u64)> {
+        let (tx, rx) = flume::bounded(1);
+        self.tx
+            .send_timeout(Work::Viewport(command, tx), REQUEST_TIMEOUT)?;
         rx.recv_timeout(REQUEST_TIMEOUT)
             .context("terminal session did not answer")
     }
@@ -266,6 +278,21 @@ fn run(mut terminal: Terminal, rx: Receiver<Work>, shared: Arc<Mutex<Shared>>) {
                 let result = crate::remote::execute(&mut terminal, command);
                 dirty |= changes_state && !matches!(result, RemoteReply::Changed(false));
                 let _ = reply.try_send(result);
+            }
+            Ok(Work::Viewport(command, reply)) => {
+                let changed = !matches!(
+                    crate::remote::execute(&mut terminal, command),
+                    RemoteReply::Changed(false)
+                );
+                let mut generation = shared.lock().unwrap().state.render.metadata.generation;
+                if changed {
+                    let state = Arc::new(RemoteState::capture(&terminal));
+                    generation = state.render.metadata.generation;
+                    publish(&mut shared.lock().unwrap(), Some(state), Vec::new());
+                    last_frame = Instant::now();
+                    dirty = false;
+                }
+                let _ = reply.try_send((changed, generation));
             }
             Ok(Work::Refresh(reply)) => {
                 let state = Arc::new(RemoteState::capture(&terminal));
