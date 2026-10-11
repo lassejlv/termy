@@ -308,7 +308,7 @@ impl SettingsWindow {
     ) -> impl IntoElement {
         let id: SharedString = id.into();
         let view = cx.entity().downgrade();
-        crate::ui::native::mac_switch(id, self.native())
+        crate::ui::native::mac_switch(id, &self.native())
             .checked(checked)
             .on_change(move |_, window, cx| {
                 let _ = view.update(cx, |view, cx| {

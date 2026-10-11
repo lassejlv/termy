@@ -66,8 +66,10 @@ impl CommandPaletteStyle {
             .a
             .max(0.94);
         let panel_border = native.stroke;
-        let scrollbar_track = view.scrollbar_color(overlay_style, COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA);
-        let scrollbar_thumb = view.scrollbar_color(overlay_style, COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA);
+        let scrollbar_track =
+            view.scrollbar_color(overlay_style, COMMAND_PALETTE_SCROLLBAR_TRACK_ALPHA);
+        let scrollbar_thumb =
+            view.scrollbar_color(overlay_style, COMMAND_PALETTE_SCROLLBAR_THUMB_ALPHA);
 
         Self {
             native,
@@ -89,7 +91,11 @@ impl CommandPaletteStyle {
 
     /// The tile behind a row's glyph: a solid system color, or a translucent
     /// white chip on the selected row so it sits on the accent fill.
-    pub(super) fn icon_tile_fill(&self, tint: gpui_kit::Rgba, selected: bool) -> gpui_kit::Background {
+    pub(super) fn icon_tile_fill(
+        &self,
+        tint: gpui_kit::Rgba,
+        selected: bool,
+    ) -> gpui_kit::Background {
         if selected {
             with_alpha(gpui_kit::rgba(0xffffffff), self.icon_tile_alpha_selected).into()
         } else {

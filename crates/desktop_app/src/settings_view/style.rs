@@ -15,7 +15,7 @@ impl SettingsWindow {
         if self.native().dark {
             rgba(0x1e1e1eff)
         } else {
-            rgba(0xececec_ff)
+            rgba(0xecececff)
         }
     }
 

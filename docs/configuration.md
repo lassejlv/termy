@@ -46,7 +46,7 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Group: `FONT`
 
 `ui_font_family`
-- Default: `Menlo` (macOS), `Consolas` (Windows), `monospace` (Linux/other)
+- Default: `.SystemUIFont` (macOS), `Consolas` (Windows), `monospace` (Linux/other)
 - Font family used for tabs, command palette, and settings UI (not the terminal cells)
 - Group: `FONT`
 
