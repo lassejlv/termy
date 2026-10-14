@@ -196,6 +196,9 @@ pub(crate) struct Transport {
     writer: WriterHandle,
     child_pid: c_int,
     alive: Arc<AtomicBool>,
+    /// How long `drop` waits after SIGHUP before SIGKILL: always
+    /// `DROP_SHUTDOWN_GRACE`, but in tests that must not race it.
+    shutdown_grace: Duration,
     /// A CLOEXEC duplicate of the PTY master, used only for foreground queries.
     control: File,
 }
@@ -937,6 +940,7 @@ impl Transport {
             writer,
             child_pid: pid,
             alive,
+            shutdown_grace: DROP_SHUTDOWN_GRACE,
             control,
         })
     }
@@ -1443,12 +1447,12 @@ fn force_child_shutdown(pid: c_int) {
     }
 }
 
-fn schedule_child_shutdown_escalation(pid: c_int, alive: Arc<AtomicBool>) {
+fn schedule_child_shutdown_escalation(pid: c_int, alive: Arc<AtomicBool>, grace: Duration) {
     let fallback_alive = alive.clone();
     let escalation = thread::Builder::new()
         .name("termy-native-pty-shutdown".to_string())
         .spawn(move || {
-            thread::sleep(DROP_SHUTDOWN_GRACE);
+            thread::sleep(grace);
             if alive.load(Ordering::Acquire) {
                 force_child_shutdown(pid);
             }
@@ -1470,7 +1474,11 @@ impl Drop for Transport {
         }
         self.writer.close();
         if child_was_alive {
-            schedule_child_shutdown_escalation(self.child_pid, self.alive.clone());
+            schedule_child_shutdown_escalation(
+                self.child_pid,
+                self.alive.clone(),
+                self.shutdown_grace,
+            );
         }
     }
 }

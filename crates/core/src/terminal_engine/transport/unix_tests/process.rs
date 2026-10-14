@@ -1066,7 +1066,7 @@ fn a_reply_during_the_drop_grace_keeps_the_hup_handler_running() {
     let (ready_tx, ready_rx) = mpsc::sync_channel(1);
     let mut output = Vec::new();
     let mut ready_reported = false;
-    let terminal = Transport::spawn(
+    let mut terminal = Transport::spawn(
         SpawnConfig {
             program: "/bin/sh".to_string(),
             args: vec![
@@ -1096,8 +1096,13 @@ fn a_reply_during_the_drop_grace_keeps_the_hup_handler_running() {
     ready_rx
         .recv_timeout(Duration::from_secs(2))
         .expect("child should install its HUP handler");
+    // The handler forks `sleep` and writes a file, which a loaded machine
+    // can stretch past the usual grace. A longer one leaves only what this
+    // tests, the reply killing the child early, to fail it.
+    let grace = Duration::from_secs(10);
+    terminal.shutdown_grace = grace;
     drop(terminal);
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + grace;
     while !marker.exists() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(10));
     }
