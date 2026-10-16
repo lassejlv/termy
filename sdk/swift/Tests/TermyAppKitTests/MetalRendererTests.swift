@@ -146,6 +146,71 @@ struct MetalRendererTests {
         }
     }
 
+    @Test func unicodePlaceholderCellsShowTheirTileOfTheImage() throws {
+        // A 2x1 image (red, then green) shown through two placeholder cells.
+        let view = try makeView(feeding:
+            "\u{1b}_Ga=T,f=32,s=2,v=1,i=7,U=1,c=2,r=1,q=2;/wAA/wD/AP8=\u{1b}\\"
+            + "\u{1b}[38;5;7m\u{10EEEE}\u{0305}\u{0305}\u{10EEEE}\u{0305}\u{030D}\u{1b}[39m")
+        #expect(view.images.count == 2)
+        let pixels = try render(view)
+        let left = cellPixels(view, row: 0, col: 0)
+        let right = cellPixels(view, row: 0, col: 1)
+        let leftPixel = pixels.rgb(x: Int(left.midX), y: Int(left.midY))
+        let rightPixel = pixels.rgb(x: Int(right.midX), y: Int(right.midY))
+        #expect(leftPixel.r > 200 && leftPixel.g < 60)
+        #expect(rightPixel.g > 200 && rightPixel.r < 60)
+        // Nothing spills into the next cell.
+        let next = cellPixels(view, row: 0, col: 2)
+        let nextPixel = pixels.rgb(x: Int(next.midX), y: Int(next.midY))
+        #expect(nextPixel.r < 100 && nextPixel.g < 100)
+    }
+
+    @Test func kittyImagesWithoutASizeKeepTheirNaturalSize() throws {
+        // A 4x4 red image with neither c nor r is 4x4 points, not stretched to its cell.
+        let red = Data((0..<16).flatMap { _ in [UInt8(255), 0, 0, 255] }).base64EncodedString()
+        let view = try makeView(feeding: "\u{1b}_Ga=T,f=32,s=4,v=4,q=2;\(red)\u{1b}\\")
+        let pixels = try render(view)
+        let cell = cellPixels(view, row: 0, col: 0)
+        let inside = pixels.rgb(x: Int(cell.minX + 2 * Self.scale), y: Int(cell.minY + 2 * Self.scale))
+        #expect(inside.r > 200 && inside.g < 60)
+        let below = pixels.rgb(x: Int(cell.minX + 2 * Self.scale), y: Int(cell.minY + 7 * Self.scale))
+        #expect(below.r < 100)
+    }
+
+    @Test func glyphAtlasGrowsBeforeStartingOver() throws {
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let atlas = try #require(GlyphAtlas(device: device, initialSize: 64, maxSize: 128))
+        func insert(_ index: Int) -> GlyphAtlas.Entry? {
+            let key = GlyphAtlas.Key.glyph(TerminalFonts.Glyph(fontIndex: 0, glyph: CGGlyph(index), isColor: false))
+            return atlas.entry(for: key) {
+                RasterizedGlyph(
+                    width: 30, height: 30, pixels: [UInt8](repeating: UInt8(index), count: 30 * 30 * 4), offset: .zero)
+            }
+        }
+        // 64x64 holds four 30x30 glyphs (31 with padding); the fifth doubles it.
+        let first = try #require(insert(1))
+        for index in 2...5 { _ = try #require(insert(index)) }
+        #expect(atlas.size == 128)
+        #expect(atlas.texture.width == 128)
+        #expect(atlas.generation == 0)
+        // Glyphs keep their texels through the copy, so cached rows stay valid.
+        var texel = [UInt8](repeating: 0, count: 4)
+        atlas.texture.getBytes(
+            &texel, bytesPerRow: 4,
+            from: MTLRegionMake2D(Int(first.rect.x), Int(first.rect.y), 1, 1), mipmapLevel: 0)
+        #expect(texel == [1, 1, 1, 1])
+
+        // Full at its largest size, it skips glyphs while resets are held off...
+        atlas.allowsReset = false
+        var index = 6
+        while insert(index) != nil { index += 1 }
+        #expect(atlas.generation == 0)
+        // ...and starts over once they're allowed; the skipped glyph wasn't cached as blank.
+        atlas.allowsReset = true
+        #expect(insert(index) != nil)
+        #expect(atlas.generation == 1)
+    }
+
     @Test func redrawsOnlyWhatChangedButStaysCorrect() throws {
         let view = try makeView(feeding: "\u{1b}[37mtop")
         _ = try render(view)

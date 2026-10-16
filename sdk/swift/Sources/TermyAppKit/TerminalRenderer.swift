@@ -260,25 +260,16 @@ final class TerminalRenderer {
     }
 
     private func drawImages(_ images: [KittyImage], in context: CGContext) {
+        let origin = cellRect(row: 0, col: 0).origin
         for image in images.sorted(by: { $0.placement.zIndex < $1.placement.zIndex }) {
             let placement = image.placement
-            let cols = placement.displayCols ?? placement.occupiedCols
-            let rows = placement.displayRows ?? placement.occupiedRows
-            var target = cellRect(row: placement.viewportRow, col: placement.col + placement.colOffset, width: cols)
-            target.origin.x += CGFloat(placement.xOffset)
-            target.origin.y += CGFloat(placement.yOffset)
-            target.size.height = CGFloat(rows) * cellHeight
-
-            let crop = CGRect(
-                x: placement.sourceX, y: placement.sourceY,
-                width: placement.sourceWidth > 0 ? placement.sourceWidth : placement.imageWidth,
-                height: placement.sourceHeight > 0 ? placement.sourceHeight : placement.imageHeight)
-            guard let cropped = image.image.cropping(to: crop) else { continue }
+            let geometry = KittyPlacementGeometry(placement, cellWidth: cellWidth, cellHeight: cellHeight)
+            let clip = geometry.clip.offsetBy(dx: origin.x, dy: origin.y)
+            let target = geometry.image.offsetBy(dx: origin.x, dy: origin.y)
+            guard !geometry.visible.isNull, let cropped = image.image.cropping(to: placement.sourceCrop) else { continue }
 
             context.saveGState()
-            let visibleTop = cellRect(row: placement.viewportRow + placement.clipTopRows, col: 0).minY
-            let visibleBottom = cellRect(row: placement.viewportRow + rows - placement.clipBottomRows, col: 0).minY
-            context.clip(to: CGRect(x: target.minX, y: visibleTop, width: target.width, height: max(0, visibleBottom - visibleTop)))
+            context.clip(to: clip)
             // CGImage draws bottom-up; flip into the view's top-down space.
             context.translateBy(x: 0, y: target.maxY + target.minY)
             context.scaleBy(x: 1, y: -1)

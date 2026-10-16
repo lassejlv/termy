@@ -114,7 +114,10 @@ public struct ClipboardWriteResponse: Hashable, Sendable {
 /// Services Kitty OSC 5522 clipboard requests while events drain.
 ///
 /// Calls are synchronous and happen inside `Terminal.drainEvents`. Enforce your
-/// own permission policy, and never call back into the same terminal.
+/// own permission policy, and never call back into the same terminal: answer
+/// from state you already have, and don't run a modal or nested run loop to
+/// ask the user (deny, and ask asynchronously instead). Draining or pasting
+/// from a callback throws.
 public protocol KittyClipboardHandler: AnyObject {
     func read(_ request: ClipboardReadRequest) -> ClipboardReadResponse
     func write(_ request: ClipboardWriteRequest) -> ClipboardWriteResponse

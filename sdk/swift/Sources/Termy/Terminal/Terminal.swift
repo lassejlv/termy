@@ -26,6 +26,17 @@ public final class Terminal {
     /// terminals. PTY terminals write input to their child directly.
     public var onInput: ((Data) -> Void)?
 
+    /// True while `drainEvents` runs, including inside its clipboard
+    /// callbacks. libtermy holds the clipboard lock there, so draining again
+    /// or pasting from a callback would deadlock; those calls throw instead.
+    public private(set) var isDraining = false
+
+    private func checkNotDraining(_ operation: @autoclosure () -> String) throws(TermyError) {
+        guard !isDraining else {
+            throw TermyError(code: .invalidArgument, operation: "\(operation()) (re-entered from a drain callback)")
+        }
+    }
+
     /// Starts a shell, or `options.startupCommand`, in a new PTY.
     public init(size: TerminalSize, options: TerminalOptions = TerminalOptions()) throws(TermyError) {
         let arena = ByteArena()
@@ -184,6 +195,7 @@ public final class Terminal {
     /// is told a paste is available and reads the clipboard itself through
     /// OSC 5522, so the text is not also typed.
     public func paste(_ text: String, availableFormats: [String] = ["text/plain"]) throws(TermyError) {
+        try checkNotDraining("termy_terminal_paste")
         if try sendKittyClipboardPasteEvent(location: .clipboard, availableFormats: availableFormats) { return }
         try write(encodePaste(text))
     }
@@ -278,6 +290,9 @@ public final class Terminal {
         clipboard: KittyClipboardHandler? = nil,
         onProtocolReply: ((Data) -> Void)? = nil
     ) throws(TermyError) -> TerminalEventBatch {
+        try checkNotDraining("termy_terminal_drain_events")
+        isDraining = true
+        defer { isDraining = false }
         var batch = TermyFfiEventBatch()
         defer { termy_event_batch_free(&batch) }
         if clipboard == nil, onProtocolReply == nil {
@@ -310,6 +325,7 @@ public final class Terminal {
     public func sendKittyClipboardPasteEvent(
         location: ClipboardLocation, availableFormats: [String]
     ) throws(TermyError) -> Bool {
+        try checkNotDraining("termy_terminal_send_kitty_clipboard_paste_event")
         let arena = ByteArena()
         let formats = availableFormats.map { arena.slice($0) }
         var sent = false

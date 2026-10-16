@@ -16,8 +16,10 @@ struct RasterizedGlyph {
 
 /// A texture of rasterized glyphs, packed into shelves.
 ///
-/// When it fills up it starts over on a new texture and bumps `generation`;
-/// anything holding atlas coordinates must then be rebuilt.
+/// When it fills up it doubles in size, copying what it holds, so cached
+/// texel coordinates stay valid. Only at its largest size does it start over
+/// on a new texture and bump `generation`; anything holding atlas coordinates
+/// must then be rebuilt.
 @MainActor
 final class GlyphAtlas {
     enum Key: Hashable {
@@ -32,21 +34,34 @@ final class GlyphAtlas {
         var offset: SIMD2<Float>
     }
 
-    static let size = 2048
+    static let initialSize = 2048
+    /// 8192² BGRA is 256 MB, so the atlas stops growing there even when the
+    /// GPU allows larger textures.
+    static let maxSize = 8192
     private static let padding = 1
 
     let device: MTLDevice
     private(set) var texture: MTLTexture
     private(set) var generation = 0
+    /// The texture's side, in texels.
+    private(set) var size: Int
+    let maxSize: Int
+    /// When false, a full atlas at its largest size drops new glyphs instead
+    /// of starting over, so a frame being rebuilt never mixes generations.
+    var allowsReset = true
     private var entries: [Key: Entry?] = [:]
     private var shelfX = 0
     private var shelfY = 0
     private var shelfHeight = 0
 
-    init?(device: MTLDevice) {
-        guard let texture = Self.makeTexture(device: device) else { return nil }
+    init?(device: MTLDevice, initialSize: Int = GlyphAtlas.initialSize, maxSize: Int = GlyphAtlas.maxSize) {
+        let deviceMax = device.supportsFamily(.apple3) || device.supportsFamily(.mac2) ? 16_384 : 8_192
+        let maxSize = max(initialSize, min(maxSize, deviceMax))
+        guard let texture = Self.makeTexture(device: device, size: initialSize) else { return nil }
         self.device = device
         self.texture = texture
+        size = initialSize
+        self.maxSize = maxSize
     }
 
     /// The cached entry for `key`, rasterizing it on first use. Nil for blank
@@ -58,7 +73,11 @@ final class GlyphAtlas {
             return nil
         }
         guard let origin = allocate(width: glyph.width, height: glyph.height) else {
-            entries[key] = .some(nil)
+            // Too big for any atlas, or skipped while resets are held off;
+            // only the first is permanent.
+            if glyph.width + Self.padding > maxSize || glyph.height + Self.padding > maxSize {
+                entries[key] = .some(nil)
+            }
             return nil
         }
         glyph.pixels.withUnsafeBytes { bytes in
@@ -75,7 +94,7 @@ final class GlyphAtlas {
 
     /// Drops every entry. Frames already on the GPU keep the old texture.
     func reset() {
-        if let texture = Self.makeTexture(device: device) { self.texture = texture }
+        if let texture = Self.makeTexture(device: device, size: size) { self.texture = texture }
         entries.removeAll()
         shelfX = 0
         shelfY = 0
@@ -84,14 +103,15 @@ final class GlyphAtlas {
     }
 
     private func allocate(width: Int, height: Int) -> (x: Int, y: Int)? {
-        let size = Self.size
-        guard width + Self.padding <= size, height + Self.padding <= size else { return nil }
+        guard width + Self.padding <= maxSize, height + Self.padding <= maxSize else { return nil }
+        while !fits(width: width, height: height), size < maxSize, grow() {}
         if shelfX + width + Self.padding > size {
             shelfY += shelfHeight
             shelfX = 0
             shelfHeight = 0
         }
         if shelfY + height + Self.padding > size {
+            guard allowsReset else { return nil }
             reset()
         }
         let origin = (x: shelfX, y: shelfY)
@@ -100,7 +120,33 @@ final class GlyphAtlas {
         return origin
     }
 
-    private static func makeTexture(device: MTLDevice) -> MTLTexture? {
+    /// Whether a glyph fits in the current texture, on this shelf or a new one.
+    private func fits(width: Int, height: Int) -> Bool {
+        guard width + Self.padding <= size, height + Self.padding <= size else { return false }
+        if shelfX + width + Self.padding <= size { return shelfY + max(shelfHeight, height + Self.padding) <= size }
+        return shelfY + shelfHeight + height + Self.padding <= size
+    }
+
+    /// Doubles the texture, keeping every glyph at the same texel position.
+    /// Shelves continue across the wider texture.
+    private func grow() -> Bool {
+        let newSize = min(size * 2, maxSize)
+        guard newSize > size, let larger = Self.makeTexture(device: device, size: newSize) else { return false }
+        let rowBytes = size * 4
+        var pixels = [UInt8](repeating: 0, count: rowBytes * size)
+        let region = MTLRegionMake2D(0, 0, size, size)
+        pixels.withUnsafeMutableBytes { bytes in
+            texture.getBytes(bytes.baseAddress!, bytesPerRow: rowBytes, from: region, mipmapLevel: 0)
+        }
+        pixels.withUnsafeBytes { bytes in
+            larger.replace(region: region, mipmapLevel: 0, withBytes: bytes.baseAddress!, bytesPerRow: rowBytes)
+        }
+        texture = larger
+        size = newSize
+        return true
+    }
+
+    private static func makeTexture(device: MTLDevice, size: Int) -> MTLTexture? {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: size, height: size, mipmapped: false)
         descriptor.usage = .shaderRead

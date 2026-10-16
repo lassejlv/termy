@@ -84,4 +84,35 @@ struct EventTests {
         #expect(clipboard.requests.first?.mimeTypes == ["text/plain"])
         #expect(!replies.isEmpty)
     }
+
+    @Test func clipboardHandlersCannotReenterTheTerminal() throws {
+        // libtermy holds the clipboard lock while a handler runs, so a nested
+        // drain or paste (say from a modal run loop) must throw, not deadlock.
+        final class Reentrant: KittyClipboardHandler {
+            weak var terminal: Terminal?
+            var errors: [TermyError] = []
+            var sawDraining = false
+            func read(_ request: ClipboardReadRequest) -> ClipboardReadResponse {
+                sawDraining = terminal?.isDraining == true
+                do { try terminal?.paste("x") } catch { errors.append(error) }
+                do { _ = try terminal?.drainEvents() } catch { errors.append(error) }
+                return .denied
+            }
+            func write(_ request: ClipboardWriteRequest) -> ClipboardWriteResponse {
+                ClipboardWriteResponse(result: .denied)
+            }
+        }
+        let terminal = try displayTerminal(feeding: "\u{1b}]5522;type=read;dGV4dC9wbGFpbg==\u{1b}\\")
+        let handler = Reentrant()
+        handler.terminal = terminal
+        _ = try drainAll(terminal, clipboard: handler) { _ in }
+        #expect(handler.sawDraining)
+        #expect(handler.errors.map(\.code) == [.invalidArgument, .invalidArgument])
+        #expect(!terminal.isDraining)
+
+        var sent = Data()
+        terminal.onInput = { sent.append($0) }
+        try terminal.paste("ok")
+        #expect(String(decoding: sent, as: UTF8.self) == "ok")
+    }
 }

@@ -3142,7 +3142,10 @@ pub unsafe extern "C" fn termy_tmux_control_notifications_free(
 }
 
 /// Runs a tmux command over the control channel; writes its output to
-/// `out_output` (free with `termy_buffer_free`).
+/// `out_output` (free with `termy_buffer_free`). A command containing a
+/// newline, carriage return or NUL is rejected with `InvalidArgument`: tmux
+/// would run each line as a separate command, so text spliced into a command
+/// could inject another one.
 #[cfg(unix)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_tmux_control_send(
@@ -3159,6 +3162,9 @@ pub unsafe extern "C" fn termy_tmux_control_send(
             Ok(value) => value,
             Err(status) => return status,
         };
+        if crate::tmux_control_core::command::validate_tmux_control_arg(command).is_err() {
+            return TermyFfiStatus::InvalidArgument;
+        }
         let session = unsafe { &*session };
         match session.send_command(command) {
             Ok(output) => {

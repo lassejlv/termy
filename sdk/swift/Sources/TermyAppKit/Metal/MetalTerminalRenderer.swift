@@ -185,9 +185,14 @@ final class MetalTerminalRenderer {
         prepare(config, scale: scale, frame: state.frame)
         var frame = buildFrame(state)
         if atlasGeneration != atlas.generation {
-            // The atlas filled up mid-frame; rebuild against the fresh one.
+            // The atlas filled up at its largest size mid-frame; rebuild
+            // against the fresh one. Glyphs that still don't fit are skipped
+            // rather than starting over again, which would leave rows built
+            // earlier in this pass pointing into the replaced texture.
             prepare(config, scale: scale, frame: state.frame)
+            atlas.allowsReset = false
             frame = buildFrame(state)
+            atlas.allowsReset = true
         }
 
         let pass = MTLRenderPassDescriptor()
@@ -419,34 +424,23 @@ final class MetalTerminalRenderer {
                 continue
             }
             live[key] = texture
-            let cols = placement.displayCols ?? placement.occupiedCols
-            let rows = placement.displayRows ?? placement.occupiedRows
-            let x = CGFloat(config?.paddingX ?? 0) + CGFloat(placement.col + placement.colOffset) * cellWidth
-                + CGFloat(placement.xOffset)
-            let y = CGFloat(config?.paddingY ?? 0) + CGFloat(placement.viewportRow) * cellHeight
-                + CGFloat(placement.yOffset)
-            let target = pixelRect(CGRect(x: x, y: y, width: CGFloat(cols) * cellWidth, height: CGFloat(rows) * cellHeight))
-            let sourceWidth = placement.sourceWidth > 0 ? placement.sourceWidth : placement.imageWidth
-            let sourceHeight = placement.sourceHeight > 0 ? placement.sourceHeight : placement.imageHeight
+            // One quad covering only the visible part, sampling the matching
+            // part of the source, so placeholder cells and partly clipped
+            // images need no scissor and batch with each other.
+            let geometry = KittyPlacementGeometry(placement, cellWidth: cellWidth, cellHeight: cellHeight)
+            let visible = geometry.visible
+            guard !visible.isNull, visible.width > 0, visible.height > 0 else { continue }
+            let padding = CGPoint(x: CGFloat(config?.paddingX ?? 0), y: CGFloat(config?.paddingY ?? 0))
+            let target = pixelRect(visible.offsetBy(dx: padding.x, dy: padding.y))
+            guard target.z > 0, target.w > 0 else { continue }
             // Source coordinates are in image pixels; the texture may be downscaled.
-            let texelScale = SIMD2(
-                Float(texture.width) / Float(max(image.image.width, 1)),
-                Float(texture.height) / Float(max(image.image.height, 1)))
+            let source = geometry.source(for: visible, crop: placement.sourceCrop)
+            let texelX = Float(texture.width) / Float(max(image.image.width, 1))
+            let texelY = Float(texture.height) / Float(max(image.image.height, 1))
             let uv = SIMD4(
-                Float(placement.sourceX), Float(placement.sourceY),
-                Float(placement.sourceX + sourceWidth), Float(placement.sourceY + sourceHeight))
-                * SIMD4(texelScale.x, texelScale.y, texelScale.x, texelScale.y)
-
-            let visibleTop = pixel(CGFloat(config?.paddingY ?? 0)
-                + CGFloat(placement.viewportRow + placement.clipTopRows) * cellHeight)
-            let visibleBottom = pixel(CGFloat(config?.paddingY ?? 0)
-                + CGFloat(placement.viewportRow + rows - placement.clipBottomRows) * cellHeight)
-            let scissor = MTLScissorRect(
-                x: max(0, Int(target.x)), y: max(0, Int(visibleTop)),
-                width: max(0, Int(target.z)), height: max(0, Int(visibleBottom - visibleTop)))
-            frame.append(
-                [MetalQuad(rect: target, uv: uv, color: SIMD4(1, 1, 1, 1), mode: .image)],
-                texture: texture, scissor: scissor)
+                Float(source.minX) * texelX, Float(source.minY) * texelY,
+                Float(source.maxX) * texelX, Float(source.maxY) * texelY)
+            frame.append([MetalQuad(rect: target, uv: uv, color: SIMD4(1, 1, 1, 1), mode: .image)], texture: texture)
         }
     }
 
