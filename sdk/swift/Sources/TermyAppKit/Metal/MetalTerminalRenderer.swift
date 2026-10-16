@@ -61,6 +61,10 @@ final class MetalTerminalRenderer {
     private var rowCols = 0
     private var atlasGeneration = 0
     private var imageTextures: [String: MTLTexture] = [:]
+    /// Images whose texture couldn't be created, so they aren't retried every frame.
+    private var failedImages: Set<String> = []
+    /// The largest texture side this GPU supports. Larger images are downscaled.
+    let maxTextureDimension: Int
     private var markedText: (key: String, texture: MTLTexture, width: Int)?
 
     /// Nil when the system has no Metal device or the shaders fail to compile.
@@ -68,6 +72,7 @@ final class MetalTerminalRenderer {
         guard let device, let queue = device.makeCommandQueue(), let atlas = GlyphAtlas(device: device),
               let pipeline = try? Self.makePipeline(device: device) else { return nil }
         self.device = device
+        maxTextureDimension = device.supportsFamily(.apple3) || device.supportsFamily(.mac2) ? 16_384 : 8_192
         self.queue = queue
         self.pipeline = pipeline
         self.atlas = atlas
@@ -250,10 +255,12 @@ final class MetalTerminalRenderer {
         frame.append(rows.flatMap { $0?.backgrounds ?? [] }, texture: texture)
         frame.append(selectionQuads(state), texture: texture)
         var liveImages: [String: MTLTexture] = [:]
-        appendImages(state.images.filter { $0.placement.zIndex < 0 }, to: &frame, live: &liveImages)
+        var failed: Set<String> = []
+        appendImages(state.images.filter { $0.placement.zIndex < 0 }, to: &frame, live: &liveImages, failed: &failed)
         frame.append(rows.flatMap { $0?.foreground ?? [] }, texture: texture)
-        appendImages(state.images.filter { $0.placement.zIndex >= 0 }, to: &frame, live: &liveImages)
+        appendImages(state.images.filter { $0.placement.zIndex >= 0 }, to: &frame, live: &liveImages, failed: &failed)
         imageTextures = liveImages
+        failedImages = failed
         frame.append(cursorQuads(state), texture: atlas.texture)
         if let marked = state.markedText, !marked.isEmpty {
             appendMarkedText(marked, state: state, to: &frame)
@@ -397,11 +404,20 @@ final class MetalTerminalRenderer {
         return quads
     }
 
-    private func appendImages(_ images: [KittyImage], to frame: inout Frame, live: inout [String: MTLTexture]) {
+    private func appendImages(
+        _ images: [KittyImage], to frame: inout Frame, live: inout [String: MTLTexture], failed: inout Set<String>
+    ) {
         for image in images.sorted(by: { $0.placement.zIndex < $1.placement.zIndex }) {
             let placement = image.placement
             let key = "\(placement.imageID):\(placement.imageGeneration)"
-            guard let texture = live[key] ?? imageTextures[key] ?? makeTexture(image.image) else { continue }
+            if failed.contains(key) || failedImages.contains(key) {
+                failed.insert(key)
+                continue
+            }
+            guard let texture = live[key] ?? imageTextures[key] ?? makeTexture(image.image) else {
+                failed.insert(key)
+                continue
+            }
             live[key] = texture
             let cols = placement.displayCols ?? placement.occupiedCols
             let rows = placement.displayRows ?? placement.occupiedRows
@@ -412,9 +428,14 @@ final class MetalTerminalRenderer {
             let target = pixelRect(CGRect(x: x, y: y, width: CGFloat(cols) * cellWidth, height: CGFloat(rows) * cellHeight))
             let sourceWidth = placement.sourceWidth > 0 ? placement.sourceWidth : placement.imageWidth
             let sourceHeight = placement.sourceHeight > 0 ? placement.sourceHeight : placement.imageHeight
+            // Source coordinates are in image pixels; the texture may be downscaled.
+            let texelScale = SIMD2(
+                Float(texture.width) / Float(max(image.image.width, 1)),
+                Float(texture.height) / Float(max(image.image.height, 1)))
             let uv = SIMD4(
                 Float(placement.sourceX), Float(placement.sourceY),
                 Float(placement.sourceX + sourceWidth), Float(placement.sourceY + sourceHeight))
+                * SIMD4(texelScale.x, texelScale.y, texelScale.x, texelScale.y)
 
             let visibleTop = pixel(CGFloat(config?.paddingY ?? 0)
                 + CGFloat(placement.viewportRow + placement.clipTopRows) * cellHeight)
@@ -439,7 +460,8 @@ final class MetalTerminalRenderer {
                 .init(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1),
             ]
             let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
-            let width = Int((CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) * scale).rounded(.up))
+            let width = min(
+                Int((CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) * scale).rounded(.up)), maxTextureDimension)
             let height = Int((cellHeight * scale).rounded(.up))
             guard let raster = GlyphRasterizer.line(line, width: width, height: height, baseline: baselineOffset, scale: scale),
                   let texture = makeTexture(raster) else { return }
@@ -462,10 +484,12 @@ final class MetalTerminalRenderer {
     }
 
     private func makeTexture(_ image: CGImage) -> MTLTexture? {
-        GlyphRasterizer.image(image).flatMap(makeTexture)
+        GlyphRasterizer.image(image, maxDimension: maxTextureDimension).flatMap(makeTexture)
     }
 
     private func makeTexture(_ raster: RasterizedGlyph) -> MTLTexture? {
+        guard raster.width > 0, raster.height > 0,
+              raster.width <= maxTextureDimension, raster.height <= maxTextureDimension else { return nil }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: raster.width, height: raster.height, mipmapped: false)
         descriptor.usage = .shaderRead

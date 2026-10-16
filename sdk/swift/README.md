@@ -99,6 +99,22 @@ session.onProtocolReply = { bytes in channel.write(bytes) }    // cursor reports
 channel.onOutput = { bytes in try? session.feed(bytes) }
 ```
 
+## Untrusted output
+
+Anything a program prints can reach `TerminalView`, including `cat` of a
+downloaded file or output from a remote host, so the view's defaults are
+conservative:
+
+- **Clipboard writes (OSC 52)** are denied unless the delegate's
+  `terminalView(_:shouldWriteClipboard:)` returns true (`.onClipboardWrite` in
+  SwiftUI). The `.clipboardStore` event still reaches `didReceive`.
+- **Links (OSC 8)** show text the program chooses, so the target appears as a
+  tooltip on hover. Command-click opens only `http`, `https` and `mailto` by
+  default (`allowedLinkSchemes`), after `terminalView(_:shouldOpen:)`
+  (`.shouldOpenURL` in SwiftUI). If you allow `file`, apps, packages, scripts
+  and executables are revealed in Finder instead of opened.
+- **Pasted files** are typed as shell-quoted paths.
+
 ## Rendering
 
 `TerminalView` renders with Metal. Each cell becomes instanced quads: solid

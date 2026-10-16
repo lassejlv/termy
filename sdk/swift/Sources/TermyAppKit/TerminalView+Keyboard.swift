@@ -44,17 +44,33 @@ extension TerminalView: @preconcurrency NSTextInputClient {
 
     @objc public func copy(_ sender: Any?) {
         guard let selection else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(selection.text(in: session.frame), forType: .string)
+        pasteboard.clearContents()
+        pasteboard.setString(selection.text(in: session.frame), forType: .string)
     }
 
     @objc public func paste(_ sender: Any?) {
-        let pasteboard = NSPasteboard.general
-        let text = pasteboard.string(forType: .string)
-            ?? pasteboard.readObjects(forClasses: [NSURL.self])?
-                .compactMap { ($0 as? URL)?.path }.joined(separator: " ")
-        guard let text, !text.isEmpty else { return }
+        guard let text = Self.pasteText(from: pasteboard), !text.isEmpty else { return }
         try? session.paste(text)
+    }
+
+    /// The text a paste types: copied files become shell-quoted paths, so a
+    /// file name can't inject commands or split into several arguments.
+    static func pasteText(from pasteboard: NSPasteboard) -> String? {
+        let files = pasteboard.readObjects(
+            forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        if !files.isEmpty {
+            return files.map { shellQuoted($0.path) }.joined(separator: " ")
+        }
+        if let string = pasteboard.string(forType: .string) { return string }
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL] ?? []
+        return urls.isEmpty ? nil : urls.map(\.absoluteString).joined(separator: " ")
+    }
+
+    /// Quotes a word for POSIX shells, leaving plain paths readable.
+    static func shellQuoted(_ word: String) -> String {
+        let plain = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-")
+        if !word.isEmpty, word.unicodeScalars.allSatisfy({ plain.contains($0) }) { return word }
+        return "'" + word.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     @objc public override func selectAll(_ sender: Any?) {
