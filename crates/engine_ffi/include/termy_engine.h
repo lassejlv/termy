@@ -520,6 +520,58 @@ TermyEngineStatus termy_engine_read_lines(
     TermyEngineFrame *out_frame);
 
 /* ------------------------------------------------------------------------
+ * Kitty graphics. Placements carry pixel rectangles with cropping, c/r
+ * fitting, letterboxing, offsets, scroll clipping and Unicode placeholder
+ * tiles applied, so a host draws one textured rectangle per entry: the
+ * image stretched over image_*, shown only inside clip_*.
+ * ------------------------------------------------------------------------ */
+
+#define TERMY_ENGINE_IMAGE_RGBA 0
+#define TERMY_ENGINE_IMAGE_PNG 1
+
+typedef struct {
+  /* With image_generation, names the pixels: the same pair always has the
+   * same pixels, so textures can be cached by it. */
+  uint32_t image_id;
+  /* Below 0 draws under text; below -1073741824 under cell backgrounds. */
+  int32_t z_index;
+  uint64_t image_generation;
+  uint32_t image_width;
+  uint32_t image_height;
+  /* Pixels from the grid's top-left, in the cell size passed in. */
+  float clip_x;
+  float clip_y;
+  float clip_width;
+  float clip_height;
+  float image_x;
+  float image_y;
+  float image_draw_width;
+  float image_draw_height;
+} TermyEngineImagePlacement;
+
+/* Placements on the viewport for cells of cell_width x cell_height pixels,
+ * lowest z first. The array borrows memory owned by the handle and stays
+ * valid until the next termy_engine_image_placements call or until the
+ * handle is freed. INVALID_ARGUMENT for a cell size that isn't positive. */
+TermyEngineStatus termy_engine_image_placements(
+    TermyEngine *engine,
+    float cell_width,
+    float cell_height,
+    const TermyEngineImagePlacement **out_placements,
+    size_t *out_len);
+
+/* A copy of an image's pixels, for an image in the last placements call:
+ * TERMY_ENGINE_IMAGE_RGBA rows of image_width * 4 bytes, or
+ * TERMY_ENGINE_IMAGE_PNG. INVALID_ARGUMENT when the pair isn't there.
+ * Release with termy_engine_bytes_free(). */
+TermyEngineStatus termy_engine_image_data(
+    TermyEngine *engine,
+    uint32_t image_id,
+    uint64_t image_generation,
+    uint32_t *out_format,
+    TermyEngineBytes *out_bytes);
+
+/* ------------------------------------------------------------------------
  * Input encoders. They return the bytes to send to the program and never
  * write anywhere. An empty result means nothing should be sent.
  * ------------------------------------------------------------------------ */

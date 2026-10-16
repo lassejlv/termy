@@ -12,6 +12,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod frame;
+pub mod graphics;
 pub mod input;
 pub mod text;
 
@@ -31,6 +32,7 @@ use termy_core::terminal_engine::{
 pub use frame::{
     TermyEngineCell, TermyEngineCursor, TermyEngineFrame, TermyEngineHyperlink, TermyEngineSpan,
 };
+pub use graphics::TermyEngineImagePlacement;
 pub use input::{TermyEngineKeyEvent, TermyEngineMouseEvent};
 pub use text::TermyEngineTextRange;
 
@@ -240,6 +242,7 @@ pub struct TermyEngine {
     replies: Vec<u8>,
     colors: HostColors,
     frame: frame::FrameBuffers,
+    graphics: graphics::GraphicsBuffers,
 }
 
 impl TermyEngine {
@@ -250,6 +253,7 @@ impl TermyEngine {
             replies: Vec::new(),
             colors: HostColors::default(),
             frame: frame::FrameBuffers::default(),
+            graphics: graphics::GraphicsBuffers::default(),
         }
     }
 

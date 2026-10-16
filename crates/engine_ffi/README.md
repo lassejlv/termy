@@ -41,9 +41,9 @@ rlib. The native desktop ABI (`crates/core/include/termy.h`, which needs the
   kept) or HTML, plus word and logical-line selection helpers.
 - **Frames** with partial damage and documented full-frame rules, borrowing
   handle-owned buffers so steady-state rendering does not allocate.
-
-Kitty graphics are parsed, stored and kept in snapshots, but not exposed in
-frames yet.
+- **Kitty graphics** as placements with pixel rectangles worked out (crop,
+  fit, letterbox, scroll clipping, Unicode placeholders) plus each image's
+  RGBA or PNG pixels, so a host draws one textured rectangle per placement.
 
 ## Packaging
 

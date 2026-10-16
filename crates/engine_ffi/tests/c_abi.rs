@@ -114,7 +114,13 @@ fn exported(source: &str) -> BTreeSet<String> {
 
 #[test]
 fn header_declares_exactly_the_exported_functions() {
-    let sources = ["src/lib.rs", "src/frame.rs", "src/input.rs", "src/text.rs"];
+    let sources = [
+        "src/lib.rs",
+        "src/frame.rs",
+        "src/graphics.rs",
+        "src/input.rs",
+        "src/text.rs",
+    ];
     let exports: BTreeSet<String> = sources
         .iter()
         .flat_map(|path| {
