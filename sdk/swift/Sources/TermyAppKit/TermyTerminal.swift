@@ -17,6 +17,8 @@ public struct TermyTerminal: NSViewRepresentable {
     private var onTitleChange: ((String?) -> Void)?
     private var onEvent: ((TerminalEvent) -> Void)?
     private var onExit: (() -> Void)?
+    private var shouldOpenURL: ((URL) -> Bool)?
+    private var shouldWriteClipboard: ((String) -> Bool)?
 
     public init(view: TerminalView) {
         self.view = view
@@ -40,6 +42,21 @@ public struct TermyTerminal: NSViewRepresentable {
         return copy
     }
 
+    /// Decides whether a Command-clicked link opens. Allowed schemes open by default.
+    public func shouldOpenURL(_ decide: @escaping (URL) -> Bool) -> TermyTerminal {
+        var copy = self
+        copy.shouldOpenURL = decide
+        return copy
+    }
+
+    /// Decides whether a program may replace the clipboard with OSC 52.
+    /// Writes are denied by default; see `TerminalViewDelegate`.
+    public func onClipboardWrite(_ decide: @escaping (String) -> Bool) -> TermyTerminal {
+        var copy = self
+        copy.shouldWriteClipboard = decide
+        return copy
+    }
+
     public func makeCoordinator() -> Coordinator {
         Coordinator()
     }
@@ -54,6 +71,8 @@ public struct TermyTerminal: NSViewRepresentable {
         context.coordinator.onTitleChange = onTitleChange
         context.coordinator.onEvent = onEvent
         context.coordinator.onExit = onExit
+        context.coordinator.shouldOpenURL = shouldOpenURL
+        context.coordinator.shouldWriteClipboard = shouldWriteClipboard
         view.delegate = context.coordinator
     }
 
@@ -62,6 +81,8 @@ public struct TermyTerminal: NSViewRepresentable {
         var onTitleChange: ((String?) -> Void)?
         var onEvent: ((TerminalEvent) -> Void)?
         var onExit: (() -> Void)?
+        var shouldOpenURL: ((URL) -> Bool)?
+        var shouldWriteClipboard: ((String) -> Bool)?
 
         public func terminalView(_ view: TerminalView, didChangeTitle title: String?) {
             onTitleChange?(title)
@@ -69,6 +90,14 @@ public struct TermyTerminal: NSViewRepresentable {
 
         public func terminalView(_ view: TerminalView, didReceive event: TerminalEvent) {
             onEvent?(event)
+        }
+
+        public func terminalView(_ view: TerminalView, shouldOpen url: URL) -> Bool {
+            shouldOpenURL?(url) ?? true
+        }
+
+        public func terminalView(_ view: TerminalView, shouldWriteClipboard text: String) -> Bool {
+            shouldWriteClipboard?(text) ?? false
         }
 
         public func terminalViewDidExit(_ view: TerminalView) {

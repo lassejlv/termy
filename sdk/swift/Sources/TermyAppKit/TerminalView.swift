@@ -9,6 +9,12 @@ public protocol TerminalViewDelegate: AnyObject {
     func terminalView(_ view: TerminalView, didReceive event: TerminalEvent)
     /// Return false to block a link. The default opens allowed schemes.
     func terminalView(_ view: TerminalView, shouldOpen url: URL) -> Bool
+    /// Return true to let a program replace the clipboard with OSC 52.
+    ///
+    /// Any output can carry OSC 52, including `cat` of an untrusted file or a
+    /// remote host, so the default denies. Hosts that allow it should usually
+    /// require `view.hasKeyboardFocus`.
+    func terminalView(_ view: TerminalView, shouldWriteClipboard text: String) -> Bool
     func terminalViewDidExit(_ view: TerminalView)
 }
 
@@ -16,6 +22,7 @@ extension TerminalViewDelegate {
     public func terminalView(_ view: TerminalView, didChangeTitle title: String?) {}
     public func terminalView(_ view: TerminalView, didReceive event: TerminalEvent) {}
     public func terminalView(_ view: TerminalView, shouldOpen url: URL) -> Bool { true }
+    public func terminalView(_ view: TerminalView, shouldWriteClipboard text: String) -> Bool { false }
     public func terminalViewDidExit(_ view: TerminalView) {}
 }
 
@@ -44,10 +51,16 @@ public final class TerminalView: NSView {
 
     /// Treat Option as Alt/Meta instead of typing composed characters.
     public var optionAsAlt = false
-    /// Link schemes opened with Command-click.
-    public var allowedLinkSchemes: Set<String> = ["http", "https", "mailto", "ftp", "file"]
+    /// Link schemes opened with Command-click, compared case-insensitively.
+    ///
+    /// OSC 8 links show text the program chooses, not their target, so the
+    /// default excludes `file` and `ftp`. Even when `file` is allowed, apps,
+    /// packages, scripts and executables are revealed in Finder, not opened.
+    public var allowedLinkSchemes: Set<String> = ["http", "https", "mailto"]
     /// Play the system beep on BEL.
     public var audibleBell = true
+    /// The pasteboard used for copy, paste and allowed OSC 52 writes.
+    public var pasteboard: NSPasteboard = .general
 
     public private(set) var renderConfig: RenderConfig
     public internal(set) var selection: TerminalSelection? {
@@ -162,8 +175,13 @@ public final class TerminalView: NSView {
     var renderState: RenderState {
         RenderState(
             frame: session.frame, config: renderConfig, glyphPlan: glyphPlan, selection: selection,
-            images: images, isFocused: window?.isKeyWindow == true && window?.firstResponder === self,
+            images: images, isFocused: hasKeyboardFocus,
             cursorBlinkVisible: cursorBlinkVisible, markedText: markedText)
+    }
+
+    /// Whether the view is first responder in the key window.
+    public var hasKeyboardFocus: Bool {
+        window?.isKeyWindow == true && window?.firstResponder === self
     }
 
     public override func draw(_ dirtyRect: NSRect) {
@@ -278,8 +296,10 @@ public final class TerminalView: NSView {
         case .bell:
             if audibleBell { NSSound.beep() }
         case .clipboardStore(let text):
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
+            if delegate?.terminalView(self, shouldWriteClipboard: text) == true {
+                pasteboard.clearContents()
+                pasteboard.setString(text, forType: .string)
+            }
         case .exit:
             delegate?.terminalViewDidExit(self)
         default:
@@ -363,14 +383,52 @@ public final class TerminalView: NSView {
 
     // MARK: - Links
 
-    func openLink(at position: GridPosition) -> Bool {
+    enum LinkAction: Equatable {
+        case open(URL)
+        /// Show the file in Finder instead of launching it.
+        case reveal(URL)
+    }
+
+    /// What Command-clicking the cell would do, or nil when the link is blocked.
+    func linkAction(at position: GridPosition) -> LinkAction? {
+        guard let target = linkTarget(at: position),
+              allowedLinkSchemes.contains(where: { $0.lowercased() == target.scheme?.lowercased() }),
+              delegate?.terminalView(self, shouldOpen: target) ?? true
+        else { return nil }
+        return target.isFileURL && Self.isLaunchable(target) ? .reveal(target) : .open(target)
+    }
+
+    /// The parsed OSC 8 target under a cell, if it is a well-formed URL.
+    func linkTarget(at position: GridPosition) -> URL? {
         guard let link = try? session.terminal.hyperlink(at: position),
-              let url = URL(string: link.uri),
-              let scheme = url.scheme?.lowercased(), allowedLinkSchemes.contains(scheme),
-              delegate?.terminalView(self, shouldOpen: url) ?? true
-        else { return false }
-        NSWorkspace.shared.open(url)
+              !link.uri.unicodeScalars.contains(where: { $0.value < 0x20 || (0x7F...0x9F).contains($0.value) })
+        else { return nil }
+        return URL(string: link.uri)
+    }
+
+    func openLink(at position: GridPosition) -> Bool {
+        switch linkAction(at: position) {
+        case .open(let url): NSWorkspace.shared.open(url)
+        case .reveal(let url): NSWorkspace.shared.activateFileViewerSelecting([url])
+        case nil: return false
+        }
         return true
+    }
+
+    /// Extensions macOS opens by running something: apps, installers,
+    /// scripts, and files that launch another target.
+    private static let launchableExtensions: Set<String> = [
+        "app", "action", "command", "fileloc", "inetloc", "jar", "mpkg", "pkg", "prefpane",
+        "scpt", "scptd", "shortcut", "terminal", "tool", "webloc", "workflow",
+    ]
+
+    /// Whether opening a file URL could run code instead of showing a document.
+    static func isLaunchable(_ url: URL) -> Bool {
+        let url = url.resolvingSymlinksInPath()
+        if launchableExtensions.contains(url.pathExtension.lowercased()) { return true }
+        let values = try? url.resourceValues(forKeys: [.isApplicationKey, .isPackageKey, .isDirectoryKey, .isExecutableKey])
+        if values?.isApplication == true || values?.isPackage == true { return true }
+        return values?.isDirectory == false && values?.isExecutable == true
     }
 }
 

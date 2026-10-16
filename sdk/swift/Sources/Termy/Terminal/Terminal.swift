@@ -179,8 +179,12 @@ public final class Terminal {
     }
 
     /// Pastes text encoded by `encodePaste(_:)`.
+    ///
+    /// When the program enabled Kitty clipboard paste events (mode 5522), it
+    /// is told a paste is available and reads the clipboard itself through
+    /// OSC 5522, so the text is not also typed.
     public func paste(_ text: String, availableFormats: [String] = ["text/plain"]) throws(TermyError) {
-        try sendKittyClipboardPasteEvent(location: .clipboard, availableFormats: availableFormats)
+        if try sendKittyClipboardPasteEvent(location: .clipboard, availableFormats: availableFormats) { return }
         try write(encodePaste(text))
     }
 

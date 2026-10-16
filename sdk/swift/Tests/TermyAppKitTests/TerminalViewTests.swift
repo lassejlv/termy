@@ -17,6 +17,24 @@ struct TerminalViewTests {
         return view
     }
 
+    private func privatePasteboard() -> NSPasteboard {
+        NSPasteboard(name: NSPasteboard.Name("dev.termy.tests.\(UUID().uuidString)"))
+    }
+
+    @MainActor
+    private final class Delegate: TerminalViewDelegate {
+        var allowsClipboardWrites = false
+        var allowsLinks = true
+        var clipboardRequests: [String] = []
+
+        func terminalView(_ view: TerminalView, shouldWriteClipboard text: String) -> Bool {
+            clipboardRequests.append(text)
+            return allowsClipboardWrites
+        }
+
+        func terminalView(_ view: TerminalView, shouldOpen url: URL) -> Bool { allowsLinks }
+    }
+
     private func render(_ view: TerminalView) throws -> NSBitmapImageRep {
         let bitmap = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)
@@ -86,6 +104,96 @@ struct TerminalViewTests {
         #expect(Set(view.glyphPlan.keys) == [0, 1, 2])
         try view.session.feed(Data("\r\u{1b}[Kabc".utf8))
         #expect(view.glyphPlan.isEmpty)
+    }
+
+    @Test func programsCannotWriteTheClipboardUnlessTheHostAllows() throws {
+        let view = try makeView()
+        let pasteboard = privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        view.pasteboard = pasteboard
+        pasteboard.clearContents()
+        pasteboard.setString("mine", forType: .string)
+        let store = Data("\u{1b}]52;c;c3RvcmVkIHRleHQ=\u{7}".utf8)
+
+        try view.session.feed(store)
+        #expect(pasteboard.string(forType: .string) == "mine")
+
+        let delegate = Delegate()
+        view.delegate = delegate
+        try view.session.feed(store)
+        #expect(delegate.clipboardRequests == ["stored text"])
+        #expect(pasteboard.string(forType: .string) == "mine")
+
+        delegate.allowsClipboardWrites = true
+        try view.session.feed(store)
+        #expect(pasteboard.string(forType: .string) == "stored text")
+    }
+
+    @Test func linksOpenOnlySafeTargets() throws {
+        func action(for uri: String, schemes: Set<String>? = nil, delegate: Delegate? = nil) throws -> TerminalView.LinkAction? {
+            let view = try makeView(feeding: "\u{1b}]8;;\(uri)\u{1b}\\L\u{1b}]8;;\u{1b}\\")
+            if let schemes { view.allowedLinkSchemes = schemes }
+            view.delegate = delegate
+            return view.linkAction(at: GridPosition(row: 0, col: 0))
+        }
+        let web = try #require(URL(string: "https://example.com/docs"))
+        #expect(try action(for: web.absoluteString) == .open(web))
+        #expect(try action(for: "HTTPS://example.com") != nil)
+        // Link text is chosen by the program, so file and ftp targets are opt-in.
+        #expect(try action(for: "file:///tmp/notes.txt") == nil)
+        #expect(try action(for: "ftp://example.com/x.app") == nil)
+
+        let files: Set<String> = ["FILE"]
+        let notes = try #require(URL(string: "file:///tmp/notes.txt"))
+        #expect(try action(for: notes.absoluteString, schemes: files) == .open(notes))
+        let app = try #require(URL(string: "file:///Applications/Calculator.app"))
+        #expect(try action(for: app.absoluteString, schemes: files) == .reveal(app))
+
+        let veto = Delegate()
+        veto.allowsLinks = false
+        #expect(try action(for: web.absoluteString, delegate: veto) == nil)
+    }
+
+    @Test func launchableFilesAreRecognized() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("termy-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tool = directory.appendingPathComponent("tool")
+        let notes = directory.appendingPathComponent("notes.txt")
+        FileManager.default.createFile(atPath: tool.path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
+        FileManager.default.createFile(atPath: notes.path, contents: Data(), attributes: [.posixPermissions: 0o644])
+
+        #expect(TerminalView.isLaunchable(tool))
+        #expect(!TerminalView.isLaunchable(notes))
+        #expect(!TerminalView.isLaunchable(directory))
+        #expect(TerminalView.isLaunchable(directory.appendingPathComponent("Run.command")))
+        #expect(TerminalView.isLaunchable(directory.appendingPathComponent("Thing.APP")))
+    }
+
+    @Test func pastedFilesBecomeQuotedPaths() throws {
+        let view = try makeView()
+        let pasteboard = privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        view.pasteboard = pasteboard
+        var sent = Data()
+        view.session.terminal.onInput = { sent.append($0) }
+
+        pasteboard.clearContents()
+        pasteboard.writeObjects([
+            URL(fileURLWithPath: "/tmp/my dir/it's $(id)") as NSURL,
+            URL(fileURLWithPath: "/tmp/plain-1.txt") as NSURL,
+        ])
+        view.paste(nil)
+        #expect(String(decoding: sent, as: UTF8.self) == "'/tmp/my dir/it'\\''s $(id)' /tmp/plain-1.txt")
+
+        sent.removeAll()
+        pasteboard.clearContents()
+        pasteboard.setString("echo hi", forType: .string)
+        view.paste(nil)
+        #expect(String(decoding: sent, as: UTF8.self) == "echo hi")
+
+        #expect(TerminalView.shellQuoted("") == "''")
+        #expect(TerminalView.shellQuoted("a/b_c.d") == "a/b_c.d")
     }
 
     @Test func pasteWritesThroughTheSession() throws {

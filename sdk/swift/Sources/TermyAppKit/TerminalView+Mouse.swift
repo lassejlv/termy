@@ -111,6 +111,9 @@ extension TerminalView {
         let position = gridPosition(for: event)
         guard position != gesture.lastMove else { return }
         gesture.lastMove = position
+        // Link text is chosen by the program; show where a link really goes.
+        let target = linkTarget(at: position)?.absoluteString
+        if toolTip != target { toolTip = target }
         _ = try? session.send(MouseInput(.move, at: position, modifiers: reportingModifiers(event)))
     }
 

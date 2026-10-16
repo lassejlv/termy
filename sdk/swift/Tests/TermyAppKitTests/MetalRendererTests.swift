@@ -118,6 +118,34 @@ struct MetalRendererTests {
         #expect(pixel.r > 200 && pixel.g < 60 && pixel.b < 60)
     }
 
+    @Test func downscalesKittyImagesWiderThanATexture() throws {
+        let view = try makeView()
+        let renderer = try #require(view.metalRenderer)
+        // An opaque red RGBA row wider than the GPU's largest texture, sent in
+        // base64 chunks the way kitty does.
+        let width = renderer.maxTextureDimension + 1_000
+        let pixels = Data((0..<width).flatMap { _ in [UInt8(255), 0, 0, 255] }).base64EncodedString()
+        let chunks = stride(from: 0, to: pixels.count, by: 4_096).map { start -> Substring in
+            let begin = pixels.index(pixels.startIndex, offsetBy: start)
+            return pixels[begin..<pixels.index(begin, offsetBy: min(4_096, pixels.count - start))]
+        }
+        var output = ""
+        for (index, chunk) in chunks.enumerated() {
+            let more = index < chunks.count - 1 ? 1 : 0
+            let control = index == 0 ? "a=T,f=32,s=\(width),v=1,c=2,r=1,q=2,m=\(more)" : "m=\(more)"
+            output += "\u{1b}_G\(control);\(chunk)\u{1b}\\"
+        }
+        try view.session.feed(Data(output.utf8))
+        #expect(view.images.count == 1)
+
+        for _ in 0..<2 {
+            let rendered = try render(view)
+            let cell = cellPixels(view, row: 0, col: 1)
+            let pixel = rendered.rgb(x: Int(cell.midX), y: Int(cell.midY))
+            #expect(pixel.r > 200 && pixel.g < 60 && pixel.b < 60)
+        }
+    }
+
     @Test func redrawsOnlyWhatChangedButStaysCorrect() throws {
         let view = try makeView(feeding: "\u{1b}[37mtop")
         _ = try render(view)

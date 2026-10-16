@@ -65,6 +65,20 @@ struct InputTests {
         #expect(String(decoding: sent, as: UTF8.self) == "\u{1b}[200~a[201~b\u{1b}[201~")
     }
 
+    @Test func kittyPasteEventsReplaceTypedPastes() throws {
+        // With mode 5522 the program reads the clipboard itself through
+        // OSC 5522, so the text must not also arrive as typed input.
+        let terminal = try displayTerminal(feeding: "\u{1b}[?5522h")
+        #expect(terminal.isKittyClipboardPasteEventsEnabled)
+        var sent = Data()
+        terminal.onInput = { sent.append($0) }
+        try terminal.paste("secret")
+        _ = try drainAll(terminal) { sent.append($0) }
+        let output = String(decoding: sent, as: UTF8.self)
+        #expect(output.contains("\u{1b}]5522;type=read:status=OK"))
+        #expect(!output.contains("secret"))
+    }
+
     @Test func pasteCannotEscapeTheBracket() throws {
         let terminal = try displayTerminal()
         var sent = Data()

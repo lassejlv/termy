@@ -182,12 +182,18 @@ enum GlyphRasterizer {
         return RasterizedGlyph(width: width, height: height, pixels: pixels, offset: .zero)
     }
 
-    /// Draws a CGImage at its natural size.
-    static func image(_ image: CGImage) -> RasterizedGlyph? {
-        let pixels = draw(width: image.width, height: image.height) { context in
-            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    /// Draws a CGImage at its natural size, downscaled to fit `maxDimension`
+    /// on both sides (a GPU texture limit) with its aspect ratio kept.
+    static func image(_ image: CGImage, maxDimension: Int = .max) -> RasterizedGlyph? {
+        guard image.width > 0, image.height > 0, maxDimension > 0 else { return nil }
+        let fit = min(1, Double(maxDimension) / Double(image.width), Double(maxDimension) / Double(image.height))
+        let width = min(maxDimension, max(1, Int((Double(image.width) * fit).rounded())))
+        let height = min(maxDimension, max(1, Int((Double(image.height) * fit).rounded())))
+        let pixels = draw(width: width, height: height) { context in
+            context.interpolationQuality = .high
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         }
-        return RasterizedGlyph(width: image.width, height: image.height, pixels: pixels, offset: .zero)
+        return RasterizedGlyph(width: width, height: height, pixels: pixels, offset: .zero)
     }
 
     private static func draw(width: Int, height: Int, _ body: (CGContext) -> Void) -> [UInt8] {
