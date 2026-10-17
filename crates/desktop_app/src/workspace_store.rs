@@ -255,6 +255,7 @@ impl WorkspaceStore {
                     width: clamp_cell(row.get::<i64, _>("pane_width")).max(1),
                     height: clamp_cell(row.get::<i64, _>("pane_height")).max(1),
                     buffer: row.get("buffer"),
+                    zoom_steps: 0,
                 });
             }
 
@@ -313,6 +314,7 @@ impl WorkspaceStore {
             Ok(Some(StoredSession {
                 workspaces,
                 active_workspace,
+                zoom_steps: 0,
             }))
         })
     }
@@ -496,6 +498,7 @@ mod tests {
                                 width: 80,
                                 height: 24,
                                 buffer: Some("hello".to_string()),
+                                zoom_steps: 0,
                             }],
                         },
                         StoredTab {
@@ -513,6 +516,7 @@ mod tests {
                                     width: 40,
                                     height: 24,
                                     buffer: None,
+                                    zoom_steps: 0,
                                 },
                                 StoredPane {
                                     session_id: None,
@@ -521,6 +525,7 @@ mod tests {
                                     width: 40,
                                     height: 24,
                                     buffer: None,
+                                    zoom_steps: 0,
                                 },
                             ],
                         },
@@ -544,11 +549,13 @@ mod tests {
                             width: 80,
                             height: 24,
                             buffer: None,
+                            zoom_steps: 0,
                         }],
                     }],
                 },
             ],
             active_workspace: 1,
+            zoom_steps: 0,
         }
     }
 

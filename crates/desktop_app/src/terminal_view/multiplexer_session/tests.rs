@@ -461,6 +461,7 @@ fn desktop_saves_preserve_cli_workspace_edits(cx: &mut TestAppContext) {
     });
     let local = termy_core::session_model::StoredSession {
         active_workspace: 0,
+        zoom_steps: 0,
         workspaces: vec![termy_core::session_model::StoredWorkspace {
             name: "Development".into(),
             pinned: false,

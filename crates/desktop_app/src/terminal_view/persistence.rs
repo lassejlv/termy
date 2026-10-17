@@ -23,6 +23,7 @@ struct PersistedNativePane {
     width: u16,
     height: u16,
     buffer: Option<String>,
+    zoom_steps: i16,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -266,6 +267,7 @@ impl TerminalView {
                             last_session,
                         )],
                         active_workspace: 0,
+                        zoom_steps: 0,
                     };
                     if let Err(error) = store.save_session(&session) {
                         log::warn!("Failed to import legacy session: {error}");
@@ -317,6 +319,7 @@ impl TerminalView {
                             width: pane.width,
                             height: pane.height,
                             buffer: pane.buffer,
+                            zoom_steps: pane.zoom_steps,
                         })
                         .collect(),
                 })
@@ -352,6 +355,7 @@ impl TerminalView {
                         width: pane.width,
                         height: pane.height,
                         buffer: pane.buffer,
+                        zoom_steps: pane.zoom_steps,
                     })
                     .collect(),
             })
@@ -430,6 +434,11 @@ impl TerminalView {
         Some(StoredSession {
             active_workspace: active_position,
             workspaces,
+            zoom_steps: if self.multiplexer.is_some() {
+                self.font_zoom_steps()
+            } else {
+                0
+            },
         })
     }
 
@@ -472,6 +481,11 @@ impl TerminalView {
                             width: width.max(1),
                             height: height.max(1),
                             buffer: self.persisted_pane_buffer(pane),
+                            zoom_steps: if self.multiplexer.is_some() {
+                                pane.pane_zoom_steps
+                            } else {
+                                0
+                            },
                         }
                     })
                     .collect::<Vec<_>>();
@@ -604,6 +618,7 @@ impl TerminalView {
                         .and_then(Value::as_str)
                         .map(str::to_string)
                         .filter(|buffer| !buffer.is_empty()),
+                    zoom_steps: 0,
                 });
             }
 
@@ -764,9 +779,10 @@ impl TerminalView {
             }
             .map_err(|error| format!("Failed to restore saved pane: {error}"))?
         };
-        Ok(TerminalPane::new_native(
-            pane_id, pane.left, pane.top, width, height, terminal,
-        ))
+        let mut restored =
+            TerminalPane::new_native(pane_id, pane.left, pane.top, width, height, terminal);
+        restored.pane_zoom_steps = pane.zoom_steps;
+        Ok(restored)
     }
 
     fn create_restored_tab(
@@ -1046,6 +1062,9 @@ impl TerminalView {
         let stored_active = session
             .active_workspace
             .min(session.workspaces.len().saturating_sub(1));
+        if self.multiplexer.is_some() {
+            self.set_font_zoom_steps(session.zoom_steps, cx);
+        }
         let mut entries = Vec::with_capacity(session.workspaces.len());
         for (index, stored_workspace) in session.workspaces.into_iter().enumerate() {
             let id = index as u64 + 1;
@@ -1446,6 +1465,7 @@ mod tests {
                     width: 80,
                     height: 24,
                     buffer: Some("saved output".to_string()),
+                    zoom_steps: 0,
                 }],
             }],
         };

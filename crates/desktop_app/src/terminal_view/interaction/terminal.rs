@@ -324,7 +324,7 @@ impl TerminalView {
         action: CommandAction,
         cx: &mut Context<Self>,
     ) -> bool {
-        match action {
+        let handled = match action {
             CommandAction::ZoomIn => {
                 if self.active_pane_uses_local_zoom() {
                     self.adjust_active_pane_zoom_steps(1, cx);
@@ -352,7 +352,22 @@ impl TerminalView {
                 true
             }
             _ => false,
+        };
+        // Zoom is part of the multiplexer's live layout so a relaunch reattaches
+        // panes at the size they were last shown.
+        if handled && self.multiplexer.is_some() {
+            self.schedule_persist_native_workspace(cx);
         }
+        handled
+    }
+
+    pub(in super::super) fn font_zoom_steps(&self) -> i16 {
+        let current: f32 = self.font_size.into();
+        ((current - self.base_font_size) / ZOOM_STEP).round() as i16
+    }
+
+    pub(in super::super) fn set_font_zoom_steps(&mut self, steps: i16, cx: &mut Context<Self>) {
+        self.update_zoom(self.base_font_size + steps as f32 * ZOOM_STEP, cx);
     }
 
     pub(in super::super) fn update_zoom(&mut self, next_size: f32, cx: &mut Context<Self>) {

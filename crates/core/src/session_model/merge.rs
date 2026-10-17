@@ -93,6 +93,7 @@ pub fn merge_session(
         return Err("The workspace order changed in another client");
     }
     Ok(StoredSession {
+        zoom_steps: field(&base.zoom_steps, &local.zoom_steps, &remote.zoom_steps)?,
         active_workspace: field(
             &base.active_workspace,
             &local.active_workspace,
@@ -171,6 +172,7 @@ mod tests {
     fn session() -> StoredSession {
         StoredSession {
             active_workspace: 0,
+            zoom_steps: 0,
             workspaces: vec![StoredWorkspace {
                 name: "Development".into(),
                 pinned: false,
@@ -189,6 +191,7 @@ mod tests {
                         width: 80,
                         height: 24,
                         buffer: None,
+                        zoom_steps: 0,
                     }],
                 }],
             }],
@@ -220,5 +223,22 @@ mod tests {
         remote = base.clone();
         remote.workspaces[0].tabs[0].panes[0].session_id = Some("replacement".into());
         assert!(merge_session(&base, &local, &remote).is_err());
+    }
+    #[test]
+    fn zoom_survives_remote_edits_and_old_layouts_default_to_unzoomed() {
+        let base = session();
+        let mut local = base.clone();
+        local.zoom_steps = 3;
+        local.workspaces[0].tabs[0].panes[0].zoom_steps = -2;
+        let mut remote = base.clone();
+        remote.workspaces[0].pinned = true;
+        let merged = merge_session(&base, &local, &remote).unwrap();
+        assert_eq!(merged.zoom_steps, 3);
+        assert_eq!(merged.workspaces[0].tabs[0].panes[0].zoom_steps, -2);
+        assert!(merged.workspaces[0].pinned);
+
+        let legacy: StoredSession =
+            serde_json::from_str(r#"{"workspaces":[],"active_workspace":0}"#).unwrap();
+        assert_eq!(legacy.zoom_steps, 0);
     }
 }
