@@ -66,6 +66,9 @@ pub struct StoredPane {
     pub width: u16,
     pub height: u16,
     pub buffer: Option<String>,
+    /// Live multiplexer layout only: pane-local font zoom relative to the base size.
+    #[serde(default)]
+    pub zoom_steps: i16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -95,6 +98,9 @@ pub struct StoredWorkspace {
 pub struct StoredSession {
     pub workspaces: Vec<StoredWorkspace>,
     pub active_workspace: usize,
+    /// Live multiplexer layout only: window font zoom relative to the base size.
+    #[serde(default)]
+    pub zoom_steps: i16,
 }
 
 /// UI title/status snapshot for live sessions; terminal events refresh it on attach.

@@ -504,6 +504,7 @@ fn layout_resizes_keep_the_live_cell_metrics() {
             width: 80,
             height: 24,
             buffer: None,
+            zoom_steps: 0,
         }],
     };
     let layout = StoredMultiplexer {
@@ -518,6 +519,7 @@ fn layout_resizes_keep_the_live_cell_metrics() {
                     tabs: vec![tab.clone()],
                 }],
                 active_workspace: 0,
+                zoom_steps: 0,
             },
         }],
     };

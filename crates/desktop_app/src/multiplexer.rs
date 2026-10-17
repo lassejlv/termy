@@ -394,6 +394,7 @@ fn reconcile(saved: &mut SavedState, live: &[termy_core::multiplexer::PaneInfo])
                 width: 80,
                 height: 24,
                 buffer: None,
+                zoom_steps: 0,
             }],
         })
         .collect();
@@ -416,6 +417,7 @@ fn reconcile(saved: &mut SavedState, live: &[termy_core::multiplexer::PaneInfo])
                 session: StoredSession {
                     workspaces: vec![workspace],
                     active_workspace: 0,
+                    zoom_steps: 0,
                 },
             });
         }

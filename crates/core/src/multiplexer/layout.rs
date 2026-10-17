@@ -310,6 +310,7 @@ impl SessionClient {
                         width: size.cols,
                         height: size.rows,
                         buffer: None,
+                        zoom_steps: 0,
                     }],
                 };
                 if let Some(target) = &target {
@@ -328,6 +329,7 @@ impl SessionClient {
                         id: new_window_id.clone(),
                         session: StoredSession {
                             active_workspace: 0,
+                            zoom_steps: 0,
                             workspaces: vec![StoredWorkspace {
                                 name: "Workspace 1".into(),
                                 pinned: false,
