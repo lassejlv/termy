@@ -30,6 +30,8 @@ public final class TerminalSession {
     public var maxBatchesPerPoll = 8
 
     private var pollScheduled = false
+    private var isPolling = false
+    private var pollRequestedWhilePolling = false
     private var forceFullOnNextPoll = true
 
     /// Spawns a shell in a PTY and starts polling on output.
@@ -72,6 +74,21 @@ public final class TerminalSession {
 
     /// Drains pending events and applies the next frame update now.
     public func poll(forceFull: Bool = false) {
+        // A clipboard handler that spins a run loop (a modal alert, say) can
+        // let a wakeup poll again mid-drain; defer it to after this one.
+        guard !isPolling, !terminal.isDraining else {
+            pollRequestedWhilePolling = true
+            if forceFull { forceFullOnNextPoll = true }
+            return
+        }
+        isPolling = true
+        defer {
+            isPolling = false
+            if pollRequestedWhilePolling {
+                pollRequestedWhilePolling = false
+                schedulePoll()
+            }
+        }
         var batches = 0
         var hasMore = true
         while hasMore, batches < maxBatchesPerPoll {

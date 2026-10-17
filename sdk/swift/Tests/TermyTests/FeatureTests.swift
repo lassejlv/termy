@@ -4,6 +4,14 @@ import Testing
 
 @Suite("Search, links, graphics, and config")
 struct FeatureTests {
+    @Test func tmuxArgumentsAreQuotedForTmuxsParser() {
+        #expect(TmuxControl.quoted("send-keys") == "send-keys")
+        #expect(TmuxControl.quoted("%1") == "%1")
+        #expect(TmuxControl.quoted("") == "''")
+        #expect(TmuxControl.quoted("a b; kill-server") == "'a b; kill-server'")
+        #expect(TmuxControl.quoted("it's") == "'it'\\''s'")
+    }
+
     @Test func searchFindsHistoryAndLiveRows() throws {
         let terminal = try displayTerminal(cols: 20, rows: 3)
         try terminal.feed("needle one\r\n")

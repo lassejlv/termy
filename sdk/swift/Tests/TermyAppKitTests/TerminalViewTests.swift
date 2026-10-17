@@ -86,6 +86,42 @@ struct TerminalViewTests {
         #expect(brightest > 0.5)
     }
 
+    @Test func unicodePlaceholderCellsShowTheirTileOfTheImage() throws {
+        // A 2x1 image (red, then green) shown through two placeholder cells.
+        let view = try makeView(feeding:
+            "\u{1b}_Ga=T,f=32,s=2,v=1,i=7,U=1,c=2,r=1,q=2;/wAA/wD/AP8=\u{1b}\\"
+            + "\u{1b}[38;5;7m\u{10EEEE}\u{0305}\u{0305}\u{10EEEE}\u{0305}\u{030D}\u{1b}[39m")
+        let bitmap = try render(view)
+        let left = try color(in: bitmap, view: view, row: 0, col: 0)
+        let right = try color(in: bitmap, view: view, row: 0, col: 1)
+        #expect(left.redComponent > 0.8 && left.greenComponent < 0.25)
+        #expect(right.greenComponent > 0.8 && right.redComponent < 0.25)
+    }
+
+    @Test func viewsThatAreNotFocusedOrVisibleDoNotBlink() throws {
+        let config = try TermyConfig(contents: "cursor_blink = true\n")
+        let render = try config.renderConfig(for: .dark)
+        let session = try TerminalSession.display(
+            size: TerminalSize(cols: 20, rows: 5, cellWidth: render.cellWidth, cellHeight: render.cellHeight))
+        let view = TerminalView(session: session, renderConfig: render, backend: .coreGraphics)
+        _ = NSApplication.shared
+        // A window that is neither key nor on screen, like a background tab.
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: view.size(cols: 20, rows: 5)),
+            styleMask: [.borderless], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        #expect(!view.isOnScreen)
+        #expect(!view.isBlinking)
+        _ = view.becomeFirstResponder()
+        #expect(!view.isBlinking)
+        try session.feed(Data("moved".utf8))
+        #expect(!view.isBlinking)
+        _ = view.resignFirstResponder()
+        #expect(!view.isBlinking)
+        window.contentView = nil
+    }
+
     @Test func selectionCopiesText() throws {
         let view = try makeView(feeding: "hello world\r\nsecond")
         view.selection = TerminalSelection(

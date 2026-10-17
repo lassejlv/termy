@@ -79,6 +79,12 @@ public final class TerminalView: NSView {
     private var blinkTimer: Timer?
     private var metalFrameScheduled = false
     private var animationTimer: Timer?
+    /// An animation frame came due while the window was hidden.
+    private var animationPaused = false
+    private var windowObservers: [NSObjectProtocol] = []
+
+    /// Kitty animations are capped at this rate however short their frame delay.
+    private static let minimumAnimationDelay: TimeInterval = 1.0 / 60
 
     /// Wraps an existing session.
     public init(session: TerminalSession, renderConfig: RenderConfig, backend: TerminalRenderingBackend = .automatic) {
@@ -116,6 +122,7 @@ public final class TerminalView: NSView {
     isolated deinit {
         blinkTimer?.invalidate()
         animationTimer?.invalidate()
+        windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
         session.stop()
     }
 
@@ -222,7 +229,8 @@ public final class TerminalView: NSView {
     }
 
     private func renderMetalFrame() {
-        guard let metalRenderer, let layer = layer as? CAMetalLayer, window != nil else { return }
+        // Hidden windows skip frames; becoming visible redraws everything.
+        guard let metalRenderer, let layer = layer as? CAMetalLayer, isOnScreen else { return }
         let scale = layer.contentsScale
         let size = CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())
         if layer.drawableSize != size { layer.drawableSize = size }
@@ -329,10 +337,17 @@ public final class TerminalView: NSView {
         needsDisplay = true
 
         animationTimer?.invalidate()
-        if let delay = snapshot.nextFrameDelay {
-            animationTimer = Timer.scheduledTimer(withTimeInterval: Double(delay) / 1000, repeats: false) { [weak self] _ in
-                MainActor.assumeIsolated { self?.reloadImages() }
-            }
+        animationTimer = nil
+        animationPaused = false
+        guard let delay = snapshot.nextFrameDelay else { return }
+        // Don't advance animations nobody can see; resume when visible.
+        guard isOnScreen else {
+            animationPaused = true
+            return
+        }
+        let interval = max(Double(delay) / 1000, Self.minimumAnimationDelay)
+        animationTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.reloadImages() }
         }
     }
 
@@ -344,13 +359,15 @@ public final class TerminalView: NSView {
     // MARK: - Focus and blink
 
     public override func becomeFirstResponder() -> Bool {
-        restartBlinkTimer()
+        // AppKit records the new first responder only after this returns.
+        restartBlinkTimer(becomingFirstResponder: true)
         invalidateCursor(session.frame.cursor)
         return true
     }
 
     public override func resignFirstResponder() -> Bool {
         blinkTimer?.invalidate()
+        blinkTimer = nil
         cursorBlinkVisible = true
         invalidateCursor(session.frame.cursor)
         return true
@@ -359,14 +376,53 @@ public final class TerminalView: NSView {
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let window { layer?.contentsScale = window.backingScaleFactor }
+        observeWindow()
         resizeGridToFit()
         restartBlinkTimer()
     }
 
-    private func restartBlinkTimer() {
+    /// Whether the view is in a window that is at least partly visible.
+    var isOnScreen: Bool {
+        guard let window else { return false }
+        return window.occlusionState.contains(.visible)
+    }
+
+    /// Whether the cursor blink timer is running.
+    var isBlinking: Bool { blinkTimer != nil }
+
+    /// Tracks key and visibility changes so idle views stop blinking,
+    /// animating and rendering, and catch up when they come back.
+    private func observeWindow() {
+        windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        windowObservers = []
+        guard let window else { return }
+        let names: [Notification.Name] = [
+            NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+            NSWindow.didChangeOcclusionStateNotification,
+        ]
+        windowObservers = names.map { name in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.windowStateDidChange() }
+            }
+        }
+    }
+
+    private func windowStateDidChange() {
+        restartBlinkTimer()
+        invalidateCursor(session.frame.cursor)
+        if isOnScreen {
+            needsDisplay = true
+            if animationPaused { reloadImages() }
+        }
+    }
+
+    private func restartBlinkTimer(becomingFirstResponder: Bool = false) {
         blinkTimer?.invalidate()
+        blinkTimer = nil
         cursorBlinkVisible = true
-        guard renderConfig.cursorBlink, window != nil else { return }
+        // An unfocused cursor is drawn hollow and never blinks.
+        let focused = window?.isKeyWindow == true && (becomingFirstResponder || window?.firstResponder === self)
+        guard renderConfig.cursorBlink, focused, isOnScreen else { return }
         blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }

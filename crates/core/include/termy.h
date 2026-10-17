@@ -643,6 +643,9 @@ TermyFfiStatus termy_tmux_control_poll(
     TermyFfiTmuxNotificationBatch *out_batch);
 TermyFfiStatus termy_tmux_control_notifications_free(
     TermyFfiTmuxNotificationBatch *batch);
+/* Runs one tmux command. A command containing a newline, carriage return or
+ * NUL returns TERMY_FFI_INVALID_ARGUMENT: tmux would run each line as its own
+ * command. Quote untrusted arguments before splicing them in. */
 TermyFfiStatus termy_tmux_control_send(
     TermyFfiTmuxControl *session,
     const uint8_t *command_ptr,

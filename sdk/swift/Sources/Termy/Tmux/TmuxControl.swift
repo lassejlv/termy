@@ -63,12 +63,32 @@ public final class TmuxControl {
     }
 
     /// Runs a tmux command and returns its output.
+    ///
+    /// The command must be a single line; one containing a newline, carriage
+    /// return or NUL throws `.invalidArgument`. Use `send(arguments:)` to pass
+    /// untrusted text, such as typed input for `send-keys -l`. This blocks
+    /// until tmux answers (up to 5 seconds), so keep it off the main thread
+    /// for anything latency-sensitive.
     @discardableResult
     public func send(_ command: String) throws(TermyError) -> String {
         guard let handle else { throw TermyError(code: .nullPointer, operation: "termy_tmux_control_send") }
         return try withUTF8(command) { (pointer, length) throws(TermyError) -> String in
             try takeString("termy_tmux_control_send") { termy_tmux_control_send(handle, pointer, length, $0) }
         }
+    }
+
+    /// Runs a tmux command built from arguments, quoting each one the way
+    /// tmux parses them, and returns its output.
+    @discardableResult
+    public func send(arguments: [String]) throws(TermyError) -> String {
+        try send(arguments.map(Self.quoted).joined(separator: " "))
+    }
+
+    /// Quotes one argument for tmux's command parser.
+    static func quoted(_ argument: String) -> String {
+        let plain = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./:@%+,=".unicodeScalars)
+        if !argument.isEmpty, argument.unicodeScalars.allSatisfy({ plain.contains($0) }) { return argument }
+        return "'" + argument.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     public func close() {

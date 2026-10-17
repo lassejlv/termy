@@ -68,6 +68,21 @@ fn ffi_control_open_poll_send_close() {
     );
     unsafe { termy_buffer_free(output) };
 
+    // A newline would make tmux run a second, injected command.
+    let injected = b"display-message -p one\nkill-server";
+    assert_eq!(
+        unsafe { termy_tmux_control_send(handle, injected.as_ptr(), injected.len(), &mut output) },
+        TermyFfiStatus::InvalidArgument
+    );
+    let command = b"display-message -p still-alive";
+    assert_eq!(
+        unsafe { termy_tmux_control_send(handle, command.as_ptr(), command.len(), &mut output) },
+        TermyFfiStatus::Ok
+    );
+    let alive = unsafe { std::slice::from_raw_parts(output.ptr, output.len) };
+    assert!(String::from_utf8_lossy(alive).contains("still-alive"));
+    unsafe { termy_buffer_free(output) };
+
     unsafe { termy_tmux_control_close(handle) };
     let _ = Command::new("tmux")
         .args(["-L", &socket, "kill-server"])
