@@ -122,7 +122,8 @@ struct MetalRendererTests {
         let view = try makeView()
         let renderer = try #require(view.metalRenderer)
         // An opaque red RGBA row wider than the GPU's largest texture, sent in
-        // base64 chunks the way kitty does.
+        // base64 chunks the way kitty does. Only r is given, so it keeps its
+        // aspect ratio as a one-cell-tall strip across the row.
         let width = renderer.maxTextureDimension + 1_000
         let pixels = Data((0..<width).flatMap { _ in [UInt8(255), 0, 0, 255] }).base64EncodedString()
         let chunks = stride(from: 0, to: pixels.count, by: 4_096).map { start -> Substring in
@@ -132,7 +133,7 @@ struct MetalRendererTests {
         var output = ""
         for (index, chunk) in chunks.enumerated() {
             let more = index < chunks.count - 1 ? 1 : 0
-            let control = index == 0 ? "a=T,f=32,s=\(width),v=1,c=2,r=1,q=2,m=\(more)" : "m=\(more)"
+            let control = index == 0 ? "a=T,f=32,s=\(width),v=1,r=1,q=2,m=\(more)" : "m=\(more)"
             output += "\u{1b}_G\(control);\(chunk)\u{1b}\\"
         }
         try view.session.feed(Data(output.utf8))
