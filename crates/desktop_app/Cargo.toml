@@ -56,7 +56,7 @@ objc = "0.2"
 raw-window-handle = "0.6"
 dispatch2 = "0.3.0"
 objc2 = "0.6.3"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSData", "NSDictionary", "NSGeometry", "NSString"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSBundle", "NSData", "NSDictionary", "NSGeometry", "NSString"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSAccessibility", "NSAlert", "NSApplication", "NSBitmapImageRep", "NSButton", "NSControl", "NSEvent", "NSGraphics", "NSImage", "NSImageRep", "NSMenu", "NSMenuItem", "NSResponder", "NSView", "NSWorkspace"] }
 objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false, features = ["UTType"] }
 
