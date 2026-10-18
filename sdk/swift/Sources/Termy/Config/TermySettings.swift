@@ -32,11 +32,6 @@ public enum TermySettings {
         try check(withUTF8(text) { termy_settings_set_keybinds($0, $1) }, "termy_settings_set_keybinds")
     }
 
-    /// Downloads and activates a theme from the Termy theme registry.
-    public static func installTheme(slug: String) throws(TermyError) {
-        try check(withUTF8(slug) { termy_settings_install_theme($0, $1) }, "termy_settings_install_theme")
-    }
-
     /// Rewrites the config file in canonical formatting.
     public static func prettifyConfig() throws(TermyError) {
         try check(termy_settings_prettify_config(), "termy_settings_prettify_config")

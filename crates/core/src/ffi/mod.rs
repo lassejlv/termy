@@ -12,7 +12,6 @@ use std::{
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::themes::{THEME_REGISTRY_CACHE_VERSION, ThemeRegistryCache, ThemeStoreTheme};
 use crate::{
     ConfigDiagnostic, ConfigDiagnosticKind, KittyGraphicsRenderPlacement, LoadedTermyConfig,
     ProgressState, Terminal, TerminalClipboardContent, TerminalClipboardLocation,
@@ -2254,337 +2253,16 @@ fn settings_color_hex(app: &cfg::AppConfig, id: cfg::ColorSettingId) -> Option<S
     rgb.map(|c| format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b))
 }
 
-const SETTINGS_THEME_REGISTRY_URL: &str =
-    "https://raw.githubusercontent.com/termy-org/themes/main/index.json";
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SettingsLegacyThemeStoreTheme {
-    name: String,
-    slug: String,
-    #[serde(default)]
-    description: String,
-    latest_version: Option<String>,
-    file_url: Option<String>,
-}
-
-impl SettingsLegacyThemeStoreTheme {
-    fn into_theme(self) -> Option<ThemeStoreTheme> {
-        let name = self.name.trim().to_string();
-        let slug = crate::themes::normalize_theme_id(&self.slug);
-        if name.is_empty() || slug.is_empty() {
-            return None;
-        }
-
-        Some(ThemeStoreTheme {
-            name,
-            slug,
-            description: self.description,
-            latest_version: self.latest_version,
-            file_url: self.file_url,
-        })
-    }
-}
-
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum SettingsThemeStorePayload {
-    Legacy(Vec<SettingsLegacyThemeStoreTheme>),
-    Registry(crate::themes::ThemeRegistryIndex),
-}
-
-fn settings_installed_theme_ids(config_path: Option<&Path>) -> Vec<String> {
-    let Some(config_path) = config_path else {
-        return Vec::new();
-    };
-    let Some(config_dir) = config_path.parent() else {
-        return Vec::new();
-    };
-    let Ok(entries) = std::fs::read_dir(config_dir.join("themes")) else {
-        return Vec::new();
-    };
-
-    entries
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            let is_json = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
-            if !is_json {
-                return None;
-            }
-
-            let stem = path.file_stem()?.to_str()?;
-            let normalized = crate::themes::normalize_theme_id(stem);
-            (!normalized.is_empty()).then_some(normalized)
-        })
-        .collect()
-}
-
-fn settings_theme_registry_url() -> String {
-    std::env::var("TERMY_THEME_REGISTRY_URL")
-        .or_else(|_| std::env::var("THEME_STORE_REGISTRY_URL"))
-        .unwrap_or_else(|_| SETTINGS_THEME_REGISTRY_URL.to_string())
-}
-
-fn settings_theme_registry_cache_path(config_path: Option<&Path>) -> Option<PathBuf> {
-    let owned_config_path;
-    let config_path = if let Some(path) = config_path {
-        path
-    } else {
-        owned_config_path = cfg::config_path()?;
-        owned_config_path.as_path()
-    };
-    Some(config_path.parent()?.join("theme_registry.cache"))
-}
-
-fn settings_current_unix_timestamp() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
-}
-
-fn settings_theme_registry_fetch_url(registry_url: &str) -> String {
-    if !registry_url.contains("raw.githubusercontent.com") {
-        return registry_url.to_string();
-    }
-
-    let separator = if registry_url.contains('?') { '&' } else { '?' };
-    format!(
-        "{registry_url}{separator}termy_cache_bust={}",
-        settings_current_unix_timestamp()
-    )
-}
-
-fn settings_load_theme_registry_cache(config_path: Option<&Path>) -> Option<ThemeRegistryCache> {
-    let path = settings_theme_registry_cache_path(config_path)?;
-    let bytes = std::fs::read(path).ok()?;
-    let cache: ThemeRegistryCache = bincode::deserialize(&bytes).ok()?;
-    (cache.version == THEME_REGISTRY_CACHE_VERSION).then_some(cache)
-}
-
-fn settings_save_theme_registry_cache(
-    config_path: Option<&Path>,
-    themes: &[ThemeStoreTheme],
-    registry_url: &str,
-    etag: Option<String>,
-) {
-    let Some(path) = settings_theme_registry_cache_path(config_path) else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    let cache = ThemeRegistryCache {
-        version: THEME_REGISTRY_CACHE_VERSION,
-        fetched_at: settings_current_unix_timestamp(),
-        registry_url: registry_url.to_string(),
-        etag,
-        themes: themes.to_vec(),
-    };
-
-    if let Ok(bytes) = bincode::serialize(&cache) {
-        let _ = std::fs::write(path, bytes);
-    }
-}
-
-fn settings_parse_theme_store_payload(
-    raw_json: &str,
-    registry_url: &str,
-) -> Result<Vec<ThemeStoreTheme>, String> {
-    let payload: SettingsThemeStorePayload = serde_json::from_str(raw_json)
-        .map_err(|error| format!("Invalid theme registry response: {error}"))?;
-
-    let mut parsed: Vec<ThemeStoreTheme> = match payload {
-        SettingsThemeStorePayload::Legacy(themes) => themes
-            .into_iter()
-            .filter_map(SettingsLegacyThemeStoreTheme::into_theme)
-            .collect(),
-        SettingsThemeStorePayload::Registry(index) => index
-            .themes
-            .into_iter()
-            .filter_map(|theme| {
-                let slug = crate::themes::normalize_theme_id(&theme.slug);
-                (!slug.is_empty() && !theme.name.trim().is_empty()).then(|| ThemeStoreTheme {
-                    name: theme.name.trim().to_string(),
-                    slug,
-                    description: theme.description,
-                    latest_version: Some(theme.latest_version),
-                    file_url: Some(crate::themes::registry_file_url(registry_url, &theme.file)),
-                })
-            })
-            .collect(),
-    };
-
-    parsed.sort_unstable_by(|left, right| {
-        left.name
-            .to_ascii_lowercase()
-            .cmp(&right.name.to_ascii_lowercase())
-    });
-    Ok(parsed)
-}
-
-fn settings_fetch_theme_registry_themes(
-    config_path: Option<&Path>,
-) -> Result<Vec<ThemeStoreTheme>, String> {
-    let registry_url = settings_theme_registry_url();
-    let cached = settings_load_theme_registry_cache(config_path);
-    let cached_etag = cached.as_ref().and_then(|cache| {
-        (cache.registry_url == registry_url)
-            .then(|| cache.etag.clone())
-            .flatten()
-    });
-
-    // Bound the request: ureq otherwise blocks indefinitely on connect/read,
-    // and this runs synchronously on the main thread when Settings opens, so a
-    // slow or hostile registry host (the URL is overridable via
-    // TERMY_THEME_REGISTRY_URL) could hang the app.
-    let mut request = ureq::get(&settings_theme_registry_fetch_url(&registry_url))
-        .timeout(std::time::Duration::from_secs(10))
-        .set("Accept", "application/json")
-        .set("Cache-Control", "no-cache")
-        .set("Pragma", "no-cache");
-
-    if let Some(ref etag) = cached_etag {
-        request = request.set("If-None-Match", etag);
-    }
-
-    match request.call() {
-        Ok(response) if response.status() == 304 => cached
-            .filter(|cache| cache.registry_url == registry_url)
-            .map(|cache| cache.themes)
-            .ok_or_else(|| {
-                "Server returned 304 Not Modified but no matching local cache exists".to_string()
-            }),
-        Ok(response) => {
-            let etag = response.header("etag").map(str::to_string);
-            let raw = response
-                .into_string()
-                .map_err(|error| format!("Invalid theme registry response: {error}"))?;
-            let themes = settings_parse_theme_store_payload(&raw, &registry_url)?;
-            settings_save_theme_registry_cache(config_path, &themes, &registry_url, etag);
-            Ok(themes)
-        }
-        Err(error) => cached
-            .filter(|cache| cache.registry_url == registry_url)
-            .map(|cache| cache.themes)
-            .ok_or_else(|| format!("Failed to fetch store themes: {error}")),
-    }
-}
-
-fn settings_theme_store_ids(config_path: Option<&Path>) -> Vec<String> {
-    if config_path.is_none() {
-        return Vec::new();
-    }
-
-    let registry_url = settings_theme_registry_url();
-    if let Some(cache) = settings_load_theme_registry_cache(config_path)
-        && cache.registry_url == registry_url
-        && !cache.themes.is_empty()
-    {
-        return cache.themes.into_iter().map(|theme| theme.slug).collect();
-    }
-
-    settings_fetch_theme_registry_themes(config_path)
-        .map(|themes| themes.into_iter().map(|theme| theme.slug).collect())
-        .unwrap_or_default()
-}
-
-fn settings_installed_theme_versions_path(config_path: &Path) -> Option<PathBuf> {
-    Some(config_path.parent()?.join("theme_store_installed.json"))
-}
-
-fn settings_installed_theme_file_path(config_path: &Path, slug: &str) -> Option<PathBuf> {
-    let normalized = crate::themes::normalize_theme_id(slug);
-    if normalized.is_empty() {
-        return None;
-    }
-    Some(
-        config_path
-            .parent()?
-            .join("themes")
-            .join(format!("{normalized}.json")),
-    )
-}
-
-fn settings_load_installed_theme_versions(config_path: &Path) -> HashMap<String, String> {
-    let Some(path) = settings_installed_theme_versions_path(config_path) else {
-        return HashMap::new();
-    };
-    let Ok(contents) = std::fs::read_to_string(path) else {
-        return HashMap::new();
-    };
-    serde_json::from_str::<HashMap<String, String>>(&contents)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(slug, version)| {
-            (
-                crate::themes::normalize_theme_id(&slug),
-                version.trim().to_string(),
-            )
-        })
-        .filter(|(slug, _)| !slug.is_empty())
-        .collect()
-}
-
-fn settings_persist_installed_theme_versions(
-    config_path: &Path,
-    versions: &HashMap<String, String>,
-) -> Result<(), TermyFfiStatus> {
-    let path =
-        settings_installed_theme_versions_path(config_path).ok_or(TermyFfiStatus::WriteFailed)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| TermyFfiStatus::WriteFailed)?;
-    }
-    let contents =
-        serde_json::to_string_pretty(versions).map_err(|_| TermyFfiStatus::SerializeFailed)?;
-    std::fs::write(path, contents).map_err(|_| TermyFfiStatus::WriteFailed)
-}
-
-fn settings_install_theme_from_registry(slug: &str) -> Result<(), TermyFfiStatus> {
-    let normalized = crate::themes::normalize_theme_id(slug);
-    if normalized.is_empty() {
-        return Err(TermyFfiStatus::UnknownKey);
-    }
-
-    let config_path = cfg::config_path().ok_or(TermyFfiStatus::ConfigLoadFailed)?;
-    let themes = settings_fetch_theme_registry_themes(Some(config_path.as_path()))
-        .map_err(|_| TermyFfiStatus::ConfigLoadFailed)?;
-    let theme = themes
-        .into_iter()
-        .find(|theme| theme.slug.eq_ignore_ascii_case(&normalized))
-        .ok_or(TermyFfiStatus::UnknownKey)?;
-    let file_url = theme.file_url.ok_or(TermyFfiStatus::ConfigLoadFailed)?;
-
-    let response = ureq::get(&file_url)
-        .timeout(std::time::Duration::from_secs(10))
-        .set("Accept", "application/json")
-        .call()
-        .map_err(|_| TermyFfiStatus::ConfigLoadFailed)?;
-    let contents = response
-        .into_string()
-        .map_err(|_| TermyFfiStatus::ConfigLoadFailed)?;
-    crate::themes::parse_theme_colors_json(&contents)
-        .map_err(|_| TermyFfiStatus::SerializeFailed)?;
-
-    let path = settings_installed_theme_file_path(&config_path, &normalized)
-        .ok_or(TermyFfiStatus::WriteFailed)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|_| TermyFfiStatus::WriteFailed)?;
-    }
-    std::fs::write(path, contents).map_err(|_| TermyFfiStatus::WriteFailed)?;
-
-    let mut versions = settings_load_installed_theme_versions(&config_path);
-    versions.insert(normalized, theme.latest_version.unwrap_or_default());
-    settings_persist_installed_theme_versions(&config_path, &versions)
+fn settings_themes_dir(config_path: Option<&Path>) -> Option<PathBuf> {
+    Some(config_path?.parent()?.join("themes"))
 }
 
 fn settings_theme_label(theme_id: &str) -> String {
     if theme_id == cfg::SHELL_DECIDE_THEME_ID {
         return "Shell Decide".to_string();
+    }
+    if let Some(theme) = crate::themes::find_builtin_theme(theme_id) {
+        return theme.name.to_string();
     }
 
     theme_id
@@ -2605,23 +2283,16 @@ fn settings_installed_theme_colors(
     theme_id: &str,
     config_path: Option<&Path>,
 ) -> Option<crate::themes::ThemeColors> {
-    let normalized = crate::themes::normalize_theme_id(theme_id);
-    if normalized.is_empty() || normalized == cfg::SHELL_DECIDE_THEME_ID {
+    if crate::themes::normalize_theme_id(theme_id) == cfg::SHELL_DECIDE_THEME_ID {
         return None;
     }
-
-    let config_dir = config_path.and_then(Path::parent)?;
-    let path = config_dir.join("themes").join(format!("{normalized}.json"));
-    if let Ok(contents) = std::fs::read_to_string(path)
-        && let Ok(colors) = crate::themes::parse_theme_colors_json(&contents)
-    {
-        return Some(colors);
-    }
-    None
+    crate::themes::load_local_theme(&settings_themes_dir(config_path)?, theme_id)
 }
 
 fn settings_theme_swatches(theme_id: &str, config_path: Option<&Path>) -> Vec<String> {
-    let Some(colors) = settings_installed_theme_colors(theme_id, config_path) else {
+    let Some(colors) = settings_installed_theme_colors(theme_id, config_path)
+        .or_else(|| crate::themes::builtin_theme(theme_id))
+    else {
         return Vec::new();
     };
     [
@@ -2637,33 +2308,56 @@ fn settings_theme_swatches(theme_id: &str, config_path: Option<&Path>) -> Vec<St
     .collect()
 }
 
+/// Termy's themes and the shell-decided theme first, then the built-in
+/// collection, local themes, and finally a configured value nothing provides.
 fn settings_theme_choices(
     loaded: &LoadedTermyConfig,
     current_value: Option<&str>,
 ) -> Vec<serde_json::Value> {
     use serde_json::json;
 
-    let mut ids = BTreeSet::new();
-    ids.insert(cfg::SHELL_DECIDE_THEME_ID.to_string());
-    let installed_ids: BTreeSet<String> = settings_installed_theme_ids(loaded.path.as_deref())
-        .into_iter()
+    let config_path = loaded.path.as_deref();
+    let local_ids = settings_themes_dir(config_path)
+        .map(|dir| crate::themes::local_theme_ids(&dir))
+        .unwrap_or_default();
+    let builtins = crate::themes::builtin_themes();
+    let termy_count = crate::themes::TERMY_THEME_IDS.len();
+    let mut ids: Vec<String> = builtins[..termy_count]
+        .iter()
+        .map(|theme| theme.id.to_string())
         .collect();
-    ids.extend(settings_theme_store_ids(loaded.path.as_deref()));
-    ids.extend(installed_ids.iter().cloned());
-    if let Some(current_value) = current_value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        ids.insert(current_value.to_string());
+    ids.push(cfg::SHELL_DECIDE_THEME_ID.to_string());
+    ids.extend(
+        builtins[termy_count..]
+            .iter()
+            .map(|theme| theme.id.to_string()),
+    );
+    ids.extend(
+        local_ids
+            .iter()
+            .filter(|id| crate::themes::builtin_theme(id).is_none())
+            .cloned(),
+    );
+    let current = current_value
+        .map(crate::themes::normalize_theme_id)
+        .filter(|value| !value.is_empty());
+    let current_is_available = current.as_ref().is_none_or(|current| ids.contains(current));
+    if let Some(current) = current.filter(|_| !current_is_available) {
+        ids.push(current);
     }
 
     ids.into_iter()
         .map(|theme_id| {
+            // Whether the theme can be applied: built in, a local file, or
+            // the shell-decided theme.
+            let installed = theme_id == cfg::SHELL_DECIDE_THEME_ID
+                || local_ids.contains(&theme_id)
+                || crate::themes::builtin_theme(&theme_id).is_some();
             json!({
                 "value": theme_id,
                 "label": settings_theme_label(&theme_id),
-                "installed": theme_id == cfg::SHELL_DECIDE_THEME_ID || installed_ids.contains(&theme_id),
-                "swatches": settings_theme_swatches(&theme_id, loaded.path.as_deref()),
+                "installed": installed,
+                "swatches": settings_theme_swatches(&theme_id, config_path),
             })
         })
         .collect()
@@ -2929,23 +2623,6 @@ pub unsafe extern "C" fn termy_settings_set_keybinds(
             Err(status) => status,
         },
     )
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn termy_settings_install_theme(
-    slug_ptr: *const u8,
-    slug_len: usize,
-) -> TermyFfiStatus {
-    ffi_status_guard(|| {
-        let slug = match unsafe { required_utf8(slug_ptr, slug_len) } {
-            Ok(slug) => slug,
-            Err(status) => return status,
-        };
-        match settings_install_theme_from_registry(slug) {
-            Ok(()) => TermyFfiStatus::Ok,
-            Err(status) => status,
-        }
-    })
 }
 
 /// Installs the bundled `termy-cli` shim (symlink into a PATH dir + shell PATH
@@ -4845,11 +4522,18 @@ mod tests {
                 .iter()
                 .any(|choice| choice["value"] == "termy")
         );
+        let values: Vec<&str> = theme_choices
+            .iter()
+            .filter_map(|choice| choice["value"].as_str())
+            .collect();
+        assert_eq!(
+            &values[..3],
+            ["termy", "termy-light", cfg::SHELL_DECIDE_THEME_ID],
+            "Termy's themes and shell-decide lead the list"
+        );
         assert!(
-            !theme_choices
-                .iter()
-                .any(|choice| choice["value"] == "tokyo-night"),
-            "schema loaded from in-memory contents must not synthesize legacy built-in themes"
+            values.contains(&"dracula"),
+            "the built-in collection is offered"
         );
         assert!(
             sections

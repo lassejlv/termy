@@ -137,82 +137,6 @@ pub const ANSI_COLOR_NAMES: [&str; 16] = [
     "bright_white",
 ];
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ThemeRegistryIndex {
-    #[serde(default = "default_registry_version")]
-    pub version: u32,
-    #[serde(default)]
-    pub themes: Vec<ThemeRegistryEntry>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThemeRegistryEntry {
-    pub name: String,
-    pub slug: String,
-    #[serde(default)]
-    pub description: String,
-    pub latest_version: String,
-    pub file: String,
-    #[serde(default)]
-    pub checksum_sha256: Option<String>,
-}
-
-/// Current on-disk format version for `theme_registry.cache`.
-pub const THEME_REGISTRY_CACHE_VERSION: u32 = 1;
-
-/// One theme listing normalized from the public registry or its legacy payload.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ThemeStoreTheme {
-    pub name: String,
-    pub slug: String,
-    pub description: String,
-    pub latest_version: Option<String>,
-    pub file_url: Option<String>,
-}
-
-/// Shared persisted representation of `theme_registry.cache`.
-///
-/// Field order is part of the bincode format. Add a new version instead of
-/// reordering or changing fields in place.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ThemeRegistryCache {
-    pub version: u32,
-    pub fetched_at: u64,
-    pub registry_url: String,
-    pub etag: Option<String>,
-    pub themes: Vec<ThemeStoreTheme>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThemeMetadata {
-    #[serde(rename = "$schema", skip_serializing_if = "Option::is_none")]
-    pub schema: Option<String>,
-    pub name: String,
-    pub slug: String,
-    #[serde(default)]
-    pub description: String,
-    pub latest_version: String,
-    #[serde(default)]
-    pub versions: Vec<ThemeMetadataVersion>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ThemeMetadataVersion {
-    pub version: String,
-    pub file: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub changelog: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checksum_sha256: Option<String>,
-}
-
-fn default_registry_version() -> u32 {
-    1
-}
-
 pub fn normalize_theme_id(theme_id: &str) -> String {
     let mut normalized = String::new();
     let mut last_dash = false;
@@ -227,6 +151,14 @@ pub fn normalize_theme_id(theme_id: &str) -> String {
             '-' | '_' | ' ' if !normalized.is_empty() && !last_dash => {
                 normalized.push('-');
                 last_dash = true;
+            }
+            // Spelled out so "Dracula+" stays apart from "Dracula".
+            '+' => {
+                if !normalized.is_empty() && !last_dash {
+                    normalized.push('-');
+                }
+                normalized.push_str("plus");
+                last_dash = false;
             }
             _ => {}
         }
@@ -257,21 +189,6 @@ pub fn theme_colors_json_pretty(
         .map_err(|error| format!("Failed to serialize theme colors: {error}"))
 }
 
-pub fn registry_file_url(index_url: &str, file: &str) -> String {
-    if file.starts_with("http://") || file.starts_with("https://") {
-        return file.to_string();
-    }
-
-    let base = index_url
-        .rsplit_once('/')
-        .map_or_else(|| index_url.trim_end_matches('/'), |(base, _)| base);
-    format!(
-        "{}/{}",
-        base.trim_end_matches('/'),
-        file.trim_start_matches('/')
-    )
-}
-
 fn parse_required_color(key: &str, value: &str) -> Result<Rgb8, String> {
     parse_hex_color(value).ok_or_else(|| format!("Theme color '{key}' must be a #RRGGBB hex"))
 }
@@ -287,8 +204,7 @@ fn parse_hex_color(value: &str) -> Option<Rgb8> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Rgb8, format_hex, normalize_theme_id, parse_theme_colors_json, registry_file_url,
-        theme_colors_json_pretty,
+        Rgb8, format_hex, normalize_theme_id, parse_theme_colors_json, theme_colors_json_pretty,
     };
 
     #[test]
@@ -309,6 +225,12 @@ mod tests {
     fn normalize_theme_id_is_stable() {
         assert_eq!(normalize_theme_id("  Tokyo_Night  "), "tokyo-night");
         assert_eq!(normalize_theme_id("gruvbox---dark"), "gruvbox-dark");
+        assert_eq!(normalize_theme_id("Dracula+"), "dracula-plus");
+        assert_eq!(
+            normalize_theme_id("Dracula+ High Contrast"),
+            "dracula-plus-high-contrast"
+        );
+        assert_eq!(normalize_theme_id("C++"), "c-plus-plus");
     }
 
     #[test]
@@ -395,16 +317,5 @@ mod tests {
             .expect("serialized colors");
         assert!(serialized.contains("\"$schema\": \"./theme.schema.json\""));
         assert!(serialized.contains("\"foreground\": \"#e5e5e5\""));
-    }
-
-    #[test]
-    fn resolves_registry_relative_file_urls() {
-        assert_eq!(
-            registry_file_url(
-                "https://raw.githubusercontent.com/termy-org/themes/main/index.json",
-                "themes/tokyonight/files/1.0.0.json"
-            ),
-            "https://raw.githubusercontent.com/termy-org/themes/main/themes/tokyonight/files/1.0.0.json"
-        );
     }
 }

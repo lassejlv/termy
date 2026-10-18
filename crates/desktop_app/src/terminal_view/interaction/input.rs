@@ -777,6 +777,9 @@ impl TerminalView {
         action: CommandAction,
         cx: &mut Context<Self>,
     ) -> bool {
+        if self.forward_edit_command_to_native_search(action) {
+            return true;
+        }
         match action {
             CommandAction::Copy => {
                 if self.copy_active_inline_input_selection(cx) {
@@ -917,7 +920,7 @@ impl TerminalView {
             }
 
             if self.search_open {
-                if self.handle_search_key_down(key, event.keystroke.modifiers.shift, cx) {
+                if self.handle_search_key_down(key, event.keystroke.modifiers, cx) {
                     self.remember_consumed_key_release(key);
                 }
                 return;

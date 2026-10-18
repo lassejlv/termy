@@ -50,11 +50,92 @@ fn main() {
             rpaths
         }
 
+        /// The macOS version the Swift code targets: the crate's deployment
+        /// target, but at least 11.0. The SwiftUI window itself checks for
+        /// macOS 13 at runtime.
+        fn deployment_target() -> String {
+            println!("cargo::rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
+            let parse = |version: &str| -> Option<(u32, u32)> {
+                let mut parts = version.trim().split('.');
+                let major = parts.next()?.parse().ok()?;
+                let minor = parts.next().map_or(Some(0), |minor| minor.parse().ok())?;
+                Some((major, minor))
+            };
+            let (major, minor) = std::env::var("MACOSX_DEPLOYMENT_TARGET")
+                .ok()
+                .and_then(|version| parse(&version))
+                .map_or((11, 0), |version| version.max((11, 0)));
+            format!("{major}.{minor}")
+        }
+
+        /// Compile the SwiftUI Settings window into a static library and link
+        /// it with the Swift runtime and the frameworks it uses.
+        fn build_native_settings(toolchain_lib_dir: Option<&Path>) {
+            const SOURCE: &str = "native/macos/SettingsWindow.swift";
+            println!("cargo::rerun-if-changed={SOURCE}");
+
+            let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set"));
+            let target = std::env::var("TARGET").expect("TARGET is set");
+            let arch = if target.starts_with("aarch64") {
+                "arm64"
+            } else {
+                "x86_64"
+            };
+            let library = out_dir.join("libtermy_native_settings.a");
+            let status = Command::new("xcrun")
+                .args(["--sdk", "macosx", "swiftc"])
+                .args(["-parse-as-library", "-emit-library", "-static", "-O"])
+                .args(["-swift-version", "5"])
+                .args(["-module-name", "TermyNativeSettings"])
+                .args([
+                    "-target",
+                    &format!("{arch}-apple-macos{}", deployment_target()),
+                ])
+                .arg("-module-cache-path")
+                .arg(out_dir.join("swift-module-cache"))
+                .arg("-o")
+                .arg(&library)
+                .arg(SOURCE)
+                .status()
+                .expect("failed to run swiftc for the native Settings window");
+            assert!(
+                status.success(),
+                "swiftc failed to build the native Settings window"
+            );
+
+            println!("cargo::rustc-link-search=native={}", out_dir.display());
+            println!("cargo::rustc-link-lib=static=termy_native_settings");
+            if let Ok(output) = Command::new("xcrun")
+                .args(["--sdk", "macosx", "--show-sdk-path"])
+                .output()
+                && let Ok(sdk) = String::from_utf8(output.stdout)
+            {
+                println!(
+                    "cargo::rustc-link-search=native={}/usr/lib/swift",
+                    sdk.trim()
+                );
+            }
+            if let Some(toolchain_lib_dir) = toolchain_lib_dir {
+                println!(
+                    "cargo::rustc-link-search=native={}",
+                    toolchain_lib_dir.join("swift/macosx").display()
+                );
+            }
+            for framework in ["SwiftUI", "AppKit", "Combine"] {
+                println!("cargo::rustc-link-lib=framework={framework}");
+            }
+        }
+
         println!("cargo::rerun-if-env-changed=DEVELOPER_DIR");
-        if let Some(toolchain_lib_dir) = swift_toolchain_lib_dir() {
-            for rpath in swift_macos_rpaths(&toolchain_lib_dir) {
+        let toolchain_lib_dir = swift_toolchain_lib_dir();
+        if let Some(toolchain_lib_dir) = &toolchain_lib_dir {
+            for rpath in swift_macos_rpaths(toolchain_lib_dir) {
                 println!("cargo::rustc-link-arg=-Wl,-rpath,{}", rpath.display());
             }
+        }
+        // The host is a Mac here; only a macOS target links the window.
+        if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+            build_native_settings(toolchain_lib_dir.as_deref());
         }
 
         match Command::new("xcrun")

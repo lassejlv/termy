@@ -3,7 +3,7 @@ mod io;
 mod mutate;
 mod preview;
 
-use crate::theme_store;
+use crate::theme_library;
 use std::time::Duration;
 use std::{
     collections::HashSet,
@@ -17,9 +17,8 @@ pub use error::ConfigIoError;
 pub(crate) use io::write_atomic_unsynced;
 pub use io::{ensure_config_file, open_config_file, subscribe_config_changes};
 pub use mutate::{
-    import_colors_from_json, prettify_config_file, remove_root_setting,
-    reset_theme_references_in_config, set_color_setting, set_keybind_lines, set_root_setting,
-    set_theme_in_config, upsert_task,
+    import_colors_from_json, prettify_config_file, remove_root_setting, set_color_setting,
+    set_keybind_lines, set_root_setting, set_theme_in_config, upsert_task,
 };
 pub use preview::{
     BackgroundOpacityPreview, current_background_opacity_preview, effective_background_opacity,
@@ -332,9 +331,8 @@ fn diagnostic_kind_label(kind: ConfigDiagnosticKind) -> &'static str {
 }
 
 fn migrate_legacy_builtin_theme_in_contents(contents: &str) -> String {
-    let installed_theme_ids: HashSet<String> = theme_store::load_installed_theme_ids()
-        .into_iter()
-        .collect();
+    let installed_theme_ids: HashSet<String> =
+        theme_library::local_theme_ids().into_iter().collect();
     migrate_legacy_builtin_theme_in_contents_with_installed_ids(contents, &installed_theme_ids)
 }
 
@@ -343,12 +341,19 @@ fn migrate_legacy_builtin_theme_in_contents_with_installed_ids(
     installed_theme_ids: &HashSet<String>,
 ) -> String {
     let report = AppConfig::from_contents(contents);
+    // A theme that resolves as written (built in or a local file) is never
+    // rewritten, even when it looks like a legacy alias such as `tokyonight`.
+    if termy_core::themes::builtin_theme(&report.theme).is_some()
+        || installed_theme_ids.contains(&termy_core::themes::normalize_theme_id(&report.theme))
+    {
+        return contents.to_string();
+    }
     let Some(canonical_legacy_theme) = canonical_legacy_builtin_theme_id(&report.theme) else {
         return contents.to_string();
     };
 
-    // Themes still shipped in the binary (e.g. the default `termy`) are kept
-    // as-is; only themes that moved to the theme store need to be installed.
+    // Legacy aliases move to their canonical id when that resolves, and to
+    // shell-decide otherwise.
     let next_theme = if termy_core::themes::builtin_theme(canonical_legacy_theme).is_some()
         || installed_theme_ids.contains(canonical_legacy_theme)
     {
@@ -478,12 +483,36 @@ mod tests {
     }
 
     #[test]
-    fn migrates_removed_builtin_theme_to_shell_decide_when_not_installed() {
-        let output = migrate_legacy_builtin_theme_in_contents_with_installed_ids(
+    fn keeps_earlier_builtin_theme_ids_that_ship_again() {
+        for theme in ["monokai", "tokyo-night", "palenight"] {
+            let input = format!("theme = {theme}\nfont_size = 14\n");
+            let output = migrate_legacy_builtin_theme_in_contents_with_installed_ids(
+                &input,
+                &HashSet::new(),
+            );
+            assert_eq!(output, input);
+        }
+    }
+
+    #[test]
+    fn keeps_legacy_ids_that_are_now_builtin_themes() {
+        for input in [
             "theme = dracula\nfont_size = 14\n",
+            "theme = tokyonight\nfont_size = 14\n",
+        ] {
+            let output =
+                migrate_legacy_builtin_theme_in_contents_with_installed_ids(input, &HashSet::new());
+            assert_eq!(output, input);
+        }
+    }
+
+    #[test]
+    fn migrates_legacy_alias_to_builtin_canonical_id() {
+        let output = migrate_legacy_builtin_theme_in_contents_with_installed_ids(
+            "theme = catppuccin\nfont_size = 14\n",
             &HashSet::new(),
         );
-        assert_eq!(output, "theme = shell-decide\nfont_size = 14\n");
+        assert_eq!(output, "theme = catppuccin-mocha\nfont_size = 14\n");
     }
 
     #[test]
@@ -580,9 +609,9 @@ mod tests {
     #[test]
     fn migrates_legacy_builtin_alias_to_installed_slug() {
         let output = migrate_legacy_builtin_theme_in_contents_with_installed_ids(
-            "theme = tokyonight\nfont_size = 14\n",
-            &HashSet::from([String::from("tokyo-night")]),
+            "theme = one\nfont_size = 14\n",
+            &HashSet::from([String::from("one-dark")]),
         );
-        assert_eq!(output, "theme = tokyo-night\nfont_size = 14\n");
+        assert_eq!(output, "theme = one-dark\nfont_size = 14\n");
     }
 }

@@ -24,6 +24,10 @@ mod macos_native_tabs;
 mod macos_titlebar_drag;
 mod menus;
 mod multiplexer;
+#[cfg(target_os = "macos")]
+// Tests keep Termy's own Settings window, so the bridge's entry points go unused there.
+#[cfg_attr(test, allow(dead_code))]
+mod native_settings;
 mod native_titlebar;
 mod native_window_tabs;
 mod settings_view;
@@ -32,7 +36,7 @@ mod startup;
 mod terminal_view;
 mod text_editing;
 mod text_input;
-mod theme_store;
+mod theme_library;
 mod ui;
 mod window_state;
 mod workspace_store;
@@ -594,63 +598,6 @@ fn focus_or_open_main_window<V: 'static>(
     true
 }
 
-fn start_theme_install_from_deeplink(cx: &mut App, slug: String) {
-    let loading_id = crate::ui::toast::loading(format!("Fetching theme \"{slug}\"..."));
-
-    cx.spawn(async move |cx: &mut AsyncApp| {
-        let fetch_result = cx
-            .background_executor()
-            .spawn(async move { theme_store::fetch_theme_for_deeplink_blocking(&slug) })
-            .await;
-
-        crate::ui::toast::dismiss_toast(loading_id);
-
-        match fetch_result {
-            Ok(theme) => {
-                let title = "Install Theme";
-                let message = format!(
-                    "Install theme \"{}\" into your local theme library?",
-                    theme.name
-                );
-                if !crate::native_sdk::confirm(title, &message) {
-                    return;
-                }
-
-                let install_loading_id =
-                    crate::ui::toast::loading(format!("Installing {}...", theme.name));
-                let install_result = cx
-                    .background_executor()
-                    .spawn(async move { theme_store::install_theme_from_store_blocking(theme) })
-                    .await;
-                crate::ui::toast::dismiss_toast(install_loading_id);
-
-                cx.update(|cx| match install_result {
-                    Ok(installed_theme) => {
-                        crate::ui::toast::success(installed_theme.message.clone());
-                        app_actions::update_open_settings_windows(cx, |view, settings_cx| {
-                            view.apply_theme_store_install(
-                                &installed_theme.slug,
-                                &installed_theme.version,
-                                settings_cx,
-                            );
-                        });
-                        app_actions::refresh_open_terminal_theme_assets(cx);
-                    }
-                    Err(error) => {
-                        log::error!("Failed to install theme from deeplink: {error}");
-                        crate::ui::toast::error(error);
-                    }
-                });
-            }
-            Err(error) => {
-                log::error!("Failed to fetch theme from deeplink: {error}");
-                crate::ui::toast::error(error);
-            }
-        }
-    })
-    .detach();
-}
-
 fn dispatch_deeplink(
     cx: &mut App,
     route: DeepLinkRoute,
@@ -668,23 +615,12 @@ fn dispatch_deeplink(
         DeepLinkRoute::NewTab => {
             let (command, dir) = match route_argument {
                 Some(DeepLinkArgument::NewTab(payload)) => (payload.command, payload.dir),
-                Some(DeepLinkArgument::Value(_)) | None => (None, None),
+                None => (None, None),
             };
             app_actions::open_new_tab_in_main_window(cx, command, dir)
         }
         DeepLinkRoute::Settings => app_actions::open_settings_or_config_file(cx),
         DeepLinkRoute::OpenConfig => app_actions::open_config_file(),
-        DeepLinkRoute::ThemeInstall => {
-            let slug = route_argument
-                .and_then(|argument| match argument {
-                    DeepLinkArgument::Value(value) => Some(value),
-                    DeepLinkArgument::NewTab(_) => None,
-                })
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| "Theme install deeplink requires a slug".to_string())?;
-            start_theme_install_from_deeplink(cx, slug);
-            Ok(())
-        }
     }
 }
 
@@ -1370,34 +1306,6 @@ mod tests {
                     command: None,
                     dir: Some("/tmp/demo".to_string()),
                 }))
-            )]
-        );
-    }
-
-    #[gpui_kit::test]
-    fn theme_install_deeplink_passes_slug_argument(cx: &mut TestAppContext) {
-        let handled = RefCell::new(Vec::new());
-
-        cx.update(|app| {
-            handle_open_urls_with_main_window::<ReopenTestView>(
-                app,
-                &[String::from(
-                    "termy://store/theme-install?slug=catppuccin-mocha",
-                )],
-                open_test_window,
-                |_, route, route_argument| {
-                    handled.borrow_mut().push((route, route_argument));
-                    Ok(())
-                },
-            );
-        });
-
-        assert_eq!(cx.windows().len(), 1);
-        assert_eq!(
-            *handled.borrow(),
-            vec![(
-                DeepLinkRoute::ThemeInstall,
-                Some(DeepLinkArgument::Value("catppuccin-mocha".to_string()))
             )]
         );
     }

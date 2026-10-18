@@ -169,7 +169,6 @@ impl SettingsWindow {
             SettingsSection::Advanced | SettingsSection::Keybindings => native.gray,
             SettingsSection::Appearance => native.blue,
             SettingsSection::Colors => native.red,
-            SettingsSection::ThemeStore => native.purple,
             SettingsSection::Plugins => native.orange,
             SettingsSection::Terminal => rgba(0x3a3a3cff),
             SettingsSection::Ssh => native.green,

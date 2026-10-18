@@ -2660,7 +2660,7 @@ impl TerminalView {
             None
         };
         let plugin_ui_overlay = self.modal_plugin_ui(cx);
-        let search_overlay = if self.search_open {
+        let search_overlay = if self.search_open && !self.uses_native_search_bar() {
             Some(self.render_search_bar(cx))
         } else {
             None

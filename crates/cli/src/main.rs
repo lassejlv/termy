@@ -94,37 +94,6 @@ enum Action {
     /// Check for updates
     #[command(name = "-update")]
     Update,
-
-    /// Export the current resolved theme into a Termy themes repo checkout
-    #[command(name = "-export-theme")]
-    ExportTheme {
-        /// Local path to the termy-org/themes checkout
-        #[arg(long)]
-        repo: PathBuf,
-        /// Theme slug, normalized to Termy's theme id format
-        #[arg(long)]
-        slug: String,
-        /// Display name for the theme
-        #[arg(long)]
-        name: String,
-        /// Semver version, for example 1.0.0
-        #[arg(long)]
-        version: String,
-        /// Theme description
-        #[arg(long, default_value = "")]
-        description: String,
-        /// Overwrite an existing files/<version>.json
-        #[arg(long)]
-        force: bool,
-    },
-
-    /// Validate a Termy themes repo checkout
-    #[command(name = "-validate-theme-repo")]
-    ValidateThemeRepo {
-        /// Local path to the termy-org/themes checkout
-        #[arg(long)]
-        repo: PathBuf,
-    },
 }
 
 #[derive(Subcommand)]
@@ -248,15 +217,6 @@ fn main() {
         Some(Action::PrettifyConfig) => commands::prettify_config::run(),
         Some(Action::Tui) => commands::tui::run(),
         Some(Action::Update) => commands::update::run(),
-        Some(Action::ExportTheme {
-            repo,
-            slug,
-            name,
-            version,
-            description,
-            force,
-        }) => commands::theme_repo::export_theme(repo, slug, name, version, description, force),
-        Some(Action::ValidateThemeRepo { repo }) => commands::theme_repo::validate_theme_repo(repo),
         None => {
             // No subcommand: show help
             commands::help::run();

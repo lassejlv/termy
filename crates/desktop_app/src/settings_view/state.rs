@@ -214,8 +214,7 @@ impl SettingsWindow {
             SettingsSection::Terminal => Some(CoreSettingsSection::Terminal),
             SettingsSection::Tabs => Some(CoreSettingsSection::Tabs),
             SettingsSection::Advanced => Some(CoreSettingsSection::Advanced),
-            SettingsSection::ThemeStore
-            | SettingsSection::Plugins
+            SettingsSection::Plugins
             | SettingsSection::Ssh
             | SettingsSection::Colors
             | SettingsSection::Keybindings => None,
@@ -275,7 +274,7 @@ impl SettingsWindow {
             SettingsSection::Colors => color_setting_specs()
                 .iter()
                 .any(|spec| self.custom_color_for_id(spec.id).is_some()),
-            SettingsSection::ThemeStore | SettingsSection::Plugins | SettingsSection::Ssh => false,
+            SettingsSection::Plugins | SettingsSection::Ssh => false,
             SettingsSection::Keybindings => !self.config.keybind_lines.is_empty(),
             _ => Self::section_root_settings(section)
                 .any(|setting| !self.is_root_setting_at_default(setting)),
@@ -329,7 +328,7 @@ impl SettingsWindow {
             SettingsSection::Advanced => "General",
             SettingsSection::Colors => "Colors",
             SettingsSection::Keybindings => "Keyboard shortcuts",
-            SettingsSection::ThemeStore | SettingsSection::Plugins | SettingsSection::Ssh => return,
+            SettingsSection::Plugins | SettingsSection::Ssh => return,
         };
         let title = "Reset Section";
         let message = format!(
@@ -393,7 +392,7 @@ impl SettingsWindow {
             SettingsSection::Colors => color_setting_specs()
                 .iter()
                 .try_for_each(|spec| config::set_color_setting(spec.id, None)),
-            SettingsSection::ThemeStore | SettingsSection::Plugins | SettingsSection::Ssh => Ok(()),
+            SettingsSection::Plugins | SettingsSection::Ssh => Ok(()),
             SettingsSection::Keybindings => Ok(()),
         };
 
@@ -1187,27 +1186,26 @@ impl SettingsWindow {
         cx.notify();
     }
 
+    /// Every theme the app can apply, then shell-decide and whatever the
+    /// config names that is not one of them.
+    /// The configured themes first, then Termy's themes and the shell-decided
+    /// theme, then the rest. The dropdown shows only the first few without a
+    /// query, so these must not sink below the ~800 built-in themes.
     pub(super) fn ordered_theme_ids_for_settings(&self) -> Vec<String> {
-        let mut theme_ids: Vec<String> = self
-            .theme_store_installed_versions
-            .keys()
-            .cloned()
-            .collect();
-        theme_ids.push("shell-decide".to_string());
-
-        for current in [
-            &self.config.theme,
-            &self.config.theme_light,
-            &self.config.theme_dark,
-        ] {
-            if !theme_ids.iter().any(|theme| theme == current) {
-                theme_ids.push(current.clone());
-            }
-        }
-
-        theme_ids.sort_unstable();
-        theme_ids.dedup();
-        theme_ids
+        let mut seen = std::collections::HashSet::new();
+        let leading = [
+            self.config.theme.as_str(),
+            self.config.theme_light.as_str(),
+            self.config.theme_dark.as_str(),
+        ]
+        .into_iter()
+        .chain(termy_core::themes::TERMY_THEME_IDS)
+        .chain([config::SHELL_DECIDE_THEME_ID])
+        .map(str::to_string);
+        leading
+            .chain(crate::theme_library::available_theme_ids())
+            .filter(|theme| !theme.is_empty() && seen.insert(theme.clone()))
+            .collect()
     }
 
     pub(super) fn ordered_font_families_for_settings(&self) -> Vec<String> {
