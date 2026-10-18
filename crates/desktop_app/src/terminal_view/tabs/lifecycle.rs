@@ -822,6 +822,13 @@ impl TerminalView {
         self.renaming_tab = Some(index);
         self.rename_input
             .set_text(self.session.tabs[index].title.clone());
+        // The WinUI strip edits the title in its own tab instead, and reports
+        // the result as a rename event.
+        #[cfg(target_os = "windows")]
+        if self.begin_winui_tab_rename(index) {
+            self.renaming_tab = None;
+            return;
+        }
         self.reset_cursor_blink_phase();
         self.inline_input_selecting = false;
         // Recompute tab widths so the renamed tab expands to its editing width.

@@ -3695,6 +3695,12 @@ impl Render for TerminalView {
         let show_horizontal_tabbar = show_tab_strip_chrome && !vertical_tabs;
         let tabs_row = show_horizontal_tabbar
             .then(|| self.render_tab_strip(window, &colors, &ui_font_family, tabbar_bg, cx));
+        // The WinUI strip is its own window; hide it whenever the row it
+        // covers is not drawn in the Windows 11 style.
+        #[cfg(target_os = "windows")]
+        if !show_horizontal_tabbar || !self.horizontal_tab_style().is_windows_11() {
+            self.hide_winui_tab_strip();
+        }
         let tab_sidebar = (vertical_tabs && show_tab_strip_chrome)
             .then(|| self.render_tab_sidebar(window, &colors, &ui_font_family, tabbar_bg, cx));
         let workspace_sidebar = self

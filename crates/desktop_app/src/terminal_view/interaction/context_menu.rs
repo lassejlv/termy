@@ -387,6 +387,18 @@ impl TerminalView {
         self.open_tab_context_menu_with_native_anchor(tab_index, position, native_anchor, cx);
     }
 
+    /// Opens the tab menu for a click that GPUI did not see (the WinUI strip
+    /// reports its own right-clicks).
+    #[cfg(target_os = "windows")]
+    pub(in super::super) fn open_tab_context_menu(
+        &mut self,
+        tab_index: usize,
+        position: gpui_kit::Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_tab_context_menu_with_native_anchor(tab_index, position, None, cx);
+    }
+
     fn open_tab_context_menu_with_native_anchor(
         &mut self,
         tab_index: usize,

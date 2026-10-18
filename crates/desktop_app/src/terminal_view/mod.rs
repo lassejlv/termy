@@ -1318,6 +1318,9 @@ pub struct TerminalView {
     /// `tab_style = native` on Windows: the horizontal strip uses the
     /// Windows 11 style. Follows config reloads.
     windows_native_tab_style: bool,
+    /// The WinUI `TabView` drawing that strip, once created.
+    #[cfg(target_os = "windows")]
+    winui_tab_strip: Option<tab_strip::winui::WinUiTabStripHost>,
     /// The tab this native tab window shows.
     native_tab_home: Option<TabId>,
     native_tab_split_pending: bool,
@@ -3317,6 +3320,8 @@ impl TerminalView {
             window_handle,
             native_window_tabs,
             windows_native_tab_style: crate::windows_native_tab_style(&config),
+            #[cfg(target_os = "windows")]
+            winui_tab_strip: None,
             native_tab_home: None,
             native_tab_split_pending: false,
             native_window_chrome: None,

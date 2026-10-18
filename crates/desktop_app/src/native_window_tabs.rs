@@ -28,6 +28,35 @@ pub(crate) fn windows_native_tab_style(config: &config::AppConfig) -> bool {
     cfg!(target_os = "windows") && config.tab_style == config::TabStyle::Native
 }
 
+/// Set once GPUI renders without DirectComposition, which the WinUI tab
+/// strip needs (see [`prepare_windows_platform`]).
+#[cfg(target_os = "windows")]
+static WINUI_TAB_STRIP_PLATFORM: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Windows draws the `tab_style = native` strip with a WinUI `TabView` in a
+/// XAML Island, a child window. GPUI's DirectComposition output sits above
+/// child windows and takes their input, so for the strip GPUI renders to a
+/// plain window swapchain instead. That rules out window transparency, so it
+/// happens only for opaque windows. GPUI reads the switch once, when its
+/// platform starts, so this runs before that and before any threads exist.
+#[cfg(target_os = "windows")]
+pub(crate) fn prepare_windows_platform(config: &config::AppConfig) {
+    if !windows_native_tab_style(config) || config.background_opacity < 1.0 {
+        return;
+    }
+    // SAFETY: called at the top of `main`, before any other thread starts.
+    unsafe { std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "1") };
+    WINUI_TAB_STRIP_PLATFORM.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether this process can show the WinUI tab strip. Changing `tab_style`
+/// or the background opacity takes effect after a restart.
+#[cfg(target_os = "windows")]
+pub(crate) fn winui_tab_strip_platform() -> bool {
+    WINUI_TAB_STRIP_PLATFORM.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Where a new terminal window goes.
 #[derive(Clone, Copy)]
 pub(crate) enum TerminalWindowPlacement {

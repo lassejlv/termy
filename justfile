@@ -16,8 +16,10 @@ dev_instance_home := env("TERMY_INSTANCE_HOME", justfile_directory() / "target" 
     just --list
 
 # Checkout-local instance lock so this does not silently attach to Termy.app.
+# On Windows it goes through `build`, which embeds termy.manifest (the WinUI
+# tab strip needs it; see scripts/windows/embed-manifest.ps1).
 run:
-    TERMY_INSTANCE_HOME={{ quote(dev_instance_home) }} cargo run -p termy --release
+    if [ "{{ os() }}" = "windows" ]; then {{ just_executable() }} build && TERMY_INSTANCE_HOME={{ quote(dev_instance_home) }} ./target/release/termy.exe; else TERMY_INSTANCE_HOME={{ quote(dev_instance_home) }} cargo run -p termy --release; fi
 
 # Measure the custom terminal parser/grid and enforce warmed allocation bounds.
 benchmark-terminal-engine mib="32":
@@ -57,6 +59,7 @@ dev:
 
 build:
     cargo build -p termy --release
+    if [ "{{ os() }}" = "windows" ]; then powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/embed-manifest.ps1 -ExePath target/release/termy.exe; fi
 
 check:
     cargo check --workspace

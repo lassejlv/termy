@@ -1,6 +1,8 @@
 mod file_manager;
 #[cfg(target_os = "windows")]
 pub mod win32_window;
+#[cfg(target_os = "windows")]
+pub mod winui_tab_strip;
 
 pub use file_manager::{OPEN_TAB_HERE_LABEL, register_open_tab_here, unregister_open_tab_here};
 

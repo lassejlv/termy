@@ -124,6 +124,26 @@ Bash, `just`, Bun, Inno Setup 6) are listed in
 [CONTRIBUTING.md](../CONTRIBUTING.md#windows-prerequisites). Run `just` from
 Git Bash; the justfile uses Git's `sh` on Windows.
 
+### WinUI tab strip
+
+With `tab_style = native` (the default), Windows draws the tab strip with
+WinUI 2's `TabView` (`crates/desktop_app/native/windows/WinUiTabStrip.cpp`),
+hosted in a XAML Island over the titlebar. The desktop crate's build script
+downloads the pinned `Microsoft.UI.Xaml` and `Microsoft.Web.WebView2` NuGet
+packages (SHA-256 checked; set `TERMY_WINUI_PACKAGES` to a directory holding
+both `.nupkg` files to build offline), generates C++/WinRT headers with the
+Windows SDK's `cppwinrt.exe`, and copies `Microsoft.UI.Xaml.dll`,
+`resources.pri` and `termy.manifest` beside `termy.exe`.
+
+XAML Islands need entries in the exe's manifest that GPUI's embedded manifest
+lacks, and a second manifest does not link. `just build`, `just run` and
+`scripts/build-setup.ps1` therefore run `scripts/windows/embed-manifest.ps1`
+after linking. A bare `cargo run`/`cargo build` skips that step, and Termy
+then draws its own Windows 11 style tabs. The strip is also skipped for
+translucent windows (`background_opacity` below 1): it needs GPUI to render
+without DirectComposition, which the process decides at startup, so changes
+to `tab_style` or the opacity apply after a restart.
+
 ### Building the installer locally
 
 ```sh

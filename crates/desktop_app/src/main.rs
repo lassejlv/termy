@@ -791,6 +791,10 @@ fn main() {
     crash_log::install_panic_hook();
     #[cfg(target_os = "windows")]
     set_windows_app_user_model_id();
+    #[cfg(target_os = "windows")]
+    native_window_tabs::prepare_windows_platform(
+        &config::load_runtime_config(&mut None, "Failed to load config").config,
+    );
 
     let mut startup_arguments = parse_startup_arguments(cli_args);
     let (deeplink_tx, deeplink_rx) = flume::unbounded::<Vec<String>>();

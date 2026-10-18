@@ -204,6 +204,11 @@ fn main() {
             if let Err(err) = res.compile() {
                 panic!("failed to compile Windows resources: {err}");
             }
+
+            build_winui::build();
         }
     }
 }
+
+#[cfg(windows)]
+mod build_winui;

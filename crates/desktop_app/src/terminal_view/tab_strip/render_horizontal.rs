@@ -144,6 +144,32 @@ impl TerminalView {
             .into_any_element()
     }
 
+    /// The WinUI strip spans from the first tab to the caption buttons; it
+    /// lays out its own tabs, so Termy's tab widths do not apply.
+    pub(super) fn winui_tab_lane_width(geometry: &super::layout::TabStripGeometry) -> f32 {
+        (geometry.window_width - geometry.row_start_x - Self::winui_right_inset_width(geometry))
+            .max(0.0)
+    }
+
+    /// With the WinUI strip the right inset holds only the caption buttons.
+    fn winui_right_inset_width(geometry: &super::layout::TabStripGeometry) -> f32 {
+        geometry
+            .right_inset_width
+            .min(Self::titlebar_right_padding_for_platform())
+    }
+
+    /// Placeholder for the tab lane the WinUI strip covers. It must stay
+    /// client area: the island receives its input through this window, and
+    /// moves the window from its own empty space.
+    fn render_winui_tab_lane(width: f32) -> AnyElement {
+        div()
+            .id("tabbar-winui-lane")
+            .flex_none()
+            .w(px(width))
+            .h_full()
+            .into_any_element()
+    }
+
     fn should_render_left_inset_divider(overflow: TabStripOverflowState) -> bool {
         overflow.left
     }
@@ -670,15 +696,22 @@ impl TerminalView {
             .min(termy_branding_reserved_width.max(0.0));
         let termy_branding_text_color =
             super::render_palette::resolve_branding_text_color(&palette);
-        let tabs_scroll_content = self.build_tabs_scroll_content(
-            window,
-            &state,
-            &palette,
-            &tab_font_family,
-            tab_font_family_key,
-            colors,
-            cx,
-        );
+        #[cfg(target_os = "windows")]
+        let winui_strip = style.is_windows_11()
+            && self.sync_winui_tab_strip(window, &state, colors, tabbar_bg, cx);
+        #[cfg(not(target_os = "windows"))]
+        let winui_strip = false;
+        let tabs_scroll_content = (!winui_strip).then(|| {
+            self.build_tabs_scroll_content(
+                window,
+                &state,
+                &palette,
+                &tab_font_family,
+                tab_font_family_key,
+                colors,
+                cx,
+            )
+        });
         let show_left_inset_divider = Self::should_render_left_inset_divider(state.overflow_state);
         let workspace_actions = workspace_sidebar_visible
             .then(|| self.render_workspace_sidebar_titlebar_actions(&palette, cx));
@@ -702,7 +735,12 @@ impl TerminalView {
                     cx,
                 )
             }))
-            .child(
+            .children(
+                winui_strip.then(|| {
+                    Self::render_winui_tab_lane(Self::winui_tab_lane_width(&state.geometry))
+                }),
+            )
+            .children(tabs_scroll_content.map(|tabs_scroll_content| {
                 div()
                     .id("tabs-scroll-viewport-lane")
                     .flex_none()
@@ -737,14 +775,14 @@ impl TerminalView {
                             .bottom_0()
                             .w(px(TAB_STROKE_THICKNESS))
                             .bg(palette.tab_stroke_color)
-                    })),
-            )
+                    }))
+            }))
             .children(
-                (state.geometry.gutter_width > 0.0)
+                (!winui_strip && state.geometry.gutter_width > 0.0)
                     .then(|| Self::render_gutter_lane(state.geometry.gutter_width, cx)),
             )
             .children(
-                (state.geometry.action_rail_width > 0.0)
+                (!winui_strip && state.geometry.action_rail_width > 0.0)
                     .then(|| self.render_action_rail(&state, &palette, cx)),
             )
             .children((state.geometry.right_inset_width > 0.0).then(|| {
@@ -753,7 +791,11 @@ impl TerminalView {
                     Self::render_windows_right_inset_lane(
                         window,
                         colors.foreground,
-                        state.geometry.right_inset_width,
+                        if winui_strip {
+                            Self::winui_right_inset_width(&state.geometry)
+                        } else {
+                            state.geometry.right_inset_width
+                        },
                         cx,
                     )
                 }

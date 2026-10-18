@@ -277,7 +277,7 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 
 `tab_style`
 - Default: `native`
-- native: macOS window tabs (applies to new windows) or Windows 11-style tabs; custom: Termy's tab strip
+- native: macOS window tabs (applies to new windows) or the WinUI tab strip on Windows (opaque windows, after a restart); custom: Termy's tab strip
 - Group: `TAB STRIP`
 
 `tab_switch_modifier_hints`

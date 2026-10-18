@@ -77,6 +77,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "..\..\target\{#MyTarget}\release\{#MyExeName}"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\target\{#MyTarget}\release\{#MyCliExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; WinUI 2 (Microsoft.UI.Xaml) for the native tab strip, staged beside
+; termy.exe by the desktop crate's build script.
+Source: "..\..\target\{#MyTarget}\release\Microsoft.UI.Xaml.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\target\{#MyTarget}\release\resources.pri"; DestDir: "{app}"; Flags: ignoreversion
 ; Newer ConPTY than the OS one, from the Microsoft.Windows.Console.ConPTY
 ; NuGet package. Release CI places them beside termy.exe; local builds
 ; without them fall back to the system ConPTY.
