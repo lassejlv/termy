@@ -58,12 +58,27 @@ fn is_cli_entrypoint(arg: &str) -> bool {
 }
 
 pub(crate) fn delegate_to_cli_or_exit(args: Vec<String>) -> ! {
+    // The Windows build uses the GUI subsystem and starts without a console,
+    // so reuse the launching shell's console before anything is printed.
+    #[cfg(target_os = "windows")]
+    let attached_console = windows_console::attach_parent_console();
+
     let cli_binary = find_termy_cli_binary().unwrap_or_else(|error| {
         eprintln!("{error}");
         std::process::exit(1);
     });
 
-    let status = Command::new(&cli_binary)
+    let mut command = Command::new(&cli_binary);
+    // A console child of a console-less parent gets a new console window.
+    // When every stream is already redirected there is nothing to show in it.
+    #[cfg(target_os = "windows")]
+    if !attached_console && windows_console::all_std_handles_usable() {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let status = command
         .args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -99,6 +114,70 @@ fn termy_cli_binary_next_to(exe_path: &Path) -> Result<Option<PathBuf>, String> 
 
 fn is_executable_file(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+}
+
+#[cfg(target_os = "windows")]
+mod windows_console {
+    use std::fs::OpenOptions;
+    use std::os::windows::io::IntoRawHandle;
+    use windows::Win32::Foundation::{GetHandleInformation, HANDLE};
+    use windows::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_HANDLE,
+        STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle,
+    };
+
+    const STD_HANDLES: [STD_HANDLE; 3] = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
+
+    /// Attaches to the console of the shell that launched Termy, so
+    /// `termy --version` prints where it was typed. Streams the parent already
+    /// redirected (pipes, files) are kept; only missing ones are pointed at the
+    /// console. Returns false, changing nothing, without a parent console.
+    pub(super) fn attach_parent_console() -> bool {
+        // SAFETY: AttachConsole takes no pointers; failure only means the
+        // parent has no console (Explorer, a shortcut) or we already have one.
+        if unsafe { AttachConsole(ATTACH_PARENT_PROCESS) }.is_err() {
+            return false;
+        }
+        for kind in STD_HANDLES {
+            if has_usable_handle(kind) {
+                continue;
+            }
+            let device = if kind == STD_INPUT_HANDLE {
+                "CONIN$"
+            } else {
+                "CONOUT$"
+            };
+            // Console APIs used by the CLI (modes, screen buffer info) need
+            // both read and write access on these handles.
+            let Ok(file) = OpenOptions::new().read(true).write(true).open(device) else {
+                continue;
+            };
+            // The handle now backs this process's standard stream for the
+            // rest of its life, so it is intentionally never closed.
+            let handle = HANDLE(file.into_raw_handle());
+            // SAFETY: `handle` is a valid console handle owned by the process.
+            let _ = unsafe { SetStdHandle(kind, handle) };
+        }
+        true
+    }
+
+    pub(super) fn all_std_handles_usable() -> bool {
+        STD_HANDLES.into_iter().all(has_usable_handle)
+    }
+
+    fn has_usable_handle(kind: STD_HANDLE) -> bool {
+        // SAFETY: GetStdHandle only reads the process parameters.
+        let Ok(handle) = (unsafe { GetStdHandle(kind) }) else {
+            return false;
+        };
+        if handle.is_invalid() {
+            return false;
+        }
+        // GUI processes can inherit handle values that are not open here.
+        let mut flags = 0u32;
+        // SAFETY: GetHandleInformation validates `handle` and writes `flags`.
+        unsafe { GetHandleInformation(handle, &mut flags) }.is_ok()
+    }
 }
 
 #[cfg(test)]

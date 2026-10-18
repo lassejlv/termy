@@ -177,6 +177,39 @@ impl TerminalView {
         true
     }
 
+    /// Moves tab `tab_id` into the Termy window under the pointer, or into a
+    /// new window, for a drag the tab strip ran itself (the WinUI strip).
+    #[cfg(target_os = "windows")]
+    pub(crate) fn move_tab_out_of_window(&mut self, tab_id: TabId, cx: &mut Context<Self>) {
+        let drag = WindowTabDrag {
+            source: cx.entity().downgrade(),
+            window: self.window_handle,
+            tab_id,
+            start: Point::default(),
+        };
+        cx.spawn(async move |_, cx: &mut AsyncApp| {
+            cx.update(|cx| {
+                let destination = cx
+                    .windows()
+                    .into_iter()
+                    .filter(|handle| *handle != drag.window)
+                    .filter_map(|handle| handle.downcast::<TerminalView>())
+                    .find_map(|handle| {
+                        handle
+                            .update(cx, |_, window, _| window.is_window_hovered())
+                            .ok()
+                            .filter(|hovered| *hovered)
+                            .map(|_| handle.into())
+                    });
+                if let Err(error) = Self::transfer_dragged_tab(&drag, destination, cx) {
+                    log::warn!("Could not move tab between windows: {error}");
+                    crate::ui::toast::error(error);
+                }
+            });
+        })
+        .detach();
+    }
+
     fn transfer_dragged_tab(
         drag: &WindowTabDrag,
         destination: Option<gpui_kit::AnyWindowHandle>,

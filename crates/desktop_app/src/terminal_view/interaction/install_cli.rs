@@ -48,15 +48,28 @@ impl TerminalView {
                 } else {
                     #[cfg(target_os = "windows")]
                     {
-                        if let Some(parent) = install_path.parent() {
-                            crate::ui::toast::success(format!(
-                                "CLI installed to {}. Add {} to PATH: setx PATH \"%PATH%;{}\"",
-                                path_str,
-                                parent.display(),
-                                parent.display()
-                            ));
-                        } else {
-                            crate::ui::toast::success(format!("CLI installed to {}", path_str));
+                        use termy_core::cli_install_core::UserPathSetup;
+
+                        match &result.user_path_setup {
+                            Some(UserPathSetup::Added | UserPathSetup::AlreadyPresent) => {
+                                crate::ui::toast::success(format!(
+                                    "CLI installed to {path_str}. Open a new terminal tab or window to use `termy`."
+                                ));
+                            }
+                            Some(UserPathSetup::Failed(error)) => {
+                                let dir =
+                                    install_path.parent().map_or_else(String::new, |parent| {
+                                        parent.display().to_string()
+                                    });
+                                crate::ui::toast::error(format!(
+                                    "CLI installed to {path_str}, but adding it to PATH failed: {error}. \
+                                     Add it from PowerShell: [Environment]::SetEnvironmentVariable('Path', \
+                                     [Environment]::GetEnvironmentVariable('Path','User') + ';{dir}', 'User')"
+                                ));
+                            }
+                            None => {
+                                crate::ui::toast::success(format!("CLI installed to {path_str}"));
+                            }
                         }
                     }
                     #[cfg(not(target_os = "windows"))]

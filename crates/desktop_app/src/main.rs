@@ -49,7 +49,9 @@ use gpui_kit::{
     App, AsyncApp, Bounds, Pixels, WindowBounds, WindowHandle, WindowKind, WindowOptions,
     prelude::*, px, size,
 };
-pub(crate) use native_window_tabs::{TerminalWindowPlacement, native_window_tabs_enabled};
+pub(crate) use native_window_tabs::{
+    TerminalWindowPlacement, native_window_tabs_enabled, windows_native_tab_style,
+};
 use startup::StartupBlocker;
 use terminal_view::{TerminalView, initial_window_background_appearance};
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -99,26 +101,64 @@ where
             startup.launch_target = LaunchTarget::Window;
         } else if arg == "--new-tab" {
             startup.launch_target = LaunchTarget::Tab;
+        } else if arg == WINDOWS_DOCK_ACTION_FLAG {
+            // Jump List tasks relaunch Termy with their index.
+            if args.next().as_deref() == Some(WINDOWS_DOCK_NEW_WINDOW_INDEX) {
+                startup.launch_target = LaunchTarget::Window;
+            }
         } else if let Some(value) = arg.strip_prefix("--working-directory=") {
-            startup.working_dir = non_empty_arg_value(value);
+            startup.working_dir = working_dir_arg_value(value);
         } else if arg == "--working-directory" {
-            startup.working_dir = args.next().and_then(|value| non_empty_arg_value(&value));
+            startup.working_dir = args.next().and_then(|value| working_dir_arg_value(&value));
         } else if arg == "--" {
             if let Some(value) = args.next() {
-                startup.working_dir = non_empty_arg_value(&value);
+                startup.working_dir = working_dir_arg_value(&value);
             }
             break;
         } else if !arg.starts_with('-') && startup.working_dir.is_none() {
-            startup.working_dir = non_empty_arg_value(&arg);
+            startup.working_dir = working_dir_arg_value(&arg);
         }
     }
 
     startup
 }
 
+/// GPUI's Windows Jump List launches `termy --dock-action <index>` for each
+/// entry passed to `set_dock_menu`; Termy registers only "New Window".
+const WINDOWS_DOCK_ACTION_FLAG: &str = "--dock-action";
+const WINDOWS_DOCK_NEW_WINDOW_INDEX: &str = "0";
+
+fn working_dir_arg_value(value: &str) -> Option<String> {
+    let value = non_empty_arg_value(value)?;
+    #[cfg(target_os = "windows")]
+    let value = normalize_windows_working_dir(&value);
+    (!value.is_empty()).then_some(value)
+}
+
 fn non_empty_arg_value(value: &str) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_string())
+}
+
+/// Repairs directories quoted by Explorer and shells. `"C:\"` reaches us as
+/// `C:"` because `\"` is an escaped quote, and the Explorer verb passes
+/// `"%V\."` to avoid that, which leaves a trailing `\.`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn normalize_windows_working_dir(value: &str) -> String {
+    let mut value = value.strip_suffix('"').unwrap_or(value).trim_end();
+    while let Some(stripped) = value
+        .strip_suffix("\\.")
+        .or_else(|| value.strip_suffix("/."))
+    {
+        value = stripped;
+    }
+    let bytes = value.as_bytes();
+    // A bare drive (`C:`) means that drive's current directory; Explorer and
+    // the shell meant its root.
+    if bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return format!("{value}\\");
+    }
+    value.to_string()
 }
 
 fn fold_startup_new_tab_into_working_dir(startup: &mut StartupArguments) {
@@ -175,9 +215,11 @@ fn fold_startup_window_deeplink(startup: &mut StartupArguments) {
 }
 
 fn current_executable() -> Option<std::path::PathBuf> {
+    // dunce avoids `\\?\` verbatim paths, which Explorer verbs and icons
+    // registered from this path cannot use.
     std::env::current_exe()
         .ok()
-        .map(|path| path.canonicalize().unwrap_or(path))
+        .map(|path| dunce::canonicalize(&path).unwrap_or(path))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -378,10 +420,13 @@ pub(crate) fn open_terminal_window_with_placement(
             traffic_light_position: Some(gpui_kit::point(px(12.0), px(10.0))),
         }
     });
+    // Windows hides the OS caption: the tab strip is the titlebar, with
+    // Termy-drawn caption buttons hit-tested by Windows (drag, snap, snap
+    // layouts, double-click maximize).
     #[cfg(target_os = "windows")]
     let titlebar = Some(gpui_kit::TitlebarOptions {
         title: Some("Termy".into()),
-        appears_transparent: false,
+        appears_transparent: true,
         traffic_light_position: None,
     });
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
@@ -413,8 +458,9 @@ pub(crate) fn open_terminal_window_with_placement(
             // Keep the NSWindow movable so macOS preserves normal zoom and
             // Dock-overlay behavior. The macOS content-view bridge below
             // disables automatic background dragging; hit-tested titlebar
-            // presses explicitly start a native AppKit drag.
-            is_movable: cfg!(target_os = "macos"),
+            // presses explicitly start a native AppKit drag. Windows needs it
+            // for GPUI to report drag areas of the client-side titlebar.
+            is_movable: cfg!(any(target_os = "macos", target_os = "windows")),
             is_resizable: true,
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
             show: tab_host.is_none(),
@@ -429,6 +475,9 @@ pub(crate) fn open_terminal_window_with_placement(
             {
                 window.set_window_title("Termy");
             }
+            // Before the view exists, so its DWM theming finds the handle.
+            #[cfg(target_os = "windows")]
+            native_sdk::win32_window::register_window(window, "Termy");
             if benchmark_mode {
                 #[cfg(target_os = "macos")]
                 if let Err(error) =
@@ -683,8 +732,36 @@ fn spawn_deeplink_listener(cx: &mut App, deeplink_rx: Receiver<Vec<String>>) {
     .detach();
 }
 
+/// Run by the uninstaller to remove the per-user Explorer verbs.
+#[cfg(target_os = "windows")]
+const UNREGISTER_FILE_MANAGER_FLAG: &str = "--unregister-file-manager-integration";
+
+/// Groups windows, taskbar pins and the Jump List under one identity. The
+/// installer sets the same AppUserModelID on its shortcuts.
+#[cfg(target_os = "windows")]
+fn set_windows_app_user_model_id() {
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
+    // SAFETY: `w!` yields a static, null-terminated string.
+    if let Err(error) =
+        unsafe { SetCurrentProcessExplicitAppUserModelID(windows::core::w!("lassejlv.Termy")) }
+    {
+        log::warn!("Failed to set the AppUserModelID: {error}");
+    }
+}
+
 fn main() {
     let cli_args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(target_os = "windows")]
+    if cli_args
+        .first()
+        .is_some_and(|arg| arg == UNREGISTER_FILE_MANAGER_FLAG)
+    {
+        // Never block an uninstall: no window, no instance handoff, and a
+        // missing key is not a failure.
+        let _ = crate::native_sdk::unregister_open_tab_here();
+        std::process::exit(0);
+    }
     if cli_args
         .first()
         .is_some_and(|arg| arg == "--multiplexer-host")
@@ -710,8 +787,14 @@ fn main() {
         cli_delegate::delegate_to_cli_or_exit(cli_args);
     }
 
-    env_logger::init();
+    crash_log::init_logging();
     crash_log::install_panic_hook();
+    #[cfg(target_os = "windows")]
+    set_windows_app_user_model_id();
+    #[cfg(target_os = "windows")]
+    native_window_tabs::prepare_windows_platform(
+        &config::load_runtime_config(&mut None, "Failed to load config").config,
+    );
 
     let mut startup_arguments = parse_startup_arguments(cli_args);
     let (deeplink_tx, deeplink_rx) = flume::unbounded::<Vec<String>>();
@@ -774,6 +857,10 @@ fn main() {
                 crate::ui::toast::error(error);
             }
         });
+        // The taskbar Jump List entry relaunches Termy with `--dock-action
+        // 0`, which the running instance turns into a new window.
+        #[cfg(target_os = "windows")]
+        cx.set_dock_menu(vec![gpui_kit::MenuItem::action("New Window", NewWindow)]);
 
         let mut startup_config_error = None;
         let startup_load =
@@ -896,6 +983,40 @@ mod tests {
     }
 
     #[test]
+    fn windows_working_directories_from_explorer_are_repaired() {
+        for (raw, expected) in [
+            (r#"C:""#, r"C:\"),
+            (r"C:\\.", r"C:\"),
+            (r"C:\.", r"C:\"),
+            (r"D:", r"D:\"),
+            (r"C:\Users\me\project\.", r"C:\Users\me\project"),
+            (r"C:\Users\me\project", r"C:\Users\me\project"),
+            (r"\\server\share\.", r"\\server\share"),
+            (".", "."),
+        ] {
+            assert_eq!(super::normalize_windows_working_dir(raw), expected, "{raw}");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn startup_arguments_repair_explorer_drive_roots() {
+        let parsed = parse_startup_arguments(["--working-directory", r#"C:""#]);
+        assert_eq!(parsed.working_dir.as_deref(), Some(r"C:\"));
+        let parsed = parse_startup_arguments(["--working-directory", r"E:\\."]);
+        assert_eq!(parsed.working_dir.as_deref(), Some(r"E:\"));
+    }
+
+    #[test]
+    fn jump_list_new_window_task_requests_a_window() {
+        let parsed = parse_startup_arguments(["--dock-action", "0"]);
+        assert_eq!(parsed.launch_target, super::LaunchTarget::Window);
+        assert_eq!(parsed.working_dir, None);
+        let parsed = parse_startup_arguments(["--dock-action", "7"]);
+        assert_eq!(parsed, StartupArguments::default());
+    }
+
+    #[test]
     fn startup_arguments_keep_deeplinks() {
         let parsed = parse_startup_arguments(["termy://new?dir=%2Ftmp%2Fproject"]);
         assert_eq!(parsed.working_dir, None);
@@ -925,7 +1046,10 @@ mod tests {
         cx.update(open_test_window);
         for args in [vec![], vec!["--working-directory", "/tmp/another project"]] {
             let startup = parse_startup_arguments(args);
-            let urls = super::instance::urls_to_forward_for_platform(&startup, true);
+            let urls = super::instance::urls_to_forward_for_platform(
+                &startup,
+                super::instance::PlainLaunch::NewWindow,
+            );
             assert!(matches!(
                 super::instance::claim_or_forward_in(home.path(), &urls).unwrap(),
                 super::instance::InstanceClaim::Forwarded

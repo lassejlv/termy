@@ -46,7 +46,76 @@ impl KeybindPlatform {
     }
 }
 
+/// Windows defaults follow Windows Terminal: app shortcuts move to Ctrl+Shift
+/// so plain Ctrl chords (Ctrl+T, Ctrl+W, Ctrl+D, Ctrl+A, ...) reach the shell.
+/// Plain Ctrl+C copies only while text is selected and otherwise sends an
+/// interrupt, and plain Ctrl+V pastes, as in Windows Terminal. For an action
+/// with several triggers the last one is shown in menus.
+const WINDOWS_DEFAULT_KEYBINDS: &[(&str, CommandId)] = &[
+    ("ctrl-shift-q", CommandId::Quit),
+    ("secondary-,", CommandId::OpenSettings),
+    ("ctrl-shift-p", CommandId::ToggleCommandPalette),
+    ("ctrl-shift-t", CommandId::NewTab),
+    ("ctrl-shift-n", CommandId::NewWindow),
+    ("ctrl-shift-w", CommandId::ClosePaneOrTab),
+    ("ctrl-shift-b", CommandId::ToggleWorkspaceSidebar),
+    ("ctrl-tab", CommandId::CycleTabs),
+    ("ctrl-shift-tab", CommandId::SwitchTabLeft),
+    ("ctrl-alt-1", CommandId::SwitchToTab1),
+    ("ctrl-alt-2", CommandId::SwitchToTab2),
+    ("ctrl-alt-3", CommandId::SwitchToTab3),
+    ("ctrl-alt-4", CommandId::SwitchToTab4),
+    ("ctrl-alt-5", CommandId::SwitchToTab5),
+    ("ctrl-alt-6", CommandId::SwitchToTab6),
+    ("ctrl-alt-7", CommandId::SwitchToTab7),
+    ("ctrl-alt-8", CommandId::SwitchToTab8),
+    ("ctrl-alt-9", CommandId::SwitchToTab9),
+    ("ctrl-shift-d", CommandId::SplitPaneVertical),
+    ("ctrl-alt-shift-d", CommandId::SplitPaneHorizontal),
+    ("ctrl-shift-o", CommandId::FocusPaneNext),
+    ("alt-1", CommandId::FocusPane1),
+    ("alt-2", CommandId::FocusPane2),
+    ("alt-3", CommandId::FocusPane3),
+    ("alt-4", CommandId::FocusPane4),
+    ("alt-5", CommandId::FocusPane5),
+    ("alt-6", CommandId::FocusPane6),
+    ("alt-7", CommandId::FocusPane7),
+    ("alt-8", CommandId::FocusPane8),
+    ("alt-9", CommandId::FocusPane9),
+    ("secondary-alt-left", CommandId::FocusPaneLeft),
+    ("secondary-alt-right", CommandId::FocusPaneRight),
+    ("secondary-alt-up", CommandId::FocusPaneUp),
+    ("secondary-alt-down", CommandId::FocusPaneDown),
+    ("secondary-alt-shift-left", CommandId::ResizePaneLeft),
+    ("secondary-alt-shift-right", CommandId::ResizePaneRight),
+    ("secondary-alt-shift-up", CommandId::ResizePaneUp),
+    ("secondary-alt-shift-down", CommandId::ResizePaneDown),
+    ("ctrl-shift-enter", CommandId::TogglePaneZoom),
+    ("secondary-=", CommandId::ZoomIn),
+    ("secondary-+", CommandId::ZoomIn),
+    ("secondary--", CommandId::ZoomOut),
+    ("secondary-0", CommandId::ZoomReset),
+    ("ctrl-shift-f", CommandId::OpenSearch),
+    ("f3", CommandId::SearchNext),
+    ("shift-f3", CommandId::SearchPrevious),
+    ("secondary-alt-i", CommandId::ToggleInspector),
+    ("ctrl-shift-c", CommandId::Copy),
+    ("ctrl-insert", CommandId::Copy),
+    ("secondary-c", CommandId::Copy),
+    ("ctrl-shift-v", CommandId::Paste),
+    ("shift-insert", CommandId::Paste),
+    ("secondary-v", CommandId::Paste),
+    ("ctrl-shift-a", CommandId::SelectAll),
+];
+
 pub fn default_keybinds_for_platform(platform: KeybindPlatform) -> Vec<DefaultKeybind> {
+    if matches!(platform, KeybindPlatform::Windows) {
+        return WINDOWS_DEFAULT_KEYBINDS
+            .iter()
+            .map(|&(trigger, action)| DefaultKeybind { trigger, action })
+            .collect();
+    }
+
     let mut bindings = vec![
         DefaultKeybind {
             trigger: "secondary-q",
@@ -245,7 +314,7 @@ pub fn default_keybinds_for_platform(platform: KeybindPlatform) -> Vec<DefaultKe
         });
     }
 
-    if matches!(platform, KeybindPlatform::MacOs | KeybindPlatform::Windows) {
+    if matches!(platform, KeybindPlatform::MacOs) {
         bindings.push(DefaultKeybind {
             trigger: "secondary-c",
             action: CommandId::Copy,
@@ -509,6 +578,18 @@ mod tests {
     };
     use crate::command_core::CommandId;
 
+    const NON_WINDOWS_PLATFORMS: [KeybindPlatform; 3] = [
+        KeybindPlatform::MacOs,
+        KeybindPlatform::Linux,
+        KeybindPlatform::Other,
+    ];
+
+    fn has_binding(platform: KeybindPlatform, trigger: &str, action: CommandId) -> bool {
+        default_keybinds_for_platform(platform)
+            .iter()
+            .any(|binding| binding.trigger == trigger && binding.action == action)
+    }
+
     fn resolved(trigger: &str, action: CommandId) -> ResolvedKeybind {
         ResolvedKeybind {
             trigger: trigger.to_string(),
@@ -529,7 +610,7 @@ mod tests {
 
     #[test]
     fn default_keybinds_close_pane_or_tab_on_secondary_w() {
-        for platform in KeybindPlatform::ALL {
+        for platform in NON_WINDOWS_PLATFORMS {
             let defaults = default_keybinds_for_platform(platform);
             assert!(
                 defaults.iter().any(|binding| {
@@ -543,7 +624,7 @@ mod tests {
 
     #[test]
     fn default_keybinds_include_requested_pane_shortcuts() {
-        for platform in KeybindPlatform::ALL {
+        for platform in NON_WINDOWS_PLATFORMS {
             let defaults = default_keybinds_for_platform(platform);
             assert!(
                 defaults.iter().any(|binding| {
@@ -595,7 +676,7 @@ mod tests {
             CommandId::SwitchToTab8,
             CommandId::SwitchToTab9,
         ];
-        for platform in KeybindPlatform::ALL {
+        for platform in NON_WINDOWS_PLATFORMS {
             let defaults = default_keybinds_for_platform(platform);
             for (number, (pane, tab)) in (1..=9).zip(panes.into_iter().zip(tabs)) {
                 assert!(defaults.iter().any(|binding| {
@@ -668,7 +749,7 @@ mod tests {
 
     #[test]
     fn default_keybinds_toggle_workspace_sidebar_on_secondary_b() {
-        for platform in KeybindPlatform::ALL {
+        for platform in NON_WINDOWS_PLATFORMS {
             let defaults = default_keybinds_for_platform(platform);
             assert!(
                 defaults.iter().any(|binding| {
@@ -722,6 +803,101 @@ mod tests {
         );
         assert!(!linux.iter().any(|binding| binding.trigger == "secondary-m"
             && binding.action == CommandId::MinimizeWindow));
+
+        let windows = default_keybinds_for_platform(KeybindPlatform::Windows);
+        assert!(
+            windows
+                .iter()
+                .any(|binding| binding.trigger == "ctrl-shift-c"
+                    && binding.action == CommandId::Copy)
+        );
+        assert!(
+            !windows
+                .iter()
+                .any(|binding| binding.trigger == "secondary-m"
+                    && binding.action == CommandId::MinimizeWindow)
+        );
+    }
+
+    #[test]
+    fn windows_defaults_move_shell_keys_to_ctrl_shift() {
+        let windows = KeybindPlatform::Windows;
+        for (trigger, action) in [
+            ("ctrl-shift-t", CommandId::NewTab),
+            ("ctrl-shift-w", CommandId::ClosePaneOrTab),
+            ("ctrl-shift-d", CommandId::SplitPaneVertical),
+            ("ctrl-shift-p", CommandId::ToggleCommandPalette),
+            ("ctrl-shift-f", CommandId::OpenSearch),
+            ("ctrl-shift-n", CommandId::NewWindow),
+            ("ctrl-shift-q", CommandId::Quit),
+            ("ctrl-shift-c", CommandId::Copy),
+            ("ctrl-shift-v", CommandId::Paste),
+            ("ctrl-shift-a", CommandId::SelectAll),
+            ("ctrl-tab", CommandId::CycleTabs),
+            ("ctrl-shift-tab", CommandId::SwitchTabLeft),
+            ("ctrl-alt-1", CommandId::SwitchToTab1),
+            ("ctrl-alt-9", CommandId::SwitchToTab9),
+            ("alt-1", CommandId::FocusPane1),
+            ("secondary-,", CommandId::OpenSettings),
+            ("secondary-=", CommandId::ZoomIn),
+            ("secondary--", CommandId::ZoomOut),
+            ("secondary-0", CommandId::ZoomReset),
+        ] {
+            assert!(
+                has_binding(windows, trigger, action),
+                "missing {trigger} -> {} on windows",
+                action.config_name()
+            );
+        }
+
+        // Ctrl+C copies a selection and otherwise interrupts; Ctrl+V pastes.
+        assert!(has_binding(windows, "secondary-c", CommandId::Copy));
+        assert!(has_binding(windows, "secondary-v", CommandId::Paste));
+        assert!(has_binding(windows, "ctrl-insert", CommandId::Copy));
+        assert!(has_binding(windows, "shift-insert", CommandId::Paste));
+
+        // Readline and PSReadLine keys stay with the shell.
+        let defaults = default_keybinds_for_platform(windows);
+        for trigger in [
+            "secondary-t",
+            "secondary-w",
+            "secondary-d",
+            "secondary-p",
+            "secondary-f",
+            "secondary-g",
+            "secondary-a",
+            "secondary-b",
+            "secondary-o",
+            "secondary-q",
+            "secondary-enter",
+            "secondary-1",
+        ] {
+            assert!(
+                defaults.iter().all(|binding| binding.trigger != trigger),
+                "unexpected {trigger} binding on windows"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_defaults_bind_each_trigger_once_and_canonically() {
+        let defaults = default_keybinds_for_platform(KeybindPlatform::Windows);
+        let mut seen = std::collections::HashSet::new();
+        for binding in &defaults {
+            assert!(
+                seen.insert(binding.trigger),
+                "duplicate trigger {}",
+                binding.trigger
+            );
+            if !binding.trigger.contains("secondary") {
+                assert_eq!(
+                    canonicalize_keybind_trigger(binding.trigger).as_deref(),
+                    Ok(binding.trigger),
+                    "user overrides must be able to match {}",
+                    binding.trigger
+                );
+            }
+        }
     }
 
     #[test]

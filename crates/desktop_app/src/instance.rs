@@ -75,16 +75,47 @@ fn remove_endpoint(home: &Path, token: &str) {
     }
 }
 
-pub(crate) fn urls_to_forward(startup: &StartupArguments) -> Vec<String> {
-    urls_to_forward_for_platform(startup, cfg!(target_os = "linux"))
+/// What a launch without `--new-window`, `--new-tab` or deeplinks asks the
+/// running instance for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlainLaunch {
+    /// macOS: focus the running app; a directory opens a tab.
+    Activate,
+    /// Linux: every launch, with or without a directory, opens a window.
+    NewWindow,
+    /// Windows: a bare launch (taskbar Shift/middle-click, Start menu) opens
+    /// a window like Windows Terminal; a directory (Explorer verb) opens a tab.
+    NewWindowWithoutDirectory,
 }
 
-pub(super) fn urls_to_forward_for_platform(startup: &StartupArguments, linux: bool) -> Vec<String> {
+impl PlainLaunch {
+    pub(crate) const CURRENT: Self = if cfg!(target_os = "linux") {
+        Self::NewWindow
+    } else if cfg!(target_os = "windows") {
+        Self::NewWindowWithoutDirectory
+    } else {
+        Self::Activate
+    };
+}
+
+pub(crate) fn urls_to_forward(startup: &StartupArguments) -> Vec<String> {
+    urls_to_forward_for_platform(startup, PlainLaunch::CURRENT)
+}
+
+pub(super) fn urls_to_forward_for_platform(
+    startup: &StartupArguments,
+    plain_launch: PlainLaunch,
+) -> Vec<String> {
     let mut urls = Vec::new();
     let new_window = match startup.launch_target {
         LaunchTarget::Window => true,
         LaunchTarget::Tab => false,
-        LaunchTarget::Default => linux && startup.deeplinks.is_empty(),
+        LaunchTarget::Default if !startup.deeplinks.is_empty() => false,
+        LaunchTarget::Default => match plain_launch {
+            PlainLaunch::Activate => false,
+            PlainLaunch::NewWindow => true,
+            PlainLaunch::NewWindowWithoutDirectory => startup.working_dir.is_none(),
+        },
     };
     if new_window {
         urls.push(new_window_deeplink(startup.working_dir.as_deref()));
@@ -597,37 +628,55 @@ mod tests {
 
     #[test]
     fn launch_routing_preserves_explicit_window_tab_and_deeplink_intent() {
-        for (args, linux, expected) in [
-            (vec![], true, "termy://window"),
+        use super::PlainLaunch::{Activate, NewWindow, NewWindowWithoutDirectory};
+
+        for (args, plain_launch, expected) in [
+            (vec![], NewWindow, "termy://window"),
             (
                 vec!["--working-directory", "/tmp/demo"],
-                true,
+                NewWindow,
                 "termy://window?dir=%2Ftmp%2Fdemo",
             ),
-            (vec!["/tmp/demo"], true, "termy://window?dir=%2Ftmp%2Fdemo"),
-            (vec![], false, "termy://"),
-            (vec!["/tmp/demo"], false, "termy://new?dir=%2Ftmp%2Fdemo"),
-            (vec!["--new-window"], false, "termy://window"),
+            (
+                vec!["/tmp/demo"],
+                NewWindow,
+                "termy://window?dir=%2Ftmp%2Fdemo",
+            ),
+            (vec![], Activate, "termy://"),
+            (vec!["/tmp/demo"], Activate, "termy://new?dir=%2Ftmp%2Fdemo"),
+            (vec!["--new-window"], Activate, "termy://window"),
             (
                 vec!["--new-window", "/tmp/demo"],
-                false,
+                Activate,
                 "termy://window?dir=%2Ftmp%2Fdemo",
             ),
-            (vec!["--new-tab"], true, "termy://new"),
+            (vec![], NewWindowWithoutDirectory, "termy://window"),
             (
-                vec!["--new-tab", "/tmp/demo"],
-                true,
+                vec!["--working-directory", "/tmp/demo"],
+                NewWindowWithoutDirectory,
                 "termy://new?dir=%2Ftmp%2Fdemo",
             ),
-            (vec!["termy://settings"], true, "termy://settings"),
-            (vec!["termy://new"], true, "termy://new"),
-            (vec!["termy://"], true, "termy://"),
+            (vec!["--dock-action", "0"], Activate, "termy://window"),
+            (
+                vec!["termy://settings"],
+                NewWindowWithoutDirectory,
+                "termy://settings",
+            ),
+            (vec!["--new-tab"], NewWindow, "termy://new"),
+            (
+                vec!["--new-tab", "/tmp/demo"],
+                NewWindow,
+                "termy://new?dir=%2Ftmp%2Fdemo",
+            ),
+            (vec!["termy://settings"], NewWindow, "termy://settings"),
+            (vec!["termy://new"], NewWindow, "termy://new"),
+            (vec!["termy://"], NewWindow, "termy://"),
         ] {
             let startup = crate::parse_startup_arguments(args.clone());
             assert_eq!(
-                super::urls_to_forward_for_platform(&startup, linux),
+                super::urls_to_forward_for_platform(&startup, plain_launch),
                 vec![expected],
-                "{args:?}, linux={linux}"
+                "{args:?}, {plain_launch:?}"
             );
         }
     }
@@ -649,7 +698,7 @@ mod tests {
     fn empty_launch_forwards_an_activate_deeplink() {
         let startup = StartupArguments::default();
         assert_eq!(
-            super::urls_to_forward_for_platform(&startup, false),
+            super::urls_to_forward_for_platform(&startup, super::PlainLaunch::Activate),
             vec!["termy://".to_string()]
         );
     }

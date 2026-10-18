@@ -15,6 +15,15 @@ pub enum InstallShell {
 pub struct InstallCliResult {
     pub install_path: PathBuf,
     pub shell_setup: Option<ShellSetup>,
+    /// Windows only: whether the install directory was added to the user `Path`.
+    pub user_path_setup: Option<UserPathSetup>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UserPathSetup {
+    Added,
+    AlreadyPresent,
+    Failed(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,9 +46,15 @@ pub fn is_cli_installed() -> bool {
     {
         let path_env = std::env::var_os("PATH");
         let target = resolve_install_cli_target_for_windows(dirs::data_local_dir().as_deref());
+        // The registry check covers the session right after Install CLI,
+        // before this process has picked up the new user Path. A stale copy
+        // (different from the bundled CLI, or without the app marker) reports
+        // as not installed so the install action is offered again.
         target.as_deref().is_some_and(|target| {
             managed_target_binary_exists(target)
-                && managed_target_dir_in_path(target, path_env.as_deref())
+                && (managed_target_dir_in_path(target, path_env.as_deref())
+                    || windows_user_path_contains_target_dir(target))
+                && !windows_installed_cli_needs_refresh(target)
         })
     }
 
@@ -64,15 +79,38 @@ pub fn install_cli(configured_shell: Option<&str>) -> Result<InstallCliResult, S
         Ok(InstallCliResult {
             install_path,
             shell_setup: Some(shell_setup),
+            user_path_setup: None,
         })
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "windows")]
+    {
+        let _ = configured_shell;
+        let user_path_setup = match install_path.parent() {
+            Some(install_dir) => match ensure_windows_user_path_contains(install_dir) {
+                Ok(true) => UserPathSetup::Added,
+                Ok(false) => UserPathSetup::AlreadyPresent,
+                Err(error) => UserPathSetup::Failed(error),
+            },
+            None => UserPathSetup::Failed(format!(
+                "Installed CLI path {} does not have a parent directory",
+                install_path.display()
+            )),
+        };
+        Ok(InstallCliResult {
+            install_path,
+            shell_setup: None,
+            user_path_setup: Some(user_path_setup),
+        })
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
         let _ = configured_shell;
         Ok(InstallCliResult {
             install_path,
             shell_setup: None,
+            user_path_setup: None,
         })
     }
 }
@@ -100,6 +138,7 @@ pub fn install_cli_from_source_for_home(
     Ok(InstallCliResult {
         install_path,
         shell_setup: Some(shell_setup),
+        user_path_setup: None,
     })
 }
 
@@ -493,15 +532,364 @@ fn install_cli_binary() -> Result<PathBuf, String> {
     let target = resolve_install_cli_target_for_windows(dirs::data_local_dir().as_deref())
         .ok_or_else(|| "Could not determine local app data directory".to_string())?;
 
-    if let Some(parent) = target.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("Failed to create directory: {}", error))?;
-    }
-
-    std::fs::copy(&cli_source, &target)
-        .map_err(|error| format!("Failed to copy CLI binary: {}", error))?;
+    install_windows_cli_copy(&cli_source, &target)?;
+    write_windows_app_path_marker(&target);
 
     Ok(target)
+}
+
+/// Copies the bundled CLI to `target` unless an identical copy is already
+/// there. A running `termy.exe` can't be overwritten but can be renamed, so a
+/// failed overwrite moves the old copy to `termy.exe.old` first.
+#[cfg(target_os = "windows")]
+fn install_windows_cli_copy(source: &Path, target: &Path) -> Result<(), String> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("Failed to create directory {}: {error}", parent.display()))?;
+    }
+
+    // Left behind when a previous refresh replaced a running copy.
+    let previous = target.with_extension("exe.old");
+    let _ = std::fs::remove_file(&previous);
+
+    if windows_cli_copy_is_current(source, target) {
+        return Ok(());
+    }
+
+    let Err(copy_error) = std::fs::copy(source, target) else {
+        return Ok(());
+    };
+    if !target.exists() {
+        return Err(format!(
+            "Failed to copy CLI binary to {}: {copy_error}",
+            target.display()
+        ));
+    }
+
+    std::fs::rename(target, &previous).map_err(|error| {
+        format!(
+            "Failed to replace {} ({copy_error}); close running termy commands and retry: {error}",
+            target.display()
+        )
+    })?;
+    if let Err(error) = std::fs::copy(source, target) {
+        let _ = std::fs::rename(&previous, target);
+        return Err(format!(
+            "Failed to copy CLI binary to {}: {error}",
+            target.display()
+        ));
+    }
+    let _ = std::fs::remove_file(&previous);
+    Ok(())
+}
+
+/// `std::fs::copy` keeps the last-write time on Windows, so an up-to-date copy
+/// matches the bundled CLI in both size and mtime.
+#[cfg(target_os = "windows")]
+fn windows_cli_copy_is_current(source: &Path, target: &Path) -> bool {
+    let (Ok(source), Ok(target)) = (std::fs::metadata(source), std::fs::metadata(target)) else {
+        return false;
+    };
+    source.len() == target.len()
+        && matches!((source.modified(), target.modified()), (Ok(a), Ok(b)) if a == b)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_installed_cli_needs_refresh(target: &Path) -> bool {
+    if !target.with_file_name(WINDOWS_APP_PATH_MARKER).is_file() {
+        return true;
+    }
+    // No bundled CLI next to this executable (e.g. when the installed copy
+    // itself asks): nothing to compare against.
+    find_cli_binary().is_ok_and(|source| !windows_cli_copy_is_current(&source, target))
+}
+
+/// The copied CLI can't find the GUI beside itself, so record which GUI
+/// installed it. Best-effort: `termy open` also checks the installer's
+/// registry entries and the default install directories.
+#[cfg(target_os = "windows")]
+fn write_windows_app_path_marker(target: &Path) {
+    let Ok(app) = std::env::current_exe() else {
+        return;
+    };
+    let app = dunce::canonicalize(&app).unwrap_or(app);
+    // Only the GUI installs the CLI; never point the CLI back at a CLI.
+    let is_cli = app
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("termy-cli"));
+    let Some(app) = app.to_str().filter(|_| !is_cli) else {
+        return;
+    };
+    let marker = target.with_file_name(WINDOWS_APP_PATH_MARKER);
+    if let Err(error) = std::fs::write(&marker, app) {
+        log::warn!(
+            "Failed to record the Termy app path in {}: {error}",
+            marker.display()
+        );
+    }
+}
+
+/// Written next to the installed Windows CLI; holds the absolute path of the
+/// Termy GUI that installed it.
+#[cfg(target_os = "windows")]
+pub const WINDOWS_APP_PATH_MARKER: &str = "termy-app-path.txt";
+
+#[cfg(target_os = "windows")]
+const WINDOWS_APP_EXE_NAME: &str = "termy.exe";
+
+#[cfg(target_os = "windows")]
+const WINDOWS_APP_PATHS_KEY: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\App Paths\termy.exe";
+
+/// Inno Setup's uninstall entry; the GUID is `AppId` in scripts/installer/termy.iss.
+#[cfg(target_os = "windows")]
+const WINDOWS_INNO_UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\{7D3DD34B-5F8F-4D7B-BBC9-0F54B4C89142}_is1";
+
+#[cfg(target_os = "windows")]
+const WINDOWS_USER_ENVIRONMENT_KEY: &str = "Environment";
+
+/// Where a Windows CLI that isn't next to the GUI (the copy Install CLI puts in
+/// `%LOCALAPPDATA%\Termy\bin`) should look for it, most specific first: the
+/// marker written at install time, the installer's registry entries, then the
+/// default install directories. Entries may not exist; callers must also skip
+/// any entry that is the CLI itself.
+#[cfg(target_os = "windows")]
+pub fn windows_app_binary_candidates(cli_dir: &Path) -> Vec<PathBuf> {
+    use winreg::RegKey;
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+
+    let mut candidates = Vec::new();
+    if let Ok(recorded) = std::fs::read_to_string(cli_dir.join(WINDOWS_APP_PATH_MARKER)) {
+        let recorded = recorded.trim();
+        if !recorded.is_empty() {
+            candidates.push(PathBuf::from(recorded));
+        }
+    }
+
+    for root in [
+        RegKey::predef(HKEY_LOCAL_MACHINE),
+        RegKey::predef(HKEY_CURRENT_USER),
+    ] {
+        if let Ok(app) = root
+            .open_subkey(WINDOWS_APP_PATHS_KEY)
+            .and_then(|key| key.get_value::<String, _>(""))
+        {
+            let app = app.trim().trim_matches('"');
+            if !app.is_empty() {
+                candidates.push(PathBuf::from(expand_percent_env_vars(app)));
+            }
+        }
+        if let Ok(location) = root
+            .open_subkey(WINDOWS_INNO_UNINSTALL_KEY)
+            .and_then(|key| key.get_value::<String, _>("InstallLocation"))
+        {
+            let location = location.trim().trim_matches('"');
+            if !location.is_empty() {
+                candidates.push(PathBuf::from(location).join(WINDOWS_APP_EXE_NAME));
+            }
+        }
+    }
+
+    for (var, relative) in [
+        ("ProgramW6432", "Termy"),
+        ("ProgramFiles", "Termy"),
+        ("LOCALAPPDATA", r"Programs\Termy"),
+    ] {
+        if let Some(base) = std::env::var_os(var).filter(|value| !value.is_empty()) {
+            let candidate = PathBuf::from(base)
+                .join(relative)
+                .join(WINDOWS_APP_EXE_NAME);
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    candidates
+}
+
+#[cfg(target_os = "windows")]
+fn read_windows_user_path() -> std::io::Result<Option<String>> {
+    use winreg::RegKey;
+    use winreg::enums::HKEY_CURRENT_USER;
+
+    let environment =
+        match RegKey::predef(HKEY_CURRENT_USER).open_subkey(WINDOWS_USER_ENVIRONMENT_KEY) {
+            Ok(key) => key,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+    match environment.get_value::<String, _>("Path") {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_user_path_contains_target_dir(target: &Path) -> bool {
+    let Some(target_dir) = target.parent().and_then(Path::to_str) else {
+        return false;
+    };
+    read_windows_user_path().ok().flatten().is_some_and(|path| {
+        path.split(';')
+            .any(|entry| windows_path_entry_matches(entry, target_dir))
+    })
+}
+
+/// Appends `dir` to the user `Path` (HKCU\Environment) unless an entry already
+/// names it, keeping the existing value and writing REG_EXPAND_SZ so `%VAR%`
+/// entries keep expanding. Returns whether the value changed.
+#[cfg(target_os = "windows")]
+fn ensure_windows_user_path_contains(dir: &Path) -> Result<bool, String> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ};
+    use winreg::{RegKey, RegValue};
+
+    let dir = dir
+        .to_str()
+        .ok_or_else(|| format!("{} is not valid Unicode", dir.display()))?;
+    let (environment, _) = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey_with_flags(WINDOWS_USER_ENVIRONMENT_KEY, KEY_READ | KEY_WRITE)
+        .map_err(|error| format!("Failed to open HKCU\\Environment: {error}"))?;
+    let existing = match environment.get_value::<String, _>("Path") {
+        Ok(value) => Some(value),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("Failed to read the user Path: {error}")),
+    };
+    let Some(updated) = windows_path_value_with_dir(existing.as_deref(), dir) else {
+        return Ok(false);
+    };
+
+    let bytes = updated
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    environment
+        .set_raw_value(
+            "Path",
+            &RegValue {
+                bytes,
+                vtype: REG_EXPAND_SZ,
+            },
+        )
+        .map_err(|error| format!("Failed to update the user Path: {error}"))?;
+    broadcast_windows_environment_change();
+    Ok(true)
+}
+
+/// Tells Explorer (and anything else listening) to reload the environment, so
+/// terminals opened from now on see the new `Path`.
+#[cfg(target_os = "windows")]
+fn broadcast_windows_environment_change() {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn SendMessageTimeoutW(
+            hwnd: isize,
+            msg: u32,
+            wparam: usize,
+            lparam: isize,
+            flags: u32,
+            timeout: u32,
+            result: *mut usize,
+        ) -> isize;
+    }
+
+    const HWND_BROADCAST: isize = 0xffff;
+    const WM_SETTINGCHANGE: u32 = 0x001A;
+    const SMTO_ABORTIFHUNG: u32 = 0x0002;
+
+    // Broadcasting waits on every top-level window; keep it off the caller's
+    // (UI) thread.
+    std::thread::spawn(|| {
+        let area: Vec<u16> = "Environment"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut result = 0usize;
+        // SAFETY: `area` is a NUL-terminated UTF-16 string that outlives the
+        // call, and `result` is a valid out pointer.
+        unsafe {
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                area.as_ptr() as isize,
+                SMTO_ABORTIFHUNG,
+                5000,
+                &raw mut result,
+            );
+        }
+    });
+}
+
+/// The user `Path` value with `dir` appended, or `None` when an entry already
+/// names it (case-insensitively, ignoring quotes, trailing separators and
+/// `%VAR%` spelling).
+#[cfg(any(target_os = "windows", test))]
+fn windows_path_value_with_dir(existing: Option<&str>, dir: &str) -> Option<String> {
+    let existing = existing.unwrap_or_default();
+    if existing
+        .split(';')
+        .any(|entry| windows_path_entry_matches(entry, dir))
+    {
+        return None;
+    }
+    let existing = existing.trim_end_matches(';');
+    Some(if existing.trim().is_empty() {
+        dir.to_string()
+    } else {
+        format!("{existing};{dir}")
+    })
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn windows_path_entry_matches(entry: &str, dir: &str) -> bool {
+    fn normalize(value: &str) -> String {
+        value
+            .trim()
+            .trim_matches('"')
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    }
+
+    let wanted = normalize(dir);
+    !wanted.is_empty()
+        && (normalize(entry) == wanted || normalize(&expand_percent_env_vars(entry)) == wanted)
+}
+
+/// Expands `%NAME%` references; unknown names are left as written.
+#[cfg(any(target_os = "windows", test))]
+fn expand_percent_env_vars(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(start) = rest.find('%') {
+        output.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('%') else {
+            output.push_str(&rest[start..]);
+            return output;
+        };
+        let name = &after[..end];
+        let expanded = if name.is_empty() {
+            None
+        } else {
+            std::env::var(name).ok()
+        };
+        match expanded {
+            Some(expanded) => output.push_str(&expanded),
+            None => {
+                output.push('%');
+                output.push_str(name);
+                output.push('%');
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    output.push_str(rest);
+    output
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
@@ -785,6 +1173,94 @@ mod tests {
     #[test]
     fn windows_install_target_missing_app_data_returns_none() {
         assert!(resolve_install_cli_target_for_windows(None).is_none());
+    }
+
+    #[test]
+    fn windows_user_path_append_preserves_existing_value() {
+        assert_eq!(
+            windows_path_value_with_dir(Some(r"%USERPROFILE%\bin;C:\tools;"), r"C:\Termy\bin"),
+            Some(r"%USERPROFILE%\bin;C:\tools;C:\Termy\bin".to_string())
+        );
+        assert_eq!(
+            windows_path_value_with_dir(None, r"C:\Termy\bin"),
+            Some(r"C:\Termy\bin".to_string())
+        );
+        assert_eq!(
+            windows_path_value_with_dir(Some(""), r"C:\Termy\bin"),
+            Some(r"C:\Termy\bin".to_string())
+        );
+    }
+
+    #[test]
+    fn windows_user_path_append_dedupes_case_insensitively() {
+        for existing in [
+            r"C:\tools;c:\termy\BIN",
+            r"C:\Termy\bin\;C:\tools",
+            r#""C:\Termy\bin";C:\tools"#,
+            "C:/Termy/bin",
+        ] {
+            assert_eq!(
+                windows_path_value_with_dir(Some(existing), r"C:\Termy\bin"),
+                None,
+                "{existing}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_user_path_entries_match_after_env_expansion() {
+        let variable = std::env::vars().find(|(name, value)| {
+            !name.is_empty()
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && value.chars().next().is_some_and(char::is_alphanumeric)
+                && !value.contains('%')
+        });
+        if let Some((name, value)) = variable {
+            assert_eq!(
+                expand_percent_env_vars(&format!("%{name}%\\bin")),
+                format!("{value}\\bin")
+            );
+            assert!(windows_path_entry_matches(&format!("%{name}%"), &value));
+        }
+        assert_eq!(
+            expand_percent_env_vars("%TERMY_SURELY_UNSET_VAR%\\bin"),
+            "%TERMY_SURELY_UNSET_VAR%\\bin"
+        );
+        assert_eq!(expand_percent_env_vars("100%"), "100%");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_cli_copy_refreshes_only_when_bundled_cli_changes() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("termy-cli.exe");
+        let target = temp.path().join("bin").join("termy.exe");
+        std::fs::write(&source, b"cli v1").unwrap();
+
+        install_windows_cli_copy(&source, &target).unwrap();
+        assert!(windows_cli_copy_is_current(&source, &target));
+        assert_eq!(std::fs::read(&target).unwrap(), b"cli v1");
+
+        std::fs::write(&source, b"cli v2 is longer").unwrap();
+        assert!(!windows_cli_copy_is_current(&source, &target));
+        install_windows_cli_copy(&source, &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"cli v2 is longer");
+        assert!(!target.with_extension("exe.old").exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_app_candidates_start_with_the_install_marker() {
+        let temp = TempDir::new().unwrap();
+        let app = temp.path().join("Termy").join("termy.exe");
+        std::fs::write(
+            temp.path().join(WINDOWS_APP_PATH_MARKER),
+            format!("{}\r\n", app.display()),
+        )
+        .unwrap();
+
+        let candidates = windows_app_binary_candidates(temp.path());
+        assert_eq!(candidates.first(), Some(&app));
     }
 
     #[test]

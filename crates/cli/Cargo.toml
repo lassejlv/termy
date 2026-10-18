@@ -17,6 +17,7 @@ path = "src/xtask/main.rs"
 
 [dependencies]
 anyhow = { workspace = true }
+dunce = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 notify = "8"
 ratatui = "0.29"

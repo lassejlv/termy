@@ -76,9 +76,10 @@ impl TerminalView {
     }
 
     pub(crate) fn tab_strip_fixed_content_width(&self) -> f32 {
+        let metrics = self.horizontal_tab_metrics();
         let tabs_width: f32 = self.session.tabs.iter().map(|tab| tab.display_width).sum();
-        let gaps = TAB_ITEM_GAP * self.session.tabs.len().saturating_sub(1) as f32;
-        TAB_HORIZONTAL_PADDING + tabs_width + gaps
+        let gaps = metrics.item_gap * self.session.tabs.len().saturating_sub(1) as f32;
+        metrics.leading_padding + tabs_width + gaps
     }
 
     pub(crate) fn tab_strip_expected_max_scroll_for_viewport(&self, viewport_width: f32) -> f32 {
@@ -125,7 +126,8 @@ impl TerminalView {
                 }
 
                 let max_scroll = self.tab_strip_scroll_max_x();
-                let mut tab_left = TAB_HORIZONTAL_PADDING;
+                let metrics = self.horizontal_tab_metrics();
+                let mut tab_left = metrics.leading_padding;
                 for (index, tab) in self.session.tabs.iter().enumerate() {
                     let tab_right = tab_left + tab.display_width;
                     if index == self.session.active_tab {
@@ -148,7 +150,7 @@ impl TerminalView {
                         }
                         return;
                     }
-                    tab_left = tab_right + TAB_ITEM_GAP;
+                    tab_left = tab_right + metrics.item_gap;
                 }
             }
             TabStripOrientation::Vertical => {
@@ -283,20 +285,33 @@ impl TerminalView {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn effective_tab_max_width_for_viewport(
         viewport_width: f32,
         tab_count: usize,
     ) -> f32 {
+        Self::effective_tab_max_width_for_viewport_with_metrics(
+            viewport_width,
+            tab_count,
+            HorizontalTabMetrics::TERMY,
+        )
+    }
+
+    pub(crate) fn effective_tab_max_width_for_viewport_with_metrics(
+        viewport_width: f32,
+        tab_count: usize,
+        metrics: HorizontalTabMetrics,
+    ) -> f32 {
         let tab_count = tab_count.max(1);
-        let gap_width = TAB_ITEM_GAP * tab_count.saturating_sub(1) as f32;
+        let gap_width = metrics.item_gap * tab_count.saturating_sub(1) as f32;
         let content_width =
-            (viewport_width - (TAB_HORIZONTAL_PADDING * 2.0) - gap_width).max(TAB_MIN_WIDTH);
+            (viewport_width - (metrics.leading_padding * 2.0) - gap_width).max(metrics.min_width);
         let share = content_width / tab_count as f32;
 
-        // Tabs never grow past TAB_MAX_WIDTH: with plenty of room each tab caps
-        // at the max instead of stretching to fill the strip; when the strip is
-        // crowded the equal share shrinks them down toward TAB_MIN_WIDTH.
-        share.clamp(TAB_MIN_WIDTH, TAB_MAX_WIDTH)
+        // Tabs never grow past the style's max width: with plenty of room each
+        // tab caps at the max instead of stretching to fill the strip; when the
+        // strip is crowded the equal share shrinks them down toward the min.
+        share.clamp(metrics.min_width, metrics.max_width)
     }
 
     fn tab_display_width_for_text_px_with_close_policy(
@@ -304,25 +319,39 @@ impl TerminalView {
         max_width: f32,
         reserve_close_slot: bool,
     ) -> f32 {
+        Self::tab_display_width_for_text_px_for_metrics(
+            text_width_px,
+            max_width,
+            reserve_close_slot,
+            HorizontalTabMetrics::TERMY,
+        )
+    }
+
+    fn tab_display_width_for_text_px_for_metrics(
+        text_width_px: f32,
+        max_width: f32,
+        reserve_close_slot: bool,
+        metrics: HorizontalTabMetrics,
+    ) -> f32 {
         let text_width = if text_width_px.is_finite() {
             text_width_px.max(0.0)
         } else {
             0.0
         };
         let close_slot_width = if reserve_close_slot {
-            TAB_CLOSE_SLOT_WIDTH
+            metrics.close_slot_width
         } else {
             0.0
         };
         let base_width =
-            (TAB_TEXT_PADDING_X * 2.0) + TAB_LEADING_SLOT_WIDTH + text_width + close_slot_width;
-        let slack_start = TAB_MIN_WIDTH - TAB_TITLE_LAYOUT_SLACK_PX;
-        let slack_end = TAB_MIN_WIDTH + TAB_TITLE_LAYOUT_SLACK_PX;
+            (metrics.text_padding_x * 2.0) + TAB_LEADING_SLOT_WIDTH + text_width + close_slot_width;
+        let slack_start = metrics.min_width - TAB_TITLE_LAYOUT_SLACK_PX;
+        let slack_end = metrics.min_width + TAB_TITLE_LAYOUT_SLACK_PX;
         let slack_span = (slack_end - slack_start).max(f32::EPSILON);
         let slack_factor = ((slack_end - base_width) / slack_span).clamp(0.0, 1.0);
         let effective_slack = TAB_TITLE_LAYOUT_SLACK_PX * slack_factor;
         let width = base_width + effective_slack;
-        width.clamp(TAB_MIN_WIDTH, max_width.max(TAB_MIN_WIDTH))
+        width.clamp(metrics.min_width, max_width.max(metrics.min_width))
     }
 
     pub(crate) fn tab_display_width_for_text_px_with_max(
@@ -339,8 +368,12 @@ impl TerminalView {
         Self::tab_display_width_for_text_px_with_close_policy(text_width_px, max_width, false)
     }
 
-    pub(crate) fn tab_title_text_area_width(tab_width: f32, close_slot_width: f32) -> f32 {
-        (tab_width - (TAB_TEXT_PADDING_X * 2.0) - close_slot_width).max(0.0)
+    pub(crate) fn tab_title_text_area_width(
+        tab_width: f32,
+        close_slot_width: f32,
+        text_padding_x: f32,
+    ) -> f32 {
+        (tab_width - (text_padding_x * 2.0) - close_slot_width).max(0.0)
     }
 
     pub(crate) fn sync_tab_title_text_widths(&mut self, measured_text_widths: &[f32]) -> bool {
@@ -391,6 +424,7 @@ impl TerminalView {
         }
     }
 
+    #[cfg(test)]
     fn resolve_tab_width_for_mode(
         tab_width_mode: TabWidthMode,
         text_width_px: f32,
@@ -398,15 +432,36 @@ impl TerminalView {
         reserve_close_slot: bool,
         sticky_title_width: f32,
     ) -> (f32, f32) {
-        let capped_max = effective_max.max(TAB_MIN_WIDTH);
-        let title_only_width = Self::tab_display_width_for_text_px_without_close_with_max(
-            text_width_px,
-            effective_max,
-        );
-        let close_policy_width = Self::tab_display_width_for_text_px_with_close_policy(
+        Self::resolve_tab_width_for_mode_with_metrics(
+            tab_width_mode,
             text_width_px,
             effective_max,
             reserve_close_slot,
+            sticky_title_width,
+            HorizontalTabMetrics::TERMY,
+        )
+    }
+
+    fn resolve_tab_width_for_mode_with_metrics(
+        tab_width_mode: TabWidthMode,
+        text_width_px: f32,
+        effective_max: f32,
+        reserve_close_slot: bool,
+        sticky_title_width: f32,
+        metrics: HorizontalTabMetrics,
+    ) -> (f32, f32) {
+        let capped_max = effective_max.max(metrics.min_width);
+        let title_only_width = Self::tab_display_width_for_text_px_for_metrics(
+            text_width_px,
+            effective_max,
+            false,
+            metrics,
+        );
+        let close_policy_width = Self::tab_display_width_for_text_px_for_metrics(
+            text_width_px,
+            effective_max,
+            reserve_close_slot,
+            metrics,
         );
 
         match tab_width_mode {
@@ -432,8 +487,12 @@ impl TerminalView {
         } else {
             0.0
         };
-        let effective_max =
-            Self::effective_tab_max_width_for_viewport(viewport_width, self.session.tabs.len());
+        let metrics = self.horizontal_tab_metrics();
+        let effective_max = Self::effective_tab_max_width_for_viewport_with_metrics(
+            viewport_width,
+            self.session.tabs.len(),
+            metrics,
+        );
         let mut changed = false;
         let tab_width_mode = self.tab_width_mode;
         let tab_close_visibility = self.tab_close_visibility;
@@ -442,7 +501,7 @@ impl TerminalView {
         // has room. It grows with the typed text up to TAB_RENAME_MAX_WIDTH,
         // floored at TAB_RENAME_MIN_WIDTH, and is always bounded by the viewport
         // so it never overflows the strip.
-        let viewport_cap = viewport_width.max(TAB_MIN_WIDTH);
+        let viewport_cap = viewport_width.max(metrics.min_width);
         let rename_cap = TAB_RENAME_MAX_WIDTH.min(viewport_cap);
         let rename_floor = TAB_RENAME_MIN_WIDTH.min(viewport_cap);
 
@@ -454,27 +513,30 @@ impl TerminalView {
                 is_active,
                 tab.pinned,
             );
-            let (next_width, next_sticky_width) = Self::resolve_tab_width_for_mode(
+            let (next_width, next_sticky_width) = Self::resolve_tab_width_for_mode_with_metrics(
                 tab_width_mode,
                 tab.title_text_width,
                 effective_max,
                 reserve_close_slot,
                 tab.sticky_title_width,
+                metrics,
             );
-            let next_width = next_width.max(TAB_MIN_WIDTH);
+            let next_width = next_width.max(metrics.min_width);
             let next_width = if renaming_tab == Some(index) {
                 // Size to the editor text (no close slot is shown while
                 // renaming), then floor/cap so short names still get room and
                 // long names stay within the strip.
-                let rename_fit = Self::tab_display_width_for_text_px_without_close_with_max(
+                let rename_fit = Self::tab_display_width_for_text_px_for_metrics(
                     tab.title_text_width,
                     rename_cap,
+                    false,
+                    metrics,
                 );
                 next_width.max(rename_fit).max(rename_floor).min(rename_cap)
             } else {
                 next_width
             };
-            let next_sticky_width = next_sticky_width.max(TAB_MIN_WIDTH);
+            let next_sticky_width = next_sticky_width.max(metrics.min_width);
             tab.sticky_title_width = next_sticky_width;
             if (tab.display_width - next_width).abs() <= f32::EPSILON {
                 continue;
@@ -627,6 +689,71 @@ mod tests {
     fn effective_tab_max_width_caps_at_max_for_very_wide_viewport() {
         let effective = TerminalView::effective_tab_max_width_for_viewport(4000.0, 1);
         assert_float_eq(effective, TAB_MAX_WIDTH);
+    }
+
+    #[test]
+    fn windows_style_tabs_shrink_equally_between_100_and_240_px() {
+        let metrics = HorizontalTabMetrics::WINDOWS_11;
+        assert_float_eq(
+            TerminalView::effective_tab_max_width_for_viewport_with_metrics(1600.0, 1, metrics),
+            240.0,
+        );
+        let crowded =
+            TerminalView::effective_tab_max_width_for_viewport_with_metrics(1000.0, 6, metrics);
+        let expected = (1000.0 - (metrics.leading_padding * 2.0)) / 6.0;
+        assert_float_eq(crowded, expected);
+        assert!(crowded < 240.0 && crowded > 100.0);
+        assert_float_eq(
+            TerminalView::effective_tab_max_width_for_viewport_with_metrics(400.0, 12, metrics),
+            100.0,
+        );
+    }
+
+    #[test]
+    fn windows_style_display_width_clamps_to_style_bounds() {
+        let metrics = HorizontalTabMetrics::WINDOWS_11;
+        assert_float_eq(
+            TerminalView::tab_display_width_for_text_px_for_metrics(1.0, 240.0, true, metrics),
+            100.0,
+        );
+        assert_float_eq(
+            TerminalView::tab_display_width_for_text_px_for_metrics(4000.0, 240.0, true, metrics),
+            240.0,
+        );
+        let text_width = 120.0;
+        assert_float_eq(
+            TerminalView::tab_display_width_for_text_px_for_metrics(
+                text_width, 512.0, true, metrics,
+            ),
+            (metrics.text_padding_x * 2.0)
+                + TAB_LEADING_SLOT_WIDTH
+                + text_width
+                + metrics.close_slot_width,
+        );
+    }
+
+    #[test]
+    fn windows_style_uniform_tabs_resolve_to_the_shared_cap() {
+        let metrics = HorizontalTabMetrics::WINDOWS_11;
+        let (width, sticky) = TerminalView::resolve_tab_width_for_mode_with_metrics(
+            TabWidthMode::Uniform,
+            40.0,
+            180.0,
+            true,
+            0.0,
+            metrics,
+        );
+        assert_float_eq(width, 180.0);
+        assert_float_eq(sticky, 180.0);
+        let (tight, _) = TerminalView::resolve_tab_width_for_mode_with_metrics(
+            TabWidthMode::Uniform,
+            40.0,
+            12.0,
+            true,
+            0.0,
+            metrics,
+        );
+        assert_float_eq(tight, metrics.min_width);
     }
 
     #[test]

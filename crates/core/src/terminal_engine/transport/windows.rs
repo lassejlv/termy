@@ -4,7 +4,7 @@ use std::{
     ffi::{OsStr, OsString, c_void},
     io::{self, ErrorKind},
     mem,
-    os::windows::ffi::OsStrExt,
+    os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Component, Path, PathBuf, Prefix},
     ptr,
     sync::{
@@ -14,9 +14,6 @@ use std::{
     },
     thread,
 };
-
-#[cfg(test)]
-use std::os::windows::ffi::OsStringExt;
 
 use super::limits::{
     MAX_PROTOCOL_REPLY_BACKLOG_BYTES as MAX_PENDING_PROTOCOL_REPLY_BYTES,
@@ -49,6 +46,15 @@ const ERROR_OPERATION_ABORTED: i32 = 995;
 const INVALID_HANDLE_VALUE: Handle = -1_isize as Handle;
 const EXTENDED_STARTUPINFO_PRESENT: Dword = 0x0008_0000;
 const CREATE_UNICODE_ENVIRONMENT: Dword = 0x0000_0400;
+const CREATE_SUSPENDED: Dword = 0x0000_0004;
+/// ConPTY asks the terminal for the cursor position (DSR 6n) at startup and
+/// waits for the reply, so it continues below existing output.
+const PSEUDOCONSOLE_INHERIT_CURSOR: Dword = 0x1;
+/// The terminal reflows its own buffer on resize, so ConPTY must not
+/// repaint it. Older ConPTY builds ignore the flag.
+const PSEUDOCONSOLE_RESIZE_QUIRK: Dword = 0x2;
+const LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR: Dword = 0x0000_0100;
+const LOAD_LIBRARY_SEARCH_SYSTEM32: Dword = 0x0000_0800;
 const STARTF_USESTDHANDLES: Dword = 0x0000_0100;
 const PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE: usize = 0x0002_0016;
 const MAX_COMMAND_LINE_UNITS: usize = 32_767;
@@ -172,6 +178,70 @@ struct ConPtyApi {
 
 impl ConPtyApi {
     fn load_uncached() -> Option<Self> {
+        Self::load_bundled().or_else(Self::load_system)
+    }
+
+    /// A `conpty.dll` shipped beside the executable, with the
+    /// `OpenConsole.exe` it starts, is newer than the inbox ConPTY of most
+    /// Windows releases. It is loaded by absolute path only, never through
+    /// the DLL search order.
+    fn load_bundled() -> Option<Self> {
+        let executable = std::env::current_exe().ok()?;
+        let directory = executable.parent()?;
+        let library = directory.join("conpty.dll");
+        if !library.is_file() || !directory.join("OpenConsole.exe").is_file() {
+            return None;
+        }
+        let library_name = wide_nul(library.as_os_str(), "bundled ConPTY path").ok()?;
+        // SAFETY: `library_name` is an absolute, NUL-terminated path. The
+        // search flags confine dependency resolution to the DLL's own
+        // directory and System32.
+        let module = unsafe {
+            LoadLibraryExW(
+                library_name.as_ptr(),
+                ptr::null_mut(),
+                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32,
+            )
+        };
+        if module.is_null() {
+            log::warn!(
+                "failed to load bundled {}: {}",
+                library.display(),
+                io::Error::last_os_error()
+            );
+            return None;
+        }
+        let api = Self::from_module(module);
+        match api {
+            Some(_) => log::debug!("using bundled ConPTY from {}", library.display()),
+            None => {
+                log::warn!("bundled {} lacks the ConPTY exports", library.display());
+                // SAFETY: the module was loaded above and no symbol from it
+                // has been retained.
+                unsafe {
+                    let _ = FreeLibrary(module);
+                }
+            }
+        }
+        // A loaded module stays loaded for the process lifetime: the cached
+        // function pointers refer into it.
+        api
+    }
+
+    fn from_module(module: HModule) -> Option<Self> {
+        // Microsoft's redistributable conpty.dll exports the kernel32 names;
+        // some builds export only the `Conpty`-prefixed implementations.
+        Some(Self {
+            create: load_symbol(module, b"CreatePseudoConsole\0")
+                .or_else(|| load_symbol(module, b"ConptyCreatePseudoConsole\0"))?,
+            resize: load_symbol(module, b"ResizePseudoConsole\0")
+                .or_else(|| load_symbol(module, b"ConptyResizePseudoConsole\0"))?,
+            close: load_symbol(module, b"ClosePseudoConsole\0")
+                .or_else(|| load_symbol(module, b"ConptyClosePseudoConsole\0"))?,
+        })
+    }
+
+    fn load_system() -> Option<Self> {
         const KERNEL32: [u16; 13] = [
             b'k' as u16,
             b'e' as u16,
@@ -209,15 +279,17 @@ fn conpty_api() -> Option<ConPtyApi> {
 }
 
 fn load_symbol<T: Copy>(module: HModule, name: &'static [u8]) -> Option<T> {
-    // SAFETY: `module` came from GetModuleHandleW and `name` is a static,
-    // NUL-terminated ASCII export name. The caller supplies the documented ABI.
+    // SAFETY: `module` came from GetModuleHandleW or LoadLibraryExW and stays
+    // loaded; `name` is a static, NUL-terminated ASCII export name. The caller
+    // supplies the documented ABI.
     let symbol = unsafe { GetProcAddress(module, name.as_ptr()) };
     if symbol.is_null() || mem::size_of::<T>() != mem::size_of::<*mut c_void>() {
         return None;
     }
-    // SAFETY: all three callers instantiate `T` with the exact documented
-    // `extern "system"` signature of the named kernel32 ConPTY export. Windows
-    // function pointers have the same representation as GetProcAddress output.
+    // SAFETY: all callers instantiate `T` with the exact documented
+    // `extern "system"` signature of the named ConPTY export, which kernel32
+    // and the redistributable conpty.dll share. Windows function pointers
+    // have the same representation as GetProcAddress output.
     Some(unsafe { mem::transmute_copy::<*mut c_void, T>(&symbol) })
 }
 
@@ -750,6 +822,8 @@ impl StartGate {
 }
 
 impl Transport {
+    // Hosts that answer terminal queries use `spawn_answering_queries`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn spawn(
         config: SpawnConfig,
         size: PtySize,
@@ -759,12 +833,51 @@ impl Transport {
         Self::spawn_with_exit(config, size, true, on_output, move |_| on_exit())
     }
 
+    /// Spawn like [`Self::spawn`] for a host whose `on_output` answers
+    /// terminal queries. The pseudoconsole then inherits the host's cursor
+    /// position instead of assuming the top-left cell, so restored output is
+    /// not overdrawn. ConPTY blocks until its startup DSR 6n is answered,
+    /// which is why hosts that do not reply must use [`Self::spawn`].
+    pub(crate) fn spawn_answering_queries(
+        config: SpawnConfig,
+        size: PtySize,
+        on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
+        on_exit: impl FnOnce() + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::spawn_inner(
+            config,
+            size,
+            true,
+            PSEUDOCONSOLE_RESIZE_QUIRK | PSEUDOCONSOLE_INHERIT_CURSOR,
+            on_output,
+            move |_| on_exit(),
+        )
+    }
+
     /// Spawn like [`Self::spawn`], reporting the child's exit code. Without
     /// `inherit_environment`, the child sees only `config.environment`.
     pub(crate) fn spawn_with_exit(
         config: SpawnConfig,
         size: PtySize,
         inherit_environment: bool,
+        on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
+        on_exit: impl FnOnce(ChildExit) + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::spawn_inner(
+            config,
+            size,
+            inherit_environment,
+            PSEUDOCONSOLE_RESIZE_QUIRK,
+            on_output,
+            on_exit,
+        )
+    }
+
+    fn spawn_inner(
+        config: SpawnConfig,
+        size: PtySize,
+        inherit_environment: bool,
+        pseudo_console_flags: Dword,
         mut on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
         on_exit: impl FnOnce(ChildExit) + Send + 'static,
     ) -> io::Result<Self> {
@@ -797,7 +910,13 @@ impl Transport {
 
         let (pseudo_input, input_writer) = create_pipe()?;
         let (output_reader, pseudo_output) = create_pipe()?;
-        let pseudo_console = PseudoConsole::create(api, coord, &pseudo_input, &pseudo_output)?;
+        let pseudo_console = PseudoConsole::create(
+            api,
+            coord,
+            &pseudo_input,
+            &pseudo_output,
+            pseudo_console_flags,
+        )?;
 
         let mut attributes = AttributeList::new(1)?;
         attributes.set_pseudo_console(pseudo_console.raw())?;
@@ -819,7 +938,8 @@ impl Transport {
         // SAFETY: all pointers reference writable or immutable buffers that
         // outlive CreateProcessW. `command_line` is mutable and NUL-terminated,
         // `environment` is a double-NUL-terminated UTF-16 environment block,
-        // and startup carries one initialized pseudoconsole attribute.
+        // and startup carries one initialized pseudoconsole attribute. The
+        // child starts suspended so it joins its job before it can spawn.
         let created = unsafe {
             CreateProcessW(
                 application.as_ptr(),
@@ -827,7 +947,7 @@ impl Transport {
                 ptr::null_mut(),
                 ptr::null_mut(),
                 FALSE,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
                 environment.as_mut_ptr().cast::<c_void>(),
                 current_directory_ptr,
                 &mut startup.startup_info,
@@ -853,6 +973,35 @@ impl Transport {
             ));
         };
         let process_thread = OwnedHandle::new(process_info.thread);
+        // The job records what the shell starts, so closing the tab can end
+        // its console programs too. Without one (for example under a parent
+        // job that forbids nesting) only the shell itself is terminated.
+        let job = JobObject::new()
+            .and_then(|job| job.assign(&process).map(|()| job))
+            .map_err(|error| log::warn!("terminal child runs without a job object: {error}"))
+            .ok();
+        let resumed = match &process_thread {
+            // SAFETY: the primary thread handle comes from the successful
+            // CreateProcessW above and is still open.
+            Some(thread) => (unsafe { ResumeThread(thread.raw()) }) != Dword::MAX,
+            None => false,
+        };
+        if !resumed {
+            let error = io::Error::last_os_error();
+            // SAFETY: the suspended child never ran; this wrapper owns its handle.
+            unsafe {
+                let _ = TerminateProcess(process.raw(), FORCED_EXIT_CODE);
+            }
+            drop(job);
+            drop(process_thread);
+            drop(process);
+            drop(output_reader);
+            drop(input_writer);
+            drop(pseudo_input);
+            drop(pseudo_output);
+            drop(pseudo_console);
+            return Err(error);
+        }
         drop(process_thread);
         drop(pseudo_input);
         drop(pseudo_output);
@@ -865,7 +1014,9 @@ impl Transport {
         let (control_finished_sender, control_finished_receiver) = mpsc::channel();
         let resources = Arc::new(Mutex::new(Some(ChildResources::new(
             process,
+            process_info.process_id,
             pseudo_console,
+            job,
         ))));
 
         let exit_status = Arc::new(Mutex::new(None::<ChildExit>));
@@ -991,6 +1142,14 @@ impl Transport {
 
     pub(crate) fn child_pid(&self) -> u32 {
         self.child_pid
+    }
+
+    /// Name of the newest process the shell has started, following
+    /// descendants down, such as `vim.exe`; the shell's own name when it runs
+    /// nothing. Windows has no foreground process group, so this is a best
+    /// guess.
+    pub(crate) fn foreground_process_name(&self) -> Option<String> {
+        foreground_descendant_name(self.child_pid)
     }
 
     /// Terminate the child. Windows has no signals; the control thread ends
@@ -1178,6 +1337,7 @@ fn run_control(
         // before the fallback termination (Unix allows the same after SIGHUP).
         resources.close_pseudo_console();
         resources.wait_for_exit(CLOSE_GRACE_MS);
+        resources.terminate_console_descendants();
         let _ = resources.terminate_and_wait();
     }
     *exit_status
@@ -1334,12 +1494,13 @@ impl PseudoConsole {
         size: Coord,
         input: &OwnedHandle,
         output: &OwnedHandle,
+        flags: Dword,
     ) -> io::Result<Self> {
         let mut handle = ptr::null_mut();
         // SAFETY: both pipe handles remain live through this call and `handle`
         // is valid output storage. The dynamically loaded function has the
         // documented CreatePseudoConsole system ABI.
-        let result = unsafe { (api.create)(size, input.raw(), output.raw(), 0, &mut handle) };
+        let result = unsafe { (api.create)(size, input.raw(), output.raw(), flags, &mut handle) };
         if result < 0 {
             return Err(hresult_error("CreatePseudoConsole", result));
         }
@@ -1393,6 +1554,7 @@ fn hresult_error(operation: &str, result: HResult) -> io::Error {
 }
 
 include!("windows/resources.rs");
+include!("windows/process_tree.rs");
 
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Default)]

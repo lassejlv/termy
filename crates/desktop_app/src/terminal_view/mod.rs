@@ -142,6 +142,7 @@ use runtime::{RuntimeKind, RuntimeState, TmuxRuntime};
 use session::SessionState;
 pub(crate) use tab_strip::constants::*;
 use tab_strip::state::TabStripState;
+pub(crate) use tab_strip::style::{HorizontalTabMetrics, TabStripActionRailMetrics};
 
 type TabId = u64;
 type NativeTerminalWakeupId = u64;
@@ -1314,6 +1315,12 @@ pub struct TerminalView {
     /// AppKit draws this window's tabs: the window holds one tab, and any
     /// other tab moves into its own native tab window.
     native_window_tabs: bool,
+    /// `tab_style = native` on Windows: the horizontal strip uses the
+    /// Windows 11 style. Follows config reloads.
+    windows_native_tab_style: bool,
+    /// The WinUI `TabView` drawing that strip, once created.
+    #[cfg(target_os = "windows")]
+    winui_tab_strip: Option<tab_strip::winui::WinUiTabStripHost>,
     /// The tab this native tab window shows.
     native_tab_home: Option<TabId>,
     native_tab_split_pending: bool,
@@ -1648,6 +1655,7 @@ impl TerminalView {
         TerminalRuntimeConfig {
             shell: config.shell.clone(),
             windows_shell: match config.windows_shell {
+                config::WindowsShell::Auto => RuntimeWindowsShell::Auto,
                 config::WindowsShell::Cmd => RuntimeWindowsShell::Cmd,
                 config::WindowsShell::PowerShell => RuntimeWindowsShell::PowerShell,
                 config::WindowsShell::PowerShellCore => RuntimeWindowsShell::PowerShellCore,
@@ -1797,8 +1805,27 @@ impl TerminalView {
         // cwd. A candidate that does not resolve locally must fall through to the
         // configured working_dir instead of shadowing it and collapsing to the
         // home-directory fallback at spawn time (issue #336).
+        #[cfg(windows)]
+        let candidate = candidate.map(Self::strip_slash_before_windows_drive);
         normalize_working_directory_candidate(candidate)
             .filter(|value| resolve_working_directory_path(Some(value)).is_some())
+    }
+
+    /// `/C:/dir` as `C:/dir`. Session hosts and snapshots from before OSC 7
+    /// learned Windows paths report `file://host/C:/dir` that way.
+    #[cfg(windows)]
+    fn strip_slash_before_windows_drive(value: &str) -> &str {
+        let trimmed = value.trim();
+        match trimmed.strip_prefix('/') {
+            Some(rest)
+                if rest.len() >= 2
+                    && rest.as_bytes()[0].is_ascii_alphabetic()
+                    && rest.as_bytes()[1] == b':' =>
+            {
+                rest
+            }
+            _ => value,
+        }
     }
 
     fn resolve_preferred_working_directory(
@@ -3292,6 +3319,9 @@ impl TerminalView {
             focus_handle,
             window_handle,
             native_window_tabs,
+            windows_native_tab_style: crate::windows_native_tab_style(&config),
+            #[cfg(target_os = "windows")]
+            winui_tab_strip: None,
             native_tab_home: None,
             native_tab_split_pending: false,
             native_window_chrome: None,
@@ -3773,6 +3803,9 @@ impl TerminalView {
         let tab_close_visibility_changed = self.tab_close_visibility != config.tab_close_visibility;
         let tab_width_mode_changed = self.tab_width_mode != config.tab_width_mode;
         let tab_bar_position_changed = self.tab_bar_position != config.tab_bar_position;
+        let windows_native_tab_style = crate::windows_native_tab_style(&config);
+        let windows_native_tab_style_changed =
+            self.windows_native_tab_style != windows_native_tab_style;
         let tab_switch_modifier_hints_changed = self
             .tab_strip
             .switch_hints
@@ -3798,6 +3831,7 @@ impl TerminalView {
         self.tab_close_visibility = config.tab_close_visibility;
         self.tab_width_mode = config.tab_width_mode;
         self.tab_bar_position = config.tab_bar_position;
+        self.windows_native_tab_style = windows_native_tab_style;
         self.auto_hide_tabbar = config.auto_hide_tabbar;
         self.show_termy_in_titlebar = config.show_termy_in_titlebar;
         self.show_debug_overlay = config.show_debug_overlay;
@@ -3966,6 +4000,7 @@ impl TerminalView {
         if tab_close_visibility_changed
             || tab_width_mode_changed
             || tab_bar_position_changed
+            || windows_native_tab_style_changed
             || show_termy_in_titlebar_changed
             || simple_mode_changed
             || auto_hide_tabbar_changed
@@ -3975,6 +4010,7 @@ impl TerminalView {
         }
         if tab_switch_modifier_hints_changed
             || tab_bar_position_changed
+            || windows_native_tab_style_changed
             || auto_hide_tabbar_changed
             || simple_mode_changed
             || workspace_sidebar_changed

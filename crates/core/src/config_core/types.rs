@@ -291,7 +291,9 @@ impl TerminalScrollbarStyle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowsShell {
+    /// PowerShell 7 when installed, else Windows PowerShell, else `COMSPEC`.
     #[default]
+    Auto,
     Cmd,
     PowerShell,
     PowerShellCore,
@@ -301,6 +303,7 @@ pub enum WindowsShell {
 impl WindowsShell {
     pub(crate) fn from_str(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
+            "auto" | "automatic" => Some(Self::Auto),
             "cmd" | "command_prompt" | "commandprompt" => Some(Self::Cmd),
             "powershell" | "power_shell" | "windows_powershell" | "ps" => Some(Self::PowerShell),
             "pwsh" | "powershell_core" | "powershellcore" | "powershell_7" | "powershell-7"

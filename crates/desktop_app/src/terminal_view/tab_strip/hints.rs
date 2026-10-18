@@ -47,8 +47,15 @@ impl TabSwitchHintState {
         changed
     }
 
-    pub(crate) fn secondary_modifier_held_alone(modifiers: Modifiers) -> bool {
-        modifiers.secondary() && modifiers.number_of_modifiers() == 1
+    /// Whether exactly the tab-switch modifier is held: Ctrl+Alt on Windows
+    /// (the default `switch_to_tab_*` bindings there are Ctrl+Alt+1..9, since
+    /// Alt+1..9 selects panes), the secondary key alone elsewhere.
+    pub(crate) fn tab_switch_modifier_held_alone(modifiers: Modifiers) -> bool {
+        if cfg!(target_os = "windows") {
+            modifiers.control && modifiers.alt && modifiers.number_of_modifiers() == 2
+        } else {
+            modifiers.secondary() && modifiers.number_of_modifiers() == 1
+        }
     }
 
     pub(crate) fn label_for_index(index: usize) -> Option<String> {
@@ -64,7 +71,7 @@ impl TabSwitchHintState {
             return self.reset_hold_state();
         }
 
-        let next = Self::secondary_modifier_held_alone(modifiers);
+        let next = Self::tab_switch_modifier_held_alone(modifiers);
         if next {
             if self.modifier_held {
                 return false;
@@ -86,7 +93,7 @@ impl TabSwitchHintState {
         overlays_blocked: bool,
         now: Instant,
     ) -> bool {
-        if !Self::secondary_modifier_held_alone(modifiers) || Self::key_keeps_hint(key) {
+        if !Self::tab_switch_modifier_held_alone(modifiers) || Self::key_keeps_hint(key) {
             return false;
         }
 
@@ -190,6 +197,8 @@ impl TabSwitchHintState {
     fn label_prefix() -> &'static str {
         if cfg!(target_os = "macos") {
             "⌘"
+        } else if cfg!(target_os = "windows") {
+            "⌃⌥"
         } else {
             "⌃"
         }
@@ -217,22 +226,45 @@ fn ease_out_cubic(progress: f32) -> f32 {
 mod tests {
     use super::*;
 
+    /// The modifiers that show the hints on the platform under test.
+    fn hint_modifiers() -> Modifiers {
+        if cfg!(target_os = "windows") {
+            Modifiers {
+                control: true,
+                alt: true,
+                ..Modifiers::default()
+            }
+        } else {
+            Modifiers::secondary_key()
+        }
+    }
+
     #[test]
-    fn secondary_modifier_requires_secondary_only() {
-        let secondary_only = Modifiers::secondary_key();
-        assert!(TabSwitchHintState::secondary_modifier_held_alone(
-            secondary_only
+    fn tab_switch_modifier_requires_exact_modifier_set() {
+        assert!(TabSwitchHintState::tab_switch_modifier_held_alone(
+            hint_modifiers()
         ));
 
-        let secondary_with_shift = Modifiers {
+        let with_shift = Modifiers {
             shift: true,
-            ..Modifiers::secondary_key()
+            ..hint_modifiers()
         };
-        assert!(!TabSwitchHintState::secondary_modifier_held_alone(
-            secondary_with_shift
+        assert!(!TabSwitchHintState::tab_switch_modifier_held_alone(
+            with_shift
         ));
-        assert!(!TabSwitchHintState::secondary_modifier_held_alone(
+        assert!(!TabSwitchHintState::tab_switch_modifier_held_alone(
             Modifiers::default()
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_hints_need_ctrl_and_alt() {
+        assert!(!TabSwitchHintState::tab_switch_modifier_held_alone(
+            Modifiers::control()
+        ));
+        assert!(!TabSwitchHintState::tab_switch_modifier_held_alone(
+            Modifiers::alt()
         ));
     }
 
@@ -267,6 +299,8 @@ mod tests {
             TabSwitchHintState::label_for_index(0).as_deref(),
             Some(if cfg!(target_os = "macos") {
                 "⌘1"
+            } else if cfg!(target_os = "windows") {
+                "⌃⌥1"
             } else {
                 "⌃1"
             })
@@ -275,6 +309,8 @@ mod tests {
             TabSwitchHintState::label_for_index(8).as_deref(),
             Some(if cfg!(target_os = "macos") {
                 "⌘9"
+            } else if cfg!(target_os = "windows") {
+                "⌃⌥9"
             } else {
                 "⌃9"
             })
@@ -286,7 +322,7 @@ mod tests {
     fn should_render_requires_supported_visible_non_renaming_state() {
         let mut state = TabSwitchHintState::new(true);
         let now = Instant::now();
-        assert!(state.handle_modifiers_changed(Modifiers::secondary_key(), now));
+        assert!(state.handle_modifiers_changed(hint_modifiers(), now));
         let visible_at = now + TAB_SWITCH_HINT_HOLD_DELAY + TAB_SWITCH_HINT_FADE_DURATION;
 
         assert!(state.should_render(0, false, false, visible_at));
@@ -299,11 +335,11 @@ mod tests {
     fn non_digit_key_suppresses_visible_hint_immediately() {
         let mut state = TabSwitchHintState::new(true);
         let now = Instant::now();
-        state.handle_modifiers_changed(Modifiers::secondary_key(), now);
+        state.handle_modifiers_changed(hint_modifiers(), now);
         let visible_at = now + TAB_SWITCH_HINT_HOLD_DELAY + TAB_SWITCH_HINT_FADE_DURATION;
 
         assert!(state.progress(visible_at, false) > 0.0);
-        assert!(state.suppress_for_key_down("k", Modifiers::secondary_key(), false, visible_at));
+        assert!(state.suppress_for_key_down("k", hint_modifiers(), false, visible_at));
         assert_eq!(state.progress(visible_at, false), 0.0);
     }
 
@@ -311,7 +347,7 @@ mod tests {
     fn numeric_tab_switch_actions_do_not_suppress_hint() {
         let mut state = TabSwitchHintState::new(true);
         let now = Instant::now();
-        state.handle_modifiers_changed(Modifiers::secondary_key(), now);
+        state.handle_modifiers_changed(hint_modifiers(), now);
         let visible_at = now + TAB_SWITCH_HINT_HOLD_DELAY + TAB_SWITCH_HINT_FADE_DURATION;
 
         assert!(!state.suppress_for_action(CommandAction::SwitchToTab4, false, visible_at));
@@ -322,11 +358,11 @@ mod tests {
     fn reset_and_disable_clear_hold_state() {
         let mut state = TabSwitchHintState::new(true);
         let now = Instant::now();
-        assert!(state.handle_modifiers_changed(Modifiers::secondary_key(), now));
+        assert!(state.handle_modifiers_changed(hint_modifiers(), now));
         assert!(state.reset_hold_state());
 
         let mut state = TabSwitchHintState::new(true);
-        assert!(state.handle_modifiers_changed(Modifiers::secondary_key(), now));
+        assert!(state.handle_modifiers_changed(hint_modifiers(), now));
         assert!(state.sync_enabled(false));
         assert_eq!(state.progress(now, false), 0.0);
     }

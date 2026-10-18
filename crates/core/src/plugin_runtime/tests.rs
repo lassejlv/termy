@@ -317,6 +317,30 @@ export default definePlugin({
     assert!(error.contains("cancelled"), "error: {error}");
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_bun_lookup_skips_shell_shims_and_prefers_the_packaged_exe() {
+    let temp = TempDir::new().expect("temp dir");
+    let dir = temp.path();
+    fs::write(dir.join("bun"), "#!/bin/sh").expect("write sh shim");
+    assert_eq!(bun_candidate_in_dir(dir), None);
+
+    fs::write(dir.join("bun.cmd"), "@echo off").expect("write cmd shim");
+    assert_eq!(bun_candidate_in_dir(dir), Some(dir.join("bun.cmd")));
+
+    let packaged = dir.join(r"node_modules\bun\bin");
+    fs::create_dir_all(&packaged).expect("create package dir");
+    fs::write(packaged.join("bun.exe"), "").expect("write packaged exe");
+    assert_eq!(
+        bun_candidate_in_dir(dir),
+        Some(dir.join(r"node_modules\bun\bin\bun.exe"))
+    );
+
+    fs::write(dir.join("bun.exe"), "").expect("write exe");
+    assert_eq!(bun_candidate_in_dir(dir), Some(dir.join("bun.exe")));
+    assert!(!is_executable_file(&dir.join("bun")));
+}
+
 #[cfg(unix)]
 #[test]
 fn plugin_host_environment_restores_gui_missing_path_entries() {

@@ -1,4 +1,5 @@
 use super::super::*;
+use super::style::HorizontalTabStyle;
 
 #[derive(Clone, Copy)]
 pub(super) struct TabStripPalette {
@@ -17,6 +18,11 @@ pub(super) struct TabStripPalette {
     pub(super) switch_hint_border: gpui_kit::Rgba,
     pub(super) switch_hint_text: gpui_kit::Rgba,
     pub(super) tab_drop_marker_color: gpui_kit::Rgba,
+    pub(super) style: HorizontalTabStyle,
+    // Windows 11 style only; transparent in the Termy style.
+    pub(super) separator_color: gpui_kit::Rgba,
+    pub(super) pressed_tab_bg: gpui_kit::Rgba,
+    pub(super) close_button_pressed_bg: gpui_kit::Rgba,
 }
 
 pub(super) fn resolve_branding_text_color(palette: &TabStripPalette) -> gpui_kit::Rgba {
@@ -66,6 +72,8 @@ impl TerminalView {
         switch_hint_text.a = (0.99 * hint_progress).clamp(0.0, 1.0);
         let mut tab_drop_marker_color = colors.cursor;
         tab_drop_marker_color.a = self.scaled_chrome_accent_alpha(0.95);
+        let mut transparent = colors.foreground;
+        transparent.a = 0.0;
         TabStripPalette {
             tab_stroke_color,
             inactive_tab_bg,
@@ -82,6 +90,25 @@ impl TerminalView {
             switch_hint_border,
             switch_hint_text,
             tab_drop_marker_color,
+            style: HorizontalTabStyle::Termy,
+            separator_color: transparent,
+            pressed_tab_bg: transparent,
+            close_button_pressed_bg: transparent,
         }
+    }
+
+    /// Palette for the horizontal strip in `style`. The Windows 11 style
+    /// fills the selected tab with `tabbar_bg`, the terminal surface color.
+    pub(super) fn resolve_horizontal_tab_strip_palette(
+        &self,
+        colors: &TerminalColors,
+        tabbar_bg: gpui_kit::Rgba,
+        style: HorizontalTabStyle,
+    ) -> TabStripPalette {
+        let mut palette = self.resolve_tab_strip_palette(colors, tabbar_bg);
+        if style.is_windows_11() {
+            Self::apply_windows_tab_palette(&mut palette, colors, tabbar_bg);
+        }
+        palette
     }
 }

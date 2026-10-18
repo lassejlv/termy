@@ -1,12 +1,25 @@
 set shell := ["bash", "-cu"]
 
+# On Windows a bare "bash" can resolve to System32's WSL launcher. Git for
+# Windows' sh is bash, and nothing else named sh ships with Windows, so run
+# just from Git Bash (or with Git's usr/bin on PATH). Shebang recipes also
+# need Git Bash: just maps their interpreter paths with cygpath.
+set windows-shell := ["sh", "-cu"]
+
+# Per-checkout instance home, so `just run`/`just dev` never attach to an
+# installed Termy. Computed by just rather than in a shell `${VAR:-...}`
+# default, whose braces broke on literal `{{ }}` text.
+dev_instance_home := env("TERMY_INSTANCE_HOME", justfile_directory() / "target" / "termy-dev-instance")
+
 # Show available recipes
 @default:
     just --list
 
 # Checkout-local instance lock so this does not silently attach to Termy.app.
+# On Windows it goes through `build`, which embeds termy.manifest (the WinUI
+# tab strip needs it; see scripts/windows/embed-manifest.ps1).
 run:
-    TERMY_INSTANCE_HOME="${TERMY_INSTANCE_HOME:-{{ justfile_directory() }}/target/termy-dev-instance}" cargo run -p termy --release
+    if [ "{{ os() }}" = "windows" ]; then {{ just_executable() }} build && TERMY_INSTANCE_HOME={{ quote(dev_instance_home) }} ./target/release/termy.exe; else TERMY_INSTANCE_HOME={{ quote(dev_instance_home) }} cargo run -p termy --release; fi
 
 # Measure the custom terminal parser/grid and enforce warmed allocation bounds.
 benchmark-terminal-engine mib="32":
@@ -42,10 +55,11 @@ validate: check fmt-check test-workspace check-boundaries
     cargo clippy --workspace --all-targets -- -D warnings
 
 dev:
-    TERMY_INSTANCE_HOME="${TERMY_INSTANCE_HOME:-{{ justfile_directory() }}/target/termy-dev-instance}" cargo watch -x "run -p termy --release"
+    TERMY_INSTANCE_HOME={{ quote(dev_instance_home) }} cargo watch -x "run -p termy --release"
 
 build:
     cargo build -p termy --release
+    if [ "{{ os() }}" = "windows" ]; then powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/windows/embed-manifest.ps1 -ExePath target/release/termy.exe; fi
 
 check:
     cargo check --workspace

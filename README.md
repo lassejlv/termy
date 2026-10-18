@@ -31,6 +31,12 @@ macOS DMGs from v0.2.75 onward are signed and notarized. Open the DMG and drag
 Termy to `/Applications`. See [macOS troubleshooting](https://termy.sh/docs/getting-started/troubleshooting)
 if the app still does not open.
 
+On Windows, run `Termy-<version>-windows-x64-Setup.exe` (or the `arm64` one on
+ARM64 PCs). It installs for the current user without an administrator prompt;
+pass `/ALLUSERS` or pick **Install for all users** to install under Program
+Files. See the [installation guide](https://termy.sh/docs/getting-started/installation#windows)
+for SmartScreen and winget notes.
+
 ### Build from source
 
 Termy is a Rust workspace. Build and launch the desktop app with:

@@ -3,8 +3,10 @@ use crate::terminal_view::tab_strip::state::TabStripOrientation;
 
 pub(crate) const TAB_STRIP_RAIL_GUTTER_WIDTH: f32 = 0.0;
 const TAB_STRIP_LAYOUT_EPSILON: f32 = 0.001;
+/// Minimize, maximize/restore and close, drawn by Termy in the client-side
+/// titlebar and hit-tested by Windows as caption buttons.
 #[cfg(target_os = "windows")]
-const WINDOWS_CAPTION_BUTTONS_RESERVED_WIDTH: f32 = 140.0;
+const WINDOWS_CAPTION_BUTTONS_RESERVED_WIDTH: f32 = 3.0 * WINDOWS_CAPTION_BUTTON_WIDTH;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct TabStripGeometry {
@@ -23,6 +25,9 @@ pub(crate) struct TabStripGeometry {
     pub(crate) button_end_x: f32,
     pub(crate) button_start_y: f32,
     pub(crate) button_end_y: f32,
+    /// Spacing of tabs inside the tab lane, from the strip style.
+    pub(crate) tab_leading_padding: f32,
+    pub(crate) tab_item_gap: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -41,6 +46,26 @@ pub(crate) struct TabStripLayoutInput {
     pub(crate) viewport_width: f32,
     pub(crate) left_inset_width: f32,
     pub(crate) content_width: Option<f32>,
+    pub(crate) metrics: HorizontalTabMetrics,
+    pub(crate) action_rail: TabStripActionRailMetrics,
+}
+
+#[cfg(test)]
+impl TabStripLayoutInput {
+    /// Input for the Termy strip style.
+    pub(crate) fn termy(
+        viewport_width: f32,
+        left_inset_width: f32,
+        content_width: Option<f32>,
+    ) -> Self {
+        Self {
+            viewport_width,
+            left_inset_width,
+            content_width,
+            metrics: HorizontalTabMetrics::TERMY,
+            action_rail: TabStripActionRailMetrics::TERMY,
+        }
+    }
 }
 
 impl TabStripGeometry {
@@ -88,8 +113,11 @@ impl TabStripGeometry {
 }
 
 impl TerminalView {
-    fn horizontal_action_rail_width_for_platform(max_row_width: f32) -> f32 {
-        TABBAR_ACTION_RAIL_WIDTH.min(max_row_width)
+    fn horizontal_action_rail_width_for_platform(
+        rail: TabStripActionRailMetrics,
+        max_row_width: f32,
+    ) -> f32 {
+        rail.width.min(max_row_width)
     }
 
     #[cfg(target_os = "windows")]
@@ -117,7 +145,8 @@ impl TerminalView {
         let reserved_right_inset_width =
             Self::titlebar_right_padding_for_platform().min(remaining_after_left);
         let max_row_width = (remaining_after_left - reserved_right_inset_width).max(0.0);
-        let action_rail_width = Self::horizontal_action_rail_width_for_platform(max_row_width);
+        let action_rail_width =
+            Self::horizontal_action_rail_width_for_platform(input.action_rail, max_row_width);
         let available_after_rail = (max_row_width - action_rail_width).max(0.0);
         let gutter_width = if action_rail_width > f32::EPSILON {
             TAB_STRIP_RAIL_GUTTER_WIDTH.min(available_after_rail)
@@ -138,12 +167,19 @@ impl TerminalView {
         let row_end_x = row_start_x + row_width;
         let gutter_start_x = row_start_x + tabs_viewport_width;
         let action_rail_start_x = gutter_start_x + gutter_width;
-        let button_size = TABBAR_NEW_TAB_BUTTON_SIZE.min(action_rail_width);
-        let button_start_x = action_rail_start_x;
-        let button_start_y =
-            TOP_STRIP_CONTENT_OFFSET_Y + ((TABBAR_HEIGHT - button_size) * 0.5).max(0.0);
-        let button_end_x = button_start_x + button_size;
-        let button_end_y = button_start_y + button_size;
+        let action_rail_end_x = action_rail_start_x + action_rail_width;
+        let button_start_x =
+            (action_rail_start_x + input.action_rail.buttons_start).min(action_rail_end_x);
+        let button_width = input
+            .action_rail
+            .buttons_width
+            .min(action_rail_end_x - button_start_x)
+            .max(0.0);
+        let button_height = input.action_rail.button_height.min(button_width);
+        let button_start_y = TOP_STRIP_CONTENT_OFFSET_Y
+            + (input.action_rail.button_center_y - (button_height * 0.5)).max(0.0);
+        let button_end_x = button_start_x + button_width;
+        let button_end_y = button_start_y + button_height;
 
         let geometry = TabStripGeometry {
             window_width,
@@ -161,6 +197,8 @@ impl TerminalView {
             button_end_x,
             button_start_y,
             button_end_y,
+            tab_leading_padding: input.metrics.leading_padding,
+            tab_item_gap: input.metrics.item_gap,
         };
 
         debug_assert!(
@@ -200,31 +238,50 @@ impl TerminalView {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn tab_strip_layout_for_viewport_with_left_inset(
         viewport_width: f32,
         left_inset_width: f32,
     ) -> TabStripLayoutSnapshot {
-        Self::tab_strip_layout_for_input(TabStripLayoutInput {
+        Self::tab_strip_layout_for_input(TabStripLayoutInput::termy(
             viewport_width,
             left_inset_width,
-            content_width: None,
-        })
+            None,
+        ))
     }
 
     // Windows keeps the action rail directly after the tabs so the remaining
     // titlebar space stays available for window dragging before the native
     // caption buttons. Other platforms keep the rail right-anchored.
-    #[cfg(any(test, target_os = "windows"))]
+    #[cfg(test)]
     pub(crate) fn tab_strip_layout_for_viewport_with_left_inset_and_content_width(
         viewport_width: f32,
         left_inset_width: f32,
         content_width: f32,
     ) -> TabStripLayoutSnapshot {
-        Self::tab_strip_layout_for_input(TabStripLayoutInput {
+        Self::tab_strip_layout_for_input(TabStripLayoutInput::termy(
             viewport_width,
             left_inset_width,
-            content_width: Some(content_width),
-        })
+            Some(content_width),
+        ))
+    }
+
+    /// Layout input for this view's horizontal strip style. `content_width`
+    /// sizes the tab lane to the tabs (the Windows layout); `None` gives the
+    /// lane all free space.
+    pub(crate) fn horizontal_tab_layout_input(
+        &self,
+        viewport_width: f32,
+        left_inset_width: f32,
+        content_width: Option<f32>,
+    ) -> TabStripLayoutInput {
+        TabStripLayoutInput {
+            viewport_width,
+            left_inset_width,
+            content_width,
+            metrics: self.horizontal_tab_metrics(),
+            action_rail: self.horizontal_tab_action_rail(),
+        }
     }
 
     /// Left inset before the first tab. The workspace sidebar replaces the
@@ -241,10 +298,11 @@ impl TerminalView {
 
     pub(crate) fn tab_strip_layout(&self, window: &Window) -> TabStripLayoutSnapshot {
         let viewport_width: f32 = window.viewport_size().width.into();
-        Self::tab_strip_layout_for_viewport_with_left_inset(
+        Self::tab_strip_layout_for_input(self.horizontal_tab_layout_input(
             viewport_width,
             self.tab_strip_base_left_inset(),
-        )
+            None,
+        ))
     }
 
     pub(crate) fn tab_strip_layout_snapshot(&self) -> Option<TabStripLayoutSnapshot> {
@@ -335,6 +393,9 @@ impl TerminalView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terminal_view::tab_strip::style::{
+        HorizontalTabStyle, WINDOWS_TAB_RAIL_BUTTON_HEIGHT,
+    };
 
     fn assert_float_eq(actual: f32, expected: f32) {
         assert!(
@@ -454,6 +515,50 @@ mod tests {
             geometry.row_end_x + geometry.right_inset_width,
             geometry.window_width,
         );
+    }
+
+    #[test]
+    fn windows_style_layout_places_buttons_after_the_tabs() {
+        let content_width = 300.0;
+        let input = TabStripLayoutInput {
+            metrics: HorizontalTabMetrics::WINDOWS_11,
+            action_rail: HorizontalTabStyle::Windows11.action_rail(true),
+            ..TabStripLayoutInput::termy(1280.0, 8.0, Some(content_width))
+        };
+        let geometry = TerminalView::tab_strip_layout_for_input(input).geometry;
+
+        assert_float_eq(geometry.tabs_viewport_width, content_width);
+        assert_float_eq(geometry.action_rail_width, input.action_rail.width);
+        assert_float_eq(
+            geometry.button_start_x,
+            geometry.action_rail_start_x + input.action_rail.buttons_start,
+        );
+        assert_float_eq(geometry.button_end_x, geometry.action_rail_end_x());
+        assert_float_eq(
+            geometry.button_end_y - geometry.button_start_y,
+            WINDOWS_TAB_RAIL_BUTTON_HEIGHT,
+        );
+        assert_float_eq(geometry.tab_item_gap, 0.0);
+        assert_float_eq(
+            geometry.tab_leading_padding,
+            HorizontalTabMetrics::WINDOWS_11.leading_padding,
+        );
+        assert!(geometry.right_inset_width > TerminalView::titlebar_right_padding_for_platform());
+    }
+
+    #[test]
+    fn termy_style_layout_keeps_square_new_tab_button() {
+        let geometry = TerminalView::tab_strip_layout_for_viewport_width(1280.0).geometry;
+        assert_float_eq(
+            geometry.button_end_x - geometry.button_start_x,
+            TABBAR_NEW_TAB_BUTTON_SIZE,
+        );
+        assert_float_eq(
+            geometry.button_end_y - geometry.button_start_y,
+            TABBAR_NEW_TAB_BUTTON_SIZE,
+        );
+        assert_float_eq(geometry.tab_leading_padding, TAB_HORIZONTAL_PADDING);
+        assert_float_eq(geometry.tab_item_gap, TAB_ITEM_GAP);
     }
 
     #[test]

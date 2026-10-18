@@ -14,6 +14,10 @@ concurrency:
 env:
   VERSION: ${{ github.event.release.tag_name }}
   INNOSETUP_VERSION: 6.7.1
+  # Microsoft.Windows.Console.ConPTY NuGet package bundled with the Windows
+  # installer. Update both together; the hash is of the .nupkg file.
+  CONPTY_VERSION: 1.25.260930003
+  CONPTY_SHA512: 2eea8c93daf9a13cde4677b7e483a551d490ec3923a2b3886dc9ce0c667cd4cbe65294ebff5541433ddf01d08d0b091fb91d0c96eabe1fbad2dc77acfc0d5f3b
   APPIMAGETOOL_VERSION: 1.9.1
   APPIMAGETOOL_X86_64_SHA256: ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0
 
@@ -95,11 +99,23 @@ jobs:
           if-no-files-found: error
 
   build-windows-setup:
-    name: Build Windows x64 Setup
+    name: Build Windows ${{ matrix.arch }} Setup
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+          # Cross-compiled on the x64 runner; the asset name carries "arm64",
+          # which release_core's asset selection matches on ARM64 Windows.
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+    env:
+      VERSION: ${{ github.event.release.tag_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -108,23 +124,61 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: stable
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.target }}
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: ${{ matrix.target }}
+
+      # ring builds its aarch64 assembly with clang; the runner image ships
+      # LLVM but does not always put it on PATH.
+      - name: Put clang on PATH
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          if (Get-Command clang -ErrorAction SilentlyContinue) { exit 0 }
+          $llvm = Join-Path $env:ProgramFiles "LLVM\bin"
+          if (-not (Test-Path (Join-Path $llvm "clang.exe"))) {
+            throw "clang.exe not found; install LLVM for the aarch64-pc-windows-msvc build"
+          }
+          $llvm | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Install Inno Setup
         run: choco install innosetup --version="$env:INNOSETUP_VERSION" --no-progress -y
 
+      - name: Build termy.exe and termy-cli.exe
+        shell: pwsh
+        run: cargo build --release --target ${{ matrix.target }} -p termy -p termy_cli
+
+      # Microsoft's out-of-band ConPTY (conpty.dll + OpenConsole.exe), newer
+      # than the one in older Windows builds. Termy loads it from beside
+      # termy.exe when present; termy.iss packs whatever is there.
+      - name: Bundle ConPTY
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP "conpty.zip"
+          $url = "https://api.nuget.org/v3-flatcontainer/microsoft.windows.console.conpty/$env:CONPTY_VERSION/microsoft.windows.console.conpty.$env:CONPTY_VERSION.nupkg"
+          Invoke-WebRequest -Uri $url -OutFile $package
+          $hash = (Get-FileHash -Algorithm SHA512 -Path $package).Hash
+          if ($hash -ne $env:CONPTY_SHA512) {
+            throw "ConPTY package hash mismatch: expected $env:CONPTY_SHA512, got $hash"
+          }
+          $extracted = Join-Path $env:RUNNER_TEMP "conpty"
+          [System.IO.Compression.ZipFile]::ExtractToDirectory($package, $extracted, $true)
+          $release = "target\${{ matrix.target }}\release"
+          Copy-Item (Join-Path $extracted "runtimes\win-${{ matrix.arch }}\native\conpty.dll") $release
+          Copy-Item (Join-Path $extracted "build\native\runtimes\${{ matrix.arch }}\OpenConsole.exe") $release
+
       - name: Build Setup.exe
         shell: pwsh
-        run: .\scripts\build-setup.ps1 -Version "${env:VERSION}" -Arch x64 -Target x86_64-pc-windows-msvc
+        run: .\scripts\build-setup.ps1 -Version "${env:VERSION}" -Arch ${{ matrix.arch }} -Target ${{ matrix.target }} -NoBuild
 
       - name: Upload Setup artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: termy-setup-x64
-          path: target/dist/Termy-${{ env.VERSION }}-windows-x64-Setup.exe
+          name: termy-setup-${{ matrix.arch }}
+          path: target/dist/Termy-${{ env.VERSION }}-windows-${{ matrix.arch }}-Setup.exe
           if-no-files-found: error
 
   build-linux:

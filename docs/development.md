@@ -116,3 +116,67 @@ Requirements:
 
 Optional:
 - Override tmux binary path with `TERMY_TEST_TMUX_BIN=/path/to/tmux`
+
+## Windows
+
+Prerequisites (MSVC Build Tools and Windows SDK, the MSVC Rust toolchain, Git
+Bash, `just`, Bun, Inno Setup 6) are listed in
+[CONTRIBUTING.md](../CONTRIBUTING.md#windows-prerequisites). Run `just` from
+Git Bash; the justfile uses Git's `sh` on Windows.
+
+### WinUI tab strip
+
+With `tab_style = native` (the default), Windows draws the tab strip with
+WinUI 2's `TabView` (`crates/desktop_app/native/windows/WinUiTabStrip.cpp`),
+hosted in a XAML Island over the titlebar. The desktop crate's build script
+downloads the pinned `Microsoft.UI.Xaml` and `Microsoft.Web.WebView2` NuGet
+packages (SHA-256 checked; set `TERMY_WINUI_PACKAGES` to a directory holding
+both `.nupkg` files to build offline), generates C++/WinRT headers with the
+Windows SDK's `cppwinrt.exe`, and copies `Microsoft.UI.Xaml.dll`,
+`resources.pri` and `termy.manifest` beside `termy.exe`.
+
+XAML Islands need entries in the exe's manifest that GPUI's embedded manifest
+lacks, and a second manifest does not link. `just build`, `just run` and
+`scripts/build-setup.ps1` therefore run `scripts/windows/embed-manifest.ps1`
+after linking. A bare `cargo run`/`cargo build` skips that step, and Termy
+then draws its own Windows 11 style tabs. The strip is also skipped for
+translucent windows (`background_opacity` below 1): it needs GPUI to render
+without DirectComposition, which the process decides at startup, so changes
+to `tab_style` or the opacity apply after a restart.
+
+### Building the installer locally
+
+```sh
+just build-setup -- -Arch x64 -Target x86_64-pc-windows-msvc
+```
+
+`scripts/build-setup.ps1` builds `termy.exe` and `termy-cli.exe`, then compiles
+`scripts/installer/termy.iss` into
+`target/dist/Termy-<version>-windows-<arch>-Setup.exe`. A leading `v` in
+`-Version` stays in the file name (release assets are named after the tag) but
+is dropped from the version Windows shows.
+
+Release CI also places `conpty.dll` and `OpenConsole.exe` from the
+`Microsoft.Windows.Console.ConPTY` NuGet package (version and SHA-512 pinned
+in `.github/workflows/release.yml`) beside `termy.exe` before packaging. To
+bundle them locally, copy `runtimes/win-<arch>/native/conpty.dll` and
+`build/native/runtimes/<arch>/OpenConsole.exe` from the package into
+`target/<target>/release/`; without them the installer skips both files and
+Termy uses the system ConPTY.
+
+The installer installs per user by default (`%LOCALAPPDATA%\Programs\Termy`,
+no UAC prompt). The privileges dialog or `/ALLUSERS` installs for all users
+under Program Files; upgrades keep the mode of the existing install, and the
+in-app updater passes `/CURRENTUSER` or `/ALLUSERS` to match where the running
+`termy.exe` lives.
+
+### winget
+
+`packaging/winget/` holds manifest templates for the `lassejlv.Termy` package.
+The first version has to be submitted to
+[microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs) by hand (see
+`packaging/winget/README.md`). After that, the *Publish to winget* job in
+`.github/workflows/finalize-stable-release.yml` opens an update pull request
+for every stable release. It needs a `WINGET_TOKEN` secret: a classic GitHub
+token with `public_repo` scope for the repository owner's account, which must
+have a fork of `microsoft/winget-pkgs`. Without the secret the job is skipped.

@@ -27,7 +27,10 @@ jobs:
             const expectedAssets = [
               `Termy-${tag}-linux-x86_64.tar.gz`,
               `Termy-${tag}-macos-arm64-signed.dmg`,
-              `Termy-${tag}-macos-x86_64-signed.dmg`
+              `Termy-${tag}-macos-x86_64-signed.dmg`,
+              `Termy-${tag}-windows-x64-Setup.exe`,
+              `Termy-${tag}-windows-arm64-Setup.exe`,
+              "checksums.txt"
             ];
             const deadline = Date.now() + 65 * 60 * 1000;
 
@@ -41,7 +44,7 @@ jobs:
               const available = new Set(release.assets.map((asset) => asset.name));
               const missing = expectedAssets.filter((asset) => !available.has(asset));
               if (missing.length === 0) {
-                core.info("Found Linux source and signed macOS release assets");
+                core.info("Found Linux, macOS and Windows release assets and checksums");
                 break;
               }
 
@@ -77,3 +80,30 @@ jobs:
               ref: "main",
               inputs: { version }
             });
+
+  # Opens a winget-pkgs pull request for the new version. Needs a classic
+  # token with public_repo scope for an account that has a fork of
+  # microsoft/winget-pkgs; skipped when WINGET_TOKEN is not configured. The
+  # first version must be submitted by hand (see packaging/winget).
+  publish-winget:
+    name: Publish to winget
+    needs: finalize-stable-release
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      WINGET_TOKEN_PRESENT: ${{ secrets.WINGET_TOKEN != '' }}
+    steps:
+      - name: Skip without WINGET_TOKEN
+        if: env.WINGET_TOKEN_PRESENT != 'true'
+        run: echo "WINGET_TOKEN is not configured; skipping the winget publish."
+
+      - name: Open winget-pkgs pull request
+        if: env.WINGET_TOKEN_PRESENT == 'true'
+        uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2
+        with:
+          identifier: lassejlv.Termy
+          installers-regex: '-windows-(x64|arm64)-Setup\.exe$'
+          release-tag: ${{ github.event.release.tag_name }}
+          token: ${{ secrets.WINGET_TOKEN }}

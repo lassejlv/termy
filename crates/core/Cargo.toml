@@ -35,6 +35,7 @@ pty = []
 
 [dependencies]
 anyhow = { workspace = true }
+dunce = { workspace = true }
 base64 = "0.22"
 compact_str = { version = "0.8.1", features = ["serde"] }
 serde = { workspace = true, features = ["derive", "rc"] }

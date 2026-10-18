@@ -20,6 +20,8 @@ pub(super) struct PaneFocusPreset {
 enum BackgroundPlatform {
     MacOs,
     Windows,
+    /// Windows 11 22H2 or later, where DWM provides system backdrops.
+    WindowsSystemBackdrop,
     Linux,
     Other,
 }
@@ -35,7 +37,14 @@ impl BackgroundSupportContext {
         #[cfg(target_os = "macos")]
         let platform = BackgroundPlatform::MacOs;
         #[cfg(target_os = "windows")]
-        let platform = BackgroundPlatform::Windows;
+        let platform =
+            if crate::native_sdk::win32_window::windows_build_number().is_some_and(|build| {
+                build >= crate::native_sdk::win32_window::WINDOWS_11_SYSTEM_BACKDROP_BUILD
+            }) {
+                BackgroundPlatform::WindowsSystemBackdrop
+            } else {
+                BackgroundPlatform::Windows
+            };
         #[cfg(target_os = "linux")]
         let platform = BackgroundPlatform::Linux;
         #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -92,6 +101,13 @@ pub(super) fn resolve_background_appearance(
     match context.platform {
         BackgroundPlatform::MacOs | BackgroundPlatform::Windows => ResolvedBackgroundAppearance {
             appearance: WindowBackgroundAppearance::Blurred,
+            blur_fallback: BlurFallbackReason::None,
+        },
+        // The DWM backdrop is smoother than the legacy acrylic accent (which
+        // lags while the window is dragged). Mica Alt is the variant meant
+        // for windows with tabs in the titlebar.
+        BackgroundPlatform::WindowsSystemBackdrop => ResolvedBackgroundAppearance {
+            appearance: WindowBackgroundAppearance::MicaAltBackdrop,
             blur_fallback: BlurFallbackReason::None,
         },
         BackgroundPlatform::Linux => {
@@ -364,6 +380,49 @@ mod tests {
         );
         assert_eq!(resolved.appearance, WindowBackgroundAppearance::Blurred);
         assert_eq!(resolved.blur_fallback, BlurFallbackReason::UnknownSupport);
+    }
+
+    #[test]
+    fn resolve_background_appearance_blur_uses_mica_alt_on_windows_11() {
+        let resolved = resolve_background_appearance(
+            0.9,
+            true,
+            BackgroundSupportContext {
+                platform: BackgroundPlatform::WindowsSystemBackdrop,
+                linux_wayland_session: false,
+            },
+        );
+        assert_eq!(
+            resolved.appearance,
+            WindowBackgroundAppearance::MicaAltBackdrop
+        );
+        assert_eq!(resolved.blur_fallback, BlurFallbackReason::None);
+    }
+
+    #[test]
+    fn resolve_background_appearance_blur_keeps_acrylic_on_older_windows() {
+        let resolved = resolve_background_appearance(
+            0.9,
+            true,
+            BackgroundSupportContext {
+                platform: BackgroundPlatform::Windows,
+                linux_wayland_session: false,
+            },
+        );
+        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Blurred);
+    }
+
+    #[test]
+    fn resolve_background_appearance_without_blur_skips_mica() {
+        let resolved = resolve_background_appearance(
+            0.9,
+            false,
+            BackgroundSupportContext {
+                platform: BackgroundPlatform::WindowsSystemBackdrop,
+                linux_wayland_session: false,
+            },
+        );
+        assert_eq!(resolved.appearance, WindowBackgroundAppearance::Transparent);
     }
 
     #[test]

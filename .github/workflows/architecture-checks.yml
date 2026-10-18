@@ -27,6 +27,57 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # Windows-only code (updater, ConPTY, registry) is invisible to the macOS
+  # run above.
+  clippy-windows:
+    name: Clippy (windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Compiles termy.iss for both architectures against placeholder binaries,
+  # so installer script errors surface in PRs instead of at release time.
+  windows-installer:
+    name: Windows installer script
+    runs-on: windows-latest
+    env:
+      INNOSETUP_VERSION: 6.7.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install Inno Setup
+        run: choco install innosetup --version="$env:INNOSETUP_VERSION" --no-progress -y
+
+      - name: Compile termy.iss
+        shell: pwsh
+        run: |
+          $release = "target\iscc-smoke\release"
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          foreach ($name in @("termy.exe", "termy-cli.exe")) {
+            Set-Content -Path (Join-Path $release $name) -Value "placeholder"
+          }
+          $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          $output = Join-Path $env:RUNNER_TEMP "iscc-smoke"
+          foreach ($arch in @("x64", "arm64")) {
+            & $iscc /Q "/O$output" "/DMyAppVersion=0.0.0-smoke" "/DMyOutputVersion=v0.0.0-smoke" "/DMyArch=$arch" "/DMyTarget=iscc-smoke" scripts\installer\termy.iss
+            if ($LASTEXITCODE -ne 0) { throw "ISCC failed for $arch with exit code $LASTEXITCODE" }
+          }
+          Get-ChildItem $output
+
   boundaries:
     runs-on: ubuntu-latest
     steps:

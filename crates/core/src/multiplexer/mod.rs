@@ -7,6 +7,6 @@ mod protocol;
 mod server;
 
 pub use client::SessionClient;
-pub use discovery::connect_or_start;
+pub use discovery::{connect_or_start, default_root};
 pub use protocol::{PaneInfo, PaneLaunch};
 pub use server::serve;

@@ -8,7 +8,7 @@ The fastest path is the [Termy download page](/download). It detects your platfo
 <Cards>
   <Card title="macOS" description="Install the DMG on Apple silicon or Intel." href="#macos" />
   <Card title="Linux" description="Run the AppImage or unpack the archive." href="#linux" />
-  <Card title="Windows" description="Install Termy with the MSI package." href="#windows" />
+  <Card title="Windows" description="Run the Setup installer on x64 or ARM64." href="#windows" />
   <Card title="Build from source" description="Compile the Rust workspace locally." href="#from-source" />
 </Cards>
 
@@ -37,7 +37,32 @@ the titlebar theme independently of Termy's terminal color theme.
 
 ## Windows
 
-Download and run the `.msi` installer from [GitHub Releases](https://github.com/lassejlv/termy/releases).
+1. From [GitHub Releases](https://github.com/lassejlv/termy/releases), download the installer for your PC:
+   - `Termy-<version>-windows-x64-Setup.exe` for Intel and AMD PCs.
+   - `Termy-<version>-windows-arm64-Setup.exe` for ARM64 PCs such as Snapdragon laptops.
+2. Run the installer. By default it installs Termy for your account only, in
+   `%LOCALAPPDATA%\Programs\Termy`, without an administrator prompt. To install
+   for every user under Program Files, choose **Install for all users** when
+   Setup asks, or run it with `/ALLUSERS`.
+3. Open Termy from the Start menu. A desktop shortcut is optional; tick it on
+   the **Additional tasks** page.
+
+Termy checks for updates itself and installs them in the same place, for the
+same users, as the existing install.
+
+The Windows installer is not code-signed, so Windows SmartScreen may show
+**Windows protected your PC** with an unknown publisher. Choose **More info**,
+check that the file name is the one you downloaded from the Termy release, then
+choose **Run anyway**. To confirm the download, compare its SHA-256 hash
+(`Get-FileHash .\Termy-<version>-windows-x64-Setup.exe` in PowerShell) with
+`checksums.txt` on the same release.
+
+Termy will also be available through winget as `lassejlv.Termy` once the
+package is accepted into the winget repository:
+
+```powershell
+winget install lassejlv.Termy
+```
 
 ## From source
 

@@ -1,3 +1,4 @@
+pub(super) mod caption_buttons;
 pub(crate) mod constants;
 pub(super) mod gestures;
 pub(super) mod hints;
@@ -11,5 +12,8 @@ pub(super) mod render_text_measure;
 pub(super) mod render_vertical;
 pub(super) mod render_workspace_sidebar;
 pub(super) mod state;
+pub(crate) mod style;
 pub(super) mod titlebar_drag;
 pub(super) mod transitions;
+#[cfg(target_os = "windows")]
+pub(super) mod winui;

@@ -648,6 +648,17 @@ impl Transport {
         Self::spawn_with_exit(config, size, true, on_output, move |_| on_exit())
     }
 
+    /// Spawn like [`Self::spawn`] for a host whose `on_output` answers
+    /// terminal queries. A Unix PTY needs nothing extra for that.
+    pub(crate) fn spawn_answering_queries(
+        config: SpawnConfig,
+        size: PtySize,
+        on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
+        on_exit: impl FnOnce() + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::spawn(config, size, on_output, on_exit)
+    }
+
     /// Spawn like [`Self::spawn`], reporting how the child ended. Without
     /// `inherit_environment`, the child sees only `config.environment`.
     pub(crate) fn spawn_with_exit(

@@ -8,20 +8,29 @@
 //! - `_KDE_NET_WM_COLOR_SCHEME` points KWin at a generated color scheme with
 //!   the exact theme colors.
 //!
-//! Native Wayland exposes neither hint through GPUI, and other platforms draw
-//! their own titlebar, so there this is a no-op.
+//! Native Wayland exposes neither hint through GPUI.
+//!
+//! On Windows DWM draws the window frame (and the caption of windows that keep
+//! the OS titlebar). It follows the system light/dark setting by default; we
+//! switch it to match the Termy theme instead and paint the caption in the
+//! theme background. The window title also tracks the active tab there, so
+//! the taskbar and Alt+Tab show something useful.
+//!
+//! macOS draws its own titlebar, so there this is a no-op.
 
 use crate::colors::TerminalColors;
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 use gpui_kit::Window;
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux::NativeTitlebarTheme;
+#[cfg(target_os = "windows")]
+pub(crate) use windows_frame::NativeTitlebarTheme;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub(crate) struct NativeTitlebarTheme;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
 impl NativeTitlebarTheme {
     pub(crate) fn for_window(_window: &Window) -> Self {
         Self
@@ -30,17 +39,17 @@ impl NativeTitlebarTheme {
     pub(crate) fn sync(&mut self, _colors: &TerminalColors) {}
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 /// `r,g,b` bytes of an opaque titlebar color.
 type Rgb8 = [u8; 3];
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 fn rgb8(color: gpui_kit::Rgba) -> Rgb8 {
     let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u8;
     [channel(color.r), channel(color.g), channel(color.b)]
 }
 
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
 fn is_dark([r, g, b]: Rgb8) -> bool {
     // Rec. 709 luma is enough to choose between the two variants.
     let luma = 0.2126 * f32::from(r) + 0.7152 * f32::from(g) + 0.0722 * f32::from(b);
@@ -215,6 +224,78 @@ mod linux {
             temp.persist(&path).map_err(|error| error.error)?;
         }
         Ok(path)
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod windows_frame {
+    use super::{Rgb8, TerminalColors, is_dark, rgb8};
+    use crate::native_sdk::win32_window;
+    use gpui_kit::Window;
+    use std::time::{Duration, Instant};
+
+    /// GPUI resets the DWM frame to the system theme whenever the system
+    /// setting changes, so that setting is polled (at most this often) to
+    /// notice and re-apply the Termy theme.
+    const SYSTEM_THEME_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+    pub(crate) struct NativeTitlebarTheme {
+        window_id: u64,
+        applied: Option<Rgb8>,
+        system_dark: Option<bool>,
+        system_checked_at: Option<Instant>,
+        window_title: Option<String>,
+    }
+
+    impl NativeTitlebarTheme {
+        pub(crate) fn for_window(window: &Window) -> Self {
+            Self {
+                window_id: window.window_handle().window_id().as_u64(),
+                applied: None,
+                system_dark: None,
+                system_checked_at: None,
+                window_title: None,
+            }
+        }
+
+        /// Applies the theme background to the DWM frame unless it is already
+        /// applied. Cheap enough to call on every frame.
+        pub(crate) fn sync(&mut self, colors: &TerminalColors) {
+            let now = Instant::now();
+            if self.system_checked_at.is_none_or(|checked_at| {
+                now.duration_since(checked_at) >= SYSTEM_THEME_POLL_INTERVAL
+            }) {
+                self.system_checked_at = Some(now);
+                let system_dark = win32_window::system_apps_use_dark_theme();
+                if system_dark != self.system_dark {
+                    self.system_dark = system_dark;
+                    self.applied = None;
+                }
+            }
+
+            let background = rgb8(colors.background);
+            if self.applied == Some(background) {
+                return;
+            }
+            // The handle is registered while the window opens; until it is
+            // known, keep retrying on later frames.
+            let Some(hwnd) = win32_window::hwnd_for_window_id(self.window_id) else {
+                return;
+            };
+            self.applied = Some(background);
+            win32_window::set_immersive_dark_mode(hwnd, is_dark(background));
+            win32_window::set_caption_color(hwnd, background);
+        }
+
+        /// Sets the OS window title (taskbar, Alt+Tab) unless it already is
+        /// `title`.
+        pub(crate) fn sync_window_title(&mut self, window: &mut Window, title: &str) {
+            if self.window_title.as_deref() == Some(title) {
+                return;
+            }
+            window.set_window_title(title);
+            self.window_title = Some(title.to_string());
+        }
     }
 }
 

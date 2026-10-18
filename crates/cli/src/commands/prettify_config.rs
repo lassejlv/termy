@@ -68,7 +68,7 @@ fn prettify_config_file(path: &Path) -> Result<Outcome, String> {
 
     // Write through a symlinked config (e.g. into a dotfiles repo) instead of
     // replacing the link with a regular file.
-    let target = std::fs::canonicalize(path)
+    let target = dunce::canonicalize(path)
         .map_err(|error| format!("Failed to resolve config file: {error}"))?;
     write_atomically(&target, &prettified)
         .map_err(|error| format!("Failed to write config file: {error}"))?;

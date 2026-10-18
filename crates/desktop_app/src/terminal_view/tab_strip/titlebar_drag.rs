@@ -80,6 +80,14 @@ impl TerminalView {
                     self.disarm_titlebar_window_move();
                     return;
                 }
+                // Presses on `WindowControlArea::Drag` arrive as non-client
+                // clicks. Leaving them unhandled lets Windows run its own
+                // move loop and double-click maximize/restore.
+                #[cfg(target_os = "windows")]
+                if self.is_windows_titlebar_os_drag_hit(x, y, window) {
+                    self.disarm_titlebar_window_move();
+                    return;
+                }
                 let geometry = self.tab_strip_geometry(window);
                 let scroll_offset_x: f32 =
                     self.tab_strip.horizontal_scroll_handle.offset().x.into();
@@ -111,7 +119,9 @@ impl TerminalView {
         if outcome.trigger_window_action {
             #[cfg(target_os = "macos")]
             window.titlebar_double_click();
-            #[cfg(not(target_os = "macos"))]
+            #[cfg(target_os = "windows")]
+            crate::native_sdk::win32_window::toggle_maximize(window);
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
             window.zoom_window();
             window.prevent_default();
             cx.stop_propagation();
@@ -170,6 +180,11 @@ impl TerminalView {
             self.disarm_titlebar_window_move();
             return;
         }
+        #[cfg(target_os = "windows")]
+        if self.is_windows_titlebar_os_drag_hit(x, event.position.y.into(), window) {
+            self.tab_strip.titlebar.on_mouse_up();
+            return;
+        }
 
         self.tab_strip.titlebar.on_mouse_up();
         window.prevent_default();
@@ -189,8 +204,23 @@ impl TerminalView {
             return false;
         }
 
+        // GPUI's `start_window_move` is a no-op on Windows; hand the drag
+        // to the OS move loop instead.
+        #[cfg(target_os = "windows")]
+        let _ = crate::native_sdk::win32_window::start_window_drag(window);
+        #[cfg(not(target_os = "windows"))]
         window.start_window_move();
         true
+    }
+
+    #[cfg(target_os = "windows")]
+    fn is_windows_titlebar_os_drag_hit(&self, x: f32, y: f32, window: &Window) -> bool {
+        Self::windows_titlebar_os_drag_hit_test(
+            x,
+            y,
+            self.windows_titlebar_drag_input(window),
+            self.tab_strip_geometry(window),
+        )
     }
 
     fn handle_window_drag_surface_mouse_move(

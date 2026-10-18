@@ -1,4 +1,10 @@
 pub(crate) const TABBAR_HEIGHT: f32 = 32.0;
+// Width of one min/max/close button in the Windows client-side titlebar,
+// matching the system caption buttons.
+#[cfg(target_os = "windows")]
+pub(crate) const WINDOWS_CAPTION_BUTTON_WIDTH: f32 = 46.0;
+#[cfg(target_os = "windows")]
+pub(crate) const WINDOWS_CAPTION_BUTTON_GLYPH_SIZE: f32 = 10.0;
 pub(crate) const TOP_STRIP_SIDE_PADDING: f32 = 8.0;
 #[cfg(macos_sdk_26)]
 pub(crate) const TOP_STRIP_MACOS_TRAFFIC_LIGHT_PADDING: f32 = 78.0;

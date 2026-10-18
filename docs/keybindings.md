@@ -62,34 +62,36 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 
 ### Windows Defaults
 
-- `secondary-q` -> `quit`
+- `ctrl-shift-q` -> `quit`
 - `secondary-,` -> `open_settings`
-- `secondary-p` -> `toggle_command_palette`
-- `secondary-t` -> `new_tab`
-- `secondary-w` -> `close_pane_or_tab`
-- `secondary-b` -> `toggle_workspace_sidebar`
+- `ctrl-shift-p` -> `toggle_command_palette`
+- `ctrl-shift-t` -> `new_tab`
+- `ctrl-shift-n` -> `new_window`
+- `ctrl-shift-w` -> `close_pane_or_tab`
+- `ctrl-shift-b` -> `toggle_workspace_sidebar`
 - `ctrl-tab` -> `cycle_tabs`
-- `secondary-1` -> `switch_to_tab_1`
-- `secondary-2` -> `switch_to_tab_2`
-- `secondary-3` -> `switch_to_tab_3`
-- `secondary-4` -> `switch_to_tab_4`
-- `secondary-5` -> `switch_to_tab_5`
-- `secondary-6` -> `switch_to_tab_6`
-- `secondary-7` -> `switch_to_tab_7`
-- `secondary-8` -> `switch_to_tab_8`
-- `secondary-9` -> `switch_to_tab_9`
-- `secondary-d` -> `split_pane_vertical`
-- `secondary-shift-d` -> `split_pane_horizontal`
-- `secondary-o` -> `focus_pane_next`
-- `secondary-alt-1` -> `focus_pane_1`
-- `secondary-alt-2` -> `focus_pane_2`
-- `secondary-alt-3` -> `focus_pane_3`
-- `secondary-alt-4` -> `focus_pane_4`
-- `secondary-alt-5` -> `focus_pane_5`
-- `secondary-alt-6` -> `focus_pane_6`
-- `secondary-alt-7` -> `focus_pane_7`
-- `secondary-alt-8` -> `focus_pane_8`
-- `secondary-alt-9` -> `focus_pane_9`
+- `ctrl-shift-tab` -> `switch_tab_left`
+- `ctrl-alt-1` -> `switch_to_tab_1`
+- `ctrl-alt-2` -> `switch_to_tab_2`
+- `ctrl-alt-3` -> `switch_to_tab_3`
+- `ctrl-alt-4` -> `switch_to_tab_4`
+- `ctrl-alt-5` -> `switch_to_tab_5`
+- `ctrl-alt-6` -> `switch_to_tab_6`
+- `ctrl-alt-7` -> `switch_to_tab_7`
+- `ctrl-alt-8` -> `switch_to_tab_8`
+- `ctrl-alt-9` -> `switch_to_tab_9`
+- `ctrl-shift-d` -> `split_pane_vertical`
+- `ctrl-alt-shift-d` -> `split_pane_horizontal`
+- `ctrl-shift-o` -> `focus_pane_next`
+- `alt-1` -> `focus_pane_1`
+- `alt-2` -> `focus_pane_2`
+- `alt-3` -> `focus_pane_3`
+- `alt-4` -> `focus_pane_4`
+- `alt-5` -> `focus_pane_5`
+- `alt-6` -> `focus_pane_6`
+- `alt-7` -> `focus_pane_7`
+- `alt-8` -> `focus_pane_8`
+- `alt-9` -> `focus_pane_9`
 - `secondary-alt-left` -> `focus_pane_left`
 - `secondary-alt-right` -> `focus_pane_right`
 - `secondary-alt-up` -> `focus_pane_up`
@@ -98,18 +100,22 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-alt-shift-right` -> `resize_pane_right`
 - `secondary-alt-shift-up` -> `resize_pane_up`
 - `secondary-alt-shift-down` -> `resize_pane_down`
-- `secondary-enter` -> `toggle_pane_zoom`
+- `ctrl-shift-enter` -> `toggle_pane_zoom`
 - `secondary-=` -> `zoom_in`
 - `secondary-+` -> `zoom_in`
 - `secondary--` -> `zoom_out`
 - `secondary-0` -> `zoom_reset`
-- `secondary-f` -> `open_search`
-- `secondary-g` -> `search_next`
-- `secondary-shift-g` -> `search_previous`
+- `ctrl-shift-f` -> `open_search`
+- `f3` -> `search_next`
+- `shift-f3` -> `search_previous`
 - `secondary-alt-i` -> `toggle_inspector`
+- `ctrl-shift-c` -> `copy`
+- `ctrl-insert` -> `copy`
 - `secondary-c` -> `copy`
+- `ctrl-shift-v` -> `paste`
+- `shift-insert` -> `paste`
 - `secondary-v` -> `paste`
-- `secondary-a` -> `select_all`
+- `ctrl-shift-a` -> `select_all`
 
 ### Linux Defaults
 
@@ -215,7 +221,7 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 
 `secondary` maps to `cmd` on macOS and `ctrl` on non-macOS platforms.
 
-Numbered pane actions (`focus_pane_1` through `focus_pane_9`) target panes in the same order as `focus_pane_next`, within the active tab. A missing pane or already-focused pane is left unchanged. The default `secondary-alt-1` through `secondary-alt-9` shortcuts leave `secondary-1` through `secondary-9` available for tabs.
+Numbered pane actions (`focus_pane_1` through `focus_pane_9`) target panes in the same order as `focus_pane_next`, within the active tab. A missing pane or already-focused pane is left unchanged. The default `secondary-alt-1` through `secondary-alt-9` shortcuts leave `secondary-1` through `secondary-9` available for tabs. On Windows, panes use `alt-1` through `alt-9` and tabs use `ctrl-alt-1` through `ctrl-alt-9`, so plain `ctrl` shortcuts stay with the shell.
 
 ## Config Syntax
 

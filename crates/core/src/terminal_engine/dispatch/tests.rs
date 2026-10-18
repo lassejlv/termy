@@ -529,6 +529,48 @@ fn osc7_file_urls_are_percent_decoded_and_other_schemes_ignored() {
 }
 
 #[test]
+fn windows_file_url_paths_map_drives_and_unc_shares() {
+    for (input, expected) in [
+        ("/C:/Users/me", r"C:\Users\me"),
+        ("/c:/", r"c:\"),
+        ("/D:", r"D:\"),
+        ("//server/share/dir", r"\\server\share\dir"),
+        ("///server/share", r"\\server\share"),
+        // A plain path is kept even when another host sent it.
+        ("/home/me", "/home/me"),
+        ("//", "//"),
+        ("/C:dir", "/C:dir"),
+    ] {
+        assert_eq!(
+            super::windows_file_url_path(input.to_owned()),
+            expected,
+            "{input}"
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn osc7_windows_file_urls_become_windows_paths() {
+    for (input, expected) in [
+        ("file://host/C:/Users/me/My%20Dir", r"C:\Users\me\My Dir"),
+        ("file:///C:/", r"C:\"),
+        ("file://host//server/share/dir", r"\\server\share\dir"),
+        ("file://host/home/me", "/home/me"),
+    ] {
+        let mut engine = engine(8, 2);
+        engine.feed(format!("\x1b]7;{input}\x07").as_bytes());
+        let mut cwd = None;
+        while let Some(event) = engine.pop_event() {
+            if let super::super::Event::WorkingDirectory(path) = event {
+                cwd = Some(path);
+            }
+        }
+        assert_eq!(cwd.as_deref(), Some(expected), "{input}");
+    }
+}
+
+#[test]
 fn save_restore_and_screen_switches_keep_cursor_visibility_shape_and_blink() {
     for (save, restore) in [
         ("\x1b7", "\x1b8"),

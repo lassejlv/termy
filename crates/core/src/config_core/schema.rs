@@ -306,7 +306,7 @@ pub const TAB_BAR_POSITION_ENUM_CHOICES: &[EnumChoice] = &[
 pub const TAB_STYLE_ENUM_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         value: "native",
-        label: "Native (macOS)",
+        label: "Native",
     },
     EnumChoice {
         value: "custom",
@@ -326,6 +326,10 @@ pub const WORKING_DIR_FALLBACK_ENUM_CHOICES: &[EnumChoice] = &[
 ];
 
 pub const WINDOWS_SHELL_ENUM_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        value: "auto",
+        label: "Automatic",
+    },
     EnumChoice {
         value: "cmd",
         label: "Command Prompt",
@@ -413,7 +417,7 @@ define_root_settings! {
     (TabCloseVisibility, "tab_close_visibility", [], Tabs, "TAB STRIP", "Close Button Visibility", "When tab close buttons are visible", ["tab", "close", "visibility", "hover"], RootSettingValueKind::Enum, false),
     (TabWidthMode, "tab_width_mode", [], Tabs, "TAB STRIP", "Tab Width Mode", "How tab widths react to active state", ["tab", "width", "layout", "active"], RootSettingValueKind::Enum, false),
     (TabBarPosition, "tab_bar_position", [], Tabs, "TAB STRIP", "Tab Bar Position", "Where the tab bar is rendered: top strip or right sidebar", ["tab", "bar", "position", "sidebar", "vertical", "right", "top"], RootSettingValueKind::Enum, false),
-    (TabStyle, "tab_style", [], Tabs, "TAB STRIP", "Tab Style", "macOS only: native window tabs or Termy's custom tab strip (applies to new windows)", ["tab", "style", "native", "custom", "macos", "appkit", "window"], RootSettingValueKind::Enum, false),
+    (TabStyle, "tab_style", [], Tabs, "TAB STRIP", "Tab Style", "native: macOS window tabs (applies to new windows) or the WinUI tab strip on Windows (opaque windows, after a restart); custom: Termy's tab strip", ["tab", "style", "native", "custom", "macos", "appkit", "window", "windows", "winui"], RootSettingValueKind::Enum, false),
     (TabSwitchModifierHints, "tab_switch_modifier_hints", [], Tabs, "TAB STRIP", "Show Tab Switch Hints", "Show secondary+1..9 number badges on the first nine tabs while the secondary modifier is held", ["tab", "switch", "hints", "modifier", "secondary", "shortcuts"], RootSettingValueKind::Boolean, false),
     (AutoHideTabbar, "auto_hide_tabbar", [], Tabs, "TAB STRIP", "Auto-hide Tab Bar", "Hide the tab bar when only one tab is open", ["tab", "tabs", "hide", "auto", "single", "tabbar"], RootSettingValueKind::Boolean, false),
     (SidebarEnabled, "sidebar_enabled", [], Tabs, "SIDEBAR", "Workspace Sidebar", "Show the left sidebar for grouping tabs into workspaces", ["sidebar", "workspace", "workspaces", "tabs", "groups"], RootSettingValueKind::Boolean, false),
@@ -602,6 +606,7 @@ pub fn root_setting_default_value(config: &AppConfig, id: RootSettingId) -> Opti
         RootSettingId::SidebarWidth => Some(config.sidebar_width.to_string()),
         RootSettingId::ShowTermyInTitlebar => Some(config.show_termy_in_titlebar.to_string()),
         RootSettingId::WindowsShell => Some(match config.windows_shell {
+            WindowsShell::Auto => "auto".to_string(),
             WindowsShell::Cmd => "cmd".to_string(),
             WindowsShell::PowerShell => "powershell".to_string(),
             WindowsShell::PowerShellCore => "pwsh".to_string(),
@@ -751,7 +756,7 @@ mod tests {
         );
         assert_eq!(
             enum_choice_values(RootSettingId::WindowsShell),
-            vec!["cmd", "powershell", "pwsh", "git_bash"]
+            vec!["auto", "cmd", "powershell", "pwsh", "git_bash"]
         );
 
         assert_eq!(

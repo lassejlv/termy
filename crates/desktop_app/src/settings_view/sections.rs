@@ -668,7 +668,9 @@ impl SettingsWindow {
         let width_mode_meta = Self::setting_metadata_or_fallback("tab_width_mode");
         let bar_position_meta = Self::setting_metadata_or_fallback("tab_bar_position");
         let mut rows = Vec::new();
-        #[cfg(target_os = "macos")]
+        // macOS: AppKit window tabs vs Termy's strip; Windows: Windows 11-style
+        // vs Termy's strip. Linux has only Termy's strip.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
             let tab_style = self.editable_field_value(EditableField::TabStyle);
             let tab_style_meta = Self::setting_metadata_or_fallback("tab_style");

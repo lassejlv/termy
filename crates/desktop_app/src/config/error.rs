@@ -29,6 +29,8 @@ pub enum ConfigIoError {
         path: PathBuf,
         source: io::Error,
     },
+    // Windows opens files through ShellExecuteW, which has no exit status.
+    #[cfg_attr(target_os = "windows", allow(dead_code))]
     OpenCommandFailed {
         command: &'static str,
         path: PathBuf,

@@ -1768,7 +1768,11 @@ mod tests {
         });
         let (view, cx) =
             cx.add_window_view(|window, cx| TerminalView::new_for_window(window, cx, config, true));
-        cx.simulate_keystrokes("secondary-p");
+        cx.simulate_keystrokes(if cfg!(target_os = "windows") {
+            "ctrl-shift-p"
+        } else {
+            "secondary-p"
+        });
         cx.run_until_parked();
         view.read_with(cx, |view, _| assert!(view.is_command_palette_open()));
         cx.simulate_input("split");

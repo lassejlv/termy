@@ -976,7 +976,12 @@ impl TerminalView {
         }
         #[cfg(target_os = "windows")]
         {
-            webbrowser::open(url).is_ok()
+            // ShellExecuteW starts the registered handler directly; no shell
+            // parses the target, so cmd metacharacters need no filtering.
+            let Some(target) = windows_link_open_target(url) else {
+                return false;
+            };
+            crate::config::shell_execute_open(std::ffi::OsStr::new(&target)).is_ok()
         }
     }
 
@@ -986,16 +991,92 @@ impl TerminalView {
 }
 
 fn is_safe_url_for_system_opener(url: &str) -> bool {
-    if url.bytes().any(|byte| byte.is_ascii_control()) {
-        return false;
+    !url.bytes().any(|byte| byte.is_ascii_control())
+}
+
+/// What the Windows shell should open for a link: web and mail URLs as they
+/// are, `file:` URLs and absolute paths (`C:\...`, `\\server\share\...`) as
+/// paths. Other schemes would reach arbitrary protocol handlers, and `\\?\` or
+/// `\\.\` device paths are not documents, so both are refused.
+#[cfg(any(target_os = "windows", test))]
+fn windows_link_open_target(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:")
+    {
+        return Some(url.to_string());
     }
 
-    #[cfg(target_os = "windows")]
-    if url.bytes().any(|byte| b"&|<>^".contains(&byte)) {
-        return false;
+    let path = if lower.starts_with("file:") {
+        windows_file_url_to_path(&url["file:".len()..])?
+    } else {
+        url.replace('/', "\\")
+    };
+    (is_windows_absolute_drive_path(&path) || is_windows_unc_share_path(&path)).then_some(path)
+}
+
+/// The path of a `file:` URL, given without its scheme: a drive path, or a
+/// UNC path for `file://server/share`. Termy's own link detection builds
+/// these without percent-encoding, so a local path that exists as written
+/// wins over its decoded form.
+#[cfg(any(target_os = "windows", test))]
+fn windows_file_url_to_path(rest: &str) -> Option<String> {
+    let local = if rest
+        .get(..12)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//localhost/"))
+    {
+        &rest[12..]
+    } else if let Some(local) = rest.strip_prefix("///") {
+        local
+    } else if rest.starts_with("//") {
+        // `file://server/share/...` keeps its leading slashes as `\\server`.
+        rest
+    } else {
+        rest.strip_prefix('/').unwrap_or(rest)
+    };
+
+    let raw = local.replace('/', "\\");
+    if is_windows_absolute_drive_path(&raw) && std::path::Path::new(&raw).exists() {
+        return Some(raw);
     }
 
-    true
+    let without_suffix = local.split(['?', '#']).next().unwrap_or(local);
+    Some(percent_decode(without_suffix)?.replace('/', "\\"))
+}
+
+/// `\\server\share...` with a real server name, not a `\\?\` or `\\.\` path.
+#[cfg(any(target_os = "windows", test))]
+fn is_windows_unc_share_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix(r"\\") else {
+        return false;
+    };
+    let mut parts = rest.split('\\');
+    let server = parts.next().unwrap_or_default();
+    let share = parts.next().unwrap_or_default();
+    !server.is_empty() && server != "?" && server != "." && !share.is_empty()
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn is_windows_absolute_drive_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn percent_decode(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let hex = value.get(index + 1..index + 3)?;
+            decoded.push(u8::from_str_radix(hex, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
 }
 
 #[cfg(test)]
@@ -1489,6 +1570,63 @@ mod tests {
             function: true,
             ..gpui_kit::Modifiers::secondary_key()
         }));
+    }
+
+    #[test]
+    fn system_opener_rejects_only_control_characters() {
+        assert!(is_safe_url_for_system_opener(
+            "https://example.com/?a=1&b=<2>|^"
+        ));
+        assert!(!is_safe_url_for_system_opener("https://example.com/\n"));
+    }
+
+    #[test]
+    fn windows_link_targets_keep_web_urls_and_map_file_urls_to_paths() {
+        assert_eq!(
+            windows_link_open_target("https://example.com/?a=1&b=2").as_deref(),
+            Some("https://example.com/?a=1&b=2")
+        );
+        assert_eq!(
+            windows_link_open_target("file:///C:/Users/me/My%20Notes.txt").as_deref(),
+            Some(r"C:\Users\me\My Notes.txt")
+        );
+        assert_eq!(
+            windows_link_open_target("file://localhost/D:/a.txt").as_deref(),
+            Some(r"D:\a.txt")
+        );
+        assert_eq!(
+            windows_link_open_target(r"C:\work\a & b.txt").as_deref(),
+            Some(r"C:\work\a & b.txt")
+        );
+    }
+
+    #[test]
+    fn windows_link_targets_open_unc_shares() {
+        for target in [
+            "file://server/share/x.txt",
+            "file://///server/share/x.txt",
+            r"\\server\share\x.txt",
+        ] {
+            assert_eq!(
+                windows_link_open_target(target).as_deref(),
+                Some(r"\\server\share\x.txt"),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn windows_link_targets_refuse_device_paths_and_other_schemes() {
+        for target in [
+            r"\\?\UNC\server\share",
+            r"\\.\pipe\name",
+            "file://./pipe/name",
+            "ms-settings:display",
+            "search-ms:query=x",
+            "relative/path.txt",
+        ] {
+            assert_eq!(windows_link_open_target(target), None, "{target}");
+        }
     }
 
     #[test]

@@ -198,11 +198,7 @@ fn capture(id: &str, terminal: &Terminal) -> Value {
 fn execute(args: Args) -> anyhow::Result<Value> {
     let root = args
         .session_dir
-        .or_else(|| {
-            termy_core::config_core::config_path()?
-                .parent()
-                .map(|path| path.join("multiplexer"))
-        })
+        .or_else(termy_core::multiplexer::default_root)
         .context("cannot determine session directory; pass --session-dir")?;
     // Validate before starting a background process.
     if let Command::Create { cols, rows, .. } | Command::Resize { cols, rows, .. } = &args.command {

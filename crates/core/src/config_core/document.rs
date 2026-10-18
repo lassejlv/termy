@@ -12,6 +12,12 @@ pub struct ColorSettingUpdate {
 }
 
 pub fn upsert_root_setting(contents: &str, setting: RootSettingId, value: &str) -> String {
+    rewrite(contents, |contents| {
+        upsert_root_setting_lines(contents, setting, value)
+    })
+}
+
+fn upsert_root_setting_lines(contents: &str, setting: RootSettingId, value: &str) -> String {
     let spec = root_setting_spec(setting);
     let mut out = Vec::new();
     let mut replaced = false;
@@ -59,6 +65,12 @@ pub fn upsert_root_setting(contents: &str, setting: RootSettingId, value: &str) 
 }
 
 pub fn remove_root_setting(contents: &str, setting: RootSettingId) -> String {
+    rewrite(contents, |contents| {
+        remove_root_setting_lines(contents, setting)
+    })
+}
+
+fn remove_root_setting_lines(contents: &str, setting: RootSettingId) -> String {
     let mut out = Vec::new();
     let mut in_root = true;
     let mut in_colors = false;
@@ -91,6 +103,12 @@ pub fn remove_root_setting(contents: &str, setting: RootSettingId) -> String {
 /// Remove all root-level lines whose key matches `key` (case-insensitive).
 /// Used to remove unknown/removed config keys that don't map to a `RootSettingId`.
 pub fn remove_raw_root_key(contents: &str, key: &str) -> String {
+    rewrite(contents, |contents| {
+        remove_raw_root_key_lines(contents, key)
+    })
+}
+
+fn remove_raw_root_key_lines(contents: &str, key: &str) -> String {
     let mut out = Vec::new();
     let mut in_root = true;
 
@@ -117,6 +135,12 @@ pub fn remove_raw_root_key(contents: &str, key: &str) -> String {
 }
 
 pub fn replace_keybind_lines(contents: &str, keybind_lines: &[String]) -> String {
+    rewrite(contents, |contents| {
+        replace_keybind_lines_in(contents, keybind_lines)
+    })
+}
+
+fn replace_keybind_lines_in(contents: &str, keybind_lines: &[String]) -> String {
     let mut out = Vec::new();
     let mut in_root = true;
     let mut first_section_index = None;
@@ -160,6 +184,12 @@ pub fn replace_keybind_lines(contents: &str, keybind_lines: &[String]) -> String
 }
 
 pub fn apply_color_updates(contents: &str, updates: &[ColorSettingUpdate]) -> String {
+    rewrite(contents, |contents| {
+        apply_color_updates_lines(contents, updates)
+    })
+}
+
+fn apply_color_updates_lines(contents: &str, updates: &[ColorSettingUpdate]) -> String {
     if updates.is_empty() {
         return normalize_newline(contents);
     }
@@ -262,6 +292,32 @@ fn append_missing_color_updates(
     }
 }
 
+/// Rewrite config `contents` with `rewrite_lines`, which sees the text without
+/// a leading byte-order mark (Windows editors add one) and may end lines with
+/// `\n`. The result is written without the mark, and keeps CRLF line endings
+/// when the file used them.
+pub(super) fn rewrite(contents: &str, rewrite_lines: impl FnOnce(&str) -> String) -> String {
+    let contents = strip_bom(contents);
+    let output = rewrite_lines(contents);
+    if uses_crlf(contents) {
+        output.replace("\r\n", "\n").replace('\n', "\r\n")
+    } else {
+        output
+    }
+}
+
+/// `contents` without a leading UTF-8 byte-order mark.
+pub(super) fn strip_bom(contents: &str) -> &str {
+    contents.strip_prefix('\u{feff}').unwrap_or(contents)
+}
+
+/// Whether the first line ends with CRLF.
+fn uses_crlf(contents: &str) -> bool {
+    contents
+        .find('\n')
+        .is_some_and(|index| contents[..index].ends_with('\r'))
+}
+
 fn normalize_newline(contents: &str) -> String {
     if contents.is_empty() {
         String::new()
@@ -286,9 +342,42 @@ mod tests {
     use crate::config_core::schema::{ColorSettingId, RootSettingId};
 
     use super::{
-        ColorSettingUpdate, apply_color_updates, remove_root_setting, replace_keybind_lines,
-        upsert_root_setting,
+        ColorSettingUpdate, apply_color_updates, remove_raw_root_key, remove_root_setting,
+        replace_keybind_lines, upsert_root_setting,
     };
+
+    #[test]
+    fn rewrites_drop_a_leading_bom_and_keep_crlf_line_endings() {
+        let input =
+            "\u{feff}theme = termy\r\nscrollback = 3000\r\n[colors]\r\nforeground = #fff\r\n";
+        assert_eq!(
+            upsert_root_setting(input, RootSettingId::Theme, "nord"),
+            "theme = nord\r\nscrollback = 3000\r\n[colors]\r\nforeground = #fff\r\n"
+        );
+        assert_eq!(
+            remove_root_setting(input, RootSettingId::ScrollbackHistory),
+            "theme = termy\r\n[colors]\r\nforeground = #fff\r\n"
+        );
+        assert_eq!(
+            remove_raw_root_key(input, "theme"),
+            "scrollback = 3000\r\n[colors]\r\nforeground = #fff\r\n"
+        );
+        assert_eq!(
+            apply_color_updates(input, &[]),
+            "theme = termy\r\nscrollback = 3000\r\n[colors]\r\nforeground = #fff\r\n"
+        );
+        let output = replace_keybind_lines(input, &["cmd-p=toggle_command_palette".to_string()]);
+        assert!(!output.starts_with('\u{feff}'));
+        assert!(output.contains("keybind = cmd-p=toggle_command_palette\r\n"));
+        assert!(!output.replace("\r\n", "").contains('\n'));
+    }
+
+    #[test]
+    fn rewrites_keep_lf_line_endings() {
+        let input = "\u{feff}theme = termy\n";
+        let output = upsert_root_setting(input, RootSettingId::Theme, "nord");
+        assert_eq!(output, "theme = nord\n");
+    }
 
     #[test]
     fn upsert_root_setting_canonicalizes_alias_and_preserves_comments() {

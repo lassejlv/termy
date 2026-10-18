@@ -77,7 +77,8 @@ pub(crate) fn fetch_release_notes_with(
 }
 
 fn github_get(url: &str) -> Result<String> {
-    let response = ureq::get(url)
+    let response = super::transport::http_agent()
+        .get(url)
         .set("User-Agent", GITHUB_USER_AGENT)
         .set("Accept", "application/vnd.github+json")
         .set("X-GitHub-Api-Version", "2022-11-28")

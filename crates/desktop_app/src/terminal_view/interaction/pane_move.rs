@@ -265,8 +265,8 @@ impl TerminalView {
                     self.session.tabs.iter().map(|tab| tab.display_width),
                     pointer,
                     scroll,
-                    TAB_HORIZONTAL_PADDING,
-                    TAB_ITEM_GAP,
+                    geometry.tab_leading_padding,
+                    geometry.tab_item_gap,
                 )?
             }
             crate::terminal_view::tab_strip::state::TabStripOrientation::Vertical => {

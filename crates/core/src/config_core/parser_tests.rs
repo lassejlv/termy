@@ -347,6 +347,8 @@ fn enum_keys_parse_table_driven() {
     );
 
     let windows_shell_cases = [
+        ("auto", WindowsShell::Auto),
+        ("Automatic", WindowsShell::Auto),
         ("cmd", WindowsShell::Cmd),
         ("powershell", WindowsShell::PowerShell),
         ("pwsh", WindowsShell::PowerShellCore),
@@ -359,8 +361,9 @@ fn enum_keys_parse_table_driven() {
     }
     assert_eq!(
         parse("windows_shell = invalid\n").windows_shell,
-        WindowsShell::Cmd
+        WindowsShell::Auto
     );
+    assert_eq!(parse("").windows_shell, WindowsShell::Auto);
 
     assert!(parse("chrome_contrast = true\n").chrome_contrast);
     assert!(parse("chrome_contrast = 1\n").chrome_contrast);
@@ -848,6 +851,14 @@ fn root_settings_in_colors_section_parse_for_legacy_settings_writes() {
     assert_eq!(report.config.theme_dark, "tokyo-night");
     assert!(report.config.colors.foreground.is_some());
     assert!(report.diagnostics.is_empty());
+}
+
+#[test]
+fn leading_bom_and_crlf_line_endings_are_ignored() {
+    let report = parse_report("\u{feff}theme = gruvbox\r\nfont_size = 12\r\n");
+    assert!(report.diagnostics.is_empty());
+    assert_eq!(report.config.theme, "gruvbox");
+    assert!((report.config.font_size - 12.0).abs() < f32::EPSILON);
 }
 
 #[test]

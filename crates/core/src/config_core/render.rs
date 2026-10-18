@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::config_core::color_keys::canonical_color_key;
+use crate::config_core::document::rewrite;
 use crate::config_core::schema::{
     COLOR_SETTING_KEYS, RootSettingId, canonical_root_key, root_setting_specs,
 };
@@ -10,6 +11,10 @@ pub const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("default_config.txt");
 const SECTION_ORDER: &[&str] = &["colors", "tab_title"];
 
 pub fn prettify_config_contents(contents: &str) -> String {
+    rewrite(contents, prettify_config_lines)
+}
+
+fn prettify_config_lines(contents: &str) -> String {
     let mut root_settings: HashMap<String, String> = HashMap::new();
     let mut keybinds = Vec::new();
     let mut colors: HashMap<String, String> = HashMap::new();
@@ -168,6 +173,12 @@ foreground = #ffffff\n\
         let output = prettify_config_contents(input);
 
         assert!(output.starts_with("theme = nord\nfont_size = 16\n\nkeybind = cmd-w=close_pane_or_tab\n\n[colors]\nforeground = #ffffff\ngreen = #00ff00\n"));
+    }
+
+    #[test]
+    fn prettify_drops_a_bom_and_keeps_crlf_line_endings() {
+        let output = prettify_config_contents("\u{feff}font_size = 16\r\ntheme = nord\r\n");
+        assert_eq!(output, "theme = nord\r\nfont_size = 16\r\n");
     }
 
     #[test]

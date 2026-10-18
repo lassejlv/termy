@@ -116,11 +116,11 @@ impl TabStripTransitions {
 
 impl TerminalView {
     /// Stable (non-animated) horizontal render width for a tab.
-    pub(crate) fn stable_tab_render_width(display_width: f32) -> f32 {
+    pub(crate) fn stable_tab_render_width(display_width: f32, min_width: f32) -> f32 {
         if display_width.is_finite() {
-            display_width.max(TAB_MIN_WIDTH)
+            display_width.max(min_width)
         } else {
-            TAB_MIN_WIDTH
+            min_width
         }
     }
 
@@ -173,16 +173,19 @@ mod tests {
     #[test]
     fn stable_width_clamps_to_minimum_and_rejects_non_finite() {
         assert_eq!(
-            TerminalView::stable_tab_render_width(TAB_MAX_WIDTH),
+            TerminalView::stable_tab_render_width(TAB_MAX_WIDTH, TAB_MIN_WIDTH),
             TAB_MAX_WIDTH
         );
-        assert_eq!(TerminalView::stable_tab_render_width(12.0), TAB_MIN_WIDTH);
         assert_eq!(
-            TerminalView::stable_tab_render_width(f32::NAN),
+            TerminalView::stable_tab_render_width(12.0, TAB_MIN_WIDTH),
             TAB_MIN_WIDTH
         );
         assert_eq!(
-            TerminalView::stable_tab_render_width(f32::INFINITY),
+            TerminalView::stable_tab_render_width(f32::NAN, TAB_MIN_WIDTH),
+            TAB_MIN_WIDTH
+        );
+        assert_eq!(
+            TerminalView::stable_tab_render_width(f32::INFINITY, TAB_MIN_WIDTH),
             TAB_MIN_WIDTH
         );
     }
