@@ -190,6 +190,25 @@ impl TabBarPosition {
     }
 }
 
+/// Who draws the tabs on macOS: AppKit's native window tabs (default) or
+/// Termy's own tab strip. Other platforms always use the custom strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TabStyle {
+    #[default]
+    Native,
+    Custom,
+}
+
+impl TabStyle {
+    pub(crate) fn from_str(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "native" => Some(Self::Native),
+            "custom" => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TabTitleConfig {
     pub mode: TabTitleMode,
@@ -382,6 +401,7 @@ pub struct AppConfig {
     pub tab_close_visibility: TabCloseVisibility,
     pub tab_width_mode: TabWidthMode,
     pub tab_bar_position: TabBarPosition,
+    pub tab_style: TabStyle,
     pub tab_switch_modifier_hints: bool,
     pub auto_hide_tabbar: bool,
     pub sidebar_enabled: bool,
@@ -484,6 +504,7 @@ impl Default for AppConfig {
             tab_close_visibility: TabCloseVisibility::default(),
             tab_width_mode: TabWidthMode::default(),
             tab_bar_position: TabBarPosition::default(),
+            tab_style: TabStyle::default(),
             tab_switch_modifier_hints: DEFAULT_TAB_SWITCH_MODIFIER_HINTS,
             auto_hide_tabbar: true,
             sidebar_enabled: false,

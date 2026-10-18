@@ -209,9 +209,9 @@ fn file_menu_section_order_is_stable() {
         .map(|entry| entry.section)
         .collect::<Vec<_>>();
     #[cfg(not(target_os = "windows"))]
-    assert_eq!(sections, [0, 0, 1, 1, 1, 1, 1]);
+    assert_eq!(sections, [0, 0, 0, 1, 1, 1, 1, 1]);
     #[cfg(target_os = "windows")]
-    assert_eq!(sections, [0, 0, 1]);
+    assert_eq!(sections, [0, 0, 0, 1]);
 }
 
 #[test]

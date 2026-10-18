@@ -156,6 +156,9 @@ impl TerminalView {
     }
 
     pub(crate) fn should_render_tab_strip_chrome(&self) -> bool {
+        if self.native_window_tabs {
+            return false;
+        }
         // The workspace sidebar needs the top chrome row for its actions and
         // for the tab strip it aligns with, so it overrides auto-hide.
         self.workspace_sidebar_visible()

@@ -232,6 +232,10 @@ pub fn default_keybinds_for_platform(platform: KeybindPlatform) -> Vec<DefaultKe
 
     if matches!(platform, KeybindPlatform::MacOs) {
         bindings.push(DefaultKeybind {
+            trigger: "secondary-n",
+            action: CommandId::NewWindow,
+        });
+        bindings.push(DefaultKeybind {
             trigger: "secondary-k",
             action: CommandId::ClearScreen,
         });

@@ -1,6 +1,6 @@
 use crate::config_core::types::{
     AppConfig, AppIcon, AppearanceMode, CursorStyle, PaneFocusEffect, TabBarPosition,
-    TabCloseVisibility, TabTitleMode, TabWidthMode, TerminalScrollbarStyle,
+    TabCloseVisibility, TabStyle, TabTitleMode, TabWidthMode, TerminalScrollbarStyle,
     TerminalScrollbarVisibility, WindowsShell, WorkingDirFallback,
 };
 
@@ -303,6 +303,17 @@ pub const TAB_BAR_POSITION_ENUM_CHOICES: &[EnumChoice] = &[
     },
 ];
 
+pub const TAB_STYLE_ENUM_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        value: "native",
+        label: "Native (macOS)",
+    },
+    EnumChoice {
+        value: "custom",
+        label: "Custom",
+    },
+];
+
 pub const WORKING_DIR_FALLBACK_ENUM_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         value: "home",
@@ -402,6 +413,7 @@ define_root_settings! {
     (TabCloseVisibility, "tab_close_visibility", [], Tabs, "TAB STRIP", "Close Button Visibility", "When tab close buttons are visible", ["tab", "close", "visibility", "hover"], RootSettingValueKind::Enum, false),
     (TabWidthMode, "tab_width_mode", [], Tabs, "TAB STRIP", "Tab Width Mode", "How tab widths react to active state", ["tab", "width", "layout", "active"], RootSettingValueKind::Enum, false),
     (TabBarPosition, "tab_bar_position", [], Tabs, "TAB STRIP", "Tab Bar Position", "Where the tab bar is rendered: top strip or right sidebar", ["tab", "bar", "position", "sidebar", "vertical", "right", "top"], RootSettingValueKind::Enum, false),
+    (TabStyle, "tab_style", [], Tabs, "TAB STRIP", "Tab Style", "macOS only: native window tabs or Termy's custom tab strip (applies to new windows)", ["tab", "style", "native", "custom", "macos", "appkit", "window"], RootSettingValueKind::Enum, false),
     (TabSwitchModifierHints, "tab_switch_modifier_hints", [], Tabs, "TAB STRIP", "Show Tab Switch Hints", "Show secondary+1..9 number badges on the first nine tabs while the secondary modifier is held", ["tab", "switch", "hints", "modifier", "secondary", "shortcuts"], RootSettingValueKind::Boolean, false),
     (AutoHideTabbar, "auto_hide_tabbar", [], Tabs, "TAB STRIP", "Auto-hide Tab Bar", "Hide the tab bar when only one tab is open", ["tab", "tabs", "hide", "auto", "single", "tabbar"], RootSettingValueKind::Boolean, false),
     (SidebarEnabled, "sidebar_enabled", [], Tabs, "SIDEBAR", "Workspace Sidebar", "Show the left sidebar for grouping tabs into workspaces", ["sidebar", "workspace", "workspaces", "tabs", "groups"], RootSettingValueKind::Boolean, false),
@@ -483,6 +495,7 @@ pub fn root_setting_enum_choices(id: RootSettingId) -> Option<&'static [EnumChoi
         RootSettingId::TabCloseVisibility => Some(TAB_CLOSE_VISIBILITY_ENUM_CHOICES),
         RootSettingId::TabWidthMode => Some(TAB_WIDTH_MODE_ENUM_CHOICES),
         RootSettingId::TabBarPosition => Some(TAB_BAR_POSITION_ENUM_CHOICES),
+        RootSettingId::TabStyle => Some(TAB_STYLE_ENUM_CHOICES),
         RootSettingId::ThemeMode => Some(THEME_MODE_ENUM_CHOICES),
         RootSettingId::AppIcon => Some(APP_ICON_ENUM_CHOICES),
         RootSettingId::WindowsShell => Some(WINDOWS_SHELL_ENUM_CHOICES),
@@ -578,6 +591,10 @@ pub fn root_setting_default_value(config: &AppConfig, id: RootSettingId) -> Opti
         RootSettingId::TabBarPosition => Some(match config.tab_bar_position {
             TabBarPosition::Top => "top".to_string(),
             TabBarPosition::Right => "right".to_string(),
+        }),
+        RootSettingId::TabStyle => Some(match config.tab_style {
+            TabStyle::Native => "native".to_string(),
+            TabStyle::Custom => "custom".to_string(),
         }),
         RootSettingId::TabSwitchModifierHints => Some(config.tab_switch_modifier_hints.to_string()),
         RootSettingId::AutoHideTabbar => Some(config.auto_hide_tabbar.to_string()),

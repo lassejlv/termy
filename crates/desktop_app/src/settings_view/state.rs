@@ -44,6 +44,7 @@ pub(super) enum EditableField {
     TabCloseVisibility,
     TabWidthMode,
     TabBarPosition,
+    TabStyle,
     SidebarWidth,
     WorkingDirectory,
     WorkingDirFallback,
@@ -445,6 +446,7 @@ impl SettingsWindow {
             | EditableField::TabCloseVisibility
             | EditableField::TabWidthMode
             | EditableField::TabBarPosition
+            | EditableField::TabStyle
             | EditableField::SidebarWidth => Self::tabs_field_spec(field),
             EditableField::WorkingDirectory
             | EditableField::WorkingDirFallback
@@ -623,6 +625,7 @@ impl SettingsWindow {
             }
             EditableField::TabWidthMode => Self::enum_field_spec(RootSettingId::TabWidthMode),
             EditableField::TabBarPosition => Self::enum_field_spec(RootSettingId::TabBarPosition),
+            EditableField::TabStyle => Self::enum_field_spec(RootSettingId::TabStyle),
             EditableField::SidebarWidth => Self::numeric_field_spec(
                 RootSettingId::SidebarWidth,
                 NumericStepSpec {
@@ -998,6 +1001,11 @@ impl SettingsWindow {
                 termy_core::config_core::TabBarPosition::Right => "right",
             }
             .to_string(),
+            EditableField::TabStyle => match self.config.tab_style {
+                termy_core::config_core::TabStyle::Native => "native",
+                termy_core::config_core::TabStyle::Custom => "custom",
+            }
+            .to_string(),
             EditableField::SidebarWidth => {
                 format!("{}", self.config.sidebar_width.round() as i32)
             }
@@ -1306,6 +1314,7 @@ mod tests {
             EditableField::TabCloseVisibility,
             EditableField::TabWidthMode,
             EditableField::TabBarPosition,
+            EditableField::TabStyle,
             EditableField::SidebarWidth,
             EditableField::WorkingDirectory,
             EditableField::WorkingDirFallback,
@@ -1339,6 +1348,7 @@ mod tests {
             EditableField::TabCloseVisibility,
             EditableField::TabWidthMode,
             EditableField::TabBarPosition,
+            EditableField::TabStyle,
             EditableField::WorkingDirFallback,
         ];
 

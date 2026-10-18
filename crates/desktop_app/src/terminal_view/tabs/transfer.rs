@@ -305,6 +305,112 @@ impl TerminalView {
         Ok(())
     }
 
+    /// Move every tab except the window's home tab into its own native tab
+    /// window, keeping their order around the home tab and focusing the tab
+    /// that was active.
+    pub(super) fn split_native_window_tabs(
+        view: WeakEntity<Self>,
+        window: gpui_kit::AnyWindowHandle,
+        cx: &mut App,
+    ) {
+        let Some(source) = view.upgrade() else {
+            return;
+        };
+        let (home, tab_ids, active) = source.update(cx, |view, _| {
+            view.native_tab_split_pending = false;
+            let active = view
+                .session
+                .tabs
+                .get(view.session.active_tab)
+                .map(|tab| tab.id);
+            let home = view
+                .native_tab_home
+                .filter(|id| view.tab_index_by_id(*id).is_some())
+                .or(active);
+            view.native_tab_home = home;
+            let tab_ids = view
+                .session
+                .tabs
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>();
+            (home, tab_ids, active)
+        });
+        let Some(home) = home else {
+            return;
+        };
+        let Some(home_index) = tab_ids.iter().position(|id| *id == home) else {
+            return;
+        };
+        let moves = Self::native_tab_split_moves(&tab_ids, home_index);
+        let mut focus = None;
+        for (tab_id, after) in moves {
+            match Self::move_tab_into_native_tab_window(&source, window, tab_id, after, cx) {
+                Ok(target) if Some(tab_id) == active => focus = Some(target),
+                Ok(_) => {}
+                Err(error) => {
+                    log::warn!("Could not open tab as a native tab: {error}");
+                    crate::ui::toast::error(error);
+                    break;
+                }
+            }
+        }
+        source.update(cx, |view, cx| {
+            view.sync_persisted_native_workspace();
+            cx.notify();
+        });
+        if let Some(focus) = focus {
+            let _ = focus.update(cx, |view, window, cx| {
+                window.activate_window();
+                view.focus_terminal_after_tab_activation(window, cx);
+            });
+        }
+    }
+
+    /// The order to move tabs out of a native tab window, each paired with
+    /// whether it goes after (right of) the home tab. Every tab lands directly
+    /// beside the home tab, so earlier tabs go left in order and later tabs go
+    /// right in reverse order, which keeps the original tab order.
+    fn native_tab_split_moves(tab_ids: &[TabId], home_index: usize) -> Vec<(TabId, bool)> {
+        tab_ids[..home_index]
+            .iter()
+            .map(|id| (*id, false))
+            .chain(tab_ids[home_index + 1..].iter().rev().map(|id| (*id, true)))
+            .collect()
+    }
+
+    fn move_tab_into_native_tab_window(
+        source: &Entity<Self>,
+        source_window: gpui_kit::AnyWindowHandle,
+        tab_id: TabId,
+        after: bool,
+        cx: &mut App,
+    ) -> Result<WindowHandle<Self>, String> {
+        let mut error = None;
+        let config = crate::config::load_runtime_config(&mut error, "Failed to load config").config;
+        let target = crate::open_terminal_window_with_placement(
+            cx,
+            config,
+            true,
+            crate::TerminalWindowPlacement::NativeTab {
+                host: source_window,
+                after,
+            },
+        )?;
+        let Some(moved) = source.update(cx, |view, cx| view.take_tab_for_transfer(tab_id, cx))
+        else {
+            let _ = target.update(cx, |_, window, _| window.remove_window());
+            return Err("The tab closed before it could move".to_string());
+        };
+        target
+            .update(cx, |view, _, cx| {
+                view.receive_transferred_tab(moved, cx);
+                view.native_tab_home = view.session.tabs.first().map(|tab| tab.id);
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(target)
+    }
+
     fn take_tab_for_transfer(
         &mut self,
         tab_id: TabId,
@@ -383,6 +489,8 @@ mod tests {
                     tmux_enabled: false,
                     native_tab_persistence: false,
                     sidebar_enabled: false,
+                    // Cross-window tab drags belong to Termy's own tab strip.
+                    tab_style: crate::config::TabStyle::Custom,
                     ..AppConfig::default()
                 };
                 let mut view = TerminalView::new_for_window(window, cx, config, true);
@@ -495,6 +603,19 @@ mod tests {
                 })
                 .unwrap();
         });
+    }
+
+    #[test]
+    fn native_tab_split_keeps_tab_order_around_the_home_tab() {
+        assert_eq!(
+            TerminalView::native_tab_split_moves(&[1, 2, 3, 4, 5], 2),
+            vec![(1, false), (2, false), (5, true), (4, true)]
+        );
+        assert_eq!(
+            TerminalView::native_tab_split_moves(&[7, 8], 0),
+            vec![(8, true)]
+        );
+        assert!(TerminalView::native_tab_split_moves(&[7], 0).is_empty());
     }
 
     #[gpui_kit::test]

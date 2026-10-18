@@ -1,8 +1,9 @@
 use crate::config_core::{
     AppConfig, AppIcon, AppearanceMode, ConfigDiagnosticKind, ConfigParseReport, CursorStyle,
     DEFAULT_LINE_HEIGHT, PaneFocusEffect, Rgb8, RootSettingId, RootSettingValueKind,
-    TabCloseVisibility, TabTitleMode, TabTitleSource, TabWidthMode, TerminalScrollbarStyle,
-    TerminalScrollbarVisibility, WindowsShell, WorkingDirFallback, root_setting_specs,
+    TabCloseVisibility, TabStyle, TabTitleMode, TabTitleSource, TabWidthMode,
+    TerminalScrollbarStyle, TerminalScrollbarVisibility, WindowsShell, WorkingDirFallback,
+    root_setting_specs,
 };
 
 fn parse(input: &str) -> AppConfig {
@@ -28,6 +29,22 @@ fn defaults_enable_tmux_persistence_and_raise_pane_focus_strength() {
 fn native_tab_persistence_parses_as_boolean() {
     assert!(parse("native_tab_persistence = true\n").native_tab_persistence);
     assert!(!parse("native_tab_persistence = false\n").native_tab_persistence);
+}
+
+#[test]
+fn tab_style_defaults_to_native_and_accepts_custom() {
+    assert_eq!(parse("").tab_style, TabStyle::Native);
+    assert_eq!(parse("tab_style = custom\n").tab_style, TabStyle::Custom);
+    assert_eq!(parse("tab_style = Native\n").tab_style, TabStyle::Native);
+
+    let report = parse_report("tab_style = floating\n");
+    assert_eq!(report.config.tab_style, TabStyle::Native);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("native, custom"))
+    );
 }
 
 #[test]

@@ -19,10 +19,13 @@ mod launch_probe;
 #[cfg(any(target_os = "linux", test))]
 mod linux_prompt;
 #[cfg(target_os = "macos")]
+mod macos_native_tabs;
+#[cfg(target_os = "macos")]
 mod macos_titlebar_drag;
 mod menus;
 mod multiplexer;
 mod native_titlebar;
+mod native_window_tabs;
 mod settings_view;
 mod ssh;
 mod startup;
@@ -35,13 +38,14 @@ mod window_state;
 mod workspace_store;
 
 use crate::terminal_ui::TmuxClient;
-use commands::{OpenConfig, OpenSettings};
+use commands::{NewWindow, OpenConfig, OpenSettings};
 use deeplink::{DeepLinkArgument, DeepLinkRoute};
 use flume::Receiver;
 use gpui_kit::{
     App, AsyncApp, Bounds, Pixels, WindowBounds, WindowHandle, WindowKind, WindowOptions,
     prelude::*, px, size,
 };
+pub(crate) use native_window_tabs::{TerminalWindowPlacement, native_window_tabs_enabled};
 use startup::StartupBlocker;
 use terminal_view::{TerminalView, initial_window_background_appearance};
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
@@ -256,12 +260,40 @@ fn open_main_window(
     startup_config: config::AppConfig,
 ) -> Result<WindowHandle<TerminalView>, String> {
     let first = open_terminal_window(cx, startup_config.clone(), false)?;
-    while multiplexer::pending_windows(cx) > 0 {
-        if let Err(error) = open_terminal_window(cx, startup_config.clone(), false) {
-            log::error!("Failed to restore terminal window: {error}");
-            crate::ui::toast::error(error);
-            break;
+    // Restored multiplexer windows rejoin the first window as native tabs.
+    let restored_placement = if native_window_tabs_enabled(&startup_config) {
+        TerminalWindowPlacement::NativeTab {
+            host: first.into(),
+            after: true,
         }
+    } else {
+        TerminalWindowPlacement::Standalone
+    };
+    let mut previous: gpui_kit::AnyWindowHandle = first.into();
+    while multiplexer::pending_windows(cx) > 0 {
+        let placement = match restored_placement {
+            TerminalWindowPlacement::NativeTab { after, .. } => {
+                TerminalWindowPlacement::NativeTab {
+                    host: previous,
+                    after,
+                }
+            }
+            TerminalWindowPlacement::Standalone => TerminalWindowPlacement::Standalone,
+        };
+        match open_terminal_window_with_placement(cx, startup_config.clone(), false, placement) {
+            Ok(window) => previous = window.into(),
+            Err(error) => {
+                log::error!("Failed to restore terminal window: {error}");
+                crate::ui::toast::error(error);
+                break;
+            }
+        }
+    }
+    if matches!(
+        restored_placement,
+        TerminalWindowPlacement::NativeTab { .. }
+    ) {
+        let _ = first.update(cx, |_, window, _| window.activate_window());
     }
     Ok(first)
 }
@@ -271,13 +303,42 @@ pub(crate) fn open_terminal_window(
     startup_config: config::AppConfig,
     empty: bool,
 ) -> Result<WindowHandle<TerminalView>, String> {
+    open_terminal_window_with_placement(
+        cx,
+        startup_config,
+        empty,
+        TerminalWindowPlacement::Standalone,
+    )
+}
+
+pub(crate) fn open_terminal_window_with_placement(
+    cx: &mut App,
+    startup_config: config::AppConfig,
+    empty: bool,
+    placement: TerminalWindowPlacement,
+) -> Result<WindowHandle<TerminalView>, String> {
     multiplexer::initialize(&startup_config, cx)?;
+    let native_tabs = native_window_tabs_enabled(&startup_config);
+    #[cfg(target_os = "macos")]
+    if native_tabs {
+        native_window_tabs::install(cx);
+    }
+    // A tab takes its group's frame, so it opens hidden at the host's bounds
+    // and only appears once AppKit has tabbed it. Plain windowed bounds keep a
+    // fullscreen host from sending the hidden window into its own Space.
+    let tab_host = match placement {
+        TerminalWindowPlacement::NativeTab { host, after } if native_tabs => host
+            .update(cx, |_, window, _| WindowBounds::Windowed(window.bounds()))
+            .ok()
+            .map(|bounds| (host, bounds, after)),
+        _ => None,
+    };
     let window_background = initial_window_background_appearance(&startup_config);
     let startup_window_size = normalized_startup_window_size(&startup_config);
     let benchmark_mode = std::env::var_os("TERMY_BENCHMARK_COMMAND").is_some();
     // Benchmarks compare fixed-size windows, so they neither restore nor
     // save geometry. Only the first window gets the saved position back.
-    let restored_geometry = (!benchmark_mode)
+    let restored_geometry = (!benchmark_mode && tab_host.is_none())
         .then(|| {
             window_state::restored_window_geometry(
                 cx,
@@ -288,19 +349,30 @@ pub(crate) fn open_terminal_window(
         .flatten();
     #[cfg(target_os = "windows")]
     let apply_windows_startup_resize = restored_geometry.is_none();
-    let (window_bounds, display_id) = match restored_geometry {
-        Some(geometry) => (geometry.bounds, geometry.display_id),
-        None => (
+    let (window_bounds, display_id) = match (tab_host, restored_geometry) {
+        (Some((_, bounds, _)), _) => (bounds, None),
+        (None, Some(geometry)) => (geometry.bounds, geometry.display_id),
+        (None, None) => (
             WindowBounds::Windowed(Bounds::centered(None, startup_window_size, cx)),
             None,
         ),
     };
 
+    // Native tabs need AppKit's own titlebar: the tab bar sits beneath it and
+    // shows each window's title as the tab label.
     #[cfg(target_os = "macos")]
-    let titlebar = Some(gpui_kit::TitlebarOptions {
-        title: Some("Termy".into()),
-        appears_transparent: true,
-        traffic_light_position: Some(gpui_kit::point(px(12.0), px(10.0))),
+    let titlebar = Some(if native_tabs {
+        gpui_kit::TitlebarOptions {
+            title: Some("Termy".into()),
+            appears_transparent: false,
+            traffic_light_position: None,
+        }
+    } else {
+        gpui_kit::TitlebarOptions {
+            title: Some("Termy".into()),
+            appears_transparent: true,
+            traffic_light_position: Some(gpui_kit::point(px(12.0), px(10.0))),
+        }
     });
     #[cfg(target_os = "windows")]
     let titlebar = Some(gpui_kit::TitlebarOptions {
@@ -315,7 +387,7 @@ pub(crate) fn open_terminal_window(
         traffic_light_position: None,
     });
 
-    cx.open_window(
+    let handle = cx.open_window(
         WindowOptions {
             window_bounds: Some(window_bounds),
             display_id,
@@ -341,6 +413,11 @@ pub(crate) fn open_terminal_window(
             is_movable: cfg!(target_os = "macos"),
             is_resizable: true,
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
+            show: tab_host.is_none(),
+            focus: tab_host.is_none(),
+            #[cfg(target_os = "macos")]
+            tabbing_identifier: native_tabs
+                .then(|| macos_native_tabs::TABBING_IDENTIFIER.to_string()),
             ..Default::default()
         },
         move |window, cx| {
@@ -392,6 +469,9 @@ pub(crate) fn open_terminal_window(
 
             #[cfg(target_os = "macos")]
             {
+                if native_tabs {
+                    macos_native_tabs::prepare_titlebar_tabs(window);
+                }
                 if let Err(error) =
                     macos_titlebar_drag::disable_automatic_content_view_window_drag(window)
                 {
@@ -449,7 +529,12 @@ pub(crate) fn open_terminal_window(
             view
         },
     )
-    .map_err(|error| format!("Failed to open main window: {error}"))
+    .map_err(|error| format!("Failed to open main window: {error}"))?;
+
+    if let Some((host, _, after)) = tab_host {
+        native_window_tabs::attach(cx, handle.into(), host, after);
+    }
+    Ok(handle)
 }
 
 fn reopen_if_no_windows(cx: &mut App, mut reopen: impl FnMut(&mut App)) -> bool {
@@ -742,6 +827,10 @@ fn main() {
                 log::error!("Failed to open config file: {error}");
                 crate::ui::toast::error(error);
             }
+        });
+        cx.on_action(|_: &NewWindow, cx| {
+            // Errors are already logged and surfaced as a toast.
+            let _ = open_main_window_with_runtime_config_overrides(cx, None);
         });
         cx.on_action(|_: &OpenSettings, cx| {
             if let Err(error) = app_actions::open_settings_or_config_file(cx) {
