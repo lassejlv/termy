@@ -1,6 +1,6 @@
 [package]
 name = "termy_cli"
-version = "1.0.0-rc.5"
+version = "1.0.0-rc.6"
 edition = "2024"
 default-run = "termy-cli"
 
