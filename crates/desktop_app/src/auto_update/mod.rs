@@ -1,14 +1,14 @@
 use gpui_kit::{App, AppContext, AsyncApp, Entity, Global, WeakEntity};
 
 mod engine;
-#[cfg(any(target_os = "macos", test))]
-mod staged_install;
+#[cfg(target_os = "macos")]
+pub mod sparkle;
 
 pub use engine::{InstallOutcome, ReleaseInfo, UpdateCheck, UpdateState};
 
 use engine::{
     cache_installer_path, check_for_updates, do_install, download_installer,
-    ensure_install_supported, verify_installer_checksum,
+    verify_installer_checksum,
 };
 
 /// The one updater shared by every window, so the app checks, downloads and
@@ -29,12 +29,13 @@ impl AutoUpdater {
         }
     }
 
+    /// macOS updates go through [`sparkle`] instead.
     pub fn supported_on_current_platform() -> bool {
-        cfg!(any(target_os = "macos", target_os = "windows"))
+        cfg!(target_os = "windows")
     }
 
     /// Returns the app-wide updater, creating it on first use. `None` when
-    /// auto updates are not supported on this platform.
+    /// this platform has no in-app installer (macOS uses Sparkle).
     pub fn global(cx: &mut App) -> Option<Entity<Self>> {
         if !Self::supported_on_current_platform() {
             return None;
@@ -153,7 +154,6 @@ impl AutoUpdater {
         let dest = cache_installer_path(&version, &extension);
         let dl_version = version.clone();
         let bg = cx.background_executor().spawn(async move {
-            ensure_install_supported()?;
             let path = download_installer(&url, &dest, progress_tx)?;
             verify_installer_checksum(
                 &path,

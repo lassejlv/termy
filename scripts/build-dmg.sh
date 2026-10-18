@@ -39,6 +39,7 @@ Notarization options (require a signing identity):
 Environment variable defaults:
   TERMY_SIGN_IDENTITY  TERMY_ENTITLEMENTS
   TERMY_NOTARY_PROFILE TERMY_NOTARY_KEY TERMY_NOTARY_KEY_ID TERMY_NOTARY_ISSUER
+  TERMY_SPARKLE_FEED_URL TERMY_SPARKLE_PUBLIC_ED_KEY
 
 Output:
   dist/Termy-<version>-macos-<arch>[-signed].dmg
@@ -166,6 +167,49 @@ ensure_app_icon() {
   /usr/bin/plutil -lint "$plist_path" >/dev/null
 }
 
+# Sparkle (macOS auto updates). The private half of this EdDSA key is the
+# SPARKLE_ED_PRIVATE_KEY GitHub Actions secret, used to sign each release DMG.
+SPARKLE_PUBLIC_ED_KEY="${TERMY_SPARKLE_PUBLIC_ED_KEY:-1hTfFqyrg+XaxfZ5ywbvd20aT5YXvL15BschCg2L57o=}"
+SPARKLE_FEED_URL="${TERMY_SPARKLE_FEED_URL:-}"
+SPARKLE_CHECK_INTERVAL_SECONDS=21600
+
+embed_sparkle() {
+  local app_path="$1"
+  local plist_path="$app_path/Contents/Info.plist"
+  local plist_buddy="/usr/libexec/PlistBuddy"
+  local frameworks_dir="$app_path/Contents/Frameworks"
+  local sparkle_dir framework
+
+  sparkle_dir="$("$SCRIPT_DIR/fetch-sparkle.sh")"
+  framework="$frameworks_dir/Sparkle.framework"
+  mkdir -p "$frameworks_dir"
+  rm -rf "$framework"
+  ditto "$sparkle_dir/Sparkle.framework" "$framework"
+  # The XPC services are only needed by sandboxed apps; Termy is not sandboxed.
+  rm -rf "$framework/Versions/B/XPCServices" "$framework/XPCServices"
+
+  "$plist_buddy" -c "Delete :SUFeedURL" "$plist_path" >/dev/null 2>&1 || true
+  "$plist_buddy" -c "Add :SUFeedURL string $SPARKLE_FEED_URL" "$plist_path"
+  "$plist_buddy" -c "Delete :SUPublicEDKey" "$plist_path" >/dev/null 2>&1 || true
+  "$plist_buddy" -c "Add :SUPublicEDKey string $SPARKLE_PUBLIC_ED_KEY" "$plist_path"
+  # Checks are on by default (no first-run prompt); the app applies the
+  # auto_update setting at launch.
+  "$plist_buddy" -c "Delete :SUEnableAutomaticChecks" "$plist_path" >/dev/null 2>&1 || true
+  "$plist_buddy" -c "Add :SUEnableAutomaticChecks bool true" "$plist_path"
+  "$plist_buddy" -c "Delete :SUScheduledCheckInterval" "$plist_path" >/dev/null 2>&1 || true
+  "$plist_buddy" -c "Add :SUScheduledCheckInterval integer $SPARKLE_CHECK_INTERVAL_SECONDS" "$plist_path"
+  /usr/bin/plutil -lint "$plist_path" >/dev/null
+}
+
+# Sign Sparkle's nested code inside-out, before the enclosing app.
+sign_sparkle() {
+  local framework="$1/Contents/Frameworks/Sparkle.framework"
+  local args=(--force --options runtime --timestamp --sign "$SIGN_IDENTITY")
+  codesign "${args[@]}" "$framework/Versions/B/Autoupdate"
+  codesign "${args[@]}" "$framework/Versions/B/Updater.app"
+  codesign "${args[@]}" "$framework"
+}
+
 VERSION=""
 ARCH=""
 TARGET=""
@@ -254,6 +298,9 @@ if [[ -n "$ENTITLEMENTS" ]]; then
   [[ -f "$ENTITLEMENTS" ]] || die "Entitlements file not found: $ENTITLEMENTS"
 fi
 
+# One feed per architecture, served from the latest GitHub release.
+[[ -n "$SPARKLE_FEED_URL" ]] || SPARKLE_FEED_URL="https://github.com/lassejlv/termy/releases/latest/download/appcast-$ARCH.xml"
+
 APP_NAME="Termy"
 SUFFIX=""
 [[ "$SIGN" -eq 1 ]] && SUFFIX="-signed"
@@ -322,16 +369,23 @@ install_finder_open_tab_service "$APP_PATH"
 log "Embedding app icon in bundle"
 ensure_app_icon "$APP_PATH"
 
+log "Embedding Sparkle updater (feed: $SPARKLE_FEED_URL)"
+embed_sparkle "$APP_PATH"
+
 if [[ "$SIGN" -eq 1 ]]; then
   log "Signing app bundle with: $SIGN_IDENTITY"
   xattr -rc "$APP_PATH"
   # The bundled CLI is a separate executable. Sign it before the enclosing app.
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
     "$APP_PATH/Contents/MacOS/termy-cli"
+  sign_sparkle "$APP_PATH"
   CODESIGN_ARGS=(--force --options runtime --timestamp --sign "$SIGN_IDENTITY")
   [[ -n "$ENTITLEMENTS" ]] && CODESIGN_ARGS+=(--entitlements "$ENTITLEMENTS")
   codesign "${CODESIGN_ARGS[@]}" "$APP_PATH"
   codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+else
+  # Removing the XPC services broke Sparkle's own seal; re-seal it ad hoc.
+  codesign --force --sign - "$APP_PATH/Contents/Frameworks/Sparkle.framework"
 fi
 
 log "Preparing DMG staging folder"

@@ -127,6 +127,16 @@ impl TerminalView {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn check_for_updates_action(&mut self, cx: &mut Context<Self>) {
+        // Sparkle shows its own checking, result and install UI.
+        if !crate::auto_update::sparkle::check_for_updates(cx) {
+            crate::ui::toast::info("Updates are not available in this build of Termy");
+            self.notify_overlay(cx);
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
     fn check_for_updates_action(&mut self, cx: &mut Context<Self>) {
         let Some(updater) = self.ensure_auto_updater(cx) else {
             crate::ui::toast::info("Auto updates are only available on macOS and Windows");

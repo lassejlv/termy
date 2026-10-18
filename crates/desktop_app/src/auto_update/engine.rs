@@ -48,14 +48,6 @@ pub enum InstallOutcome {
     InstallerLaunched,
 }
 
-#[cfg(target_os = "macos")]
-pub fn cache_installer_path(version: &str, extension: &str) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let cache_dir = PathBuf::from(home).join("Library/Caches/Termy");
-    let _ = std::fs::create_dir_all(&cache_dir);
-    cache_dir.join(format!("update-{version}.{extension}"))
-}
-
 #[cfg(target_os = "windows")]
 pub fn cache_installer_path(version: &str, extension: &str) -> PathBuf {
     let cache_dir = std::env::var("LOCALAPPDATA")
@@ -67,7 +59,7 @@ pub fn cache_installer_path(version: &str, extension: &str) -> PathBuf {
     cache_dir.join(format!("update-{}.{}", version, extension))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(target_os = "windows"))]
 pub fn cache_installer_path(version: &str, extension: &str) -> PathBuf {
     let cache_dir = std::env::temp_dir().join("termy-updates");
     let _ = std::fs::create_dir_all(&cache_dir);
@@ -215,203 +207,6 @@ fn file_sha256_hex(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Fails early, before anything is downloaded, when this build cannot replace
-/// itself (for example an unsigned development build on macOS).
-#[cfg(target_os = "macos")]
-pub fn ensure_install_supported() -> Result<()> {
-    running_signed_bundle().map(|_| ())
-}
-
-#[cfg(not(target_os = "macos"))]
-#[allow(clippy::unnecessary_wraps)] // Same signature as the macOS check.
-pub fn ensure_install_supported() -> Result<()> {
-    Ok(())
-}
-
-/// The running `.app` bundle and the Team ID it is signed with.
-#[cfg(target_os = "macos")]
-fn running_signed_bundle() -> Result<(PathBuf, String)> {
-    let exe = std::env::current_exe().context("Failed to resolve the running executable")?;
-    let exe = exe.canonicalize().unwrap_or(exe);
-    let bundle = app_bundle_for_executable(&exe)
-        .context("Termy is not running from an app bundle; download the update manually instead")?;
-    let team_id = codesign_team_identifier(&bundle)?.with_context(|| {
-        format!(
-            "{} is not signed with a Developer ID; download the update manually instead",
-            bundle.display()
-        )
-    })?;
-    Ok((bundle, team_id))
-}
-
-#[cfg(target_os = "macos")]
-fn codesign_team_identifier(app: &Path) -> Result<Option<String>> {
-    let output = std::process::Command::new("codesign")
-        .args(["-dv", "--verbose=2"])
-        .arg(app)
-        .output()
-        .context("Failed to run codesign")?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    // codesign prints the signature details on stderr.
-    Ok(team_identifier_from_codesign_output(
-        &String::from_utf8_lossy(&output.stderr),
-    ))
-}
-
-/// Requires a valid, Apple-anchored signature from the same team as the
-/// running app before the downloaded bundle may replace it.
-#[cfg(target_os = "macos")]
-fn verify_app_signature(app: &Path, expected_team_id: &str) -> Result<()> {
-    // A leading `=` makes codesign read the requirement as text, not a path.
-    let requirement = format!(
-        "-R=anchor apple generic and certificate leaf[subject.OU] = \"{expected_team_id}\""
-    );
-    let output = std::process::Command::new("codesign")
-        .args(["--verify", "--deep", "--strict"])
-        .arg(&requirement)
-        .arg(app)
-        .output()
-        .context("Failed to run codesign")?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "The downloaded app failed code signature verification: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    let team_id = codesign_team_identifier(app)?;
-    if team_id.as_deref() != Some(expected_team_id) {
-        anyhow::bail!(
-            "The downloaded app is signed by team {}, expected {expected_team_id}",
-            team_id.as_deref().unwrap_or("(none)")
-        );
-    }
-    Ok(())
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn team_identifier_from_codesign_output(output: &str) -> Option<String> {
-    output
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("TeamIdentifier="))
-        .map(str::trim)
-        // Team IDs are short alphanumeric strings; anything else (such as
-        // "not set" for ad-hoc signatures) means there is no team.
-        .filter(|team| !team.is_empty() && team.chars().all(|ch| ch.is_ascii_alphanumeric()))
-        .map(ToOwned::to_owned)
-}
-
-/// `/Applications/Termy.app/Contents/MacOS/termy` -> `/Applications/Termy.app`.
-#[cfg(any(target_os = "macos", test))]
-fn app_bundle_for_executable(exe: &Path) -> Option<PathBuf> {
-    let macos_dir = exe.parent()?;
-    let contents_dir = macos_dir.parent()?;
-    let bundle = contents_dir.parent()?;
-    let is_bundle = macos_dir.file_name()? == "MacOS"
-        && contents_dir.file_name()? == "Contents"
-        && bundle
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("app"));
-    is_bundle.then(|| bundle.to_path_buf())
-}
-
-#[cfg(target_os = "macos")]
-pub fn do_install(dmg_path: &PathBuf) -> Result<InstallOutcome> {
-    use std::process::Command;
-
-    // Replace the bundle that is actually running, wherever it lives (e.g.
-    // ~/Applications), and only with an app signed by the same team.
-    let (running_bundle, team_id) = running_signed_bundle()?;
-    let install_dir = running_bundle
-        .parent()
-        .context("Running app bundle has no parent directory")?
-        .to_path_buf();
-    let bundle_name = running_bundle
-        .file_name()
-        .and_then(|name| name.to_str())
-        .context("Running app bundle is missing a valid file name")?
-        .to_string();
-
-    // Mount the DMG
-    let mount = Command::new("hdiutil")
-        .args(["attach", "-nobrowse", "-readonly"])
-        .arg(dmg_path)
-        .output()
-        .context("Failed to mount DMG")?;
-
-    if !mount.status.success() {
-        anyhow::bail!(
-            "hdiutil attach failed: {}",
-            String::from_utf8_lossy(&mount.stderr)
-        );
-    }
-
-    let mount_stdout = String::from_utf8_lossy(&mount.stdout);
-    let mount_point = mount_stdout
-        .lines()
-        .find_map(|line| {
-            line.find("/Volumes/")
-                .map(|start| PathBuf::from(line[start..].trim()))
-        })
-        .context(format!(
-            "Could not determine mounted volume from hdiutil output: {}",
-            mount_stdout.trim()
-        ))?;
-
-    let install_result: Result<()> = (|| {
-        let mut app_path = None;
-        for entry in std::fs::read_dir(&mount_point).context("Failed to read mounted volume")? {
-            let entry = entry?;
-            let path = entry.path();
-            let is_app = path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("app"));
-            if !is_app {
-                continue;
-            }
-            if path.file_name().and_then(|n| n.to_str()) == Some("Termy.app") {
-                app_path = Some(path);
-                break;
-            }
-            if app_path.is_none() {
-                app_path = Some(path);
-            }
-        }
-
-        let app_path = app_path.context("No .app bundle found inside mounted DMG")?;
-        verify_app_signature(&app_path, &team_id)?;
-        super::staged_install::install_staged(&install_dir, &[bundle_name.as_str()], |stage| {
-            // ditto preserves bundle metadata; only a complete copy is published.
-            let copy_result = Command::new("ditto")
-                .arg(&app_path)
-                .arg(stage.join(&bundle_name))
-                .output()
-                .with_context(|| {
-                    format!("Failed to stage app bundle in {}", install_dir.display())
-                })?;
-            if !copy_result.status.success() {
-                anyhow::bail!(
-                    "ditto failed: {}",
-                    String::from_utf8_lossy(&copy_result.stderr)
-                );
-            }
-            // Verify the copy too, so nothing changed between check and install.
-            verify_app_signature(&stage.join(&bundle_name), &team_id)
-        })
-    })();
-
-    // Always try to detach, even if install failed.
-    let _ = Command::new("hdiutil")
-        .arg("detach")
-        .arg(&mount_point)
-        .arg("-quiet")
-        .output();
-
-    install_result.map(|()| InstallOutcome::Installed)
-}
-
 #[cfg(target_os = "windows")]
 pub fn do_install(installer_path: &PathBuf) -> Result<InstallOutcome> {
     let extension = installer_path
@@ -534,9 +329,9 @@ fn quote_windows_arg(arg: &str) -> String {
     quoted
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(target_os = "windows"))]
 pub fn do_install(_installer_path: &PathBuf) -> Result<InstallOutcome> {
-    anyhow::bail!("Auto-install is only supported on macOS and Windows")
+    anyhow::bail!("Auto-install is only supported on Windows")
 }
 
 #[cfg(test)]
@@ -589,38 +384,6 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
         assert_eq!(
             expected_sha256_for_asset(checksums, "Termy-v1.2.3-windows-x64-Setup.exe", true),
-            None
-        );
-    }
-
-    #[test]
-    fn team_identifier_is_parsed_from_codesign_details() {
-        let details = "Executable=/Applications/Termy.app/Contents/MacOS/termy
-Identifier=com.lassevestergaard.termy
-Authority=Developer ID Application: Example (AB12CD34EF)
-TeamIdentifier=AB12CD34EF
-";
-        assert_eq!(
-            team_identifier_from_codesign_output(details),
-            Some("AB12CD34EF".to_string())
-        );
-        assert_eq!(
-            team_identifier_from_codesign_output("Signature=adhoc\nTeamIdentifier=not set\n"),
-            None
-        );
-        assert_eq!(team_identifier_from_codesign_output(""), None);
-    }
-
-    #[test]
-    fn app_bundle_is_resolved_from_the_running_executable() {
-        assert_eq!(
-            app_bundle_for_executable(Path::new(
-                "/Users/me/Applications/Termy.app/Contents/MacOS/termy"
-            )),
-            Some(PathBuf::from("/Users/me/Applications/Termy.app"))
-        );
-        assert_eq!(
-            app_bundle_for_executable(Path::new("/home/me/termy/target/debug/termy")),
             None
         );
     }

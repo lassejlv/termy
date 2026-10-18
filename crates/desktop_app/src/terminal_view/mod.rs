@@ -3565,6 +3565,9 @@ impl TerminalView {
             .detach();
         cx.on_app_quit(|view, _cx| {
             view.prepare_multiplexer_detach();
+            // Sparkle's "Install and Relaunch" terminates the app without the
+            // quit flow, so the workspace must be flushed here too.
+            view.sync_persisted_native_workspace();
             async {}
         })
         .detach();
@@ -3625,6 +3628,8 @@ impl TerminalView {
             .detach();
         }
 
+        #[cfg(target_os = "macos")]
+        crate::auto_update::sparkle::sync_automatic_checks(config.auto_update, cx);
         if config.auto_update
             && let Some(updater) = view.ensure_auto_updater(cx)
         {
@@ -3741,6 +3746,8 @@ impl TerminalView {
             cx.text_system().as_ref(),
         );
         crate::app_icon::apply_from_config(&config);
+        #[cfg(target_os = "macos")]
+        crate::auto_update::sparkle::sync_automatic_checks(config.auto_update, cx);
         keybindings::install_keybindings(cx, &config, self.runtime_uses_tmux());
         self.cached_tmux_binary = {
             let binary = config.tmux_binary.trim().to_string();

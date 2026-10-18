@@ -65,6 +65,18 @@ jobs:
       - name: Build, sign, and notarize DMG
         run: ./scripts/build-dmg-signed.sh --version "$VERSION" --arch "${{ matrix.arch }}" --target "${{ matrix.target }}" --no-layout
 
+      - name: Sign DMG for Sparkle
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          sparkle_dir="$(./scripts/fetch-sparkle.sh)"
+          python3 scripts/sparkle-appcast.py sign \
+            --sign-update "$sparkle_dir/bin/sign_update" \
+            --dmg "dist/Termy-$VERSION-macos-${{ matrix.arch }}-signed.dmg" \
+            --info-plist "target/${{ matrix.target }}/release/bundle/osx/Termy.app/Contents/Info.plist" \
+            --arch "${{ matrix.arch }}" \
+            --out "dist/sparkle-${{ matrix.arch }}.json"
+
       - name: Remove signing credentials
         if: always()
         run: |
@@ -77,7 +89,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: termy-dmg-${{ matrix.arch }}
-          path: dist/Termy-${{ env.VERSION }}-macos-${{ matrix.arch }}-signed.dmg
+          path: |
+            dist/Termy-${{ env.VERSION }}-macos-${{ matrix.arch }}-signed.dmg
+            dist/sparkle-${{ matrix.arch }}.json
           if-no-files-found: error
 
   build-windows-setup:
@@ -222,11 +236,31 @@ jobs:
       contents: write
       actions: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          sparse-checkout: scripts
+
       - name: Download all artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
+
+      - name: Generate Sparkle appcasts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BODY: ${{ github.event.release.body }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          notes_args=()
+          if [[ -n "${RELEASE_BODY//[[:space:]]/}" ]]; then
+            gh api markdown -f text="$RELEASE_BODY" -f mode=gfm -f context="$GITHUB_REPOSITORY" > "$RUNNER_TEMP/release-notes.html"
+            notes_args=(--notes-html "$RUNNER_TEMP/release-notes.html")
+          fi
+          python3 scripts/sparkle-appcast.py feed \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" "${notes_args[@]}" \
+            --out-dir dist dist/sparkle-*.json
 
       - name: Generate SHA256 checksums
         shell: bash
@@ -249,5 +283,6 @@ jobs:
             dist/*.deb
             dist/*.rpm
             dist/checksums.txt
+            dist/appcast-*.xml
           fail_on_unmatched_files: true
           overwrite_files: true

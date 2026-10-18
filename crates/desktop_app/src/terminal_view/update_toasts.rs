@@ -90,6 +90,8 @@ impl UpdateToasts {
 
     /// Show a "checking" toast for a manual check, unless an update toast is
     /// already in progress (another window may have started the check).
+    /// macOS checks go through Sparkle's own UI.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(super) fn show_checking(cx: &mut App) {
         let toasts = cx.default_global::<Self>();
         if toasts.update_check_toast_id.is_none() {
