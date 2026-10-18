@@ -1,5 +1,6 @@
 //! Native window tabs (`tab_style = native`): when they apply, where a new
-//! terminal window goes, and the AppKit hookup on macOS.
+//! terminal window goes, and the AppKit hookup on macOS. On Windows the same
+//! setting selects the Windows 11 style of Termy's own tab strip.
 
 use crate::config;
 #[cfg(target_os = "macos")]
@@ -17,6 +18,14 @@ pub(crate) fn native_window_tabs_enabled(config: &config::AppConfig) -> bool {
         && !config.tmux_enabled
         && !config.sidebar_enabled
         && !config.native_tab_persistence
+}
+
+/// Windows has no OS tab API, so there `tab_style = native` keeps Termy's
+/// tab model and draws its horizontal strip in the Windows 11 (WinUI
+/// `TabView`) style. Unlike AppKit tabs it works with tmux, workspaces and
+/// saved tabs.
+pub(crate) fn windows_native_tab_style(config: &config::AppConfig) -> bool {
+    cfg!(target_os = "windows") && config.tab_style == config::TabStyle::Native
 }
 
 /// Where a new terminal window goes.
@@ -88,7 +97,7 @@ pub(crate) fn install(cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::native_window_tabs_enabled;
+    use super::{native_window_tabs_enabled, windows_native_tab_style};
     use crate::config::{AppConfig, TabStyle};
 
     #[test]
@@ -112,5 +121,27 @@ mod tests {
             disable(&mut config);
             assert!(!native_window_tabs_enabled(&config));
         }
+    }
+
+    #[test]
+    fn windows_native_tab_style_follows_tab_style_on_windows_only() {
+        let config = AppConfig::default();
+        assert_eq!(
+            windows_native_tab_style(&config),
+            cfg!(target_os = "windows")
+        );
+
+        let mut custom = config.clone();
+        custom.tab_style = TabStyle::Custom;
+        assert!(!windows_native_tab_style(&custom));
+
+        // Termy keeps its own tab model, so tmux and workspaces still apply.
+        let mut tmux_and_sidebar = config.clone();
+        tmux_and_sidebar.tmux_enabled = true;
+        tmux_and_sidebar.sidebar_enabled = true;
+        assert_eq!(
+            windows_native_tab_style(&tmux_and_sidebar),
+            cfg!(target_os = "windows")
+        );
     }
 }

@@ -58,7 +58,9 @@ impl PtyDimensions {
 }
 
 /// How the program ended. On Unix exactly one field is set; on Windows only
-/// `code` is, as an unsigned `DWORD`.
+/// `code` is, as an unsigned `DWORD`. A Windows program Termy terminated (on
+/// [`Pty::kill`], drop, or a close it did not finish within 250 ms) reports
+/// `0xC000013A` (`STATUS_CONTROL_C_EXIT`), never a plain exit code.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PtyExit {
     pub code: Option<i64>,
@@ -82,7 +84,8 @@ impl From<ChildExit> for PtyExit {
 ///
 /// Dropping a `Pty` hangs up the session: Unix children receive `SIGHUP`, then
 /// `SIGKILL` if they are still running 250 ms later; Windows children are
-/// terminated.
+/// terminated together with the console programs they started (GUI programs
+/// they launched keep running).
 pub struct Pty {
     transport: Transport,
 }
@@ -150,16 +153,11 @@ impl Pty {
     }
 
     /// Name of the program in the foreground of the PTY, such as `vim` while
-    /// it runs in a shell. `None` when unknown, and always on Windows.
+    /// it runs in a shell. `None` when unknown. Windows has no foreground
+    /// process group, so there it is the newest descendant of the program,
+    /// with its extension (`vim.exe`).
     pub fn foreground_process_name(&self) -> Option<String> {
-        #[cfg(not(windows))]
-        {
-            self.transport.foreground_process_name()
-        }
-        #[cfg(windows)]
-        {
-            None
-        }
+        self.transport.foreground_process_name()
     }
 }
 

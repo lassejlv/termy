@@ -58,7 +58,10 @@ impl TerminalView {
         _sidebar_tabs: bool,
         show_tab_strip_chrome: bool,
     ) -> f32 {
-        Self::window_titlebar_height_for_platform(cfg!(target_os = "macos"), show_tab_strip_chrome)
+        Self::window_titlebar_height_for_platform(
+            cfg!(any(target_os = "macos", target_os = "windows")),
+            show_tab_strip_chrome,
+        )
     }
 
     fn window_titlebar_height_for_platform(
@@ -139,7 +142,7 @@ mod tests {
     }
 
     #[test]
-    fn linux_and_windows_titlebar_height_collapses_when_tab_strip_hidden() {
+    fn linux_titlebar_height_collapses_when_tab_strip_hidden() {
         assert_eq!(
             TerminalView::window_titlebar_height_for_platform(false, false),
             0.0

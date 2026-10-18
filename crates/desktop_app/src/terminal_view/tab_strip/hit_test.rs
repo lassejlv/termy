@@ -2,11 +2,31 @@ use super::super::*;
 use super::layout::TabStripGeometry;
 
 impl TerminalView {
+    /// Termy-style spacing; the strip itself passes its geometry's spacing.
+    #[cfg(test)]
     pub(crate) fn unified_titlebar_tab_shell_hit_test(
         pointer_x: f32,
         pointer_y: f32,
         tab_widths: impl IntoIterator<Item = f32>,
         scroll_offset_x: f32,
+    ) -> bool {
+        Self::unified_titlebar_tab_shell_hit_test_with_spacing(
+            pointer_x,
+            pointer_y,
+            tab_widths,
+            scroll_offset_x,
+            TAB_HORIZONTAL_PADDING,
+            TAB_ITEM_GAP,
+        )
+    }
+
+    pub(crate) fn unified_titlebar_tab_shell_hit_test_with_spacing(
+        pointer_x: f32,
+        pointer_y: f32,
+        tab_widths: impl IntoIterator<Item = f32>,
+        scroll_offset_x: f32,
+        leading_padding: f32,
+        item_gap: f32,
     ) -> bool {
         let tab_top = TOP_STRIP_CONTENT_OFFSET_Y;
         let tab_bottom = TOP_STRIP_CONTENT_OFFSET_Y + TABBAR_HEIGHT;
@@ -14,13 +34,13 @@ impl TerminalView {
             return false;
         }
 
-        let mut left = TAB_HORIZONTAL_PADDING + scroll_offset_x;
+        let mut left = leading_padding + scroll_offset_x;
         for width in tab_widths {
             let right = left + width;
             if pointer_x >= left && pointer_x < right {
                 return true;
             }
-            left = right + TAB_ITEM_GAP;
+            left = right + item_gap;
         }
 
         false
@@ -43,8 +63,14 @@ impl TerminalView {
 
         if geometry.contains_tabs_viewport_x(x) {
             let pointer_x = (x - geometry.row_start_x).clamp(0.0, geometry.tabs_viewport_width);
-            if Self::unified_titlebar_tab_shell_hit_test(pointer_x, y, tab_widths, scroll_offset_x)
-            {
+            if Self::unified_titlebar_tab_shell_hit_test_with_spacing(
+                pointer_x,
+                y,
+                tab_widths,
+                scroll_offset_x,
+                geometry.tab_leading_padding,
+                geometry.tab_item_gap,
+            ) {
                 return true;
             }
         }
@@ -124,6 +150,44 @@ mod tests {
             widths,
             scroll_offset_x
         ));
+    }
+
+    #[test]
+    fn shell_hit_test_uses_adjacent_tabs_without_gap() {
+        let widths = [100.0, 120.0];
+        let leading = 8.0;
+        let y = tab_hit_test_y();
+        // Gapless tabs: the first pixel after tab 0 already belongs to tab 1.
+        assert!(
+            TerminalView::unified_titlebar_tab_shell_hit_test_with_spacing(
+                leading + 100.0,
+                y,
+                widths,
+                0.0,
+                leading,
+                0.0,
+            )
+        );
+        assert!(
+            !TerminalView::unified_titlebar_tab_shell_hit_test_with_spacing(
+                leading - 1.0,
+                y,
+                widths,
+                0.0,
+                leading,
+                0.0,
+            )
+        );
+        assert!(
+            !TerminalView::unified_titlebar_tab_shell_hit_test_with_spacing(
+                leading + 220.0,
+                y,
+                widths,
+                0.0,
+                leading,
+                0.0,
+            )
+        );
     }
 
     #[test]

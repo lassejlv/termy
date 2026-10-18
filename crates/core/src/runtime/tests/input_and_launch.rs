@@ -520,7 +520,12 @@ fn public_resolver_preserves_every_windows_startup_command_launch() {
         (
             WindowsShell::Cmd,
             windows_cmd_path(),
-            vec!["/C".to_string(), command.to_string()],
+            vec![
+                "/D".to_string(),
+                "/S".to_string(),
+                "/C".to_string(),
+                command.to_string(),
+            ],
         ),
         (
             WindowsShell::PowerShell,
@@ -585,8 +590,147 @@ fn public_resolver_preserves_custom_windows_shell_startup_behavior() {
     let startup = TerminalLaunch::ShellCommand("echo startup".to_string());
     let command = resolve_terminal_launch(&runtime_config, Some(&startup))
         .expect("custom Windows startup command launch");
-    assert_eq!(command.program, "cmd.exe");
-    assert_eq!(command.args, ["/C", "echo startup"]);
+    assert_eq!(command.program, windows_cmd_path());
+    assert_eq!(command.args, ["/D", "/S", "/C", "echo startup"]);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn custom_windows_shell_runs_startup_commands_with_its_own_command_flag() {
+    let startup = TerminalLaunch::ShellCommand(r#"echo "quoted" & dir"#.to_string());
+    let cases = [
+        (
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            vec![
+                "-NoLogo",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                r#"echo "quoted" & dir"#,
+            ],
+        ),
+        (
+            r"C:\Program Files\Git\bin\bash.exe",
+            vec!["-lc", r#"echo "quoted" & dir"#],
+        ),
+        (
+            r"D:\tools\CMD.EXE",
+            vec!["/D", "/S", "/C", r#"echo "quoted" & dir"#],
+        ),
+    ];
+    for (shell, args) in cases {
+        let resolved = resolve_terminal_launch(
+            &TerminalRuntimeConfig {
+                shell: Some(shell.to_string()),
+                ..TerminalRuntimeConfig::default()
+            },
+            Some(&startup),
+        )
+        .expect("custom Windows startup command launch");
+        assert_eq!(resolved.program, shell);
+        assert_eq!(resolved.args, args);
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_shell_family_classifies_executable_names() {
+    for (program, family) in [
+        (r"C:\Windows\System32\cmd.exe", WindowsShellFamily::Cmd),
+        ("pwsh", WindowsShellFamily::PowerShell),
+        ("PowerShell.EXE", WindowsShellFamily::PowerShell),
+        (r"C:\msys64\usr\bin\zsh.exe", WindowsShellFamily::Posix),
+        ("bash.exe. ", WindowsShellFamily::Posix),
+        (r"C:\Tools\nu.exe", WindowsShellFamily::Other),
+    ] {
+        assert_eq!(windows_shell_family(program), family, "{program}");
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn automatic_windows_shell_prefers_powershell_and_falls_back_to_cmd() {
+    let launch = default_shell_launch(&TerminalRuntimeConfig::default());
+    match windows_shell_family(&launch.program) {
+        WindowsShellFamily::PowerShell => assert_eq!(launch.args, ["-NoLogo"]),
+        WindowsShellFamily::Cmd => assert!(launch.args.is_empty()),
+        family => panic!("unexpected automatic shell {family:?}: {}", launch.program),
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn git_bash_is_never_the_wsl_launcher() {
+    let bash = windows_git_bash_path().to_ascii_lowercase();
+    let system_root = std::env::var("SystemRoot")
+        .unwrap_or_else(|_| r"C:\Windows".to_string())
+        .to_ascii_lowercase();
+    assert!(!bash.starts_with(&system_root), "{bash}");
+    assert!(!bash.contains(r"\microsoft\windowsapps\"), "{bash}");
+    assert!(bash.ends_with(r"\bash.exe"), "{bash}");
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn user_path_replaces_normalized_path_case_insensitively() {
+    let config = TerminalRuntimeConfig {
+        environment: HashMap::from([("Path".to_string(), r"C:\only".to_string())]),
+        ..TerminalRuntimeConfig::default()
+    };
+    let env = terminal_environment_overrides(None, &config);
+    let paths = env
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("PATH"))
+        .collect::<Vec<_>>();
+    assert_eq!(paths, [(&"Path".to_string(), &r"C:\only".to_string())]);
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn windows_shell_integration_wraps_interactive_powershell_and_cmd() {
+    let enabled = TabTitleShellIntegration {
+        enabled: true,
+        explicit_prefix: String::new(),
+    };
+    let mut pwsh = ResolvedTerminalLaunch {
+        program: r"C:\Program Files\PowerShell\7\pwsh.exe".to_string(),
+        args: vec!["-NoLogo".to_string()],
+    };
+    let mut environment = HashMap::new();
+    apply_windows_shell_integration(&mut pwsh, &mut environment, Some(&enabled));
+    assert_eq!(pwsh.args[..3], ["-NoLogo", "-NoExit", "-Command"]);
+    assert!(pwsh.args[3].contains("133;A"));
+    assert!(!pwsh.args[3].contains('"'));
+
+    let mut disabled_pwsh = ResolvedTerminalLaunch {
+        program: "pwsh.exe".to_string(),
+        args: vec!["-NoLogo".to_string()],
+    };
+    apply_windows_shell_integration(&mut disabled_pwsh, &mut environment, None);
+    assert_eq!(disabled_pwsh.args, ["-NoLogo"]);
+
+    let mut cmd = ResolvedTerminalLaunch {
+        program: windows_cmd_path(),
+        args: Vec::new(),
+    };
+    let mut cmd_environment = HashMap::new();
+    apply_windows_shell_integration(&mut cmd, &mut cmd_environment, Some(&enabled));
+    if !inherited_prompt_is_custom(std::env::var_os("PROMPT").as_deref()) {
+        assert!(cmd_environment["PROMPT"].contains("$e]133;A"));
+    }
+    let mut user_environment = HashMap::from([("prompt".to_string(), "$G".to_string())]);
+    apply_windows_shell_integration(&mut cmd, &mut user_environment, Some(&enabled));
+    assert!(!user_environment.contains_key("PROMPT"));
+    assert!(cmd.args.is_empty());
+
+    assert!(!inherited_prompt_is_custom(None));
+    assert!(!inherited_prompt_is_custom(Some(std::ffi::OsStr::new(
+        "$p$g"
+    ))));
+    assert!(inherited_prompt_is_custom(Some(std::ffi::OsStr::new(
+        "$T $P$G"
+    ))));
 }
 
 #[cfg(target_os = "windows")]

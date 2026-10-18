@@ -291,6 +291,26 @@ mod tests {
     }
 
     #[test]
+    fn selects_windows_setup_for_each_architecture() {
+        // The names the release workflow uploads for each Windows matrix entry.
+        let assets = vec![
+            asset("checksums.txt"),
+            asset("Termy-v1.0.0-windows-x64-Setup.exe"),
+            asset("Termy-v1.0.0-windows-arm64-Setup.exe"),
+        ];
+
+        for (arch, expected_name) in [
+            ("x86_64", "Termy-v1.0.0-windows-x64-Setup.exe"),
+            ("arm64", "Termy-v1.0.0-windows-arm64-Setup.exe"),
+        ] {
+            let selected = select_platform_asset(&assets, PlatformKind::Windows, arch)
+                .expect("Windows Setup asset");
+            assert_eq!(selected.name, expected_name);
+            assert_eq!(extension_for_asset_name(&selected.name), "exe");
+        }
+    }
+
+    #[test]
     fn selects_signed_macos_assets_and_checksum_manifest() {
         let assets = vec![
             asset("checksums.txt"),

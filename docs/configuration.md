@@ -123,7 +123,7 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - Group: `TMUX`
 
 `windows_shell`
-- Default: `cmd`
+- Default: `auto`
 - Preset shell used for new sessions on Windows
 - Group: `SHELL`
 
@@ -277,7 +277,7 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 
 `tab_style`
 - Default: `native`
-- macOS only: native window tabs or Termy's custom tab strip (applies to new windows)
+- native: macOS window tabs (applies to new windows) or Windows 11-style tabs; custom: Termy's tab strip
 - Group: `TAB STRIP`
 
 `tab_switch_modifier_hints`

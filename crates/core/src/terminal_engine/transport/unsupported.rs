@@ -12,7 +12,18 @@ fn unsupported() -> io::Error {
 }
 
 impl Transport {
+    // Hosts that answer terminal queries use `spawn_answering_queries`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn spawn(
+        _config: SpawnConfig,
+        _size: PtySize,
+        _on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
+        _on_exit: impl FnOnce() + Send + 'static,
+    ) -> io::Result<Self> {
+        Err(unsupported())
+    }
+
+    pub(crate) fn spawn_answering_queries(
         _config: SpawnConfig,
         _size: PtySize,
         _on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,

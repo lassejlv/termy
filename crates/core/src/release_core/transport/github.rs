@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::release_core::source::{ReleaseAsset, ReleasePayload, ReleaseSource};
+use crate::release_core::transport::http_agent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GithubReleaseSource {
@@ -17,8 +18,8 @@ impl GithubReleaseSource {
 impl ReleaseSource for GithubReleaseSource {
     fn fetch_latest_release(&self) -> Result<ReleasePayload> {
         let url = format!("https://api.github.com/repos/{}/releases/latest", self.repo);
-        let response: GithubRelease = ureq::get(&url)
-            .set("User-Agent", "Termy-Updater/1.0")
+        let response: GithubRelease = http_agent()
+            .get(&url)
             .set("Accept", "application/vnd.github+json")
             .call()
             .with_context(|| {

@@ -14,6 +14,8 @@ use std::{
 };
 
 pub use error::ConfigIoError;
+#[cfg(target_os = "windows")]
+pub(crate) use io::shell_execute_open;
 pub(crate) use io::write_atomic_unsynced;
 pub use io::{ensure_config_file, open_config_file, subscribe_config_changes};
 pub use mutate::{

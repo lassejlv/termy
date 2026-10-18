@@ -131,6 +131,10 @@ if (-not $Version) {
     $Version = Get-CargoPackageVersion -CargoTomlPath $cargoToml
 }
 
+# Release builds pass the tag (v1.2.3). The output file keeps it so the asset
+# name matches the tag; the version Windows shows has no "v".
+$appVersion = $Version -replace '^v', ''
+
 if (-not $Target) {
     $Target = Get-DefaultTarget
 }
@@ -163,10 +167,21 @@ if (-not (Test-Path $cliExePath)) {
 
 $isccPath = Resolve-IsccPath
 Write-Host "Using ISCC at $isccPath"
-Write-Host "Packaging Termy $Version ($Arch)..."
+Write-Host "Packaging Termy $appVersion ($Arch)..."
+
+# Optional: release CI drops the ConPTY NuGet binaries beside termy.exe.
+$releaseDir = Split-Path -Parent $exePath
+foreach ($conptyFile in @("conpty.dll", "OpenConsole.exe")) {
+    if (Test-Path (Join-Path $releaseDir $conptyFile)) {
+        Write-Host "Bundling $conptyFile"
+    } else {
+        Write-Host "No $conptyFile beside termy.exe; the installer relies on the system ConPTY"
+    }
+}
 
 & $isccPath `
-    "/DMyAppVersion=$Version" `
+    "/DMyAppVersion=$appVersion" `
+    "/DMyOutputVersion=$Version" `
     "/DMyArch=$Arch" `
     "/DMyTarget=$Target" `
     "/DMyExeName=termy.exe" `

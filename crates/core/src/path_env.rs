@@ -1,7 +1,10 @@
 use std::{env, ffi::OsStr, path::PathBuf};
 
 #[cfg(target_os = "windows")]
-use std::ffi::OsString;
+use std::{
+    ffi::OsString,
+    os::windows::ffi::{OsStrExt, OsStringExt},
+};
 
 #[cfg(not(target_os = "windows"))]
 const DEFAULT_SYSTEM_PATH_ENTRIES: [&str; 4] = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"];
@@ -29,10 +32,10 @@ fn push_unique_path(entries: &mut Vec<PathBuf>, entry: PathBuf) {
 
     #[cfg(target_os = "windows")]
     let duplicate = {
-        let candidate = entry.to_string_lossy().to_ascii_lowercase();
+        let candidate = windows_path_identity(&entry);
         entries
             .iter()
-            .any(|existing| existing.to_string_lossy().to_ascii_lowercase() == candidate)
+            .any(|existing| windows_path_identity(existing) == candidate)
     };
 
     #[cfg(not(target_os = "windows"))]
@@ -43,6 +46,22 @@ fn push_unique_path(entries: &mut Vec<PathBuf>, entry: PathBuf) {
     }
 }
 
+/// How Windows compares directories: case-insensitively, with either slash,
+/// and with or without a trailing separator (`C:\Tools\` is `c:/tools`).
+#[cfg(target_os = "windows")]
+fn windows_path_identity(entry: &std::path::Path) -> String {
+    let text = entry.to_string_lossy().replace('/', "\\");
+    let trimmed = text.trim_end_matches('\\');
+    // Keep a drive root's separator: `C:` alone means that drive's current
+    // directory, not its root.
+    let trimmed = if trimmed.len() == 2 && trimmed.ends_with(':') {
+        &text[..3.min(text.len())]
+    } else {
+        trimmed
+    };
+    trimmed.to_lowercase()
+}
+
 fn push_split_paths(entries: &mut Vec<PathBuf>, path: Option<&OsStr>) {
     if let Some(path) = path {
         for entry in env::split_paths(path) {
@@ -51,36 +70,45 @@ fn push_split_paths(entries: &mut Vec<PathBuf>, path: Option<&OsStr>) {
     }
 }
 
+/// Expand `%NAME%` references in a `REG_EXPAND_SZ` value. Works on UTF-16
+/// code units so that values which are not valid Unicode survive unchanged.
 #[cfg(target_os = "windows")]
 fn expand_windows_env_vars(value: &OsStr) -> OsString {
-    let mut input = value.to_string_lossy().into_owned();
-    let mut output = String::with_capacity(input.len());
+    const PERCENT: u16 = b'%' as u16;
+    let input = value.encode_wide().collect::<Vec<_>>();
+    let mut output = Vec::with_capacity(input.len());
+    let mut rest = input.as_slice();
 
-    while let Some(start) = input.find('%') {
-        output.push_str(&input[..start]);
-        let rest = &input[start + 1..];
-        let Some(end) = rest.find('%') else {
-            output.push('%');
-            output.push_str(rest);
-            input.clear();
+    while let Some(start) = rest.iter().position(|unit| *unit == PERCENT) {
+        output.extend_from_slice(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.iter().position(|unit| *unit == PERCENT) else {
+            output.push(PERCENT);
+            output.extend_from_slice(after);
+            rest = &[];
             break;
         };
 
-        let name = &rest[..end];
+        let name = &after[..end];
+        // `=` and NUL cannot appear in a variable name; looking them up
+        // would be an invalid environment query.
+        let lookup = (!name.is_empty() && !name.iter().any(|unit| matches!(*unit, 0 | 0x3D)))
+            .then(|| env::var_os(OsString::from_wide(name)))
+            .flatten();
         if name.is_empty() {
-            output.push_str("%%");
-        } else if let Some(value) = env::var_os(name) {
-            output.push_str(&value.to_string_lossy());
+            output.extend([PERCENT, PERCENT]);
+        } else if let Some(value) = lookup {
+            output.extend(value.encode_wide());
         } else {
-            output.push('%');
-            output.push_str(name);
-            output.push('%');
+            output.push(PERCENT);
+            output.extend_from_slice(name);
+            output.push(PERCENT);
         }
-        input = rest[end + 1..].to_string();
+        rest = &after[end + 1..];
     }
 
-    output.push_str(&input);
-    OsString::from(output)
+    output.extend_from_slice(rest);
+    OsString::from_wide(&output)
 }
 
 #[cfg(target_os = "windows")]
@@ -303,6 +331,45 @@ mod tests {
                 .filter(|entry| entry.to_string_lossy().eq_ignore_ascii_case(r"C:\Tools"))
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn normalized_path_env_ignores_trailing_separators_and_slashes() {
+        let raw = OsString::from(r"C:\Tools\;c:/tools;C:\;c:");
+        let path = normalized_windows_path_env(
+            Some(raw.as_os_str()),
+            Vec::<OsString>::new(),
+            Vec::<PathBuf>::new(),
+        )
+        .expect("normalized path");
+        let parsed = std::env::split_paths(&OsString::from(path)).collect::<Vec<_>>();
+
+        assert_eq!(
+            parsed
+                .iter()
+                .filter(|entry| {
+                    entry
+                        .to_string_lossy()
+                        .trim_end_matches('\\')
+                        .eq_ignore_ascii_case(r"C:\Tools")
+                })
+                .count(),
+            1
+        );
+        // A drive root and a bare drive (its current directory) differ.
+        assert!(parsed.contains(&PathBuf::from(r"C:\")));
+        assert!(parsed.contains(&PathBuf::from("c:")));
+    }
+
+    #[test]
+    fn expand_windows_env_vars_keeps_non_unicode_code_units() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        let raw = OsString::from_wide(&[0xD800, b'\\' as u16, b'%' as u16, b'%' as u16]);
+        let expanded = expand_windows_env_vars(raw.as_os_str());
+        assert_eq!(
+            expanded.encode_wide().collect::<Vec<_>>(),
+            [0xD800, b'\\' as u16, b'%' as u16, b'%' as u16]
         );
     }
 

@@ -21,8 +21,17 @@ impl StartupBlocker {
 
     pub(crate) fn message(&self) -> String {
         if let Self::MainWindowOpen(error) = self {
+            // Windows GUI builds have no stderr; point at the log file instead.
+            #[cfg(target_os = "windows")]
+            let diagnostics = format!(
+                "Recent Termy logs are in {}.",
+                crate::crash_log::log_file_path().display()
+            );
+            #[cfg(not(target_os = "windows"))]
+            let diagnostics =
+                "If this was launched from a terminal, keep this stderr message for support.";
             return format!(
-                "Termy cannot continue because it failed to open the main window.\n\nError:\n{error}\n\nRecovery:\n- Restart Termy and try again.\n- If this was launched from a terminal, keep this stderr message for support.\n- If the problem repeats, include your OS, display/GPU setup, and recent Termy logs in the bug report."
+                "Termy cannot continue because it failed to open the main window.\n\nError:\n{error}\n\nRecovery:\n- Restart Termy and try again.\n- {diagnostics}\n- If the problem repeats, include your OS, display/GPU setup, and recent Termy logs in the bug report."
             );
         }
 
@@ -36,7 +45,7 @@ impl StartupBlocker {
     pub(crate) fn present_alert_and_exit(self) -> ! {
         let message = self.message();
         eprintln!("Termy startup blocked:\n{message}");
-        crate::native_sdk::show_alert("Termy Startup Error", &message);
+        crate::native_sdk::show_error_alert("Termy Startup Error", &message);
         std::process::exit(1);
     }
 }
@@ -70,7 +79,10 @@ mod tests {
         assert!(message.contains("failed to open the main window"));
         assert!(message.contains("no display available"));
         assert!(message.contains("Restart Termy"));
+        #[cfg(not(target_os = "windows"))]
         assert!(message.contains("stderr"));
+        #[cfg(target_os = "windows")]
+        assert!(message.contains("termy.log"));
         assert!(message.contains("display/GPU"));
     }
 }

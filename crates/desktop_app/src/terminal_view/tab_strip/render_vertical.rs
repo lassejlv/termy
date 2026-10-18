@@ -263,6 +263,7 @@ impl TerminalView {
             let available_text_px = Self::tab_title_text_area_width(
                 tab_row_width,
                 text_reserve_slot_width + icon_slot_width,
+                TAB_TEXT_PADDING_X,
             );
             let label = Self::format_tab_label_for_render_measured(
                 &tab_title,
@@ -294,6 +295,7 @@ impl TerminalView {
                     hover_progress: self.tab_strip.hover_progress(index, now),
                     progress_state,
                     program_status,
+                    show_trailing_separator: false,
                 },
                 font_family,
                 colors,

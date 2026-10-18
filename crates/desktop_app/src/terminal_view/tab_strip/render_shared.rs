@@ -175,8 +175,9 @@ impl TerminalView {
         left_inset_width: f32,
     ) -> TabStripRenderState {
         let viewport_width: f32 = window.viewport_size().width.into();
-        let provisional_layout =
-            Self::tab_strip_layout_for_viewport_with_left_inset(viewport_width, left_inset_width);
+        let provisional_layout = Self::tab_strip_layout_for_input(
+            self.horizontal_tab_layout_input(viewport_width, left_inset_width, None),
+        );
         let tab_strip_viewport_width = provisional_layout.geometry.tabs_viewport_width;
         let _ = self.sync_tab_display_widths_for_viewport_if_needed(tab_strip_viewport_width);
         self.scroll_active_tab_into_view(TabStripOrientation::Horizontal);
@@ -184,11 +185,11 @@ impl TerminalView {
         // Windows places the "+" directly after the tabs and leaves the remaining
         // titlebar space draggable before the native caption buttons.
         #[cfg(target_os = "windows")]
-        let layout = Self::tab_strip_layout_for_viewport_with_left_inset_and_content_width(
+        let layout = Self::tab_strip_layout_for_input(self.horizontal_tab_layout_input(
             viewport_width,
             left_inset_width,
-            fixed_content_width,
-        );
+            Some(fixed_content_width),
+        ));
         // Other platforms keep the "+" right-anchored. Tabs remain left-aligned
         // inside the viewport, with the empty area available for window dragging.
         #[cfg(not(target_os = "windows"))]

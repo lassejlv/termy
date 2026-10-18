@@ -63,6 +63,10 @@ const BUNDLE_CACHE_FORMAT: &[u8] = b"termy-plugin-bundle-v3\0";
 const DISABLED_MARKER: &str = ".termy-disabled";
 const SOURCE_METADATA_FILE: &str = ".termy-source.json";
 const SETTINGS_FILE: &str = "settings.json";
+/// Keeps Bun, a console program, from opening a console window when the host
+/// is a GUI process.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 #[cfg(not(test))]
 const KEYRING_SERVICE: &str = "com.lassevestergaard.termy.plugin";
 
@@ -2717,6 +2721,11 @@ impl HostConnection {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
         copy_safe_environment(&mut command, &bun);
         let child = command
             .spawn()
@@ -3784,16 +3793,32 @@ fn resolve_bun_binary() -> Result<Option<PathBuf>, String> {
     Ok(None)
 }
 
+#[cfg(not(windows))]
 fn bun_candidate_in_dir(directory: &Path) -> Option<PathBuf> {
-    let names: &[&str] = if cfg!(target_os = "windows") {
-        &["bun.exe", "bun"]
-    } else {
-        &["bun"]
-    };
-    names
-        .iter()
-        .map(|name| directory.join(name))
-        .find(|path| is_executable_file(path))
+    let path = directory.join("bun");
+    is_executable_file(&path).then_some(path)
+}
+
+#[cfg(windows)]
+fn bun_candidate_in_dir(directory: &Path) -> Option<PathBuf> {
+    // An extensionless `bun` here is npm's shell-script shim, which Windows
+    // cannot start.
+    let exe = directory.join("bun.exe");
+    if is_executable_file(&exe) {
+        return Some(exe);
+    }
+    let shim = directory.join("bun.cmd");
+    if !is_executable_file(&shim) {
+        return None;
+    }
+    // npm's global `bun.cmd` runs the package's own bun.exe. Starting that
+    // directly means stopping the runtime stops Bun, not a cmd.exe wrapper.
+    let packaged = directory.join(r"node_modules\bun\bin\bun.exe");
+    if is_executable_file(&packaged) {
+        return Some(packaged);
+    }
+    // `Command` runs a `.cmd` through `cmd.exe /d /c` with batch-safe quoting.
+    Some(shim)
 }
 
 fn is_executable_file(path: &Path) -> bool {
@@ -3806,7 +3831,26 @@ fn is_executable_file(path: &Path) -> bool {
         path.metadata()
             .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // PATHEXT also lists script types (`.js`, `.vbs`) that only a shell
+        // association can open; `Command` can start programs and batch files.
+        let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+            return false;
+        };
+        let startable = ["exe", "com", "bat", "cmd"]
+            .iter()
+            .any(|startable| extension.eq_ignore_ascii_case(startable));
+        let path_ext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        startable
+            && path_ext.split(';').any(|entry| {
+                entry
+                    .trim()
+                    .strip_prefix('.')
+                    .is_some_and(|entry| entry.eq_ignore_ascii_case(extension))
+            })
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         true
     }
@@ -3865,8 +3909,18 @@ fn copy_safe_environment(command: &mut Command, bun: &Path) {
     if let Some(path) = plugin_path_env(bun) {
         command.env("PATH", path);
     }
+    // Windows programs, Bun included, need these to find system DLLs, the
+    // profile and per-user app data folders.
     #[cfg(target_os = "windows")]
-    for key in ["SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"] {
+    for key in [
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "APPDATA",
+        "LOCALAPPDATA",
+    ] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
         }

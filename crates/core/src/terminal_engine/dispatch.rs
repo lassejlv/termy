@@ -491,10 +491,9 @@ impl State {
                     // vte.sh and fish percent-encode the path of a file URL.
                     // Other shells send a literal `%`, so keep malformed
                     // escapes as written.
-                    Some((scheme, url)) if scheme.eq_ignore_ascii_case("file") => url
-                        .find('/')
-                        .map(|offset| &url[offset..])
-                        .map(|path| percent_decode(path).unwrap_or_else(|| path.to_owned())),
+                    Some((scheme, url)) if scheme.eq_ignore_ascii_case("file") => {
+                        url.find('/').map(|offset| file_url_path(&url[offset..]))
+                    }
                     Some(_) => None,
                     None => Some(rest.to_owned()),
                 };
@@ -982,6 +981,47 @@ fn split_url(text: &str) -> Option<(&str, &str)> {
     (bytes.next()?.is_ascii_alphabetic()
         && bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.')))
     .then_some((scheme, rest))
+}
+
+/// The working directory named by the path of a `file://host/path` URL.
+fn file_url_path(path: &str) -> String {
+    let path = percent_decode(path).unwrap_or_else(|| path.to_owned());
+    if cfg!(windows) {
+        windows_file_url_path(path)
+    } else {
+        path
+    }
+}
+
+/// A decoded `file://` URL path as a Windows path: `/C:/dir` becomes `C:\dir`
+/// and `//server/share/dir` (`file://host//server/share` or
+/// `file:////server/share`) becomes the UNC path `\\server\share\dir`.
+///
+/// A plain path is kept as sent even when the URL names another host: that is
+/// usually a shell over SSH or in WSL reporting its own `/home/me`, and reading
+/// it as `\\host\home\me` would make every cwd lookup try an SMB connection.
+fn windows_file_url_path(path: String) -> String {
+    let bytes = path.as_bytes();
+    let drive = bytes.len() >= 3
+        && bytes[0] == b'/'
+        && bytes[1].is_ascii_alphabetic()
+        && bytes[2] == b':'
+        && matches!(bytes.get(3).copied(), None | Some(b'/' | b'\\'));
+    if drive {
+        let mut path = path[1..].replace('/', "\\");
+        // `C:` alone is the drive's current directory, not its root.
+        if path.len() == 2 {
+            path.push('\\');
+        }
+        return path;
+    }
+    if let Some(share) = path.strip_prefix("//") {
+        let share = share.trim_start_matches('/');
+        if !share.is_empty() {
+            return format!(r"\\{}", share.replace('/', "\\"));
+        }
+    }
+    path
 }
 
 /// Decode `%XX` escapes; `None` for malformed escapes or non-UTF-8 results.

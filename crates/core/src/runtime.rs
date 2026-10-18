@@ -71,11 +71,15 @@ const MAX_TERMINAL_ROWS: u16 = 4096;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum WindowsShell {
-    #[default]
     Cmd,
     PowerShell,
     PowerShellCore,
     GitBash,
+    /// PowerShell 7 (`pwsh.exe`) when it is installed, else Windows
+    /// PowerShell, else the `COMSPEC` command processor. Declared last so
+    /// serialized indices of the explicit presets stay stable.
+    #[default]
+    Auto,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,39 +220,16 @@ pub struct ResolvedTerminalLaunch {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_cmd_path() -> String {
-    if let Ok(comspec) = env::var("COMSPEC")
-        && !comspec.trim().is_empty()
-    {
-        return comspec;
-    }
-    "C:\\Windows\\System32\\cmd.exe".to_string()
-}
-
+mod windows_shell;
+#[cfg(all(target_os = "windows", test))]
+use windows_shell::{
+    WindowsShellFamily, inherited_prompt_is_custom, windows_cmd_path, windows_git_bash_path,
+};
 #[cfg(target_os = "windows")]
-fn windows_git_bash_path() -> String {
-    let mut candidates = Vec::new();
-    if let Ok(program_files) = env::var("ProgramFiles")
-        && !program_files.trim().is_empty()
-    {
-        candidates.push(PathBuf::from(program_files).join("Git\\bin\\bash.exe"));
-    }
-    if let Ok(program_files_x86) = env::var("ProgramFiles(x86)")
-        && !program_files_x86.trim().is_empty()
-    {
-        candidates.push(PathBuf::from(program_files_x86).join("Git\\bin\\bash.exe"));
-    }
-    if let Ok(local_app_data) = env::var("LOCALAPPDATA")
-        && !local_app_data.trim().is_empty()
-    {
-        candidates.push(PathBuf::from(local_app_data).join("Programs\\Git\\bin\\bash.exe"));
-    }
-
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .map_or_else(|| "bash.exe".to_string(), |path| path.display().to_string())
-}
+use windows_shell::{
+    apply_windows_shell_integration, warn_cmd_unc_working_directory, windows_shell_family,
+    windows_shell_launch, windows_startup_command_launch, windows_startup_command_shell,
+};
 
 #[cfg(any(not(target_os = "windows"), test))]
 fn resolve_shell_path(configured_shell: Option<&str>) -> String {
@@ -278,67 +259,6 @@ fn resolve_shell_path(configured_shell: Option<&str>) -> String {
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
         "/bin/bash".to_string()
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn windows_shell_launch(windows_shell: WindowsShell) -> ResolvedTerminalLaunch {
-    match windows_shell {
-        WindowsShell::Cmd => ResolvedTerminalLaunch {
-            program: windows_cmd_path(),
-            args: Vec::new(),
-        },
-        WindowsShell::PowerShell => ResolvedTerminalLaunch {
-            program: "powershell.exe".to_string(),
-            args: vec!["-NoLogo".to_string()],
-        },
-        WindowsShell::PowerShellCore => ResolvedTerminalLaunch {
-            program: "pwsh.exe".to_string(),
-            args: vec!["-NoLogo".to_string()],
-        },
-        WindowsShell::GitBash => ResolvedTerminalLaunch {
-            program: windows_git_bash_path(),
-            args: vec!["--login".to_string(), "-i".to_string()],
-        },
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn windows_startup_command_shell(
-    windows_shell: WindowsShell,
-    command: &str,
-) -> ResolvedTerminalLaunch {
-    match windows_shell {
-        WindowsShell::Cmd => ResolvedTerminalLaunch {
-            program: windows_cmd_path(),
-            args: vec!["/C".to_string(), command.to_string()],
-        },
-        WindowsShell::PowerShell => ResolvedTerminalLaunch {
-            program: "powershell.exe".to_string(),
-            args: vec![
-                "-NoLogo".to_string(),
-                "-NoProfile".to_string(),
-                "-ExecutionPolicy".to_string(),
-                "Bypass".to_string(),
-                "-Command".to_string(),
-                command.to_string(),
-            ],
-        },
-        WindowsShell::PowerShellCore => ResolvedTerminalLaunch {
-            program: "pwsh.exe".to_string(),
-            args: vec![
-                "-NoLogo".to_string(),
-                "-NoProfile".to_string(),
-                "-ExecutionPolicy".to_string(),
-                "Bypass".to_string(),
-                "-Command".to_string(),
-                command.to_string(),
-            ],
-        },
-        WindowsShell::GitBash => ResolvedTerminalLaunch {
-            program: windows_git_bash_path(),
-            args: vec!["-lc".to_string(), command.to_string()],
-        },
     }
 }
 
@@ -407,16 +327,19 @@ pub fn resolve_terminal_launch(
 
         #[cfg(target_os = "windows")]
         {
-            if runtime_config
+            // A configured shell runs the command itself when it takes a
+            // known command flag; other shells fall back to COMSPEC.
+            if let Some(shell) = runtime_config
                 .shell
                 .as_deref()
                 .map(str::trim)
-                .is_some_and(|shell| !shell.is_empty())
+                .filter(|shell| !shell.is_empty())
             {
-                return Ok(ResolvedTerminalLaunch {
-                    program: "cmd.exe".to_string(),
-                    args: vec!["/C".to_string(), command.to_string()],
-                });
+                return Ok(windows_startup_command_launch(
+                    windows_shell_family(shell),
+                    shell.to_string(),
+                    command,
+                ));
             }
 
             return Ok(windows_startup_command_shell(
@@ -504,11 +427,19 @@ pub fn terminal_environment_overrides(
         TERMY_TERM_PROGRAM.to_string(),
     );
 
-    for (key, value) in &runtime_config.environment {
+    // Sorted so that names colliding case-insensitively on Windows (`PATH`
+    // and `Path`) resolve the same way on every launch.
+    let mut user_environment = runtime_config.environment.iter().collect::<Vec<_>>();
+    user_environment.sort_unstable_by(|left, right| left.0.cmp(right.0));
+    for (key, value) in user_environment {
         let key = key.trim();
         if key.is_empty() {
             continue;
         }
+        // Windows names are case-insensitive: a user `Path` replaces the
+        // normalized `PATH` instead of racing it into the child block.
+        #[cfg(target_os = "windows")]
+        env_overrides.retain(|existing, _| !existing.eq_ignore_ascii_case(key));
         env_overrides.insert(key.to_string(), value.clone());
     }
 

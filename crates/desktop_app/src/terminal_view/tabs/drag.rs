@@ -127,12 +127,13 @@ impl TerminalView {
             TabStripOrientation::Horizontal => {
                 let scroll_offset_x: f32 =
                     self.tab_strip.horizontal_scroll_handle.offset().x.into();
+                let metrics = self.horizontal_tab_metrics();
                 Self::tab_drop_slot_from_pointer_primary_axis_for_extents(
                     self.session.tabs.iter().map(|tab| tab.display_width),
                     pointer_primary_axis,
                     scroll_offset_x,
-                    TAB_HORIZONTAL_PADDING,
-                    TAB_ITEM_GAP,
+                    metrics.leading_padding,
+                    metrics.item_gap,
                 )
             }
             TabStripOrientation::Vertical => {

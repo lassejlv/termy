@@ -19,6 +19,27 @@ fn should_defer_key_down_to_ime(keystroke: &gpui_kit::Keystroke) -> bool {
         )
 }
 
+/// AltGr text on Windows, which arrives as Ctrl+Alt. GPUI flags it with
+/// `prefer_character_input` and skips key bindings for it. Leaving it to the
+/// platform text path (WM_CHAR) lets Windows compose AltGr dead keys: writing
+/// the key here would send the spacing accent and swallow the dead-key state,
+/// so the next letter would arrive uncombined.
+fn should_defer_altgr_key_down_to_ime(
+    keystroke: &gpui_kit::Keystroke,
+    prefer_character_input: bool,
+) -> bool {
+    cfg!(target_os = "windows")
+        && prefer_character_input
+        && keystroke.modifiers.control
+        && keystroke.modifiers.alt
+        && !keystroke.modifiers.platform
+        && !keystroke.modifiers.function
+        && keystroke
+            .key_char
+            .as_deref()
+            .is_some_and(|text| !text.is_empty())
+}
+
 /// A dead key starting an xkb compose sequence (Linux). GPUI shows the dead
 /// key as marked text first, then sends a KeyDown with no `key_char` whose
 /// `key` is only a US-layout guess for the physical key (e.g. `}` or `\`).
@@ -35,31 +56,143 @@ fn is_compose_dead_key(keystroke: &gpui_kit::Keystroke, composing: bool) -> bool
         && (keystroke.key.chars().count() == 1 || keystroke.key.starts_with("dead_"))
 }
 
-fn shell_quote_path(path: &Path) -> String {
+/// How pasted and dropped paths are quoted for the shell that reads them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PathQuoteStyle {
+    /// POSIX shells, including Git Bash and WSL on Windows: single quotes.
+    Posix,
+    /// cmd.exe: double quotes, which a Windows path cannot contain.
+    Cmd,
+    /// PowerShell: single quotes, with each literal quote doubled.
+    PowerShell,
+}
+
+impl PathQuoteStyle {
+    /// The style for a shell program path or name such as
+    /// `C:\Windows\System32\cmd.exe` or `pwsh`.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    fn for_shell_program(program: &str) -> Self {
+        let name = program
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(program)
+            .to_ascii_lowercase();
+        let name = name.strip_suffix(".exe").unwrap_or(name.as_str());
+        match name {
+            "cmd" => Self::Cmd,
+            "powershell" | "pwsh" => Self::PowerShell,
+            _ => Self::Posix,
+        }
+    }
+}
+
+/// PowerShell also ends a single-quoted string at typographic single quotes.
+fn is_powershell_single_quote(ch: char) -> bool {
+    matches!(ch, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}')
+}
+
+fn shell_quote_path(path: &Path, style: PathQuoteStyle) -> String {
     let path_str = path.to_string_lossy();
     let mut quoted = String::with_capacity(path_str.len() + 2);
-    quoted.push('\'');
-    quoted.push_str(&path_str.replace('\'', "'\\''"));
-    quoted.push('\'');
+    match style {
+        PathQuoteStyle::Posix => {
+            quoted.push('\'');
+            quoted.push_str(&path_str.replace('\'', "'\\''"));
+            quoted.push('\'');
+        }
+        PathQuoteStyle::Cmd => {
+            quoted.push('"');
+            quoted.push_str(&path_str);
+            quoted.push('"');
+        }
+        PathQuoteStyle::PowerShell => {
+            quoted.push('\'');
+            for ch in path_str.chars() {
+                if is_powershell_single_quote(ch) {
+                    quoted.push(ch);
+                }
+                quoted.push(ch);
+            }
+            quoted.push('\'');
+        }
+    }
     quoted
 }
 
-fn shell_quote_paths(paths: &[PathBuf]) -> String {
+fn shell_quote_paths(paths: &[PathBuf], style: PathQuoteStyle) -> String {
     paths
         .iter()
-        .map(|path| shell_quote_path(path))
+        .map(|path| shell_quote_path(path, style))
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-fn dropped_paths_to_terminal_paste_input(paths: &[PathBuf]) -> Option<Vec<u8>> {
+fn dropped_paths_to_terminal_paste_input(
+    paths: &[PathBuf],
+    style: PathQuoteStyle,
+) -> Option<Vec<u8>> {
     if paths.is_empty() {
         return None;
     }
 
-    let mut text = shell_quote_paths(paths);
+    let mut text = shell_quote_paths(paths, style);
     text.push(' ');
     Some(text.into_bytes())
+}
+
+/// Pasted line breaks become carriage returns, the byte Enter sends, as in
+/// xterm and Windows Terminal. A bare `\n` reaches Windows console programs
+/// as Ctrl+J, and `\r\n` would add an empty line after each pasted line.
+fn normalize_paste_line_endings(input: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    if !input.contains(&b'\n') {
+        return std::borrow::Cow::Borrowed(input);
+    }
+
+    let mut normalized = Vec::with_capacity(input.len());
+    let mut index = 0;
+    while index < input.len() {
+        match input[index] {
+            b'\r' if input.get(index + 1) == Some(&b'\n') => {
+                normalized.push(b'\r');
+                index += 2;
+            }
+            b'\n' => {
+                normalized.push(b'\r');
+                index += 1;
+            }
+            byte => {
+                normalized.push(byte);
+                index += 1;
+            }
+        }
+    }
+    std::borrow::Cow::Owned(normalized)
+}
+
+/// The full image path of a running process, used to find a pane's shell.
+#[cfg(target_os = "windows")]
+fn windows_process_image_path(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+    use windows::core::PWSTR;
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut buffer = [0u16; 1024];
+    let mut len = buffer.len() as u32;
+    let result = unsafe {
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(buffer.as_mut_ptr()),
+            &mut len,
+        )
+    };
+    let _ = unsafe { CloseHandle(handle) };
+    result.ok()?;
+    Some(String::from_utf16_lossy(&buffer[..len as usize]))
 }
 
 fn should_write_drop_to_target(target_is_active: bool, focus_succeeded: bool) -> bool {
@@ -179,12 +312,14 @@ fn write_clipboard_image_to_temp_file(image: &gpui_kit::Image) -> std::io::Resul
 
 fn clipboard_item_to_terminal_paste_input(
     item: &ClipboardItem,
+    style: PathQuoteStyle,
 ) -> std::io::Result<Option<Vec<u8>>> {
-    clipboard_entries_to_terminal_paste_input(item.entries())
+    clipboard_entries_to_terminal_paste_input(item.entries(), style)
 }
 
 fn clipboard_entries_to_terminal_paste_input(
     entries: &[gpui_kit::ClipboardEntry],
+    style: PathQuoteStyle,
 ) -> std::io::Result<Option<Vec<u8>>> {
     // A copied file may also carry a plain-text display name. Paste the file
     // paths when a file list is present. Without one, text and images follow
@@ -203,7 +338,7 @@ fn clipboard_entries_to_terminal_paste_input(
             .cloned()
             .collect();
         if !paths.is_empty() {
-            return Ok(Some(shell_quote_paths(&paths).into_bytes()));
+            return Ok(Some(shell_quote_paths(&paths, style).into_bytes()));
         }
     }
 
@@ -227,7 +362,7 @@ fn clipboard_entries_to_terminal_paste_input(
     match entry {
         gpui_kit::ClipboardEntry::Image(image) => {
             let path = write_clipboard_image_to_temp_file(image)?;
-            Ok(Some(shell_quote_path(&path).into_bytes()))
+            Ok(Some(shell_quote_path(&path, style).into_bytes()))
         }
         gpui_kit::ClipboardEntry::String(_) | gpui_kit::ClipboardEntry::ExternalPaths(_) => {
             Ok(None)
@@ -353,6 +488,33 @@ impl TerminalView {
             self.renaming_workspace,
             self.release_notes_open(),
         )
+    }
+
+    /// How to quote paths pasted into the active pane, chosen by its shell.
+    fn active_pane_path_quote_style(&self) -> PathQuoteStyle {
+        #[cfg(target_os = "windows")]
+        {
+            // tmux runs inside WSL, so its panes are POSIX shells.
+            if self.runtime_kind() == RuntimeKind::Tmux {
+                return PathQuoteStyle::Posix;
+            }
+            // The pane's own process names the shell, including tabs opened
+            // from the shell menu; the configured shell is the fallback.
+            let program = self
+                .active_terminal()
+                .and_then(Terminal::child_pid)
+                .and_then(windows_process_image_path)
+                .unwrap_or_else(|| self.terminal_runtime.resolved_shell_program());
+            if program.trim().is_empty() {
+                // Double quotes work in cmd and PowerShell alike.
+                return PathQuoteStyle::Cmd;
+            }
+            PathQuoteStyle::for_shell_program(&program)
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            PathQuoteStyle::Posix
+        }
     }
 
     fn pane_keyboard_mode(&self, pane_id: &str) -> TerminalKeyboardMode {
@@ -526,12 +688,9 @@ impl TerminalView {
         position: gpui_kit::Point<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        if self.overlay_owns_terminal_input() {
+        if self.overlay_owns_terminal_input() || paths.is_empty() {
             return;
         }
-        let Some(input) = dropped_paths_to_terminal_paste_input(paths) else {
-            return;
-        };
         let hit_pane_id = self
             .position_to_pane_cell(position, false)
             .map(|(pane_id, _)| pane_id);
@@ -550,6 +709,12 @@ impl TerminalView {
             return;
         }
 
+        // Quote for the target pane's shell, which is active by now.
+        let Some(input) =
+            dropped_paths_to_terminal_paste_input(paths, self.active_pane_path_quote_style())
+        else {
+            return;
+        };
         self.write_dropped_paths(&input, cx);
     }
 
@@ -738,6 +903,8 @@ impl TerminalView {
             return;
         }
 
+        let input = normalize_paste_line_endings(input);
+        let input: &[u8] = &input;
         self.prepare_terminal_input_write(cx);
         let bracketed_paste = self
             .active_terminal()
@@ -800,6 +967,12 @@ impl TerminalView {
                 }
                 if let Some(selected) = self.selected_text() {
                     cx.write_to_clipboard(ClipboardItem::new_string(selected));
+                    // Windows copies with plain Ctrl+C, as Windows Terminal does.
+                    // Dropping the selection lets the next Ctrl+C interrupt.
+                    #[cfg(target_os = "windows")]
+                    if self.clear_selection() {
+                        cx.notify();
+                    }
                 } else {
                     self.write_copy_fallback_input(cx);
                 }
@@ -813,7 +986,10 @@ impl TerminalView {
                     return true;
                 }
                 if let Some(item) = cx.read_from_clipboard() {
-                    match clipboard_item_to_terminal_paste_input(&item) {
+                    match clipboard_item_to_terminal_paste_input(
+                        &item,
+                        self.active_pane_path_quote_style(),
+                    ) {
                         Ok(Some(input)) => {
                             self.write_terminal_paste_input(&input, cx);
                             self.clear_selection();
@@ -889,11 +1065,13 @@ impl TerminalView {
         let _ = self.close_terminal_context_menu(cx);
         let _ = self.close_new_tab_menu(cx);
         let composing = is_compose_dead_key(&event.keystroke, self.ime_marked_text.is_some());
+        let defer_to_ime = should_defer_key_down_to_ime(&event.keystroke)
+            || should_defer_altgr_key_down_to_ime(&event.keystroke, event.prefer_character_input);
         let inspector_route = if self.overlay_owns_terminal_input() {
             "overlay"
         } else if composing {
             "compose"
-        } else if should_defer_key_down_to_ime(&event.keystroke) {
+        } else if defer_to_ime {
             "ime"
         } else {
             "pty"
@@ -962,7 +1140,7 @@ impl TerminalView {
         // platform IME / input handler so that CJK input methods work.
         // Named special keys (enter, tab, space, etc.) and modifier
         // combinations are still handled here via keystroke_to_input.
-        if should_defer_key_down_to_ime(&event.keystroke) {
+        if defer_to_ime {
             self.deferred_ime_key_releases.insert(key.to_string());
             // Let the event propagate to the platform IME handler which
             // will call `replace_text_in_range` on our EntityInputHandler.
@@ -1042,14 +1220,15 @@ impl TerminalView {
 #[cfg(test)]
 mod tests {
     use super::{
-        CLIPBOARD_IMAGE_MAX_AGE, FileDropTarget, PendingKeyRelease, PendingKeyReleaseAction,
-        classify_file_drop_target, clipboard_entries_to_terminal_paste_input,
-        clipboard_item_to_terminal_paste_input, dropped_paths_to_terminal_paste_input,
-        image_extension, is_compose_dead_key, kitty_png_clipboard_item, modifier_transition_events,
-        shell_quote_paths, should_defer_key_down_to_ime, should_prepare_terminal_input_write,
-        should_write_drop_to_target, take_deferred_ime_key_release,
-        take_pending_key_release_action, terminal_modifier_transition_events,
-        write_clipboard_image_in,
+        CLIPBOARD_IMAGE_MAX_AGE, FileDropTarget, PathQuoteStyle, PendingKeyRelease,
+        PendingKeyReleaseAction, classify_file_drop_target,
+        clipboard_entries_to_terminal_paste_input, clipboard_item_to_terminal_paste_input,
+        dropped_paths_to_terminal_paste_input, image_extension, is_compose_dead_key,
+        kitty_png_clipboard_item, modifier_transition_events, normalize_paste_line_endings,
+        shell_quote_paths, should_defer_altgr_key_down_to_ime, should_defer_key_down_to_ime,
+        should_prepare_terminal_input_write, should_write_drop_to_target,
+        take_deferred_ime_key_release, take_pending_key_release_action,
+        terminal_modifier_transition_events, write_clipboard_image_in,
     };
     use gpui_kit::{Keystroke, Modifiers};
     use std::{
@@ -1136,6 +1315,36 @@ mod tests {
     }
 
     #[test]
+    fn altgr_text_defers_to_the_platform_text_path_on_windows() {
+        let altgr = Modifiers {
+            control: true,
+            alt: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(
+            should_defer_altgr_key_down_to_ime(&keystroke("7", Some("{"), altgr), true),
+            cfg!(target_os = "windows")
+        );
+        // A real Ctrl+Alt shortcut produces no text and is not flagged.
+        assert!(!should_defer_altgr_key_down_to_ime(
+            &keystroke("t", None, altgr),
+            false
+        ));
+        assert!(!should_defer_altgr_key_down_to_ime(
+            &keystroke("7", Some("{"), altgr),
+            false
+        ));
+        let control = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        assert!(!should_defer_altgr_key_down_to_ime(
+            &keystroke("c", Some("c"), control),
+            true
+        ));
+    }
+
+    #[test]
     fn ime_does_not_defer_keys_without_key_char() {
         assert!(!should_defer_key_down_to_ime(&keystroke(
             "f1",
@@ -1152,15 +1361,79 @@ mod tests {
         ];
 
         assert_eq!(
-            shell_quote_paths(&paths),
+            shell_quote_paths(&paths, PathQuoteStyle::Posix),
             "'/tmp/normal.png' '/tmp/quote'\\''s test.png'"
         );
     }
 
     #[test]
+    fn cmd_paths_use_double_quotes() {
+        let paths = vec![
+            PathBuf::from(r"C:\Users\me\a & b.txt"),
+            PathBuf::from(r"C:\it's.txt"),
+        ];
+        assert_eq!(
+            shell_quote_paths(&paths, PathQuoteStyle::Cmd),
+            r#""C:\Users\me\a & b.txt" "C:\it's.txt""#
+        );
+    }
+
+    #[test]
+    fn powershell_paths_double_every_single_quote() {
+        let paths = vec![
+            PathBuf::from(r"C:\it's $HOME.txt"),
+            PathBuf::from("C:\\curly\u{2019}s.txt"),
+        ];
+        assert_eq!(
+            shell_quote_paths(&paths, PathQuoteStyle::PowerShell),
+            "'C:\\it''s $HOME.txt' 'C:\\curly\u{2019}\u{2019}s.txt'"
+        );
+    }
+
+    #[test]
+    fn path_quote_style_follows_the_shell_program() {
+        for (program, style) in [
+            (r"C:\Windows\System32\cmd.exe", PathQuoteStyle::Cmd),
+            ("CMD.EXE", PathQuoteStyle::Cmd),
+            (
+                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                PathQuoteStyle::PowerShell,
+            ),
+            (
+                r"C:\Program Files\PowerShell\7\pwsh.exe",
+                PathQuoteStyle::PowerShell,
+            ),
+            ("pwsh", PathQuoteStyle::PowerShell),
+            (r"C:\Program Files\Git\bin\bash.exe", PathQuoteStyle::Posix),
+            (r"C:\Windows\System32\wsl.exe", PathQuoteStyle::Posix),
+            ("/bin/zsh", PathQuoteStyle::Posix),
+        ] {
+            assert_eq!(
+                PathQuoteStyle::for_shell_program(program),
+                style,
+                "{program}"
+            );
+        }
+    }
+
+    #[test]
+    fn paste_line_endings_become_carriage_returns() {
+        assert_eq!(
+            &*normalize_paste_line_endings(b"one\r\ntwo\nthree\rfour"),
+            b"one\rtwo\rthree\rfour"
+        );
+        assert_eq!(&*normalize_paste_line_endings(b"\n\n"), b"\r\r");
+        assert!(matches!(
+            normalize_paste_line_endings(b"no newline"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
     fn dropped_paths_add_a_trailing_space() {
         let paths = vec![PathBuf::from("/tmp/file with space.png")];
-        let input = dropped_paths_to_terminal_paste_input(&paths).expect("drop should serialize");
+        let input = dropped_paths_to_terminal_paste_input(&paths, PathQuoteStyle::Posix)
+            .expect("drop should serialize");
         assert_eq!(
             String::from_utf8(input).expect("drop input should be utf8"),
             "'/tmp/file with space.png' "
@@ -1169,7 +1442,7 @@ mod tests {
 
     #[test]
     fn dropped_paths_rejects_empty_input() {
-        assert!(dropped_paths_to_terminal_paste_input(&[]).is_none());
+        assert!(dropped_paths_to_terminal_paste_input(&[], PathQuoteStyle::Posix).is_none());
     }
 
     #[test]
@@ -1221,7 +1494,7 @@ mod tests {
             vec![1, 2, 3, 4],
         ));
 
-        let input = clipboard_item_to_terminal_paste_input(&item)
+        let input = clipboard_item_to_terminal_paste_input(&item, PathQuoteStyle::Posix)
             .expect("clipboard image should serialize")
             .expect("clipboard image should produce paste input");
         let text = String::from_utf8(input).expect("path should be utf8");
@@ -1279,7 +1552,7 @@ mod tests {
         );
         let item = gpui_kit::ClipboardEntry::ExternalPaths(paths).into();
         assert_eq!(
-            clipboard_item_to_terminal_paste_input(&item).unwrap(),
+            clipboard_item_to_terminal_paste_input(&item, PathQuoteStyle::Posix).unwrap(),
             Some(b"'/tmp/a b.txt' '/tmp/it'\\''s.txt'".to_vec())
         );
     }
@@ -1293,7 +1566,7 @@ mod tests {
             gpui_kit::ClipboardEntry::String("q7n4w2.kpx".to_string().into()),
         ];
         assert_eq!(
-            clipboard_entries_to_terminal_paste_input(&entries).unwrap(),
+            clipboard_entries_to_terminal_paste_input(&entries, PathQuoteStyle::Posix).unwrap(),
             Some(b"'/tmp/q7n4w2.kpx'".to_vec())
         );
     }
@@ -1306,7 +1579,7 @@ mod tests {
             gpui_kit::ClipboardEntry::Image(image),
         ];
         assert_eq!(
-            clipboard_entries_to_terminal_paste_input(&entries).unwrap(),
+            clipboard_entries_to_terminal_paste_input(&entries, PathQuoteStyle::Posix).unwrap(),
             Some(b"screenshot".to_vec())
         );
     }
@@ -1315,7 +1588,7 @@ mod tests {
     fn clipboard_text_is_pasted_without_shell_quoting() {
         let item = gpui_kit::ClipboardItem::new_string("echo hello\n".into());
         assert_eq!(
-            clipboard_item_to_terminal_paste_input(&item).unwrap(),
+            clipboard_item_to_terminal_paste_input(&item, PathQuoteStyle::Posix).unwrap(),
             Some(b"echo hello\n".to_vec())
         );
     }

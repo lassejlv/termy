@@ -116,7 +116,7 @@ fn list() -> Result<(), String> {
 }
 
 fn dev(path: &Path) -> Result<(), String> {
-    let source = fs::canonicalize(path).map_err(|error| {
+    let source = dunce::canonicalize(path).map_err(|error| {
         format!(
             "failed to resolve plugin source {}: {error}",
             path.display()

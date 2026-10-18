@@ -11,7 +11,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use termy_core::multiplexer::{SessionClient, connect_or_start};
+use termy_core::multiplexer::{SessionClient, connect_or_start, default_root};
 
 use termy_core::session_model::{StoredMultiplexer as SavedState, StoredWindow as SavedWindow};
 
@@ -39,11 +39,9 @@ pub(crate) fn initialize(config: &AppConfig, cx: &mut App) -> Result<(), String>
         cx.set_global(AppSessions(None));
         return Ok(());
     }
-    let path = crate::config::ensure_config_file().map_err(|error| error.to_string())?;
-    let root = path
-        .parent()
-        .ok_or("config directory is missing")?
-        .join("multiplexer");
+    crate::config::ensure_config_file().map_err(|error| error.to_string())?;
+    // Shared with `termy mux`, so the CLI finds the host this window starts.
+    let root = default_root().ok_or("multiplexer directory is unavailable")?;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
     let client = connect_or_start(&root, &executable)
         .map_err(|error| format!("Cannot start the built-in multiplexer: {error}"))?;

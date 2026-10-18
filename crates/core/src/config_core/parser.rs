@@ -7,6 +7,7 @@ use crate::config_core::constants::{
     SHELL_DECIDE_THEME_ID, VALID_SECTIONS,
 };
 use crate::config_core::diagnostics::{ConfigDiagnostic, ConfigDiagnosticKind, ConfigParseReport};
+use crate::config_core::document::strip_bom;
 use crate::config_core::schema::{RootSettingId, root_setting_from_key, root_setting_spec};
 use crate::config_core::types::{
     AppConfig, AppearanceMode, ClipboardReadPolicy, CursorStyle, KeybindConfigLine,
@@ -42,7 +43,8 @@ impl AppConfig {
         let mut seen_root_keys: HashMap<RootSettingId, usize> = HashMap::new();
         let mut task_entries: BTreeMap<String, PendingTaskConfig> = BTreeMap::new();
 
-        for (line_number, line) in contents.lines().enumerate() {
+        // Notepad and PowerShell 5 save UTF-8 with a byte-order mark.
+        for (line_number, line) in strip_bom(contents).lines().enumerate() {
             let line_number = line_number + 1;
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -612,7 +614,7 @@ impl AppConfig {
                             line_number,
                             key,
                             value,
-                            "one of: cmd, powershell, git_bash",
+                            "one of: auto, cmd, powershell, pwsh, git_bash",
                         );
                     }
                 }

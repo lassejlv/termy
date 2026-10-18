@@ -1,0 +1,40 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+
+PackageIdentifier: lassejlv.Termy
+PackageVersion: __VERSION__
+InstallerType: inno
+# Inno Setup registers the uninstall entry as "<AppId>_is1" (see
+# scripts/installer/termy.iss), which lets winget match existing installs.
+ProductCode: '{7D3DD34B-5F8F-4D7B-BBC9-0F54B4C89142}_is1'
+UpgradeBehavior: install
+Protocols:
+  - termy
+Installers:
+  - Architecture: x64
+    Scope: user
+    InstallerUrl: https://github.com/lassejlv/termy/releases/download/__TAG__/Termy-__TAG__-windows-x64-Setup.exe
+    InstallerSha256: __X64_SHA256__
+    InstallerSwitches:
+      Custom: /CURRENTUSER
+  - Architecture: x64
+    Scope: machine
+    InstallerUrl: https://github.com/lassejlv/termy/releases/download/__TAG__/Termy-__TAG__-windows-x64-Setup.exe
+    InstallerSha256: __X64_SHA256__
+    ElevationRequirement: elevatesSelf
+    InstallerSwitches:
+      Custom: /ALLUSERS
+  - Architecture: arm64
+    Scope: user
+    InstallerUrl: https://github.com/lassejlv/termy/releases/download/__TAG__/Termy-__TAG__-windows-arm64-Setup.exe
+    InstallerSha256: __ARM64_SHA256__
+    InstallerSwitches:
+      Custom: /CURRENTUSER
+  - Architecture: arm64
+    Scope: machine
+    InstallerUrl: https://github.com/lassejlv/termy/releases/download/__TAG__/Termy-__TAG__-windows-arm64-Setup.exe
+    InstallerSha256: __ARM64_SHA256__
+    ElevationRequirement: elevatesSelf
+    InstallerSwitches:
+      Custom: /ALLUSERS
+ManifestType: installer
+ManifestVersion: 1.10.0

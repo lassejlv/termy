@@ -292,14 +292,23 @@ pub(crate) fn link_candidate_at_viewport_cell(
         screen_lines,
         columns,
     )?;
-    let base_dir = grid
-        .working_directory()
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute());
+    let base_dir = grid.working_directory().and_then(working_directory_base);
     Some(ViewportLinkCandidate {
         link,
         token: Some((token, base_dir)),
     })
+}
+
+/// The pane's OSC 7 directory as a base for relative links, when it is a local
+/// absolute path.
+fn working_directory_base(directory: &str) -> Option<PathBuf> {
+    // `file://host/C:/dir` used to be reported as `/C:/dir`.
+    #[cfg(windows)]
+    let directory = match directory.strip_prefix('/') {
+        Some(stripped) if has_windows_drive_prefix(stripped) => stripped,
+        _ => directory,
+    };
+    Some(PathBuf::from(directory)).filter(|path| path.is_absolute())
 }
 
 #[derive(Clone, Copy)]
@@ -444,12 +453,19 @@ fn link_token_in_line(line: &[char], col: usize) -> Option<(usize, usize, String
     // Leading dots are punctuation unless they start a relative path.
     while start <= end
         && edge_trim_char(line[start])
-        && !matches!(line[start..=end], ['.', '/', ..] | ['.', '.', '/', ..])
+        && !starts_with_relative_prefix(&line[start..=end])
     {
         start += 1;
     }
     while end >= start && edge_trim_char(line[end]) {
         if end == 0 {
+            break;
+        }
+        // Keep the closing parenthesis of an MSVC `file.cpp(12,3)` location.
+        if cfg!(windows)
+            && line[end] == ')'
+            && msvc_location_start(&line[start..=end].iter().collect::<String>()).is_some()
+        {
             break;
         }
         end -= 1;
@@ -464,15 +480,38 @@ fn link_token_in_line(line: &[char], col: usize) -> Option<(usize, usize, String
     Some((start, end, token))
 }
 
+fn starts_with_relative_prefix(token: &[char]) -> bool {
+    matches!(token, ['.', '/', ..] | ['.', '.', '/', ..])
+        || (cfg!(windows) && matches!(token, ['.', '\\', ..] | ['.', '.', '\\', ..]))
+}
+
+/// `./` and `../` paths, plus `.\` and `..\` on Windows.
+fn is_relative_link_path(path: &str) -> bool {
+    path.starts_with("./")
+        || path.starts_with("../")
+        || (cfg!(windows) && (path.starts_with(".\\") || path.starts_with("..\\")))
+}
+
+/// `~/` home paths, plus `~\` on Windows.
+fn strip_home_prefix(path: &str) -> Option<&str> {
+    path.strip_prefix("~/").or_else(|| {
+        if cfg!(windows) {
+            path.strip_prefix("~\\")
+        } else {
+            None
+        }
+    })
+}
+
 /// [`classify_link_token_in`] with relative paths resolved against the
 /// process's working directory.
 pub fn classify_link_token(token: &str) -> Option<String> {
     classify_link_token_in(token, None)
 }
 
-/// The link target a token stands for. Relative paths (`./`, `../`) resolve
-/// against `base_dir`, normally the pane's OSC 7 working directory, or the
-/// process's working directory without one.
+/// The link target a token stands for. Relative paths (`./`, `../`, and `.\`,
+/// `..\` on Windows) resolve against `base_dir`, normally the pane's OSC 7
+/// working directory, or the process's working directory without one.
 pub fn classify_link_token_in(token: &str, base_dir: Option<&Path>) -> Option<String> {
     if token.is_empty() {
         return None;
@@ -565,7 +604,7 @@ fn canonicalize_path_to_file_url(token: &str, base_dir: Option<&Path>) -> Option
     // Joining first also keys the cache by directory for relative paths.
     let joined;
     let normalized_key = match base_dir {
-        Some(base_dir) if path.starts_with("./") || path.starts_with("../") => {
+        Some(base_dir) if is_relative_link_path(path) => {
             joined = base_dir.join(path).to_string_lossy().into_owned();
             joined.as_str()
         }
@@ -598,9 +637,9 @@ fn canonicalize_path_to_file_url_uncached(token: &str) -> Option<String> {
     Some(format!("file:///{}", canonical.trim_start_matches('/')))
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 fn expand_tilde_path(path: &str) -> Option<PathBuf> {
-    let remainder = path.strip_prefix("~/")?;
+    let remainder = strip_home_prefix(path)?;
     let home = dirs::home_dir()?;
     Some(home.join(remainder))
 }
@@ -612,20 +651,37 @@ fn canonicalize_path_to_file_url_uncached(token: &str) -> Option<String> {
         return None;
     }
 
-    if let Some(stripped) = raw_path.strip_prefix('/') {
-        if has_windows_drive_prefix(stripped) {
-            raw_path = stripped;
-        }
+    if let Some(stripped) = raw_path.strip_prefix('/')
+        && has_windows_drive_prefix(stripped)
+    {
+        raw_path = stripped;
     }
 
-    if !has_windows_drive_prefix(raw_path) && !Path::new(raw_path).is_absolute() {
+    let path = expand_tilde_path(raw_path).unwrap_or_else(|| PathBuf::from(raw_path));
+    // Relative paths without a pane directory resolve against the process's
+    // one. A rooted path with no drive (`/usr/lib`) is MSYS or WSL output that
+    // names another filesystem, so it is not a local link.
+    if !path.is_absolute() && !is_relative_link_path(raw_path) {
         return None;
     }
 
-    let canonical = std::fs::canonicalize(raw_path).ok()?;
+    let canonical = dunce::canonicalize(path).ok()?;
     let canonical = canonical.to_string_lossy();
-    let canonical = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical);
+    // dunce keeps the verbatim prefix when dropping it would change the path
+    // (long paths, reserved names); a file URL has no verbatim form anyway.
+    let canonical = match canonical.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => canonical
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&canonical)
+            .to_string(),
+    };
     let canonical = canonical.replace('\\', "/");
+
+    // `\\server\share\dir` becomes `file://server/share/dir`.
+    if let Some(share) = canonical.strip_prefix("//") {
+        return (!share.is_empty()).then(|| format!("file://{share}"));
+    }
 
     if !has_windows_drive_prefix(&canonical) {
         return None;
@@ -757,13 +813,18 @@ fn looks_like_file_path(input: &str) -> bool {
     }
 
     // Home directory paths
-    if path.starts_with("~/") {
+    if strip_home_prefix(path).is_some() {
         return has_path_like_structure(path);
     }
 
     // Relative paths starting with ./ or ../
-    if path.starts_with("./") || path.starts_with("../") {
+    if is_relative_link_path(path) {
         return has_path_like_structure(path);
+    }
+
+    // UNC paths (\\server\share\file)
+    if cfg!(windows) && is_unc_path(path) {
+        return true;
     }
 
     // Windows absolute paths (C:\, D:\, etc.)
@@ -777,7 +838,36 @@ fn looks_like_file_path(input: &str) -> bool {
     false
 }
 
+/// `\\server\share` with a non-empty server and share, not a `\\?\` or `\\.\`
+/// device path.
+fn is_unc_path(path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("\\\\") else {
+        return false;
+    };
+    let mut parts = rest.split('\\');
+    let server = parts.next().unwrap_or_default();
+    let share = parts.next().unwrap_or_default();
+    !server.is_empty() && server != "?" && server != "." && !share.is_empty()
+}
+
+/// Where an MSVC-style `(line)` or `(line,col)` location suffix starts, as in
+/// `file.cpp(12,3)`.
+fn msvc_location_start(input: &str) -> Option<usize> {
+    let inner = input.strip_suffix(')')?;
+    let open = inner.rfind('(')?;
+    let location = &inner[open + 1..];
+    let (line, col) = location.split_once(',').unwrap_or((location, "0"));
+    let is_number = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+    (open > 0 && is_number(line) && is_number(col)).then_some(open)
+}
+
 fn strip_line_col_suffix(input: &str) -> &str {
+    if cfg!(windows)
+        && let Some(open) = msvc_location_start(input)
+    {
+        return &input[..open];
+    }
+
     // Handle patterns like "file.rs:42" or "file.rs:42:10"
     let mut path = input;
 
@@ -1056,6 +1146,93 @@ mod tests {
         let link = link_at_viewport_cell(&term, 0, 6).expect("relative path link");
         assert_eq!(link.target, expected);
         assert_eq!((link.start_col, link.end_col), (4, 14));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_relative_paths_resolve_against_the_pane_working_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("notes.txt");
+        fs::write(&file_path, "notes").expect("write temp file");
+        let canonical = dunce::canonicalize(&file_path).expect("canonicalize temp file");
+        let expected =
+            classify_link_token(&canonical.to_string_lossy()).expect("absolute path link");
+        assert!(expected.starts_with("file:///"), "{expected}");
+        assert!(!expected.contains('?'), "{expected}");
+
+        assert_eq!(
+            classify_link_token_in(r".\notes.txt", Some(dir.path())),
+            Some(expected.clone())
+        );
+        assert_eq!(
+            classify_link_token_in("./notes.txt", Some(dir.path())),
+            Some(expected.clone())
+        );
+
+        // A Windows OSC 7 URL (`file://host/C:/dir`) is the base for hovered links.
+        let url_path = dir.path().to_string_lossy().replace('\\', "/");
+        let mut input = format!("\x1b]7;file://localhost/{url_path}\x1b\\");
+        input.push_str(r"see .\notes.txt");
+        let term = term_with_input(40, 2, input.as_bytes());
+        let link = link_at_viewport_cell(&term, 0, 6).expect("relative path link");
+        assert_eq!(link.target, expected);
+        assert_eq!((link.start_col, link.end_col), (4, 14));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn msvc_locations_link_to_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file_path = dir.path().join("main.cpp");
+        fs::write(&file_path, "int main() {}").expect("write temp file");
+        let token = file_path.to_string_lossy();
+        let expected = classify_link_token(&token).expect("base file path should classify");
+
+        for suffix in ["(12)", "(12,3)", ":12", ":12:3"] {
+            assert_eq!(
+                classify_link_token(&format!("{token}{suffix}")),
+                Some(expected.clone()),
+                "{suffix}"
+            );
+        }
+
+        let line: Vec<char> = r"C:\src\main.cpp(12,3): error C2065".chars().collect();
+        assert_eq!(
+            super::link_token_in_line(&line, 3).map(|(_, _, token)| token),
+            Some(r"C:\src\main.cpp(12,3)".to_string())
+        );
+        let line: Vec<char> = r"at C:\src\main.cpp(12)".chars().collect();
+        assert_eq!(
+            super::link_token_in_line(&line, 5),
+            Some((3, 21, r"C:\src\main.cpp(12)".to_string()))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_forms_are_recognised() {
+        assert!(super::looks_like_file_path(r"\\server\share\file.txt"));
+        assert!(super::looks_like_file_path(r".\src\main.rs"));
+        assert!(super::looks_like_file_path(r"..\lib.rs"));
+        assert!(super::looks_like_file_path(r"~\notes.txt"));
+        assert!(!super::looks_like_file_path(r"\\?\"));
+        assert!(!super::looks_like_file_path(r"\\server"));
+
+        let line: Vec<char> = r"(.\src\main.rs)".chars().collect();
+        assert_eq!(
+            super::link_token_in_line(&line, 3),
+            Some((1, 13, r".\src\main.rs".to_string()))
+        );
+    }
+
+    #[test]
+    fn msvc_location_suffixes_are_parsed() {
+        assert_eq!(super::msvc_location_start("main.cpp(12)"), Some(8));
+        assert_eq!(super::msvc_location_start("main.cpp(12,3)"), Some(8));
+        assert_eq!(super::msvc_location_start("main.cpp(x)"), None);
+        assert_eq!(super::msvc_location_start("main.cpp(12,)"), None);
+        assert_eq!(super::msvc_location_start("(12)"), None);
+        assert_eq!(super::msvc_location_start("main.cpp"), None);
     }
 
     #[test]

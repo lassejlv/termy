@@ -686,21 +686,40 @@ impl CustomBackend {
         if let Some(bytes) = restored_output {
             terminal.hydrate_output(bytes);
         }
-        let launch = resolve_terminal_launch(&config, launch)?;
+        #[cfg(windows)]
+        let interactive_shell = launch.is_none_or(|launch| {
+            matches!(launch, TerminalLaunch::ShellCommand(command) if command.trim().is_empty())
+        });
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut launch = resolve_terminal_launch(&config, launch)?;
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut environment = terminal_environment_overrides(shell_integration, &config);
+        #[cfg(windows)]
+        if interactive_shell {
+            super::apply_windows_shell_integration(
+                &mut launch,
+                &mut environment,
+                shell_integration,
+            );
+        }
+        let working_directory =
+            resolve_launch_working_directory(working_dir, config.working_dir_fallback);
+        #[cfg(windows)]
+        super::warn_cmd_unc_working_directory(&launch, working_directory.as_deref());
+        let mut environment = environment.into_iter().collect::<Vec<_>>();
+        // A stable order keeps the child environment block reproducible.
+        environment.sort_unstable();
         let spawn = SpawnConfig {
             program: launch.program,
             args: launch.args,
-            working_directory: resolve_launch_working_directory(
-                working_dir,
-                config.working_dir_fallback,
-            ),
-            environment: terminal_environment_overrides(shell_integration, &config)
-                .into_iter()
-                .collect(),
+            working_directory,
+            environment,
         };
         let shared = terminal.shared.clone();
         let exit = terminal.shared.clone();
-        terminal.transport = Some(Arc::new(Transport::spawn(
+        // The engine answers terminal queries through `feed`'s replies, which
+        // lets a Windows pseudoconsole inherit the restored cursor position.
+        terminal.transport = Some(Arc::new(Transport::spawn_answering_queries(
             spawn,
             pty_size(terminal.size()),
             move |bytes| shared.feed(bytes, false, false),

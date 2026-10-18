@@ -58,7 +58,9 @@ Reordering preserves the active item. Workspace deletion requires an empty
 workspace and preserves at least one workspace in the window.
 
 Pass `--session-dir PATH` anywhere after `mux` to select an isolated host.
-The default uses the desktop config directory's `multiplexer` subdirectory.
+The default uses the desktop config directory's `multiplexer` subdirectory
+(`%LOCALAPPDATA%\termy\multiplexer` on Windows, falling back to the old location
+while an older host still runs there).
 Input is bounded to 1 MiB; terminal sizes to 1–400 columns and 1–200 rows.
 
 Workspace edits use conditional host writes. Independent edits preserve other

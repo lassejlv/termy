@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+
+PackageIdentifier: lassejlv.Termy
+PackageVersion: __VERSION__
+PackageLocale: en-US
+# Must match AppPublisher in scripts/installer/termy.iss.
+Publisher: Termy
+PublisherUrl: https://github.com/lassejlv
+PublisherSupportUrl: https://github.com/lassejlv/termy/issues
+PackageName: Termy
+PackageUrl: https://termy.sh
+License: MIT
+LicenseUrl: https://github.com/lassejlv/termy/blob/main/LICENSE
+ShortDescription: A fast, native, GPU-accelerated terminal.
+Description: |-
+  Termy is a fast, native terminal for macOS, Linux, and Windows. It combines
+  GPU-accelerated rendering with tabs, splits, search, tasks, layouts, themes,
+  and optional tmux sessions.
+Moniker: termy
+Tags:
+  - terminal
+  - terminal-emulator
+  - console
+  - gpu
+  - tmux
+ReleaseNotesUrl: https://github.com/lassejlv/termy/releases/tag/__TAG__
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0

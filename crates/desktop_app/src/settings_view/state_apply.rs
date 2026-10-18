@@ -239,6 +239,7 @@ impl SettingsWindow {
         match field {
             EditableField::WindowsShell => {
                 let parsed = match value.trim().to_ascii_lowercase().as_str() {
+                    "auto" | "automatic" => termy_core::config_core::WindowsShell::Auto,
                     "cmd" | "command_prompt" | "commandprompt" => {
                         termy_core::config_core::WindowsShell::Cmd
                     }
@@ -254,12 +255,14 @@ impl SettingsWindow {
                     }
                     _ => {
                         return Err(
-                            "Windows shell must be cmd, powershell, pwsh, or git_bash".to_string()
+                            "Windows shell must be auto, cmd, powershell, pwsh, or git_bash"
+                                .to_string(),
                         );
                     }
                 };
                 self.config.windows_shell = parsed;
                 let canonical = match parsed {
+                    termy_core::config_core::WindowsShell::Auto => "auto",
                     termy_core::config_core::WindowsShell::Cmd => "cmd",
                     termy_core::config_core::WindowsShell::PowerShell => "powershell",
                     termy_core::config_core::WindowsShell::PowerShellCore => "pwsh",

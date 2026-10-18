@@ -7,8 +7,8 @@ pub mod sparkle;
 pub use engine::{InstallOutcome, ReleaseInfo, UpdateCheck, UpdateState};
 
 use engine::{
-    cache_installer_path, check_for_updates, do_install, download_installer,
-    verify_installer_checksum,
+    cache_installer_path, check_for_updates, clean_update_cache, do_install,
+    download_verified_installer,
 };
 
 /// The one updater shared by every window, so the app checks, downloads and
@@ -45,6 +45,11 @@ impl AutoUpdater {
         }
         let updater = cx.new(|_| Self::new(env!("CARGO_PKG_VERSION")));
         cx.set_global(GlobalAutoUpdater(updater.clone()));
+        // Installers from earlier updates are no longer needed once the app
+        // that replaced them is running.
+        cx.background_executor()
+            .spawn(async { clean_update_cache() })
+            .detach();
         Some(updater)
     }
 
@@ -154,14 +159,14 @@ impl AutoUpdater {
         let dest = cache_installer_path(&version, &extension);
         let dl_version = version.clone();
         let bg = cx.background_executor().spawn(async move {
-            let path = download_installer(&url, &dest, progress_tx)?;
-            verify_installer_checksum(
-                &path,
+            download_verified_installer(
+                &url,
+                &dest,
                 &asset_name,
                 checksum_asset_name.as_deref(),
                 checksum_url.as_deref(),
-            )?;
-            Ok::<std::path::PathBuf, anyhow::Error>(path)
+                progress_tx,
+            )
         });
 
         let weak_progress = entity.clone();

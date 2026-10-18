@@ -12,6 +12,7 @@ resolver = "2"
 [workspace.dependencies]
 anyhow = "1.0"
 dirs = "6.0"
+dunce = "1"
 flume = "0.11"
 # Keep Termy's own controls and assets; Kit supplies GPUI and the native platforms.
 gpui-kit = { version = "=0.7.0", default-features = false }

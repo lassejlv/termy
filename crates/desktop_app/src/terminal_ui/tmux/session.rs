@@ -56,13 +56,45 @@ pub(crate) fn tmux_base_command(command_prefix: &[String], binary: &str) -> Comm
         Some((program, rest)) => {
             let mut command = Command::new(program);
             command.args(rest);
+            // `wsl.exe -e` runs tmux without a login shell, so the distro's
+            // locale is never loaded and tmux would render non-ASCII as `_`.
+            #[cfg(windows)]
+            if is_wsl_program(program) {
+                command.args(["env", WSL_UTF8_LANG]);
+            }
             command.arg(binary);
+            // The prefix does not carry the app's locale across either.
+            #[cfg(windows)]
+            command.arg("-u");
             command
         }
         None => Command::new(binary),
     };
     normalize_tmux_command_env(&mut command);
+    // Termy has no console, so each wsl.exe/ssh.exe child would otherwise
+    // flash a console window of its own.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
     command
+}
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(windows)]
+const WSL_UTF8_LANG: &str = "LANG=C.UTF-8";
+
+#[cfg(windows)]
+fn is_wsl_program(program: &str) -> bool {
+    let name = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    name == "wsl" || name == "wsl.exe"
 }
 
 pub(crate) fn run_tmux_command_with_socket(
@@ -285,7 +317,26 @@ mod tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().to_string())
             .collect::<Vec<_>>();
+        #[cfg(not(windows))]
         assert_eq!(args, vec!["-e", "tmux"]);
+        #[cfg(windows)]
+        assert_eq!(args, vec!["-e", "env", "LANG=C.UTF-8", "tmux", "-u"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn tmux_base_command_only_sets_the_wsl_locale_for_wsl() {
+        let prefix = vec!["ssh".to_string(), "myhost".to_string()];
+        let command = tmux_base_command(&prefix, "tmux");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(args, vec!["myhost", "tmux", "-u"]);
+
+        assert!(super::is_wsl_program(r"C:\Windows\System32\WSL.EXE"));
+        assert!(super::is_wsl_program("wsl"));
+        assert!(!super::is_wsl_program("ssh.exe"));
     }
 
     #[test]

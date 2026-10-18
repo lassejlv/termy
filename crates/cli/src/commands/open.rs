@@ -43,8 +43,9 @@ fn resolve_working_dir(path: &Path) -> Result<PathBuf, String> {
             .join(path)
     };
 
-    let path = path
-        .canonicalize()
+    // dunce keeps Windows paths in their plain `C:\...` form; the app rejects
+    // the `\\?\` verbatim paths std's canonicalize returns.
+    let path = dunce::canonicalize(&path)
         .map_err(|error| format!("Failed to resolve {}: {error}", path.display()))?;
 
     if !path.is_dir() {
@@ -61,6 +62,14 @@ fn find_termy_app_binary() -> Result<PathBuf, String> {
 }
 
 fn find_app_for_cli(reported_exe_path: PathBuf, sibling_names: &[&str]) -> Result<PathBuf, String> {
+    find_app_for_cli_with_fallbacks(reported_exe_path, sibling_names, installed_app_candidates)
+}
+
+fn find_app_for_cli_with_fallbacks(
+    reported_exe_path: PathBuf,
+    sibling_names: &[&str],
+    fallbacks: impl FnOnce(&Path) -> Vec<PathBuf>,
+) -> Result<PathBuf, String> {
     let exe_path = resolve_executable_path(reported_exe_path);
     let exe_dir = exe_path
         .parent()
@@ -70,25 +79,68 @@ fn find_app_for_cli(reported_exe_path: PathBuf, sibling_names: &[&str]) -> Resul
     // that launcher so its X11/Wayland environment setup is preserved.
     if exe_dir.ends_with("lib/termy") {
         let launcher = resolve_executable_path(exe_dir.join("../../bin/termy"));
-        if is_executable_file(&launcher) && launcher != exe_path {
+        if is_executable_file(&launcher) && !is_same_file(&launcher, &exe_path) {
             return Ok(launcher);
         }
     }
 
     for sibling_name in sibling_names {
         let sibling = exe_dir.join(sibling_name);
-        if is_executable_file(&sibling) && sibling != exe_path {
+        if is_executable_file(&sibling) && !is_same_file(&sibling, &exe_path) {
             return Ok(sibling);
         }
     }
 
-    // Only look next to the CLI itself: cwd-relative paths would let an
+    // A copied CLI (Windows Install CLI puts `termy.exe` in
+    // %LOCALAPPDATA%\Termy\bin) has no app beside it; the sibling check above
+    // finds the CLI itself there, so ask where the app was installed.
+    for candidate in fallbacks(exe_dir) {
+        if is_executable_file(&candidate) && !is_same_file(&candidate, &exe_path) {
+            return Ok(resolve_executable_path(candidate));
+        }
+    }
+
+    // Never look relative to the current directory: that would let an
     // untrusted checkout's `target/*/termy` run when the CLI is used inside it.
-    Err("Termy app binary not found. Build it with: cargo build -p termy".to_string())
+    Err(APP_NOT_FOUND_MESSAGE.to_string())
+}
+
+#[cfg(target_os = "windows")]
+const APP_NOT_FOUND_MESSAGE: &str = "Termy app binary not found. Reinstall Termy or run Install CLI from the app again (from source: cargo build -p termy)";
+
+#[cfg(not(target_os = "windows"))]
+const APP_NOT_FOUND_MESSAGE: &str =
+    "Termy app binary not found. Build it with: cargo build -p termy";
+
+#[cfg(target_os = "windows")]
+fn installed_app_candidates(cli_dir: &Path) -> Vec<PathBuf> {
+    termy_core::cli_install_core::windows_app_binary_candidates(cli_dir)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn installed_app_candidates(_cli_dir: &Path) -> Vec<PathBuf> {
+    Vec::new()
 }
 
 fn resolve_executable_path(path: PathBuf) -> PathBuf {
-    path.canonicalize().unwrap_or(path)
+    dunce::canonicalize(&path).unwrap_or(path)
+}
+
+/// Compares resolved paths so the CLI never launches itself, whatever
+/// spelling (case, `..`, symlinks) a candidate uses.
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    let a = resolve_executable_path(a.to_path_buf());
+    let b = resolve_executable_path(b.to_path_buf());
+
+    #[cfg(target_os = "windows")]
+    {
+        a.as_os_str().eq_ignore_ascii_case(b.as_os_str())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        a == b
+    }
 }
 
 fn sibling_app_binary_names() -> &'static [&'static str] {
@@ -152,7 +204,53 @@ mod tests {
     fn open_resolves_existing_directory() {
         let temp = tempfile::tempdir().expect("tempdir");
         let resolved = resolve_working_dir(temp.path()).expect("directory should resolve");
-        assert_eq!(resolved, temp.path().canonicalize().unwrap());
+        assert_eq!(resolved, dunce::canonicalize(temp.path()).unwrap());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn open_resolves_relative_directory_without_verbatim_prefix() {
+        let resolved = resolve_working_dir(std::path::Path::new(".")).expect("cwd should resolve");
+        assert!(
+            !resolved.as_os_str().to_string_lossy().starts_with(r"\\?\"),
+            "{}",
+            resolved.display()
+        );
+    }
+
+    #[test]
+    fn copied_cli_skips_itself_and_uses_installed_app() {
+        let temp = tempfile::tempdir().unwrap();
+        let bin = temp.path().join("bin");
+        let app_dir = temp.path().join("Termy");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::create_dir_all(&app_dir).unwrap();
+        // The installed CLI copy has the app's file name.
+        let cli = bin.join("termy.exe");
+        let app = app_dir.join("termy.exe");
+        std::fs::write(&cli, b"cli").unwrap();
+        std::fs::write(&app, b"gui").unwrap();
+
+        let fallback_cli = cli.clone();
+        let fallback_app = app.clone();
+        let found = super::find_app_for_cli_with_fallbacks(cli, &["termy.exe"], move |_| {
+            vec![fallback_cli, bin.join("missing.exe"), fallback_app]
+        })
+        .unwrap();
+        assert_eq!(found, dunce::canonicalize(&app).unwrap());
+    }
+
+    #[test]
+    fn copied_cli_without_installed_app_reports_not_found() {
+        let temp = tempfile::tempdir().unwrap();
+        let cli = temp.path().join("termy.exe");
+        std::fs::write(&cli, b"cli").unwrap();
+        let fallback_cli = cli.clone();
+        let error = super::find_app_for_cli_with_fallbacks(cli, &["termy.exe"], move |_| {
+            vec![fallback_cli]
+        })
+        .unwrap_err();
+        assert!(error.contains("Termy app binary not found"));
     }
 
     #[test]

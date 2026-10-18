@@ -123,6 +123,14 @@ fn win32_abi_layouts_match_the_sdk() {
         mem::size_of::<ClosePseudoConsoleFn>(),
         mem::size_of::<usize>()
     );
+    if cfg!(target_pointer_width = "64") {
+        assert_eq!(mem::size_of::<JobObjectBasicLimitInformation>(), 64);
+        assert_eq!(mem::size_of::<ProcessEntry32W>(), 568);
+    } else {
+        assert_eq!(mem::size_of::<JobObjectBasicLimitInformation>(), 40);
+        assert_eq!(mem::size_of::<ProcessEntry32W>(), 556);
+    }
+    assert_eq!(mem::size_of::<FileTime>(), 8);
 }
 
 #[test]
@@ -141,6 +149,117 @@ fn command_line_quotes_windows_backslashes_and_quotes() {
         decode_nul_terminated(&command),
         r#""C:\Program Files\shell.exe" plain "" "two words\\" "say \"hi\"""#
     );
+}
+
+#[test]
+fn command_processor_payload_after_s_c_is_passed_raw() {
+    let payload = r#"echo "two words" & dir "C:\Program Files\" | findstr x"#;
+    let command = command_processor_command_line(
+        "cmd.exe",
+        &[
+            "/D".to_string(),
+            "/S".to_string(),
+            "/C".to_string(),
+            payload.to_string(),
+        ],
+    )
+    .expect("cmd payload should encode");
+    assert_eq!(
+        decode_nul_terminated(&command),
+        format!(r#"cmd.exe /D /S /C "{payload}""#)
+    );
+
+    // Without `/S`, or with arguments after the command, cmd strips quotes
+    // differently, so normal quoting applies.
+    for args in [
+        vec!["/C".to_string(), r#"say "hi""#.to_string()],
+        vec![
+            "/S".to_string(),
+            "/C".to_string(),
+            "echo".to_string(),
+            "x y".to_string(),
+        ],
+    ] {
+        assert_eq!(
+            command_processor_command_line("cmd.exe", &args).unwrap(),
+            command_line("cmd.exe", &args).unwrap()
+        );
+    }
+    assert!(is_command_processor(Path::new(
+        r"C:\Windows\System32\CMD.EXE"
+    )));
+    assert!(!is_command_processor(Path::new(r"C:\tools\cmd.cmd")));
+}
+
+#[test]
+fn executable_lookup_follows_pathext_and_skips_extensionless_files() {
+    let directory = TestDirectory::new("pathext lookup");
+    let base = directory.path().join("tool");
+    fs::write(&base, "#!/bin/sh\n").unwrap();
+    fs::write(base.with_extension("cmd"), "@echo off\r\n").unwrap();
+    fs::write(base.with_extension("com"), "").unwrap();
+    let pathext = OsStr::new(".COM;.EXE;.BAT;.CMD");
+    assert_eq!(
+        executable_candidate(&base, pathext),
+        Some(base.with_extension("COM"))
+    );
+    assert_eq!(
+        executable_candidate(&base, OsStr::new(".EXE;.CMD")),
+        Some(base.with_extension("CMD"))
+    );
+    assert_eq!(executable_candidate(&base, OsStr::new(".EXE")), None);
+
+    let versioned = directory.path().join("tool.v2");
+    fs::write(&versioned, "").unwrap();
+    assert_eq!(
+        executable_candidate(&versioned, pathext),
+        Some(versioned.clone())
+    );
+    assert_eq!(
+        executable_candidate(&base.with_extension("cmd"), pathext),
+        Some(base.with_extension("cmd"))
+    );
+}
+
+#[test]
+fn image_subsystem_tells_console_programs_from_gui_programs() {
+    let test_binary = std::env::current_exe().expect("test binary path");
+    assert_eq!(
+        image_subsystem(&test_binary),
+        Some(IMAGE_SUBSYSTEM_WINDOWS_CUI)
+    );
+    assert_eq!(
+        cached_image_subsystem(&test_binary),
+        Some(IMAGE_SUBSYSTEM_WINDOWS_CUI)
+    );
+    let system_root =
+        std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from("C:/Windows"), PathBuf::from);
+    let explorer = system_root.join("explorer.exe");
+    if explorer.is_file() {
+        assert_eq!(image_subsystem(&explorer), Some(2));
+    }
+    let directory = TestDirectory::new("not a pe image");
+    let text = directory.path().join("plain.exe");
+    fs::write(&text, "not an executable").unwrap();
+    assert_eq!(image_subsystem(&text), None);
+}
+
+#[test]
+fn new_job_lists_no_processes_and_skips_nothing_on_close() {
+    let job = JobObject::new().expect("job object should be created");
+    assert_eq!(
+        job.process_ids().expect("empty job should list"),
+        Vec::<Dword>::new()
+    );
+    job.terminate_console_processes(std::process::id());
+}
+
+#[test]
+fn foreground_descendant_name_reports_a_live_process() {
+    let name = foreground_descendant_name(std::process::id())
+        .expect("the test process should appear in a process snapshot");
+    assert!(name.to_ascii_lowercase().ends_with(".exe"), "{name}");
+    assert!(foreground_descendant_name(0xFFFF_FFFC).is_none());
 }
 
 #[test]
@@ -201,7 +320,22 @@ fn working_directory_is_lexically_absolute_and_rejects_namespaces() {
             .expect("ordinary absolute path should normalize"),
         PathBuf::from(r"C:\base\two")
     );
-    for path in [r"\\?\C:\work", r"\\.\C:\work", r"D:work"] {
+    for (verbatim, legacy) in [
+        (r"\\?\C:\work", r"C:\work"),
+        (r"\\?\UNC\server\share\work", r"\\server\share\work"),
+    ] {
+        assert_eq!(
+            normalize_absolute_path(Path::new(verbatim))
+                .expect("verbatim path with a legacy form should normalize"),
+            PathBuf::from(legacy)
+        );
+        assert_eq!(
+            normalize_working_directory(Some(Path::new(verbatim)))
+                .expect("verbatim working directory should normalize"),
+            Some(PathBuf::from(legacy))
+        );
+    }
+    for path in [r"\\.\C:\work", r"D:work", r"\\?\C:\work\..\x"] {
         let error = normalize_absolute_path(Path::new(path))
             .expect_err("unsafe or drive-relative path should fail");
         assert_eq!(error.kind(), ErrorKind::InvalidInput);

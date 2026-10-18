@@ -67,7 +67,7 @@ tab_close_visibility = hover
 tab_width_mode = uniform
 # Where the tab bar is rendered: top strip or right sidebar
 tab_bar_position = top
-# macOS only: native window tabs or Termy's custom tab strip (applies to new windows)
+# native: macOS window tabs (applies to new windows) or Windows 11-style tabs; custom: Termy's tab strip
 tab_style = native
 # Show secondary+1..9 number badges on the first nine tabs while the secondary modifier is held
 tab_switch_modifier_hints = true
@@ -80,7 +80,7 @@ sidebar_width = 200
 # Show or hide the termy branding in the titlebar
 show_termy_in_titlebar = true
 # Preset shell used for new sessions on Windows
-windows_shell = cmd
+windows_shell = auto
 # Optional executable path used for new sessions; overrides the Windows shell preset on Windows
 shell = none
 # TERM value exposed to child applications

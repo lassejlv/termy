@@ -1,6 +1,12 @@
 use super::super::*;
 use super::render_palette::TabStripPalette;
 use super::state::{TabDropMarkerSide, TabStripOrientation};
+use super::style::{
+    WINDOWS_TAB_CLOSE_BUTTON_RADIUS, WINDOWS_TAB_CLOSE_BUTTON_SIZE, WINDOWS_TAB_CLOSE_GLYPH,
+    WINDOWS_TAB_CLOSE_GLYPH_SIZE, WINDOWS_TAB_CORNER_RADIUS, WINDOWS_TAB_SEPARATOR_HEIGHT,
+    WINDOWS_TAB_SEPARATOR_WIDTH, windows_tab_icon_font_family,
+};
+use gpui_kit::prelude::FluentBuilder as _;
 use termy_core::ProgressState;
 
 pub(super) struct TabItemRenderInput {
@@ -26,6 +32,8 @@ pub(super) struct TabItemRenderInput {
     pub(super) hover_progress: f32,
     pub(super) progress_state: ProgressState,
     pub(super) program_status: Option<termy_core::ProgramState>,
+    /// Windows 11 style: draw the 1 px divider after this tab.
+    pub(super) show_trailing_separator: bool,
 }
 
 #[cfg(test)]
@@ -126,6 +134,17 @@ impl TerminalView {
                 .into_any_element();
         }
 
+        if palette.style.is_windows_11() && input.orientation == TabStripOrientation::Horizontal {
+            return Self::render_windows_tab_close_button(
+                input,
+                palette,
+                close_text_color,
+                hover_tab_index,
+                close_tab_index,
+                cx,
+            );
+        }
+
         let close_font_size = if input.orientation == TabStripOrientation::Horizontal {
             TAB_HORIZONTAL_TITLE_FONT_SIZE
         } else {
@@ -188,6 +207,62 @@ impl TerminalView {
             .into_any_element()
     }
 
+    /// WinUI tab close button: Segoe icon "X" in a rounded 24x24 hit area
+    /// with a neutral hover fill.
+    fn render_windows_tab_close_button(
+        input: &TabItemRenderInput,
+        palette: &TabStripPalette,
+        close_text_color: gpui_kit::Rgba,
+        hover_tab_index: usize,
+        close_tab_index: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let hover_bg = palette.close_button_hover_bg;
+        let hover_text = palette.close_button_hover_text;
+        let pressed_bg = palette.close_button_pressed_bg;
+        let button_size = WINDOWS_TAB_CLOSE_BUTTON_SIZE.min(input.close_slot_width);
+        div()
+            .flex_none()
+            .w(px(input.close_slot_width))
+            .h(px(button_size))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .id(("windows-tab-close", close_tab_index))
+                    .w(px(button_size))
+                    .h(px(button_size))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(WINDOWS_TAB_CLOSE_BUTTON_RADIUS))
+                    .bg(palette.close_button_bg)
+                    .font_family(windows_tab_icon_font_family())
+                    .text_size(px(WINDOWS_TAB_CLOSE_GLYPH_SIZE))
+                    .text_color(close_text_color)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _event: &MouseDownEvent, window, cx| {
+                            window.prevent_default();
+                            this.request_tab_close_by_index(close_tab_index, window, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(
+                        move |this, _event: &MouseMoveEvent, _window, cx| {
+                            this.on_tab_close_mouse_move(hover_tab_index, cx);
+                            cx.stop_propagation();
+                        },
+                    ))
+                    .hover(move |style| style.bg(hover_bg).text_color(hover_text))
+                    .active(move |style| style.bg(pressed_bg).text_color(hover_text))
+                    .cursor_pointer()
+                    .child(WINDOWS_TAB_CLOSE_GLYPH),
+            )
+            .into_any_element()
+    }
+
     pub(super) fn render_tab_item(
         &mut self,
         input: TabItemRenderInput,
@@ -197,6 +272,9 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let orientation = input.orientation;
+        // Windows 11 (WinUI TabView) decoration of the horizontal strip.
+        let windows_style =
+            palette.style.is_windows_11() && orientation == TabStripOrientation::Horizontal;
         let switch_tab_index = input.index;
         let hover_tab_index = input.index;
         let close_tab_index = input.index;
@@ -234,7 +312,8 @@ impl TerminalView {
             tab_bg = palette.hovered_tab_bg;
             tab_bg.a = (tab_bg.a * 1.8).max(self.scaled_chrome_surface_alpha(0.12));
         }
-        if orientation == TabStripOrientation::Horizontal && input.is_active {
+        // The Windows 11 selected tab must match the terminal surface exactly.
+        if orientation == TabStripOrientation::Horizontal && input.is_active && !windows_style {
             tab_bg.a = (tab_bg.a + TAB_ACTIVE_BG_LIFT_HORIZONTAL).min(1.0);
         }
         tab_bg.a *= anim;
@@ -264,7 +343,9 @@ impl TerminalView {
             hover_tab_bg.a = (hover_tab_bg.a + self.scaled_chrome_surface_alpha(0.06)).min(1.0);
         }
         let drag_offset_y = if input.is_drag_source { -1.0 } else { 0.0 };
-        let visual_offset_y = if orientation == TabStripOrientation::Horizontal {
+        // Windows 11 tabs stay seated on the strip's bottom edge, where the
+        // selected tab joins the terminal content.
+        let visual_offset_y = if orientation == TabStripOrientation::Horizontal && !windows_style {
             drag_offset_y
         } else {
             0.0
@@ -279,13 +360,25 @@ impl TerminalView {
             TabStripOrientation::Horizontal => TAB_ITEM_RADIUS_HORIZONTAL,
             TabStripOrientation::Vertical => TAB_ITEM_RADIUS,
         };
-        let mut tab_shell = div()
+        let tab_shell = div()
+            .id(("tab-shell", input.index))
             .flex_none()
             .relative()
-            .overflow_hidden()
-            .rounded(px(chip_radius))
+            .overflow_hidden();
+        // WinUI tabs round only their top corners; the bottom edge is flush
+        // with the content (selected) or the strip bottom (hover).
+        let tab_shell = if windows_style {
+            tab_shell.rounded_t(px(WINDOWS_TAB_CORNER_RADIUS))
+        } else {
+            tab_shell.rounded(px(chip_radius))
+        };
+        let pressed_tab_bg = palette.pressed_tab_bg;
+        let mut tab_shell = tab_shell
             .bg(tab_bg)
             .hover(move |style| style.bg(hover_tab_bg))
+            .when(windows_style && !input.is_active, |shell| {
+                shell.active(move |style| style.bg(pressed_tab_bg))
+            })
             .w(px(shell_width))
             .h(px(shell_height))
             .mt(px(visual_offset_y))
@@ -449,7 +542,7 @@ impl TerminalView {
                             .overflow_x_hidden()
                             .whitespace_nowrap()
                             .font_family(font_family.clone())
-                            .font_weight(if input.is_active {
+                            .font_weight(if input.is_active && !windows_style {
                                 FontWeight::MEDIUM
                             } else {
                                 FontWeight::NORMAL
@@ -467,13 +560,38 @@ impl TerminalView {
                 .children(drop_marker);
 
         if orientation == TabStripOrientation::Horizontal {
-            return div()
+            let separator = (windows_style && input.show_trailing_separator).then(|| {
+                let tab_top = (TABBAR_HEIGHT - input.tab_cross_extent).max(0.0);
+                div()
+                    .absolute()
+                    .right_0()
+                    .top(px(tab_top
+                        + ((input.tab_cross_extent - WINDOWS_TAB_SEPARATOR_HEIGHT)
+                            * 0.5)
+                            .max(0.0)))
+                    .w(px(WINDOWS_TAB_SEPARATOR_WIDTH))
+                    .h(px(WINDOWS_TAB_SEPARATOR_HEIGHT.min(input.tab_cross_extent)))
+                    .bg(palette.separator_color)
+            });
+            let ears = (windows_style && input.is_active).then(|| {
+                [
+                    Self::render_windows_tab_ear(true, tab_bg),
+                    Self::render_windows_tab_ear(false, tab_bg),
+                ]
+            });
+            let wrapper = div()
                 .flex_none()
                 .relative()
                 .w(px(tab_primary_extent))
                 .h(px(TABBAR_HEIGHT))
-                .flex()
-                .items_center()
+                .flex();
+            // Windows 11 tabs sit on the row's bottom edge; Termy chips center.
+            let wrapper = if windows_style {
+                wrapper.items_end()
+            } else {
+                wrapper.items_center()
+            };
+            return wrapper
                 .cursor_pointer()
                 .on_mouse_down(
                     MouseButton::Left,
@@ -509,6 +627,8 @@ impl TerminalView {
                     }),
                 )
                 .child(tab_shell)
+                .children(separator)
+                .children(ears.into_iter().flatten())
                 .into_any_element();
         }
 
@@ -568,6 +688,7 @@ mod tests {
             hover_progress: 0.0,
             progress_state: ProgressState::default(),
             program_status: None,
+            show_trailing_separator: false,
         }
     }
 

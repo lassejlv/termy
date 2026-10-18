@@ -121,6 +121,7 @@ pub fn runtime_config_from_app_config_with_query_colors(
     TerminalRuntimeConfig {
         shell: config.shell.clone(),
         windows_shell: match config.windows_shell {
+            WindowsShell::Auto => RuntimeWindowsShell::Auto,
             WindowsShell::Cmd => RuntimeWindowsShell::Cmd,
             WindowsShell::PowerShell => RuntimeWindowsShell::PowerShell,
             WindowsShell::PowerShellCore => RuntimeWindowsShell::PowerShellCore,

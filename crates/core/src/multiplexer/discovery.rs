@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
     net::TcpStream,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
@@ -25,6 +25,41 @@ pub(crate) struct Endpoint {
     /// The host proves it knows the token before the client sends anything.
     #[serde(default)]
     pub mutual_auth: bool,
+}
+
+/// The session host directory for this user: `multiplexer` next to the config
+/// file. On Windows it is under `%LOCALAPPDATA%` instead, so the endpoint token
+/// stays on this machine rather than roaming with the `%APPDATA%` profile; a
+/// host that an older version started next to the config keeps being used
+/// while it runs.
+pub fn default_root() -> Option<PathBuf> {
+    let legacy =
+        crate::config_core::config_path().and_then(|path| Some(path.parent()?.join("multiplexer")));
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .map(|value| PathBuf::from(value).join("termy").join("multiplexer"))
+    {
+        return Some(match legacy {
+            Some(legacy) if host_is_running(&legacy) => legacy,
+            _ => local,
+        });
+    }
+    legacy
+}
+
+/// Whether a session host holds the host lock in `root`. Creates nothing, so
+/// probing a directory no host ever used leaves no files behind.
+#[cfg(windows)]
+fn host_is_running(root: &Path) -> bool {
+    let Ok(lock) = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join("host.lock"))
+    else {
+        return false;
+    };
+    matches!(lock.try_lock_exclusive(), Ok(false))
 }
 
 pub(crate) fn prepare_root(root: &Path) -> anyhow::Result<()> {
@@ -226,6 +261,21 @@ fn prevent_standard_handle_inheritance() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::net::TcpListener;
+
+    #[cfg(windows)]
+    #[test]
+    fn host_lock_probe_detects_a_running_host() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!host_is_running(temp.path()));
+        assert!(!temp.path().join("host.lock").exists());
+
+        let held = private_file(&temp.path().join("host.lock")).unwrap();
+        assert!(!host_is_running(temp.path()));
+        assert!(held.try_lock_exclusive().unwrap());
+        assert!(host_is_running(temp.path()));
+        FileExt::unlock(&held).unwrap();
+        assert!(!host_is_running(temp.path()));
+    }
 
     /// After a host crash another local user can bind the freed port. The
     /// client must not hand that listener the token or accept it as the host.

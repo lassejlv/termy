@@ -364,6 +364,30 @@ impl TerminalView {
         }
     }
 
+    /// Whether "+" would open the new-tab menu instead of adding a tab. The
+    /// Windows 11 tab style then shows a separate chevron for the menu.
+    pub(crate) fn new_tab_menu_has_choices(&self) -> bool {
+        should_show_new_tab_menu(
+            self.runtime_kind(),
+            cfg!(target_os = "windows"),
+            !self.saved_ssh_hosts.is_empty(),
+        )
+    }
+
+    /// Chevron next to "+" in the Windows 11 tab style: always the menu.
+    pub(crate) fn handle_new_tab_menu_button(
+        &mut self,
+        anchor: (f32, f32),
+        cx: &mut Context<Self>,
+    ) {
+        self.reload_saved_ssh_hosts();
+        if self.new_tab_menu_has_choices() {
+            self.toggle_new_tab_menu(anchor, cx);
+        } else {
+            self.add_tab(cx);
+        }
+    }
+
     pub(crate) fn toggle_new_tab_menu(&mut self, anchor: (f32, f32), cx: &mut Context<Self>) {
         if self.new_tab_menu_anchor.take().is_none() {
             self.new_tab_menu_anchor = Some(anchor);
@@ -639,7 +663,10 @@ impl TerminalView {
         self.push_closing_tab_overlay(
             index,
             self.session.tabs[index].title.clone(),
-            Self::stable_tab_render_width(self.session.tabs[index].display_width),
+            Self::stable_tab_render_width(
+                self.session.tabs[index].display_width,
+                self.horizontal_tab_metrics().min_width,
+            ),
             index == self.session.active_tab,
             cx,
         );

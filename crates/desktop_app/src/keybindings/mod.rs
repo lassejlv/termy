@@ -581,9 +581,15 @@ mod tests {
         let config = AppConfig::default();
         let (resolved, warnings) = resolve_keybinds_for_config(&config, true);
 
+        // Windows keeps Ctrl+O for the shell.
+        let trigger = if cfg!(target_os = "windows") {
+            "ctrl-shift-o"
+        } else {
+            "secondary-o"
+        };
         assert!(warnings.is_empty());
         assert!(resolved.iter().any(|binding| {
-            binding.trigger == "secondary-o" && binding.action == CommandId::FocusPaneNext
+            binding.trigger == trigger && binding.action == CommandId::FocusPaneNext
         }));
     }
 

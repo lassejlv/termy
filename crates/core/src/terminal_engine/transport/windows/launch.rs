@@ -4,9 +4,14 @@ fn resolve_launch_command(
 ) -> io::Result<LaunchCommand> {
     let program = resolve_program(&config.program, &config.environment, lookup_directory)?;
     if !is_batch_program(&program) {
+        let command_line = if is_command_processor(&program) {
+            command_processor_command_line(&config.program, &config.args)?
+        } else {
+            command_line(&config.program, &config.args)?
+        };
         return Ok(LaunchCommand {
             application: program,
-            command_line: command_line(&config.program, &config.args)?,
+            command_line,
         });
     }
 
@@ -95,13 +100,46 @@ fn normalize_working_directory(directory: Option<&Path>) -> io::Result<Option<Pa
     let Some(directory) = directory else {
         return Ok(None);
     };
-    reject_windows_namespace_path(directory)?;
+    let directory = simplify_verbatim_path(directory);
+    reject_windows_namespace_path(&directory)?;
     let absolute = if directory.is_absolute() {
-        directory.to_path_buf()
+        directory
     } else {
         normalized_current_directory()?.join(directory)
     };
     Ok(Some(normalize_absolute_path(&absolute)?))
+}
+
+/// `\\?\C:\work` and `\\?\UNC\server\share` name the same directories as
+/// `C:\work` and `\\server\share`, which CreateProcessW and shells accept as
+/// a working directory. Paths that only exist in the verbatim namespace (too
+/// long, `.` or `..` components, reserved names) and device paths are
+/// returned unchanged for the namespace check to reject.
+fn simplify_verbatim_path(path: &Path) -> PathBuf {
+    let simplified = dunce::simplified(path);
+    if simplified.as_os_str().len() != path.as_os_str().len() {
+        return simplified.to_path_buf();
+    }
+    let Some(text) = path.to_str() else {
+        return path.to_path_buf();
+    };
+    let Some(rest) = text
+        .get(..8)
+        .filter(|prefix| prefix.eq_ignore_ascii_case(r"\\?\UNC\"))
+        .map(|_| &text[8..])
+    else {
+        return path.to_path_buf();
+    };
+    let legacy_safe = rest.split('\\').count() >= 2
+        && !rest.contains('/')
+        && rest
+            .split('\\')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+        && rest.len() + 2 < 260;
+    if !legacy_safe {
+        return path.to_path_buf();
+    }
+    PathBuf::from(format!(r"\\{rest}"))
 }
 
 fn normalized_current_directory() -> io::Result<PathBuf> {
@@ -109,6 +147,8 @@ fn normalized_current_directory() -> io::Result<PathBuf> {
 }
 
 fn normalize_absolute_path(path: &Path) -> io::Result<PathBuf> {
+    let simplified = simplify_verbatim_path(path);
+    let path = simplified.as_path();
     reject_windows_namespace_path(path)?;
     if !path.is_absolute() {
         return Err(io::Error::new(
@@ -199,24 +239,55 @@ fn is_batch_program(path: &Path) -> bool {
     })
 }
 
+/// Resolve `candidate` the way cmd.exe does: a name whose extension PATHEXT
+/// lists is used as is; otherwise each PATHEXT extension is appended in
+/// PATHEXT order. An extension-less file is never a Windows program (it is
+/// usually a POSIX script beside the real `.cmd` or `.exe`), so it is never
+/// chosen. A name with an unlisted extension (`tool.v2`) is still tried as
+/// is after the PATHEXT forms.
 fn executable_candidate(candidate: &Path, path_extensions: &OsStr) -> Option<PathBuf> {
-    if candidate.extension().is_none() {
-        let with_exe = candidate.with_extension("exe");
-        if with_exe.is_file() {
-            return Some(with_exe);
-        }
-        for extension in path_extensions.to_string_lossy().split(';') {
-            let extension = extension.trim().trim_start_matches('.');
-            if extension.is_empty() || extension.eq_ignore_ascii_case("exe") {
-                continue;
-            }
-            let candidate = candidate.with_extension(extension);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
+    let path_extensions = path_extensions.to_string_lossy();
+    let extensions = path_extensions
+        .split(';')
+        .map(|extension| extension.trim().trim_start_matches('.'))
+        .filter(|extension| !extension.is_empty())
+        .collect::<Vec<_>>();
+    let extension = candidate.extension();
+    if extension.is_some_and(|extension| {
+        let extension = extension.to_string_lossy();
+        extensions
+            .iter()
+            .any(|listed| listed.eq_ignore_ascii_case(&extension))
+    }) {
+        return is_launchable_file(candidate).then(|| candidate.to_path_buf());
+    }
+    for listed in &extensions {
+        let mut name = candidate.as_os_str().to_os_string();
+        name.push(".");
+        name.push(listed);
+        let with_extension = PathBuf::from(name);
+        if is_launchable_file(&with_extension) {
+            return Some(with_extension);
         }
     }
-    candidate.is_file().then(|| candidate.to_path_buf())
+    (extension.is_some() && is_launchable_file(candidate)).then(|| candidate.to_path_buf())
+}
+
+/// A regular file, or an app execution alias (`WindowsApps\pwsh.exe`), a
+/// reparse point `metadata` cannot follow but CreateProcessW starts.
+fn is_launchable_file(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(metadata) => metadata.is_file(),
+        Err(_) => std::fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_dir()),
+    }
+}
+
+fn is_command_processor(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| {
+        name.to_string_lossy()
+            .trim_end_matches([' ', '.'])
+            .eq_ignore_ascii_case("cmd.exe")
+    })
 }
 
 fn program_not_found(program: &str) -> io::Error {
@@ -233,6 +304,43 @@ fn command_line(program: &str, args: &[String]) -> io::Result<Vec<u16>> {
         command.push(b' ' as u16);
         append_quoted_argument(&mut command, argument)?;
     }
+    finish_command_line(command)
+}
+
+/// cmd.exe reads the text after `/C` or `/K` itself instead of with the C
+/// runtime's rules, so CRT escaping (`\"`) would reach the command verbatim
+/// and break it. With `/S` before the switch, cmd strips exactly the first
+/// and last quote of that text and runs the rest unchanged, so a single
+/// final command argument is passed raw inside one quote pair. Any other
+/// argument shape is quoted normally.
+fn command_processor_command_line(program: &str, args: &[String]) -> io::Result<Vec<u16>> {
+    let switch = args.iter().position(|argument| {
+        argument.eq_ignore_ascii_case("/C") || argument.eq_ignore_ascii_case("/K")
+    });
+    let Some(switch) = switch.filter(|switch| {
+        switch + 2 == args.len()
+            && args[..*switch]
+                .iter()
+                .any(|argument| argument.eq_ignore_ascii_case("/S"))
+    }) else {
+        return command_line(program, args);
+    };
+    let mut command = Vec::new();
+    append_quoted_argument(&mut command, program)?;
+    for argument in &args[..=switch] {
+        command.push(b' ' as u16);
+        append_quoted_argument(&mut command, argument)?;
+    }
+    let payload = args[switch + 1].encode_utf16().collect::<Vec<_>>();
+    if payload.contains(&0) {
+        return Err(io::Error::new(
+            ErrorKind::InvalidInput,
+            "terminal command cannot contain NUL bytes",
+        ));
+    }
+    command.extend(" \"".encode_utf16());
+    command.extend_from_slice(&payload);
+    command.push(b'"' as u16);
     finish_command_line(command)
 }
 
@@ -480,6 +588,8 @@ fn compare_environment_names(left: &OsStr, right: &OsStr) -> CmpOrdering {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetModuleHandleW(module_name: *const u16) -> HModule;
+    fn LoadLibraryExW(file_name: *const u16, file: Handle, flags: Dword) -> HModule;
+    fn FreeLibrary(module: HModule) -> Bool;
     fn GetProcAddress(module: HModule, procedure_name: *const u8) -> *mut c_void;
     fn CompareStringOrdinal(
         string_1: *const u16,

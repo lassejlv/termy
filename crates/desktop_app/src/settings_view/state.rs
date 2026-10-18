@@ -908,6 +908,7 @@ impl SettingsWindow {
             EditableField::PaddingX => format!("{}", self.config.padding_x.round() as i32),
             EditableField::PaddingY => format!("{}", self.config.padding_y.round() as i32),
             EditableField::WindowsShell => match self.config.windows_shell {
+                termy_core::config_core::WindowsShell::Auto => "auto",
                 termy_core::config_core::WindowsShell::Cmd => "cmd",
                 termy_core::config_core::WindowsShell::PowerShell => "powershell",
                 termy_core::config_core::WindowsShell::PowerShellCore => "pwsh",

@@ -203,6 +203,10 @@ fn open_settings_window_with_section(
             {
                 window.set_window_title("Settings");
             }
+            // The settings window keeps the OS caption; registering lets its
+            // DWM frame follow the Termy theme.
+            #[cfg(target_os = "windows")]
+            crate::native_sdk::win32_window::register_window(window, "Settings");
             // Opening a window without a tabbing identifier turns AppKit's
             // automatic tabbing off app-wide; native terminal tabs need it on.
             #[cfg(target_os = "macos")]

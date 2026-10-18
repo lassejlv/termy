@@ -147,7 +147,7 @@ fn render_keybindings_doc() -> String {
     }
 
     output.push_str("`secondary` maps to `cmd` on macOS and `ctrl` on non-macOS platforms.\n\n");
-    output.push_str("Numbered pane actions (`focus_pane_1` through `focus_pane_9`) target panes in the same order as `focus_pane_next`, within the active tab. A missing pane or already-focused pane is left unchanged. The default `secondary-alt-1` through `secondary-alt-9` shortcuts leave `secondary-1` through `secondary-9` available for tabs.\n\n");
+    output.push_str("Numbered pane actions (`focus_pane_1` through `focus_pane_9`) target panes in the same order as `focus_pane_next`, within the active tab. A missing pane or already-focused pane is left unchanged. The default `secondary-alt-1` through `secondary-alt-9` shortcuts leave `secondary-1` through `secondary-9` available for tabs. On Windows, panes use `alt-1` through `alt-9` and tabs use `ctrl-alt-1` through `ctrl-alt-9`, so plain `ctrl` shortcuts stay with the shell.\n\n");
     output.push_str("## Config Syntax\n\n");
     output.push_str("Supported forms:\n\n");
     output.push_str("- `keybind = clear`\n");

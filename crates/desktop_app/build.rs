@@ -176,12 +176,31 @@ fn main() {
         }
     }
 
-    #[cfg(target_os = "windows")]
+    // winresource is a Windows-host build dependency, so this block compiles
+    // only on Windows hosts; within it the target decides, so a Windows host
+    // building for another OS embeds nothing.
+    #[cfg(windows)]
     {
-        let icon_path = "../../assets/termy.ico";
-        if std::path::Path::new(icon_path).exists() {
+        if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+            const ICON_PATH: &str = "../../assets/termy.ico";
+            println!("cargo::rerun-if-changed={ICON_PATH}");
+
             let mut res = winresource::WindowsResource::new();
-            res.set_icon(icon_path);
+            if std::path::Path::new(ICON_PATH).exists() {
+                res.set_icon(ICON_PATH);
+            }
+            // VERSIONINFO for Explorer's Details tab, Task Manager and SmartScreen.
+            // The numeric FILEVERSION/PRODUCTVERSION come from CARGO_PKG_VERSION.
+            // No manifest here: gpui already embeds one, and a second conflicts.
+            let version = std::env::var("CARGO_PKG_VERSION").expect("CARGO_PKG_VERSION is set");
+            res.set("FileDescription", "Termy")
+                .set("ProductName", "Termy")
+                .set("CompanyName", "Termy")
+                .set("LegalCopyright", "Copyright (c) Lasse Vestergaard")
+                .set("OriginalFilename", "termy.exe")
+                .set("InternalName", "termy")
+                .set("FileVersion", &version)
+                .set("ProductVersion", &version);
             if let Err(err) = res.compile() {
                 panic!("failed to compile Windows resources: {err}");
             }

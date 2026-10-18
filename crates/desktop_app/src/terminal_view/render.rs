@@ -2882,6 +2882,7 @@ impl Render for TerminalView {
         let font_size = self.font_size;
         self.sync_window_background_appearance(window);
         self.native_titlebar.sync(&self.colors);
+        self.sync_native_window_title(window);
         let effective_background_opacity = self.background_opacity_factor();
         let mut terminal_surface_bg = colors.background;
         terminal_surface_bg.a = self.scaled_background_alpha(terminal_surface_bg.a);
@@ -3681,6 +3682,12 @@ impl Render for TerminalView {
 
         let focus_handle = self.focus_handle.clone();
         let tabbar_bg = terminal_surface_bg;
+        // Windows 11 tab style: the titlebar row gets its own chrome fill (or
+        // shows the Mica backdrop) and only the content below it paints the
+        // terminal surface, which the selected tab continues into the row.
+        let windows_tab_chrome_bg = self
+            .windows_tab_chrome_active()
+            .then(|| self.windows_tab_chrome_background_for(&colors));
         let show_tab_strip_chrome = self.should_render_tab_strip_chrome();
         let titlebar_height = self.window_titlebar_height();
         let vertical_tabs = self.tab_strip_orientation()
@@ -3791,6 +3798,11 @@ impl Render for TerminalView {
         } else {
             "Terminal"
         };
+        // Vertical-tab and hidden-strip layouts still need caption buttons and a
+        // drag area on Windows, where Termy draws its own titlebar.
+        let windows_titlebar_controls = (!show_horizontal_tabbar)
+            .then(|| self.render_windows_titlebar_controls(window, &colors))
+            .flatten();
         let titlebar_element: Option<AnyElement> = (titlebar_height > 0.0).then(|| {
             // The root already paints the shared translucent window background.
             // Repainting that same fill on the titlebar darkens the top strip
@@ -3803,6 +3815,9 @@ impl Render for TerminalView {
                 .relative()
                 .flex()
                 .items_center()
+                .when_some(windows_tab_chrome_bg, |titlebar, chrome_bg| {
+                    titlebar.bg(chrome_bg)
+                })
                 .on_mouse_move(cx.listener(Self::handle_titlebar_tab_strip_mouse_move));
 
             titlebar_container
@@ -3828,6 +3843,7 @@ impl Render for TerminalView {
                         .children(tabs_row)
                         .children(hidden_titlebar_branding),
                 )
+                .children(windows_titlebar_controls)
                 .into_any()
         });
         // Keep the existing long GPUI listener chain stable when adding actions.
@@ -3837,7 +3853,7 @@ impl Render for TerminalView {
             .flex()
             .flex_col()
             .size_full()
-            .bg(terminal_surface_bg)
+            .when(windows_tab_chrome_bg.is_none(), |root| root.bg(terminal_surface_bg))
             .font_family(ui_font_family)
             .capture_any_mouse_up(cx.listener(|this, event: &MouseUpEvent, window, cx| {
                 if this.finish_window_tab_drag(event, window, cx) {
@@ -3884,6 +3900,9 @@ impl Render for TerminalView {
             .child(
                 div()
                     .id("terminal")
+                    .when(windows_tab_chrome_bg.is_some(), |terminal| {
+                        terminal.bg(terminal_surface_bg)
+                    })
                     .track_focus(&focus_handle)
                     .key_context(key_context)
                     .on_action(cx.listener(Self::handle_toggle_command_palette_action))

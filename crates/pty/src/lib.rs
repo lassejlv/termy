@@ -236,7 +236,8 @@ impl NativePty {
         self.pid
     }
 
-    /// Foreground process name, or null when unknown (always on Windows).
+    /// Foreground process name, or null when unknown. On Windows it is the
+    /// newest descendant of the program, with its extension (`vim.exe`).
     #[napi(getter)]
     pub fn process(&self) -> Option<String> {
         self.pty.as_ref()?.foreground_process_name()
