@@ -44,6 +44,7 @@ impl SettingsWindow {
             | EditableField::TabCloseVisibility
             | EditableField::TabWidthMode
             | EditableField::TabBarPosition
+            | EditableField::TabStyle
             | EditableField::SidebarWidth => self.apply_tabs_field(field, value),
             EditableField::WorkingDirectory
             | EditableField::WorkingDirFallback
@@ -648,6 +649,24 @@ impl SettingsWindow {
                 };
                 config::set_root_setting(
                     termy_core::config_core::RootSettingId::TabBarPosition,
+                    canonical,
+                )
+            }
+            EditableField::TabStyle => {
+                let parsed = match value.to_ascii_lowercase().as_str() {
+                    "native" => termy_core::config_core::TabStyle::Native,
+                    "custom" => termy_core::config_core::TabStyle::Custom,
+                    _ => {
+                        return Err("Tab style must be native or custom".to_string());
+                    }
+                };
+                self.config.tab_style = parsed;
+                let canonical = match parsed {
+                    termy_core::config_core::TabStyle::Native => "native",
+                    termy_core::config_core::TabStyle::Custom => "custom",
+                };
+                config::set_root_setting(
+                    termy_core::config_core::RootSettingId::TabStyle,
                     canonical,
                 )
             }

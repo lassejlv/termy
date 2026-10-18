@@ -72,6 +72,16 @@ impl TerminalView {
         }
     }
 
+    /// Height of Termy's own titlebar row. Native tab windows use AppKit's
+    /// titlebar, which sits outside the content view.
+    pub(in super::super) fn window_titlebar_height(&self) -> f32 {
+        if self.native_window_tabs {
+            0.0
+        } else {
+            Self::window_titlebar_height_for(false, self.should_render_tab_strip_chrome())
+        }
+    }
+
     fn terminal_content_top_inset_for(
         sidebar_tabs: bool,
         show_tab_strip_chrome: bool,
@@ -81,6 +91,9 @@ impl TerminalView {
     }
 
     pub(in super::super) fn terminal_content_top_inset(&self) -> f32 {
+        if self.native_window_tabs {
+            return 0.0;
+        }
         Self::terminal_content_top_inset_for(
             false,
             self.should_render_tab_strip_chrome(),

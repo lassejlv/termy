@@ -1309,6 +1309,14 @@ pub struct TerminalView {
     native_terminal_wakeup_batch: HashSet<NativeTerminalWakeupId>,
     focus_handle: FocusHandle,
     window_handle: gpui_kit::AnyWindowHandle,
+    /// AppKit draws this window's tabs: the window holds one tab, and any
+    /// other tab moves into its own native tab window.
+    native_window_tabs: bool,
+    /// The tab this native tab window shows.
+    native_tab_home: Option<TabId>,
+    native_tab_split_pending: bool,
+    /// Last title and titlebar color given to AppKit.
+    native_window_chrome: Option<tabs::NativeWindowChrome>,
     owns_persisted_session: bool,
     multiplexer: Option<Arc<crate::multiplexer::WindowSession>>,
     multiplexer_enabled_config: bool,
@@ -3249,6 +3257,8 @@ impl TerminalView {
                 multiplexer.as_ref().map(|window| window.client()),
             );
         let resolved_runtime_kind = runtime.kind();
+        let native_window_tabs = crate::native_window_tabs_enabled(&config)
+            && resolved_runtime_kind == RuntimeKind::Native;
         if resolved_runtime_kind != configured_runtime_kind {
             // Preinstalled menus and shortcuts must follow the runtime we actually
             // started, including a tmux preflight/control-session fallback.
@@ -3274,6 +3284,10 @@ impl TerminalView {
             native_terminal_wakeup_batch: HashSet::new(),
             focus_handle,
             window_handle,
+            native_window_tabs,
+            native_tab_home: None,
+            native_tab_split_pending: false,
+            native_window_chrome: None,
             owns_persisted_session,
             multiplexer,
             multiplexer_enabled_config,
@@ -3632,6 +3646,23 @@ impl TerminalView {
             }
         }
         view.sync_native_terminal_wakeup_interest();
+        if view.native_window_tabs {
+            cx.observe_self(|view, cx| view.sync_native_window_chrome(cx))
+                .detach();
+            // Closing or merging tabs elsewhere activates another tab window,
+            // which may now need its title back (or hidden) in the titlebar.
+            #[cfg(target_os = "macos")]
+            cx.observe_window_activation(window, |_, window, _| {
+                crate::macos_native_tabs::refresh_titlebar_tabs(window);
+            })
+            .detach();
+            // Leaving fullscreen turns the titlebar opaque again.
+            cx.observe_window_bounds(window, |view, _, cx| {
+                view.native_window_chrome = None;
+                view.sync_native_window_chrome(cx);
+            })
+            .detach();
+        }
         view.appearance_subscription =
             Some(cx.observe_window_appearance(window, |view, window, cx| {
                 view.handle_window_appearance_change(window.appearance(), cx);

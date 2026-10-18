@@ -63,6 +63,9 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if let Some(handled) = self.execute_native_window_tab_action(action, window) {
+            return handled;
+        }
         match action {
             CommandAction::RenameTab => {
                 self.begin_rename_tab(self.session.active_tab, cx);
@@ -607,6 +610,7 @@ impl TerminalView {
         self.sync_plugin_lifecycle_state(false, cx);
         self.schedule_persist_native_workspace(cx);
         self.start_new_tab_animation(tab_id, cx);
+        self.schedule_native_window_tab_split(cx);
         cx.notify();
         true
     }

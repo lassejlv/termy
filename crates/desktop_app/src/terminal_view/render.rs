@@ -866,23 +866,20 @@ impl Focusable for TerminalView {
 impl TerminalView {
     fn update_banner_layout_for(
         show_update_banner: bool,
-        show_tab_strip_chrome: bool,
+        titlebar_height: f32,
     ) -> Option<UpdateBannerLayout> {
         if !show_update_banner {
             return None;
         }
 
         Some(UpdateBannerLayout {
-            overlay_top: Self::window_titlebar_height_for(false, show_tab_strip_chrome) + 10.0,
+            overlay_top: titlebar_height + 10.0,
             overlay_left: 0.0,
         })
     }
 
     fn update_banner_layout(&self) -> Option<UpdateBannerLayout> {
-        Self::update_banner_layout_for(
-            self.update_banner_visible(),
-            self.should_render_tab_strip_chrome(),
-        )
+        Self::update_banner_layout_for(self.update_banner_visible(), self.window_titlebar_height())
     }
     fn pane_render_cache_key(
         &self,
@@ -2849,6 +2846,7 @@ impl TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let frame_now = Instant::now();
+        self.schedule_native_window_tab_split(cx);
         if !self.launch_probe_scheduled
             && self
                 .session
@@ -3684,7 +3682,7 @@ impl Render for TerminalView {
         let focus_handle = self.focus_handle.clone();
         let tabbar_bg = terminal_surface_bg;
         let show_tab_strip_chrome = self.should_render_tab_strip_chrome();
-        let titlebar_height = Self::window_titlebar_height_for(false, show_tab_strip_chrome);
+        let titlebar_height = self.window_titlebar_height();
         let vertical_tabs = self.tab_strip_orientation()
             == crate::terminal_view::tab_strip::state::TabStripOrientation::Vertical;
         let show_horizontal_tabbar = show_tab_strip_chrome && !vertical_tabs;
@@ -3701,12 +3699,13 @@ impl Render for TerminalView {
         let workspace_sidebar_edge_peek = self
             .workspace_sidebar_edge_peek_enabled()
             .then(|| self.render_workspace_sidebar_edge_peek_target(cx));
-        let hidden_titlebar_branding = Self::should_render_hidden_titlebar_branding(
-            self.auto_hide_tabbar,
-            self.session.tabs.len(),
-            self.effective_tab_bar_visibility(),
-            self.show_termy_in_titlebar,
-        )
+        let hidden_titlebar_branding = (!self.native_window_tabs
+            && Self::should_render_hidden_titlebar_branding(
+                self.auto_hide_tabbar,
+                self.session.tabs.len(),
+                self.effective_tab_bar_visibility(),
+                self.show_termy_in_titlebar,
+            ))
         .then(|| {
             self.render_titlebar_branding(window, &colors, &ui_font_family, tabbar_bg, false, cx)
         })
@@ -4190,7 +4189,10 @@ mod tests {
     #[test]
     fn update_dialog_layout_floats_below_titlebar_without_reserving_space() {
         assert_eq!(
-            TerminalView::update_banner_layout_for(true, true),
+            TerminalView::update_banner_layout_for(
+                true,
+                TerminalView::window_titlebar_height_for(false, true)
+            ),
             Some(UpdateBannerLayout {
                 overlay_top: TerminalView::titlebar_height() + 10.0,
                 overlay_left: 0.0,

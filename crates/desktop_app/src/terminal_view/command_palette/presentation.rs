@@ -14,6 +14,7 @@ pub(super) fn command_icon_path(id: CommandId) -> &'static str {
     use termy_core::command_core::CommandId::*;
     match id {
         NewTab => "icons/command_palette/new-tab.svg",
+        NewWindow => "icons/command_palette/new-window.svg",
         CloseTab | ClosePane | ClosePaneOrTab => "icons/command_palette/close-tab.svg",
         MoveTabLeft | SwitchTabLeft => "icons/command_palette/tab-left.svg",
         MoveTabRight | SwitchTabRight | CycleTabs => "icons/command_palette/tab-right.svg",
@@ -133,7 +134,7 @@ pub(super) fn command_category(id: CommandId) -> &'static str {
         | FocusPane1 | FocusPane2 | FocusPane3 | FocusPane4 | FocusPane5 | FocusPane6
         | FocusPane7 | FocusPane8 | FocusPane9 | ResizePaneLeft | ResizePaneRight
         | ResizePaneUp | ResizePaneDown | TogglePaneZoom => "Panes",
-        MinimizeWindow | ToggleWorkspaceSidebar => "Window",
+        NewWindow | MinimizeWindow | ToggleWorkspaceSidebar => "Window",
         ManageTmuxSessions | ManageSavedLayouts | RunTask => "Sessions",
         OpenSearch
         | CloseSearch

@@ -465,7 +465,7 @@ impl TerminalView {
         }
         let tab_id = self.session.tabs[self.session.active_tab].id;
         let target = Self::tab_close_request_target(self.effective_tab_count_for_close(), tab_id);
-        let _ = self.request_close(target, window, cx);
+        self.request_close_and_follow_through(target, window, cx);
     }
 
     /// Tab count used to pick a close target: stashed workspaces keep the
@@ -490,7 +490,21 @@ impl TerminalView {
         }
         let tab_id = self.session.tabs[index].id;
         let target = Self::tab_close_request_target(self.effective_tab_count_for_close(), tab_id);
-        let _ = self.request_close(target, window, cx);
+        self.request_close_and_follow_through(target, window, cx);
+    }
+
+    /// Closing the last tab closes the window. `request_close` only answers
+    /// whether a window may close, so this removes it when the answer is yes
+    /// (a confirmation prompt removes it itself).
+    fn request_close_and_follow_through(
+        &mut self,
+        target: CloseRequestTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.request_close(target, window, cx) && target == CloseRequestTarget::WindowClose {
+            window.remove_window();
+        }
     }
 
     pub(in super::super) fn request_workspace_delete_by_id(

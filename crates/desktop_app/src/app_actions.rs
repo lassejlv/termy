@@ -221,6 +221,12 @@ fn open_settings_window_with_section(
             {
                 window.set_window_title("Settings");
             }
+            // Opening a window without a tabbing identifier turns AppKit's
+            // automatic tabbing off app-wide; native terminal tabs need it on.
+            #[cfg(target_os = "macos")]
+            if crate::native_window_tabs_enabled(&settings_load.config) {
+                crate::macos_native_tabs::allow_automatic_window_tabbing();
+            }
             cx.new(|cx| {
                 let mut view = SettingsWindow::new(window, cx);
                 if let Some(section) = section {

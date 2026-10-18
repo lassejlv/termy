@@ -63,6 +63,7 @@ const SETTINGS_ICONS: &[(&str, &[u8])] = &[
 
 const COMMAND_PALETTE_ICONS: &[(&str, &[u8])] = &[
     palette_icon!("new-tab"),
+    palette_icon!("new-window"),
     palette_icon!("close-tab"),
     palette_icon!("tab-left"),
     palette_icon!("tab-right"),

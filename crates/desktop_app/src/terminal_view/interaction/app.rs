@@ -27,6 +27,11 @@ impl TerminalView {
                 self.open_settings_action(cx);
                 true
             }
+            CommandAction::NewWindow => {
+                // Errors are already logged and surfaced as a toast.
+                let _ = crate::open_main_window_with_runtime_config_overrides(cx, None);
+                true
+            }
             CommandAction::CheckForUpdates => {
                 self.check_for_updates_action(cx);
                 true

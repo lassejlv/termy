@@ -176,6 +176,7 @@ impl TerminalView {
             CommandAction::Quit => {
                 self.execute_quit_command_action(action, window, cx);
             }
+            CommandAction::ToggleTabBarVisibility if self.toggle_native_window_tab_bar(window) => {}
             CommandAction::ToggleTabBarVisibility => {
                 let next_visibility = if self.should_render_tab_strip_chrome() {
                     TabBarVisibility::ForceHidden
@@ -198,6 +199,7 @@ impl TerminalView {
             | CommandAction::ImportColors
             | CommandAction::AppInfo
             | CommandAction::OpenSettings
+            | CommandAction::NewWindow
             | CommandAction::CheckForUpdates
             | CommandAction::ViewReleaseNotes => {
                 self.execute_app_system_command_action(action, cx);

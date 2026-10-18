@@ -411,6 +411,22 @@ define_commands!(
             MenuActionRole::Normal
         ))
     ),
+    (
+        NewWindow,
+        GLOBAL_CONTEXT,
+        Some(palette(
+            "New Window",
+            "create open window",
+            CommandPaletteVisibility::Always
+        )),
+        Some(menu(
+            MenuRoot::File,
+            0,
+            "New Window",
+            MenuVisibility::Always,
+            MenuActionRole::Normal
+        ))
+    ),
     (CloseTab, TERMINAL_CONTEXT, None, None),
     (
         ClosePaneOrTab,

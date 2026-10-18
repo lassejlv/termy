@@ -53,6 +53,7 @@ Termy keybindings use Ghostty-style trigger overrides via repeated `keybind` lin
 - `secondary-g` -> `search_next`
 - `secondary-shift-g` -> `search_previous`
 - `secondary-alt-i` -> `toggle_inspector`
+- `secondary-n` -> `new_window`
 - `secondary-k` -> `clear_screen`
 - `secondary-m` -> `minimize_window`
 - `secondary-c` -> `copy`
@@ -241,6 +242,7 @@ Related UI option:
 ## Configurable Actions
 
 - `new_tab`
+- `new_window`
 - `close_tab`
 - `close_pane_or_tab`
 - `move_tab_left`

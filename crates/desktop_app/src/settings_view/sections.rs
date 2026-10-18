@@ -695,7 +695,21 @@ impl SettingsWindow {
         let close_visibility_meta = Self::setting_metadata_or_fallback("tab_close_visibility");
         let width_mode_meta = Self::setting_metadata_or_fallback("tab_width_mode");
         let bar_position_meta = Self::setting_metadata_or_fallback("tab_bar_position");
-        let mut rows = vec![
+        let mut rows = Vec::new();
+        #[cfg(target_os = "macos")]
+        {
+            let tab_style = self.editable_field_value(EditableField::TabStyle);
+            let tab_style_meta = Self::setting_metadata_or_fallback("tab_style");
+            rows.push(self.render_editable_row(
+                "tab_style",
+                EditableField::TabStyle,
+                tab_style_meta.title,
+                tab_style_meta.description,
+                tab_style,
+                cx,
+            ));
+        }
+        rows.extend([
             self.render_editable_row(
                 "tab_bar_position",
                 EditableField::TabBarPosition,
@@ -727,7 +741,7 @@ impl SettingsWindow {
                 show_switch_hints,
                 cx,
             ),
-        ];
+        ]);
 
         rows.push(self.render_root_bool_setting_row(
             "auto_hide_tabbar",

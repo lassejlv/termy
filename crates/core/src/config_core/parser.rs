@@ -10,7 +10,7 @@ use crate::config_core::diagnostics::{ConfigDiagnostic, ConfigDiagnosticKind, Co
 use crate::config_core::schema::{RootSettingId, root_setting_from_key, root_setting_spec};
 use crate::config_core::types::{
     AppConfig, AppearanceMode, ClipboardReadPolicy, CursorStyle, KeybindConfigLine,
-    PaneFocusEffect, TabBarPosition, TabCloseVisibility, TabTitleMode, TabTitleSource,
+    PaneFocusEffect, TabBarPosition, TabCloseVisibility, TabStyle, TabTitleMode, TabTitleSource,
     TabWidthMode, TaskConfig, TerminalScrollbarStyle, TerminalScrollbarVisibility, ThemeId,
     WindowsShell, WorkingDirFallback,
 };
@@ -552,6 +552,19 @@ impl AppConfig {
                             key,
                             value,
                             "one of: top, right",
+                        );
+                    }
+                }
+                RootSettingId::TabStyle => {
+                    if let Some(parsed) = TabStyle::from_str(value) {
+                        config.tab_style = parsed;
+                    } else {
+                        push_invalid_value(
+                            &mut diagnostics,
+                            line_number,
+                            key,
+                            value,
+                            "one of: native, custom",
                         );
                     }
                 }
