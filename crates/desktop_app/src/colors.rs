@@ -2,7 +2,7 @@ use crate::config::{
     AppConfig, AppearanceMode, CustomColors, SHELL_DECIDE_THEME_ID, SystemAppearance,
     resolve_active_theme,
 };
-use crate::theme_store;
+use crate::theme_library;
 use gpui_kit::Rgba;
 use termy_core::themes;
 use termy_core::themes::Rgb8;
@@ -55,9 +55,7 @@ impl TerminalColors {
         let mut colors = if theme.eq_ignore_ascii_case(SHELL_DECIDE_THEME_ID) {
             Self::from_theme_colors(fallback)
         } else {
-            if let Some(theme_colors) = theme_store::load_installed_theme_colors(theme)
-                .or_else(|| themes::builtin_theme(theme))
-            {
+            if let Some(theme_colors) = theme_library::theme_colors(theme) {
                 Self::from_theme_colors(theme_colors)
             } else {
                 log::warn!("Theme '{theme}' is unavailable; using the built-in fallback");

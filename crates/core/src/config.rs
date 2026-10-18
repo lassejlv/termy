@@ -13,7 +13,7 @@ use crate::runtime::{
     TerminalCursorStyle, TerminalRuntimeConfig, WindowsShell as RuntimeWindowsShell,
     WorkingDirFallback as RuntimeWorkingDirFallback,
 };
-use crate::themes::{ThemeColors, normalize_theme_id, parse_theme_colors_json};
+use crate::themes::ThemeColors;
 use crate::{TerminalColor, TermyColor};
 
 #[derive(Debug, Clone)]
@@ -216,11 +216,6 @@ pub fn terminal_query_colors_from_resolved_theme(
 }
 
 fn load_installed_theme_colors(theme_id: &str, config_path: Option<&Path>) -> Option<ThemeColors> {
-    let normalized = normalize_theme_id(theme_id);
-    if normalized.is_empty() {
-        return None;
-    }
-
     let owned_config_path;
     let config_path = if let Some(path) = config_path {
         path
@@ -228,12 +223,7 @@ fn load_installed_theme_colors(theme_id: &str, config_path: Option<&Path>) -> Op
         owned_config_path = crate::config_core::config_path()?;
         owned_config_path.as_path()
     };
-    let theme_path = config_path
-        .parent()?
-        .join("themes")
-        .join(format!("{normalized}.json"));
-    let contents = std::fs::read_to_string(theme_path).ok()?;
-    parse_theme_colors_json(&contents).ok()
+    crate::themes::load_local_theme(&config_path.parent()?.join("themes"), theme_id)
 }
 
 fn apply_custom_colors(colors: &mut ThemeColors, custom: &crate::config_core::CustomColors) {
@@ -352,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn store_themes_resolve_only_when_installed_like_in_the_app() {
+    fn builtin_themes_resolve_offline_and_local_theme_files_override_them() {
         let tempdir = tempdir().expect("tempdir");
         let config_path = tempdir.path().join("config.txt");
         let config = AppConfig {
@@ -360,20 +350,21 @@ mod tests {
             theme: "dracula".to_string(),
             ..AppConfig::default()
         };
-        let termy_background = crate::themes::termy().background;
+        let dracula = crate::themes::builtin_theme("dracula").expect("built-in dracula");
 
         let colors = resolve_theme_colors_from_app_config(
             &config,
             Some(&config_path),
             SystemAppearance::Dark,
         );
-        assert_eq!(colors.background, term_color_from_rgb(termy_background));
+        assert_eq!(colors.background, term_color_from_rgb(dracula.background));
 
         let themes_dir = tempdir.path().join("themes");
         fs::create_dir_all(&themes_dir).expect("themes dir");
+        let custom = crate::themes::nord();
         fs::write(
             themes_dir.join("dracula.json"),
-            crate::themes::theme_colors_json_pretty(&crate::themes::dracula(), None).expect("json"),
+            crate::themes::theme_colors_json_pretty(&custom, None).expect("json"),
         )
         .expect("write theme");
         let colors = resolve_theme_colors_from_app_config(
@@ -381,10 +372,7 @@ mod tests {
             Some(&config_path),
             SystemAppearance::Dark,
         );
-        assert_eq!(
-            colors.background,
-            term_color_from_rgb(crate::themes::dracula().background)
-        );
+        assert_eq!(colors.background, term_color_from_rgb(custom.background));
     }
 
     #[test]

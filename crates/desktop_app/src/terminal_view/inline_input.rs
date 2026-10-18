@@ -1,3 +1,4 @@
+use super::search::SearchEditCommand;
 use super::*;
 use crate::text_editing;
 use gpui_kit::{
@@ -1018,7 +1019,14 @@ impl TerminalView {
     }
 
     pub(super) fn notify_search_inline_input(&mut self, cx: &mut Context<Self>) {
+        self.sync_native_search_bar();
         self.notify_for_inline_input_target(InlineInputTarget::Search, cx);
+    }
+
+    /// Whether search owns text input now (nothing drawn over it does).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(super) fn search_owns_inline_input(&self) -> bool {
+        self.active_inline_input_target() == Some(InlineInputTarget::Search)
     }
 
     fn active_inline_input_target(&self) -> Option<InlineInputTarget> {
@@ -1280,6 +1288,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::DeleteBackward) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::delete_backward, cx);
     }
 
@@ -1289,6 +1300,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::DeleteForward) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::delete_forward, cx);
     }
 
@@ -1298,6 +1312,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::MoveLeft) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::move_left, cx);
     }
 
@@ -1307,6 +1324,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::MoveRight) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::move_right, cx);
     }
 
@@ -1316,6 +1336,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::SelectLeft) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::select_left, cx);
     }
 
@@ -1325,6 +1348,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::SelectRight) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::select_right, cx);
     }
 
@@ -1334,6 +1360,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::SelectAll) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::select_all, cx);
     }
 
@@ -1343,6 +1372,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::MoveToStart) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::move_to_start, cx);
     }
 
@@ -1352,6 +1384,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::MoveToEnd) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::move_to_end, cx);
     }
 
@@ -1361,6 +1396,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::DeleteWordBackward) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::delete_word_backward, cx);
     }
 
@@ -1370,6 +1408,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::DeleteWordForward) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::delete_word_forward, cx);
     }
 
@@ -1379,6 +1420,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::DeleteToStart) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::delete_to_start, cx);
     }
 
@@ -1388,6 +1432,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.forward_edit_to_native_search(SearchEditCommand::DeleteToEnd) {
+            return;
+        }
         self.apply_inline_input_mutation(InlineInputState::delete_to_end, cx);
     }
 }

@@ -113,7 +113,6 @@ mod tests {
                 SettingsSection::Advanced,
                 SettingsSection::Appearance,
                 SettingsSection::Colors,
-                SettingsSection::ThemeStore,
                 SettingsSection::Plugins,
                 SettingsSection::Terminal,
                 SettingsSection::Ssh,
@@ -211,13 +210,6 @@ static SETTINGS_METADATA: LazyLock<Vec<SettingMetadata>> = LazyLock::new(|| {
     });
 
     entries.push(SettingMetadata {
-        key: "theme_store",
-        section: SettingsSection::ThemeStore,
-        title: "Themes",
-        description: "Browse and install community themes from the online store.",
-        keywords: &["theme", "store", "install", "colors"],
-    });
-    entries.push(SettingMetadata {
         key: "plugins",
         section: SettingsSection::Plugins,
         title: "Plugins",
@@ -253,7 +245,6 @@ impl SettingsWindow {
             SettingsSection::Terminal => "Terminal",
             SettingsSection::Ssh => "SSH",
             SettingsSection::Tabs => "Tabs",
-            SettingsSection::ThemeStore => "Themes",
             SettingsSection::Plugins => "Plugins",
             SettingsSection::Advanced => "General",
             SettingsSection::Colors => "Colors",
@@ -267,7 +258,6 @@ impl SettingsWindow {
             SettingsSection::Terminal => "Shell, input, scrolling, and tmux",
             SettingsSection::Ssh => "Saved hosts, authentication, and remote sessions",
             SettingsSection::Tabs => "Tabs, sidebar, and title bar",
-            SettingsSection::ThemeStore => "Find and install community themes",
             SettingsSection::Plugins => "Install and manage plugins",
             SettingsSection::Advanced => "Startup, windows, updates, and app behavior",
             SettingsSection::Colors => "Override individual terminal colors",
@@ -281,7 +271,6 @@ impl SettingsWindow {
             SettingsSection::Terminal => "icons/settings/terminal.svg",
             SettingsSection::Ssh => "icons/settings/ssh.svg",
             SettingsSection::Tabs => "icons/settings/tabs.svg",
-            SettingsSection::ThemeStore => "icons/settings/themes.svg",
             SettingsSection::Plugins => "icons/settings/plugins.svg",
             SettingsSection::Advanced => "icons/settings/advanced.svg",
             SettingsSection::Colors => "icons/settings/colors.svg",
@@ -289,12 +278,11 @@ impl SettingsWindow {
         }
     }
 
-    pub(super) const fn settings_sections_in_order() -> [SettingsSection; 9] {
+    pub(super) const fn settings_sections_in_order() -> [SettingsSection; 8] {
         [
             SettingsSection::Advanced,
             SettingsSection::Appearance,
             SettingsSection::Colors,
-            SettingsSection::ThemeStore,
             SettingsSection::Plugins,
             SettingsSection::Terminal,
             SettingsSection::Ssh,
@@ -316,8 +304,6 @@ impl SettingsWindow {
         self.active_plugin_setting_select = None;
         self.capturing_action = None;
         self.blur_sidebar_search();
-        self.theme_store_search_active = section == SettingsSection::ThemeStore;
-        self.theme_store_search_selecting = false;
         self.scroll_animation_token = self.scroll_animation_token.wrapping_add(1);
         self.content_scroll_handle
             .set_offset(point(px(0.0), px(0.0)));
@@ -733,11 +719,7 @@ impl SettingsWindow {
                         ],
                         cx,
                     ))
-                    .child(self.render_sidebar_group(
-                        "Extensions",
-                        &[SettingsSection::ThemeStore, SettingsSection::Plugins],
-                        cx,
-                    ))
+                    .child(self.render_sidebar_group("Extensions", &[SettingsSection::Plugins], cx))
                     .child(self.render_sidebar_group(
                         "Workflow",
                         &[

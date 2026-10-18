@@ -1,5 +1,5 @@
 use super::*;
-use crate::theme_store;
+use crate::theme_library;
 use gpui_kit::Modifiers;
 use gpui_kit::point;
 use state::{
@@ -612,7 +612,7 @@ impl TerminalView {
     }
 
     fn command_palette_theme_items(&self) -> Vec<CommandPaletteItem> {
-        let theme_ids = theme_store::load_installed_theme_ids();
+        let theme_ids = theme_library::available_theme_ids();
 
         ordered_theme_ids_for_palette(theme_ids, &self.theme_id)
             .into_iter()
@@ -738,6 +738,8 @@ impl TerminalView {
         }
 
         let _ = self.close_terminal_context_menu(cx);
+        // Typing goes to the palette, not the AppKit search field.
+        self.release_native_search_focus();
         let was_open = self.command_palette.is_open();
         if !was_open {
             self.command_palette.reload_recents();

@@ -29,36 +29,20 @@ pub fn list_theme_lines() -> Vec<String> {
     theme_lines(installed_themes_dir().as_deref())
 }
 
-/// Built-in theme ids first, then themes installed from the theme store.
+/// Built-in theme ids first, then local themes from the config's `themes`
+/// directory.
 fn theme_lines(themes_dir: Option<&Path>) -> Vec<String> {
-    let mut lines: Vec<String> = termy_core::themes::BUILTIN_THEME_IDS
+    let mut lines: Vec<String> = termy_core::themes::builtin_themes()
         .iter()
-        .map(ToString::to_string)
+        .map(|theme| theme.id.to_string())
         .collect();
 
-    let mut installed: Vec<String> = themes_dir
-        .and_then(|dir| std::fs::read_dir(dir).ok())
+    let installed: Vec<String> = themes_dir
+        .map(termy_core::themes::local_theme_ids)
+        .unwrap_or_default()
         .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter_map(|entry| {
-            let path = entry.path();
-            let is_json = path
-                .extension()
-                .and_then(|extension| extension.to_str())
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
-            if !is_json {
-                return None;
-            }
-            let normalized =
-                termy_core::theme_core::normalize_theme_id(path.file_stem()?.to_str()?);
-            (!normalized.is_empty()).then_some(normalized)
-        })
         .filter(|id| !lines.contains(id))
         .collect();
-    installed.sort();
-    installed.dedup();
-
     lines.extend(installed);
     lines
 }
@@ -530,10 +514,17 @@ mod tests {
         assert!(resize_pane_line.contains("restart_required=false"));
     }
 
+    fn builtin_ids() -> Vec<String> {
+        termy_core::themes::builtin_themes()
+            .iter()
+            .map(|theme| theme.id.to_string())
+            .collect()
+    }
+
     #[test]
     fn list_themes_includes_builtin_themes() {
         let themes = theme_lines(None);
-        assert_eq!(themes, termy_core::themes::BUILTIN_THEME_IDS);
+        assert_eq!(themes, builtin_ids());
         for theme in &themes {
             assert!(
                 termy_core::themes::builtin_theme(theme).is_some(),
@@ -543,16 +534,16 @@ mod tests {
     }
 
     #[test]
-    fn list_themes_appends_installed_themes_sorted() {
+    fn list_themes_appends_local_themes_sorted() {
         let temp = tempfile::tempdir().unwrap();
-        for name in ["Nord.json", "dracula.json", "termy.json", "notes.txt"] {
+        for name in ["My Theme.json", "custom.json", "dracula.json", "notes.txt"] {
             std::fs::write(temp.path().join(name), "{}").unwrap();
         }
 
         let themes = theme_lines(Some(temp.path()));
 
-        let mut expected: Vec<&str> = termy_core::themes::BUILTIN_THEME_IDS.to_vec();
-        expected.extend(["dracula", "nord"]);
+        let mut expected = builtin_ids();
+        expected.extend(["custom".to_string(), "my-theme".to_string()]);
         assert_eq!(themes, expected);
     }
 }

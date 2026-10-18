@@ -330,7 +330,6 @@ impl SettingsWindow {
         self.active_input = None;
         self.plugin_setting_input = None;
         self.blur_sidebar_search();
-        self.theme_store_search_active = false;
         self.ssh_input = Some(ActiveSshInput::new(field, value));
         self.focus_handle.focus(window, cx);
         cx.notify();

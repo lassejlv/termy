@@ -11,7 +11,6 @@ pub(crate) enum DeepLinkRoute {
     NewWindow,
     Settings,
     OpenConfig,
-    ThemeInstall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +22,6 @@ pub(crate) struct NewTabDeepLink {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DeepLinkArgument {
     NewTab(NewTabDeepLink),
-    Value(String),
 }
 
 impl DeepLinkRoute {
@@ -77,18 +75,6 @@ impl DeepLinkRoute {
             }
             ["settings"] => Ok((Self::Settings, None)),
             ["open", "config"] => Ok((Self::OpenConfig, None)),
-            ["store", "theme-install"] => {
-                let slug = url
-                    .query_pairs()
-                    .find_map(|(key, value)| {
-                        (key.eq_ignore_ascii_case("slug") && !value.trim().is_empty())
-                            .then(|| value.into_owned())
-                    })
-                    .ok_or_else(|| {
-                        "Theme install deeplink requires ?slug=<theme-slug>".to_string()
-                    })?;
-                Ok((Self::ThemeInstall, Some(DeepLinkArgument::Value(slug))))
-            }
             _ => Err(format!(
                 "Unsupported Termy deeplink route: {}",
                 segments.join("/")
@@ -258,24 +244,6 @@ mod tests {
             DeepLinkRoute::parse("termy://open/config?source=browser#top"),
             Ok((OpenConfig, None))
         );
-    }
-
-    #[test]
-    fn parses_theme_install_route() {
-        assert_eq!(
-            DeepLinkRoute::parse("termy://store/theme-install?slug=catppuccin-mocha"),
-            Ok((
-                ThemeInstall,
-                Some(DeepLinkArgument::Value("catppuccin-mocha".to_string()))
-            ))
-        );
-    }
-
-    #[test]
-    fn rejects_theme_install_without_slug() {
-        let error = DeepLinkRoute::parse("termy://store/theme-install")
-            .expect_err("theme install without slug should be rejected");
-        assert!(error.contains("requires ?slug"));
     }
 
     #[test]

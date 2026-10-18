@@ -54,8 +54,6 @@ fn is_cli_entrypoint(arg: &str) -> bool {
             | "-prettify-config"
             | "-tui"
             | "-update"
-            | "-export-theme"
-            | "-validate-theme-repo"
     )
 }
 
@@ -155,8 +153,6 @@ mod tests {
             "-prettify-config",
             "-tui",
             "-update",
-            "-export-theme",
-            "-validate-theme-repo",
         ] {
             assert!(
                 should_delegate_to_cli(&args(&[command])),

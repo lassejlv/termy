@@ -606,9 +606,6 @@ TermyFfiStatus termy_settings_set_color(
 TermyFfiStatus termy_settings_set_keybinds(
     const uint8_t *text_ptr,
     size_t text_len);
-TermyFfiStatus termy_settings_install_theme(
-    const uint8_t *slug_ptr,
-    size_t slug_len);
 TermyFfiStatus termy_cli_install(
     const uint8_t *shell_ptr,
     size_t shell_len,

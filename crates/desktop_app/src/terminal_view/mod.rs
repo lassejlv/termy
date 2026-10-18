@@ -75,6 +75,8 @@ mod interaction;
 mod kitty_images;
 #[cfg(target_os = "macos")]
 mod macos_file_drop;
+#[cfg(target_os = "macos")]
+mod macos_native_search;
 mod metrics;
 mod multiplexer_session;
 mod overlay_view;
@@ -1481,6 +1483,11 @@ pub struct TerminalView {
     search_debounce_token: u64,
     search_scan_incomplete: bool,
     search_options_open: bool,
+    /// AppKit find bar shown instead of Termy's in native tab windows.
+    #[cfg(target_os = "macos")]
+    native_search_bar: Option<macos_native_search::NativeSearchBar>,
+    #[cfg(target_os = "macos")]
+    search_focus_request: u64,
     // IME composing state for terminal mode
     ime_marked_text: Option<String>,
     ime_selected_range: Option<Range<usize>>,
@@ -3444,6 +3451,10 @@ impl TerminalView {
             search_debounce_token: 0,
             search_scan_incomplete: false,
             search_options_open: false,
+            #[cfg(target_os = "macos")]
+            native_search_bar: None,
+            #[cfg(target_os = "macos")]
+            search_focus_request: 0,
             ime_marked_text: None,
             ime_selected_range: None,
             pending_clipboard: None,
@@ -3652,6 +3663,8 @@ impl TerminalView {
         }
         view.sync_native_terminal_wakeup_interest();
         if view.native_window_tabs {
+            #[cfg(target_os = "macos")]
+            view.install_native_search_bar(window, cx);
             cx.observe_self(|view, cx| view.sync_native_window_chrome(cx))
                 .detach();
             // Closing or merging tabs elsewhere activates another tab window,
@@ -3727,17 +3740,6 @@ impl TerminalView {
             }
         }
         cx.notify();
-    }
-
-    pub(crate) fn reload_theme_assets(&mut self, cx: &mut Context<Self>) {
-        let resolved = match self.theme_mode {
-            config::AppearanceMode::Manual => self.manual_theme.clone(),
-            config::AppearanceMode::System => match self.system_appearance {
-                SystemAppearance::Light => self.light_theme.clone(),
-                SystemAppearance::Dark => self.dark_theme.clone(),
-            },
-        };
-        self.apply_resolved_theme(resolved, cx);
     }
 
     fn apply_runtime_config(&mut self, config: AppConfig, cx: &mut Context<Self>) -> bool {

@@ -3,7 +3,17 @@ title: Themes
 description: Built-in and custom JSON themes.
 ---
 
-Drop `.json` files in `~/.config/termy/themes/` (Windows: `%APPDATA%\termy\themes\`). The filename (without `.json`) is the theme slug:
+Termy ships 800+ built-in themes from [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2-Color-Schemes), plus its own `termy` and `termy-light`. Search and pick one in **Settings** or with **Switch Theme** in the command palette, or set it by id:
+
+```txt
+theme = catppuccin-mocha
+```
+
+`termy -list-themes` prints every id.
+
+## Custom themes
+
+Drop `.json` files in `~/.config/termy/themes/` (Windows: `%APPDATA%\termy\themes\`). The filename (without `.json`) is the theme id, and a file named like a built-in theme replaces it:
 
 ```txt
 theme = my-theme
