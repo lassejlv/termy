@@ -1,7 +1,7 @@
 //! Kitty graphics placements for host-owned renderers.
 //!
 //! Placements come with pixel rectangles already worked out (cropping, `c`/`r`
-//! fitting, letterboxing, pixel offsets, scroll clipping and Unicode
+//! scaling, placeholder letterboxing, pixel offsets, scroll clipping and Unicode
 //! placeholder tiles), so a host only draws a textured rectangle per entry.
 
 use std::{collections::HashMap, ptr, sync::Arc};

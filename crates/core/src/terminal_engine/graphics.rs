@@ -371,20 +371,23 @@ impl State {
                 .cursor_advance_screen
                 .is_none_or(|target| target == screen)
         {
+            // As in kitty, the cursor ends on the image's last row, just past
+            // its right edge. An image reaching the right edge of the screen
+            // wraps the cursor to the start of the next line instead.
             let size = self.grid.size();
+            let wraps = self.grid.cursor.col.saturating_add(cols as usize) >= size.cols;
             self.grid
                 .move_cursor(0, (cols as usize).min(size.cols) as isize);
-            let (top, bottom) = self.grid.scroll_region();
-            let rows = (rows as usize).min(size.rows);
-            if top == 0 && bottom == size.rows {
-                let newline = self.grid.newline_mode;
-                self.grid.newline_mode = false;
-                for _ in 0..rows {
-                    self.grid.linefeed();
-                }
-                self.grid.newline_mode = newline;
-            } else {
-                self.grid.move_cursor(rows as isize, 0);
+            let rows = ((rows as usize).saturating_sub(1) + usize::from(wraps)).min(size.rows);
+            // Linefeeds scroll at the bottom margin, as kitty's index does.
+            let newline = self.grid.newline_mode;
+            self.grid.newline_mode = false;
+            for _ in 0..rows {
+                self.grid.linefeed();
+            }
+            self.grid.newline_mode = newline;
+            if wraps {
+                self.grid.carriage_return();
             }
             self.flush_graphics_effects();
         }
@@ -713,7 +716,8 @@ mod tests {
             assert_eq!(replies, drain(&mut expected));
             assert_eq!(row_text(&engine, 0), row_text(&expected, 0));
             assert_eq!(row_text(&engine, 1), row_text(&expected, 1));
-            assert!(row_text(&engine, 1).ends_with("after"));
+            // A one-row image leaves the cursor on its row, as in kitty.
+            assert!(row_text(&engine, 0).ends_with("after"));
             assert_eq!(engine.cursor(), expected.cursor());
             assert_eq!(
                 engine.graphics_placements().len(),
@@ -779,7 +783,7 @@ mod tests {
         assert_eq!(engine.feed_deferring_uploads(input), input.len());
         assert!(engine.take_deferred_upload().is_none());
         assert_eq!(engine.graphics_placements().len(), 1);
-        assert_eq!(row_text(&engine, 1).trim_start(), "after");
+        assert_eq!(row_text(&engine, 0).trim_start(), "after");
     }
 
     #[test]
@@ -789,7 +793,7 @@ mod tests {
         let consumed = engine.feed_deferring_uploads(input);
         engine.feed(&input[consumed..]);
         assert_eq!(engine.graphics_placements().len(), 1);
-        assert_eq!(row_text(&engine, 1).trim_start(), "after");
+        assert_eq!(row_text(&engine, 0).trim_start(), "after");
     }
 
     #[test]

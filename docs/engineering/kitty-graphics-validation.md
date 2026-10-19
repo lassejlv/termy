@@ -18,9 +18,22 @@ explicit paint bounds so magnified one-pixel images have solid edges.
 ## Automated checks
 
 The protocol regressions also cover omitted/zero parent placement IDs in cycle
-detection, silent anonymous uploads, and aspect-preserving explicit placement
-boxes. Letterboxing retains the full requested cursor occupancy across resize
-and deletion. Run the public conformance suite:
+detection, silent anonymous uploads, and explicit placement boxes that keep the
+full requested cursor occupancy across resize and deletion.
+
+Behaviour follows kitty's reference implementation (and ghostty where they
+agree), checked against their sources on 2026-10-19:
+
+- A direct placement with both `c` and `r` stretches the image over that box.
+  Only Unicode placeholder placements fit the image inside their box (whole
+  cells, an omitted dimension taken from the natural size) and center it.
+- After a placement the cursor ends on the image's last row, just past its
+  right edge, scrolling at the bottom margin. An image reaching the right edge
+  of the screen wraps the cursor to the start of the next line.
+- A direct transmission arriving during a chunked upload continues it, whatever
+  its other keys: only `m` and `q` apply, so clients that repeat every key on
+  each chunk work. A chunk naming another image id or number, or another
+  transmission medium, abandons the unfinished upload instead. Run the public conformance suite:
 
 ```sh
 cargo test --locked -p termy_core --test kitty_conformance

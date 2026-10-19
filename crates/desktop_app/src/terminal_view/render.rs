@@ -94,8 +94,9 @@ fn kitty_graphics_layers(
                 .object_fit(ObjectFit::Fill)
                 .into_any_element(),
         };
-        // Clip to the fitted source rectangle before clipping to the placement
-        // or placeholder cell, so cropped pixels cannot bleed into the letterbox.
+        // Clip to the drawn source rectangle before clipping to the placement
+        // or placeholder cell, so cropped pixels cannot bleed into a
+        // placeholder's letterbox.
         let image_element = div()
             .absolute()
             .left(px(layout.image_offset.0 - tile_x as f32 * cell_width))

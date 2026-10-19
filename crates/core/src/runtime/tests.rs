@@ -37,8 +37,9 @@ fn display_terminal_intercepts_and_places_kitty_graphics() {
     assert_eq!(placements[0].display_rows, Some(3));
     assert!(placements[0].image.png().starts_with(b"\x89PNG"));
 
+    // As in kitty, the cursor ends on the image's last row.
     let cursor = terminal.cursor_position();
-    assert_eq!(cursor, (2, 3));
+    assert_eq!(cursor, (2, 2));
 }
 
 #[test]
@@ -195,11 +196,12 @@ fn display_terminal_scrolls_for_kitty_cursor_advance_at_bottom() {
     let terminal = Terminal::new_display(test_terminal_size(), None);
     terminal.feed_output(b"\x1b[4;1H\x1b_Ga=T,f=32,s=1,v=1,i=78,c=2,r=3;AQID/w==\x1b\\");
 
-    assert_eq!(terminal.scroll_state(), (0, 3));
+    // The cursor ends on the image's last row, so a three-row image scrolls two.
+    assert_eq!(terminal.scroll_state(), (0, 2));
     assert_eq!(terminal.cursor_position(), (2, 3));
     let placements = terminal.kitty_graphics_placements();
     assert_eq!(placements.len(), 1);
-    assert_eq!(placements[0].viewport_row, 0);
+    assert_eq!(placements[0].viewport_row, 1);
 }
 
 #[test]
@@ -215,7 +217,7 @@ fn kitty_cursor_advance_tracks_zero_history_screen_scroll() {
     assert_eq!(terminal.cursor_position(), (2, 3));
     let placements = terminal.kitty_graphics_placements();
     assert_eq!(placements.len(), 1);
-    assert_eq!(placements[0].viewport_row, 0);
+    assert_eq!(placements[0].viewport_row, 1);
 }
 
 #[test]
@@ -234,7 +236,7 @@ fn kitty_cursor_advance_tracks_full_history_screen_scroll() {
     assert_eq!(terminal.cursor_position(), (2, 3));
     let placements = terminal.kitty_graphics_placements();
     assert_eq!(placements.len(), 1);
-    assert_eq!(placements[0].viewport_row, 0);
+    assert_eq!(placements[0].viewport_row, 1);
 }
 
 #[test]
@@ -247,7 +249,7 @@ fn kitty_cursor_advance_tracks_alternate_screen_scroll() {
     assert_eq!(terminal.cursor_position(), (2, 3));
     let placements = terminal.kitty_graphics_placements();
     assert_eq!(placements.len(), 1);
-    assert_eq!(placements[0].viewport_row, 0);
+    assert_eq!(placements[0].viewport_row, 1);
 }
 
 #[test]
@@ -410,7 +412,7 @@ fn primary_kitty_placement_survives_alternate_screen_scroll() {
     let alternate = terminal.kitty_graphics_placements();
     assert_eq!(alternate.len(), 1);
     assert_eq!(alternate[0].image_id, 84);
-    assert_eq!(alternate[0].viewport_row, 0);
+    assert_eq!(alternate[0].viewport_row, 1);
 
     terminal.feed_output(b"\x1b[?1049l");
     let restored_primary = terminal.kitty_graphics_placements();
@@ -476,7 +478,8 @@ fn kitty_cursor_advance_caps_linefeeds_to_screen_height() {
     engine.feed(b"\x1b[4;1H");
     engine.feed(b"\x1b_Ga=T,f=32,s=1,v=1,i=77,c=4294967295,r=4294967295;AQID/w==\x1b\\");
     assert_eq!(engine.history_size(), usize::from(size.rows));
-    assert_eq!(engine.cursor().col, usize::from(size.cols) - 1);
+    // An image reaching the right edge wraps the cursor to the next line.
+    assert_eq!(engine.cursor().col, 0);
     assert_eq!(engine.cursor().row, usize::from(size.rows) - 1);
 }
 

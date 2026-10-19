@@ -434,28 +434,20 @@ impl KittyGraphicsState {
 
         let encoded = std::mem::take(&mut command.payload);
         if let Some(pending) = &self.pending {
-            let foreign = command.control.iter().any(|(key, _)| {
-                !(matches!(key, 'm' | 'q')
-                    || *key == 'a'
-                        && command.char_value('a') == Some('f')
-                        && pending.command.char_value('a') == Some('f'))
+            // Like kitty and ghostty, a direct transmission continues the
+            // pending upload whatever its other keys: many clients repeat the
+            // first chunk's keys on every chunk, and only `m` and `q` apply.
+            // A client killed mid-upload never sends the final chunk, so a
+            // transmission naming another image, or another medium, abandons
+            // that upload instead, before sizes are checked against its data.
+            let names_other_image = ['i', 'I'].into_iter().any(|key| {
+                command
+                    .value(key)
+                    .is_some_and(|value| Some(value) != pending.command.value(key))
             });
-            // A client killed mid-upload never sends the final chunk. A new
-            // transmission abandons that upload instead of failing itself, so
-            // detect it before checking sizes against the abandoned data.
-            let restarts = foreign
-                && command
-                    .control
-                    .iter()
-                    .any(|(key, _)| matches!(key, 'a' | 'i' | 'I' | 'f' | 's' | 'v' | 't'));
-            if foreign {
-                let abandoned = self.pending.take().expect("pending upload");
-                if !restarts {
-                    return self.failure(
-                        &abandoned.command,
-                        "EINVAL:continuation contains unsupported control data",
-                    );
-                }
+            let other_medium = command.char_value('t').is_some_and(|medium| medium != 'd');
+            if names_other_image || other_medium {
+                self.pending = None;
             }
         }
         // Reject before decoding: base64 yields at least len/4*3 - 2 bytes.

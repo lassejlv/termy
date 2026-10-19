@@ -42,7 +42,7 @@ rlib. The native desktop ABI (`crates/core/include/termy.h`, which needs the
 - **Frames** with partial damage and documented full-frame rules, borrowing
   handle-owned buffers so steady-state rendering does not allocate.
 - **Kitty graphics** as placements with pixel rectangles worked out (crop,
-  fit, letterbox, scroll clipping, Unicode placeholders) plus each image's
+  scale, placeholder letterbox, scroll clipping, Unicode placeholders) plus each image's
   RGBA or PNG pixels, so a host draws one textured rectangle per placement.
 
 ## Packaging

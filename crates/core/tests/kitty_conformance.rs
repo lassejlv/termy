@@ -78,7 +78,7 @@ fn synchronized_graphics_follow_screen_clear_scroll_and_cursor_changes_in_order(
     let second = placements.iter().find(|p| p.placement_id == 2).unwrap();
     assert_eq!((first.col, first.viewport_row), (4, 2));
     assert_eq!((second.col, second.viewport_row), (9, 7));
-    assert_eq!(terminal.cursor_position(), (11, 8));
+    assert_eq!(terminal.cursor_position(), (11, 7));
 }
 
 #[test]
@@ -156,10 +156,46 @@ fn unnumbered_relative_placement_is_new_even_for_the_same_image() {
 }
 
 #[test]
-fn letterboxed_image_keeps_requested_cursor_occupancy_after_resize() {
+fn cursor_ends_on_the_images_last_row_like_kitty() {
+    let terminal = terminal();
+    terminal.feed_output(b"\x1b[3;5H\x1b_Ga=T,i=1,f=32,s=1,v=1,c=4,r=3;AQID/w==\x1b\\");
+    assert_eq!(terminal.cursor_position(), (8, 4));
+    // An image reaching the right edge wraps the cursor to the next line.
+    terminal.feed_output(b"\x1b[10;71H\x1b_Ga=T,i=2,f=32,s=1,v=1,c=10,r=2;AQID/w==\x1b\\");
+    assert_eq!(terminal.cursor_position(), (0, 11));
+    // At the bottom, a three-row image scrolls only the two rows below the cursor.
+    terminal.feed_output(b"\x1b[24;1H\x1b_Ga=T,i=3,f=32,s=1,v=1,c=2,r=3;AQID/w==\x1b\\");
+    assert_eq!(terminal.cursor_position(), (2, 23));
+    let placement = terminal
+        .kitty_graphics_placements()
+        .into_iter()
+        .find(|p| p.image_id == 3)
+        .unwrap();
+    assert_eq!(placement.viewport_row, 21);
+}
+
+#[test]
+fn chunks_that_repeat_every_key_continue_the_upload() {
+    // Some clients resend all keys with each chunk. Kitty and ghostty treat
+    // any direct transmission during an upload as its continuation.
+    for keys in ["i=9,", ""] {
+        let terminal = terminal();
+        terminal
+            .feed_output(format!("\x1b_Ga=T,{keys}f=32,s=1,v=1,c=2,r=1,m=1;AQID\x1b\\").as_bytes());
+        terminal
+            .feed_output(format!("\x1b_Ga=T,{keys}f=32,s=1,v=1,c=2,r=1,m=0;/w==\x1b\\").as_bytes());
+        let placements = terminal.kitty_graphics_placements();
+        assert_eq!(placements.len(), 1, "keys: {keys}");
+        assert_eq!(placements[0].display_cols, Some(2));
+        assert_eq!(terminal.cursor_position(), (2, 0));
+    }
+}
+
+#[test]
+fn stretched_image_keeps_requested_cursor_occupancy_after_resize() {
     let mut terminal = terminal();
     terminal.feed_output(b"\x1b_Ga=T,i=1,f=32,s=1,v=1,c=2,r=3;AQID/w==\x1b\\");
-    assert_eq!(terminal.cursor_position(), (2, 3));
+    assert_eq!(terminal.cursor_position(), (2, 2));
     terminal.resize(TerminalSize {
         cols: 80,
         rows: 24,
@@ -180,9 +216,10 @@ fn letterboxed_image_keeps_requested_cursor_occupancy_after_resize() {
         (0, 0),
         false,
     );
-    assert_eq!(layout.image_size, (30.0, 30.0));
-    assert_eq!(layout.image_offset, (0.0, 22.5));
-    // The bottom row remains inside the requested box, including its letterbox.
+    // As in kitty and ghostty, the image fills the requested box.
+    assert_eq!(layout.image_size, (30.0, 75.0));
+    assert_eq!(layout.image_offset, (0.0, 0.0));
+    // The bottom row remains inside the requested box.
     terminal.feed_output(b"\x1b_Ga=d,d=p,x=1,y=3\x1b\\");
     assert!(terminal.kitty_graphics_placements().is_empty());
 }

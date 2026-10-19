@@ -6,8 +6,10 @@ import Termy
 /// (before padding). Mirrors libtermy's `graphics_display_layout`, which the
 /// desktop app uses too.
 struct KittyPlacementGeometry: Equatable {
-    /// Where the whole source crop is drawn. With both `c` and `r` the image
-    /// is fitted inside that box with its aspect ratio kept, and centered.
+    /// Where the whole source crop is drawn. A direct placement with both `c`
+    /// and `r` stretches the image over that box, as in kitty and ghostty. A
+    /// Unicode placeholder's image is fitted inside its box (whole cells) with
+    /// its aspect ratio kept, and centered.
     var image: CGRect
     /// The part of the grid the placement may paint: its box after margin
     /// clipping, or the single cell of a Unicode placeholder.
@@ -26,6 +28,11 @@ struct KittyPlacementGeometry: Equatable {
 
         let box: CGSize
         switch (placement.displayCols, placement.displayRows) {
+        case let (cols, rows) where isVirtual:
+            // As in kitty, an omitted dimension comes from the natural size.
+            let columns = cols.map { CGFloat($0) } ?? max(1, (sourceWidth / cellWidth).rounded(.up))
+            let lines = rows.map { CGFloat($0) } ?? max(1, (sourceHeight / cellHeight).rounded(.up))
+            box = CGSize(width: columns * cellWidth, height: lines * cellHeight)
         case let (cols?, rows?):
             box = CGSize(
                 width: max(0, CGFloat(cols) * cellWidth - offsetX),
@@ -40,7 +47,7 @@ struct KittyPlacementGeometry: Equatable {
             box = CGSize(width: sourceWidth, height: sourceHeight)
         }
         var fitted = box
-        if placement.displayCols != nil, placement.displayRows != nil {
+        if isVirtual {
             let scale = min(box.width / max(sourceWidth, 1), box.height / max(sourceHeight, 1))
             fitted = CGSize(width: sourceWidth * scale, height: sourceHeight * scale)
         }
