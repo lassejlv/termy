@@ -371,21 +371,23 @@ impl State {
                 .cursor_advance_screen
                 .is_none_or(|target| target == screen)
         {
+            // As in kitty (and ghostty), the cursor ends on the image's last
+            // row, just past its last column; passing the right edge wraps to
+            // the next line. Line feeds scroll the region like any output.
             let size = self.grid.size();
-            self.grid
-                .move_cursor(0, (cols as usize).min(size.cols) as isize);
-            let (top, bottom) = self.grid.scroll_region();
             let rows = (rows as usize).min(size.rows);
-            if top == 0 && bottom == size.rows {
-                let newline = self.grid.newline_mode;
-                self.grid.newline_mode = false;
-                for _ in 0..rows {
-                    self.grid.linefeed();
-                }
-                self.grid.newline_mode = newline;
-            } else {
-                self.grid.move_cursor(rows as isize, 0);
+            let newline = self.grid.newline_mode;
+            self.grid.newline_mode = false;
+            for _ in 1..rows {
+                self.grid.linefeed();
             }
+            if self.grid.cursor.col.saturating_add(cols as usize) >= size.cols {
+                self.grid.carriage_return();
+                self.grid.linefeed();
+            } else {
+                self.grid.move_cursor(0, cols as isize);
+            }
+            self.grid.newline_mode = newline;
             self.flush_graphics_effects();
         }
     }
@@ -683,6 +685,20 @@ mod tests {
     }
 
     #[test]
+    fn placing_an_image_leaves_the_cursor_on_its_last_row_like_kitty() {
+        // 9x18 px cells: a 2x3-cell image at (1, 0).
+        let mut engine = Engine::new(Size { cols: 10, rows: 6 }, Options::default());
+        engine.feed(b"\x1b[1;2H\x1b_Ga=T,f=32,s=1,v=1,i=1,c=2,r=3,q=2;AQID/w==\x1b\\after");
+        assert_eq!(row_text(&engine, 2), "   after");
+        assert_eq!((engine.cursor().row, engine.cursor().col), (2, 8));
+
+        // Reaching the right edge wraps to the start of the next line.
+        engine.feed(b"\x1b[5;7H\x1b_Ga=T,f=32,s=1,v=1,i=2,c=4,r=1,q=2;AQID/w==\x1b\\next");
+        assert_eq!(row_text(&engine, 5), "next");
+        assert_eq!(engine.graphics_placements().len(), 2);
+    }
+
+    #[test]
     fn deferred_uploads_pause_the_parser_and_commit_in_stream_order() {
         let upload = b"\x1b_Ga=T,f=32,s=1,v=1,i=7,c=2,r=1;AQID/w==\x1b\\".as_slice();
         let chunked = b"\x1b_Ga=T,f=32,s=1,v=1,i=7,c=2,r=1,m=1;AQID\x1b\\\x1b_Gm=0;/w==\x1b\\";
@@ -713,7 +729,8 @@ mod tests {
             assert_eq!(replies, drain(&mut expected));
             assert_eq!(row_text(&engine, 0), row_text(&expected, 0));
             assert_eq!(row_text(&engine, 1), row_text(&expected, 1));
-            assert!(row_text(&engine, 1).ends_with("after"));
+            // The image ends the cursor on its own row, as in kitty.
+            assert_eq!(row_text(&engine, 0), "before  after");
             assert_eq!(engine.cursor(), expected.cursor());
             assert_eq!(
                 engine.graphics_placements().len(),
@@ -779,7 +796,7 @@ mod tests {
         assert_eq!(engine.feed_deferring_uploads(input), input.len());
         assert!(engine.take_deferred_upload().is_none());
         assert_eq!(engine.graphics_placements().len(), 1);
-        assert_eq!(row_text(&engine, 1).trim_start(), "after");
+        assert_eq!(row_text(&engine, 0), " after");
     }
 
     #[test]
@@ -789,7 +806,7 @@ mod tests {
         let consumed = engine.feed_deferring_uploads(input);
         engine.feed(&input[consumed..]);
         assert_eq!(engine.graphics_placements().len(), 1);
-        assert_eq!(row_text(&engine, 1).trim_start(), "after");
+        assert_eq!(row_text(&engine, 0), " after");
     }
 
     #[test]

@@ -130,7 +130,8 @@ fn image_uploads_decoded_outside_the_lock_keep_stream_order() {
         replies: Vec::new(),
     };
     terminal.drain_events(&mut host);
-    assert_eq!(host.replies, b"\x1b[1;3R\x1b_Gi=5;OK\x1b\\\x1b[2;4R");
+    // The one-cell image leaves the cursor right after it, as in kitty.
+    assert_eq!(host.replies, b"\x1b[1;3R\x1b_Gi=5;OK\x1b\\\x1b[1;4R");
     assert_eq!(terminal.kitty_graphics_placements().len(), 1);
 }
 

@@ -297,14 +297,16 @@ impl KittyGraphicsState {
                 matches!(placement.location, PlacementLocation::Virtual),
             )
             .placement_size;
-            placement.occupied_cols = ((width + placement.x_offset as f32)
-                / size.cell_width.max(1.0))
-            .ceil()
-            .max(1.0) as u32;
-            placement.occupied_rows = ((height + placement.y_offset as f32)
-                / size.cell_height.max(1.0))
-            .ceil()
-            .max(1.0) as u32;
+            placement.occupied_cols = occupied_cells(
+                placement.display_cols,
+                width + placement.x_offset as f32,
+                size.cell_width.max(1.0),
+            );
+            placement.occupied_rows = occupied_cells(
+                placement.display_rows,
+                height + placement.y_offset as f32,
+                size.cell_height.max(1.0),
+            );
         }
     }
 
@@ -398,12 +400,29 @@ impl KittyGraphicsState {
             );
         }
         let action = command.char_value('a').unwrap_or('t');
-        if matches!(action, 'a' | 'c')
-            || (action == 'd' && matches!(command.char_value('d'), Some('f' | 'F')))
-        {
-            if action == 'd' {
+        if action == 'd' {
+            // Like kitty and ghostty, deletions never reply, whatever `q`
+            // says. A reply the client doesn't read lands at its prompt.
+            let mut result = if matches!(command.char_value('d'), Some('f' | 'F')) {
                 self.pending = None;
-            }
+                match self.edit_animation(&command, None) {
+                    Ok(_) => self.success(&command, true, None, screen),
+                    Err(error) => self.failure(&command, &error),
+                }
+            } else {
+                self.delete(
+                    &command,
+                    cursor_col,
+                    cursor_row,
+                    history_size,
+                    screen,
+                    placeholders,
+                )
+            };
+            result.response = None;
+            return result;
+        }
+        if matches!(action, 'a' | 'c') {
             return match self.edit_animation(&command, None) {
                 Ok(id) => {
                     if command.u32_value('I').is_some() {
@@ -414,17 +433,6 @@ impl KittyGraphicsState {
                 Err(error) => self.failure(&command, &error),
             };
         }
-
-        if action == 'd' {
-            return self.delete(
-                &command,
-                cursor_col,
-                cursor_row,
-                history_size,
-                screen,
-                placeholders,
-            );
-        }
         if action == 'p' {
             return self.put(command, cursor_col, cursor_row, history_size, size, screen);
         }
@@ -434,11 +442,11 @@ impl KittyGraphicsState {
 
         let encoded = std::mem::take(&mut command.payload);
         if let Some(pending) = &self.pending {
-            let foreign = command.control.iter().any(|(key, _)| {
-                !(matches!(key, 'm' | 'q')
-                    || *key == 'a'
-                        && command.char_value('a') == Some('f')
-                        && pending.command.char_value('a') == Some('f'))
+            // Some clients repeat the first chunk's control data on every
+            // chunk. kitty and ghostty ignore it, so only a key that changes
+            // the upload counts against continuing it.
+            let foreign = command.control.iter().any(|(key, value)| {
+                !matches!(key, 'm' | 'q') && pending.command.value(*key) != Some(value.as_str())
             });
             // A client killed mid-upload never sends the final chunk. A new
             // transmission abandons that upload instead of failing itself, so
@@ -1195,8 +1203,8 @@ impl KittyGraphicsState {
             virtual_placement,
         )
         .placement_size;
-        let occupied_cols = ((width + x_offset as f32) / cell_width).ceil().max(1.0) as u32;
-        let occupied_rows = ((height + y_offset as f32) / cell_height).ceil().max(1.0) as u32;
+        let occupied_cols = occupied_cells(display_cols, width + x_offset as f32, cell_width);
+        let occupied_rows = occupied_cells(display_rows, height + y_offset as f32, cell_height);
         let placement_id = command.u32_value('p').unwrap_or(0);
         let virtual_placement = command.u32_value('U').unwrap_or(0) == 1;
         let relative_parent = command.u32_value('P').filter(|id| *id > 0);
@@ -1434,6 +1442,13 @@ impl KittyGraphicsState {
             ..KittyGraphicsApplyResult::default()
         }
     }
+}
+
+/// Cells a placement covers: the requested count, else enough for `extent`
+/// pixels. The tolerance keeps float error in a fractional cell size from
+/// adding a cell to an extent that is a whole number of cells.
+fn occupied_cells(requested: Option<u32>, extent: f32, cell: f32) -> u32 {
+    requested.unwrap_or_else(|| (extent / cell - 1e-3).ceil().max(1.0) as u32)
 }
 
 fn response(command: &KittyGraphicsCommand, success: bool, message: &str) -> Option<Vec<u8>> {
