@@ -142,6 +142,11 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 - COLORTERM value exposed to child applications
 - Group: `SHELL`
 
+`term_program`
+- Default: `ghostty`
+- Terminal identity exposed to child applications: ghostty enables features such as Claude Code progress bars, termy reports Termy in tools like neofetch
+- Group: `SHELL`
+
 `macos_option_as_alt`
 - Default: `false`
 - Send macOS Option plus printable keys as escape-prefixed terminal Alt input

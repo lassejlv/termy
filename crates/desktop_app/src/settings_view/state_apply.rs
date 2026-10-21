@@ -24,6 +24,7 @@ impl SettingsWindow {
             | EditableField::Shell
             | EditableField::Term
             | EditableField::Colorterm
+            | EditableField::TermProgram
             | EditableField::TmuxBinary
             | EditableField::TmuxCommandPrefix
             | EditableField::ScrollbackHistory
@@ -303,6 +304,16 @@ impl SettingsWindow {
                         value,
                     )
                 }
+            }
+            EditableField::TermProgram => {
+                let parsed = value
+                    .parse::<termy_core::config_core::TermProgram>()
+                    .map_err(|()| "TERM_PROGRAM must be ghostty or termy".to_string())?;
+                self.config.term_program = parsed;
+                config::set_root_setting(
+                    termy_core::config_core::RootSettingId::TermProgram,
+                    parsed.as_str(),
+                )
             }
             EditableField::TmuxBinary => {
                 if value.is_empty() {

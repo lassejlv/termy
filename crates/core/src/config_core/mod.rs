@@ -33,7 +33,7 @@ pub use schema::{
 pub use types::{
     AppConfig, AppIcon, AppearanceMode, ClipboardReadPolicy, CursorStyle, CustomColors,
     KeybindConfigLine, PaneFocusEffect, Rgb8, SystemAppearance, TabBarPosition, TabCloseVisibility,
-    TabStyle, TabTitleConfig, TabTitleMode, TabTitleSource, TabWidthMode, TaskConfig,
+    TabStyle, TabTitleConfig, TabTitleMode, TabTitleSource, TabWidthMode, TaskConfig, TermProgram,
     TerminalScrollbarStyle, TerminalScrollbarVisibility, ThemeId, WindowsShell, WorkingDirFallback,
     resolve_active_theme,
 };

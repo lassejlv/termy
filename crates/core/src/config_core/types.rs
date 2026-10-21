@@ -368,6 +368,40 @@ impl ClipboardReadPolicy {
     }
 }
 
+/// Terminal identity advertised to child processes through `TERM_PROGRAM`.
+///
+/// `Ghostty` is the default because CLIs such as Claude Code only emit
+/// features like OSC 9;4 progress to terminals they recognise. The cost is
+/// that system info tools such as neofetch report Ghostty; `Termy` reports
+/// the real identity instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TermProgram {
+    Termy,
+    #[default]
+    Ghostty,
+}
+
+impl std::str::FromStr for TermProgram {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "termy" => Ok(Self::Termy),
+            "ghostty" => Ok(Self::Ghostty),
+            _ => Err(()),
+        }
+    }
+}
+
+impl TermProgram {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Termy => "termy",
+            Self::Ghostty => "ghostty",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CustomColors {
     pub foreground: Option<Rgb8>,
@@ -414,6 +448,7 @@ pub struct AppConfig {
     pub shell: Option<String>,
     pub term: String,
     pub colorterm: Option<String>,
+    pub term_program: TermProgram,
     pub macos_option_as_alt: bool,
     pub window_width: f32,
     pub window_height: f32,
@@ -517,6 +552,7 @@ impl Default for AppConfig {
             shell: None,
             term: DEFAULT_TERM.to_string(),
             colorterm: Some(DEFAULT_COLORTERM.to_string()),
+            term_program: TermProgram::default(),
             macos_option_as_alt: false,
             window_width: 1280.0,
             window_height: 820.0,

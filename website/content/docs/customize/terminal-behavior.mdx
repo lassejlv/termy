@@ -10,6 +10,7 @@ description: Shell, cursor, scrolling, clipboard, and terminal UI behavior.
 | `shell` | login shell | Executable used for new sessions. |
 | `term` | `xterm-256color` | `TERM` value exposed to child apps. |
 | `colorterm` | `truecolor` | `COLORTERM` value exposed to child apps. |
+| `term_program` | `ghostty` | `TERM_PROGRAM` identity exposed to child apps. `ghostty` lets CLIs such as Claude Code enable progress bars; `termy` makes tools like neofetch report Termy. `TERMY_TERM_PROGRAM=termy` is always set. |
 | `shell_integration_enabled` | `true` | OSC 133 prompt and command tracking. |
 
 ## Cursor

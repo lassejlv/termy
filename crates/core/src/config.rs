@@ -5,13 +5,13 @@ use std::{
 };
 
 use crate::config_core::{
-    AppConfig, ConfigDiagnostic, CursorStyle, SHELL_DECIDE_THEME_ID, SystemAppearance,
+    AppConfig, ConfigDiagnostic, CursorStyle, SHELL_DECIDE_THEME_ID, SystemAppearance, TermProgram,
     WindowsShell, WorkingDirFallback, resolve_active_theme,
 };
 use crate::protocol::TerminalQueryColors;
 use crate::runtime::{
-    TerminalCursorStyle, TerminalRuntimeConfig, WindowsShell as RuntimeWindowsShell,
-    WorkingDirFallback as RuntimeWorkingDirFallback,
+    TermProgram as RuntimeTermProgram, TerminalCursorStyle, TerminalRuntimeConfig,
+    WindowsShell as RuntimeWindowsShell, WorkingDirFallback as RuntimeWorkingDirFallback,
 };
 use crate::themes::ThemeColors;
 use crate::{TerminalColor, TermyColor};
@@ -129,6 +129,10 @@ pub fn runtime_config_from_app_config_with_query_colors(
         },
         term: config.term.clone(),
         colorterm: config.colorterm.clone(),
+        term_program: match config.term_program {
+            TermProgram::Termy => RuntimeTermProgram::Termy,
+            TermProgram::Ghostty => RuntimeTermProgram::Ghostty,
+        },
         environment: Default::default(),
         query_colors,
         working_dir_fallback,
@@ -287,12 +291,16 @@ mod tests {
     #[test]
     fn parses_runtime_fields_from_contents() {
         let loaded = load_config_from_contents(
-            "theme = termy-light\nshell = /bin/zsh\nterm = screen-256color\ncolorterm = none\nscrollback = 42\ncursor_style = line\n",
+            "theme = termy-light\nshell = /bin/zsh\nterm = screen-256color\ncolorterm = none\nterm_program = termy\nscrollback = 42\ncursor_style = line\n",
         );
 
         assert_eq!(loaded.runtime_config.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(loaded.runtime_config.term, "screen-256color");
         assert_eq!(loaded.runtime_config.colorterm, None);
+        assert_eq!(
+            loaded.runtime_config.term_program,
+            RuntimeTermProgram::Termy
+        );
         assert_eq!(loaded.runtime_config.scrollback_history, 42);
         assert_eq!(loaded.runtime_config.query_colors.background.r, 0xfa);
         assert_eq!(loaded.runtime_config.query_colors.background.g, 0xfa);
