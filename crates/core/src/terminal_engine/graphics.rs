@@ -10,7 +10,7 @@ use super::{Color, dispatch::State, types::GridEffect};
 use crate::{
     KittyGraphicsApplyResult, KittyGraphicsCommand, KittyGraphicsPlaceholder,
     KittyGraphicsRenderPlacement, KittyGraphicsScreen, KittyGraphicsState, TerminalSize,
-    kitty_graphics::{KittyPreparedUpload, KittyUpload},
+    kitty_graphics::{InlineMultipart, KittyPreparedUpload, KittyUpload},
 };
 
 /// Animation pixels (`a=c` compositions, `a=f` frames) one deferring feed
@@ -31,6 +31,9 @@ pub(super) struct Graphics {
     // the per-feed checks don't move a large, almost always empty value.
     defer_uploads: bool,
     deferred: Option<Box<KittyUpload>>,
+    // An OSC 1337 multipart image still receiving parts. Unlike a pending
+    // kitty upload, snapshots omit it.
+    multipart: Option<Box<InlineMultipart>>,
     #[cfg(test)]
     placeholder_scans: usize,
 }
@@ -275,10 +278,50 @@ impl State {
         if bytes.first() != Some(&b'G') {
             return;
         }
-        self.flush_graphics_effects();
-        self.resize_graphics();
         // Take the parser's buffer: payloads reach hundreds of MiB.
         let command = KittyGraphicsCommand::parse_after(std::mem::take(bytes), 1, false);
+        self.apply_graphics_command(command);
+    }
+
+    /// OSC 1337 file transfers: `File=args:data`, or `MultipartFile=args`
+    /// followed by `FilePart=data`s and `FileEnd`. An inline image becomes a
+    /// quiet, anonymous kitty upload, decoded, deferred and placed like one.
+    pub(super) fn apply_inline_image(&mut self, bytes: &mut Vec<u8>) {
+        const FILE: &[u8] = b"1337;File=";
+        if bytes.starts_with(FILE) {
+            self.graphics.multipart = None;
+            let Some(colon) = bytes.iter().position(|byte| *byte == b':') else {
+                return;
+            };
+            // Like an APC, keep the payload in the parser's allocation.
+            let mut payload = std::mem::take(bytes);
+            let args = payload[FILE.len()..colon].to_vec();
+            payload.drain(..=colon);
+            if let Some(command) = KittyGraphicsCommand::inline_image(&args, payload) {
+                self.apply_graphics_command(command);
+            }
+        } else if let Some(args) = bytes.strip_prefix(b"1337;MultipartFile=") {
+            self.graphics.multipart = Some(Box::new(InlineMultipart::new(args)));
+        } else if let Some(part) = bytes.strip_prefix(b"1337;FilePart=") {
+            if let Some(upload) = &mut self.graphics.multipart
+                && !upload.push(part)
+            {
+                self.graphics.multipart = None;
+            }
+        } else if bytes.as_slice() == b"1337;FileEnd"
+            && let Some(command) = self
+                .graphics
+                .multipart
+                .take()
+                .and_then(|upload| upload.finish())
+        {
+            self.apply_graphics_command(command);
+        }
+    }
+
+    fn apply_graphics_command(&mut self, command: KittyGraphicsCommand) {
+        self.flush_graphics_effects();
+        self.resize_graphics();
         // Only placement deletion resolves positions from placeholder cells.
         // In particular, upload continuations must not scan the whole viewport.
         if command.needs_placeholder_positions() {
@@ -847,5 +890,115 @@ mod tests {
         assert_eq!(row_text(&engine, 0), row_text(&expected, 0));
         assert!(row_text(&engine, 0).ends_with("after"));
         assert!(drain(&mut engine).is_empty());
+    }
+
+    fn inline_file(format: ::image::ImageFormat, width: u32, height: u32) -> Vec<u8> {
+        let mut file = std::io::Cursor::new(Vec::new());
+        ::image::DynamicImage::new_rgb8(width, height)
+            .write_to(&mut file, format)
+            .unwrap();
+        file.into_inner()
+    }
+
+    fn osc_file(args: &str, file: &[u8]) -> Vec<u8> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let encoded = STANDARD.encode(file);
+        [
+            b"\x1b]1337;File=",
+            args.as_bytes(),
+            b":",
+            encoded.as_bytes(),
+            b"\x07",
+        ]
+        .concat()
+    }
+
+    #[test]
+    fn osc_1337_places_inline_images_of_any_format_silently() {
+        use ::image::ImageFormat;
+        for format in [
+            ImageFormat::Png,
+            ImageFormat::Jpeg,
+            ImageFormat::Gif,
+            ImageFormat::WebP,
+            ImageFormat::Tiff,
+            ImageFormat::Bmp,
+        ] {
+            let mut engine = Engine::new(Size { cols: 20, rows: 6 }, Options::default());
+            engine.feed(&osc_file("inline=1", &inline_file(format, 18, 36)));
+            let placements = engine.graphics_placements();
+            assert_eq!(placements.len(), 1, "{format:?}");
+            assert_eq!(
+                (placements[0].image_width, placements[0].image_height),
+                (18, 36)
+            );
+            // 9x18 px cells: the natural size covers 2x2 cells.
+            assert_eq!(
+                (placements[0].occupied_cols, placements[0].occupied_rows),
+                (2, 2)
+            );
+            // Like iTerm2, no reply reaches the program's input.
+            assert!(drain(&mut engine).is_empty(), "{format:?}");
+        }
+    }
+
+    #[test]
+    fn osc_1337_images_survive_fragments_st_and_payloads_past_the_osc_limit() {
+        // An uncompressed BMP, base64-encoded well past the 64 KiB OSC limit.
+        let mut stream = osc_file(
+            "inline=1;width=4",
+            &inline_file(::image::ImageFormat::Bmp, 160, 160),
+        );
+        assert!(stream.len() > super::super::parser::MAX_STRING_BYTES);
+        stream.pop();
+        stream.extend_from_slice(b"\x1b\\after");
+        let mut engine = Engine::new(Size { cols: 20, rows: 6 }, Options::default());
+        for chunk in stream.chunks(7) {
+            engine.feed(chunk);
+        }
+        let placements = engine.graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].display_cols, Some(4));
+        assert_eq!(placements[0].occupied_rows, 2);
+        // Text continues right of the image.
+        assert_eq!(engine.cursor().col, 9);
+    }
+
+    #[test]
+    fn osc_1337_multipart_files_join_parts_split_anywhere() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let encoded = STANDARD.encode(inline_file(::image::ImageFormat::Png, 9, 18));
+        let mut stream = b"\x1b]1337;MultipartFile=inline=1;width=3\x07".to_vec();
+        for part in encoded.as_bytes().chunks(5) {
+            stream.extend_from_slice(&[b"\x1b]1337;FilePart=", part, b"\x1b\\"].concat());
+        }
+        stream.extend_from_slice(b"\x1b]1337;FileEnd\x07");
+        let mut engine = Engine::new(Size { cols: 20, rows: 6 }, Options::default());
+        engine.feed(&stream);
+        let placements = engine.graphics_placements();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].image_height, 18);
+        assert_eq!(placements[0].display_cols, Some(3));
+
+        // Parts and ends without a started upload are ignored.
+        engine.feed(b"\x1b]1337;FilePart=AAAA\x07\x1b]1337;FileEnd\x07");
+        assert_eq!(engine.graphics_placements().len(), 1);
+    }
+
+    #[test]
+    fn osc_1337_ignores_downloads_and_bad_files_and_can_keep_the_cursor() {
+        let file = inline_file(::image::ImageFormat::Png, 9, 18);
+        let mut engine = Engine::new(Size { cols: 20, rows: 6 }, Options::default());
+        engine.feed(&osc_file("name=eA==;size=10", &file));
+        engine.feed(&osc_file("inline=0", &file));
+        engine.feed(&osc_file("inline=1", b"not an image"));
+        engine.feed(b"\x1b]1337;File=inline=1\x07\x1b]1337;SetUserVar=a=Yg==\x07");
+        assert!(engine.graphics_placements().is_empty());
+        assert!(drain(&mut engine).is_empty());
+
+        engine.feed(b"\x1b[2;3H");
+        engine.feed(&osc_file("inline=1;doNotMoveCursor=1", &file));
+        assert_eq!(engine.graphics_placements().len(), 1);
+        assert_eq!((engine.cursor().row, engine.cursor().col), (1, 2));
     }
 }

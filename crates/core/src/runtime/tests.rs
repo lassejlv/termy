@@ -42,6 +42,24 @@ fn display_terminal_intercepts_and_places_kitty_graphics() {
 }
 
 #[test]
+fn display_terminal_places_iterm2_inline_images() {
+    // A 1x1 RGB PNG, as `imgcat` sends it.
+    let terminal = Terminal::new_display(test_terminal_size(), None);
+    terminal.feed_output(
+        b"\x1b]1337;File=inline=1;width=2;preserveAspectRatio=0:iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC\x07",
+    );
+
+    let placements = terminal.kitty_graphics_placements();
+    assert_eq!(placements.len(), 1);
+    assert_eq!(
+        (placements[0].image_width, placements[0].image_height),
+        (1, 1)
+    );
+    assert_eq!(placements[0].display_cols, Some(2));
+    assert_eq!(placements[0].display_rows, Some(1));
+}
+
+#[test]
 fn display_terminal_notifier_coalesces_until_events_are_drained() {
     let notifications = Arc::new(AtomicU64::new(0));
     let notification_count = notifications.clone();

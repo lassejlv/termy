@@ -10,6 +10,8 @@ mod animation;
 mod deletion;
 mod image;
 use image::normalize_image;
+mod inline;
+pub(crate) use inline::InlineMultipart;
 mod snapshot;
 mod upload;
 pub(crate) use upload::{KittyPreparedUpload, KittyUpload};
@@ -999,6 +1001,15 @@ impl KittyGraphicsState {
             Ok(image) => image,
             Err(error) => return self.failure(&command, &error),
         };
+        if let Some(inline) = command.inline {
+            let (cols, rows) = inline.display_cells(width, height, size, cursor.0);
+            command
+                .control
+                .extend(cols.map(|cols| ('c', cols.to_string())));
+            command
+                .control
+                .extend(rows.map(|rows| ('r', rows.to_string())));
+        }
 
         if command.char_value('a') == Some('f') {
             return match self.edit_animation(&command, Some(image)) {
