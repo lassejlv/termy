@@ -5258,24 +5258,30 @@ mod tests {
             unsafe { termy_terminal_new(size, command.as_ptr(), command.len(), &mut terminal) },
             TermyFfiStatus::Ok
         );
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        let mut update = TermyFfiFrameUpdate::default();
-        assert_eq!(
-            unsafe { termy_terminal_take_frame_update(terminal, true, &mut update) },
-            TermyFfiStatus::Ok
-        );
-        assert_eq!(update.damage_kind, 1);
-        assert_eq!(
-            update.cells_len,
-            usize::from(size.cols) * usize::from(size.rows)
-        );
-        let cells = unsafe { slice::from_raw_parts(update.cells_ptr, update.cells_len) };
-        assert!(cells.iter().any(|cell| cell.codepoint == u32::from(b'a')));
-        assert_eq!(
-            unsafe { termy_frame_update_free(&mut update) },
-            TermyFfiStatus::Ok
-        );
+        // Shell startup time varies (PowerShell on Windows takes far longer
+        // than /bin/sh), so poll full frames until the output arrives.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        let mut printed = false;
+        while !printed && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let mut update = TermyFfiFrameUpdate::default();
+            assert_eq!(
+                unsafe { termy_terminal_take_frame_update(terminal, true, &mut update) },
+                TermyFfiStatus::Ok
+            );
+            assert_eq!(update.damage_kind, 1);
+            assert_eq!(
+                update.cells_len,
+                usize::from(size.cols) * usize::from(size.rows)
+            );
+            let cells = unsafe { slice::from_raw_parts(update.cells_ptr, update.cells_len) };
+            printed = cells.iter().any(|cell| cell.codepoint == u32::from(b'a'));
+            assert_eq!(
+                unsafe { termy_frame_update_free(&mut update) },
+                TermyFfiStatus::Ok
+            );
+        }
+        assert!(printed, "startup command output never reached the frame");
 
         assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
     }
