@@ -169,7 +169,7 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_executable_path, resolve_working_dir};
+    use super::resolve_working_dir;
 
     #[cfg(unix)]
     #[test]
@@ -271,6 +271,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn installed_cli_symlink_resolves_back_to_bundle() {
+        use super::resolve_executable_path;
         use std::os::unix::fs::symlink;
 
         let temp = tempfile::tempdir().unwrap();
