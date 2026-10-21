@@ -78,7 +78,8 @@ fn synchronized_graphics_follow_screen_clear_scroll_and_cursor_changes_in_order(
     let second = placements.iter().find(|p| p.placement_id == 2).unwrap();
     assert_eq!((first.col, first.viewport_row), (4, 2));
     assert_eq!((second.col, second.viewport_row), (9, 7));
-    assert_eq!(terminal.cursor_position(), (11, 8));
+    // The cursor stays on the image's last row, just past its last column.
+    assert_eq!(terminal.cursor_position(), (11, 7));
 }
 
 #[test]
@@ -156,10 +157,10 @@ fn unnumbered_relative_placement_is_new_even_for_the_same_image() {
 }
 
 #[test]
-fn letterboxed_image_keeps_requested_cursor_occupancy_after_resize() {
+fn explicit_box_keeps_requested_cursor_occupancy_after_resize() {
     let mut terminal = terminal();
     terminal.feed_output(b"\x1b_Ga=T,i=1,f=32,s=1,v=1,c=2,r=3;AQID/w==\x1b\\");
-    assert_eq!(terminal.cursor_position(), (2, 3));
+    assert_eq!(terminal.cursor_position(), (2, 2));
     terminal.resize(TerminalSize {
         cols: 80,
         rows: 24,
@@ -180,9 +181,10 @@ fn letterboxed_image_keeps_requested_cursor_occupancy_after_resize() {
         (0, 0),
         false,
     );
-    assert_eq!(layout.image_size, (30.0, 30.0));
-    assert_eq!(layout.image_offset, (0.0, 22.5));
-    // The bottom row remains inside the requested box, including its letterbox.
+    // A direct placement stretches over its requested box, as in kitty.
+    assert_eq!(layout.image_size, (30.0, 75.0));
+    assert_eq!(layout.image_offset, (0.0, 0.0));
+    // The bottom row remains inside the requested box.
     terminal.feed_output(b"\x1b_Ga=d,d=p,x=1,y=3\x1b\\");
     assert!(terminal.kitty_graphics_placements().is_empty());
 }
