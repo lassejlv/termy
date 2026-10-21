@@ -1233,7 +1233,7 @@ mod tests {
     use gpui_kit::{Keystroke, Modifiers};
     use std::{
         collections::{HashMap, HashSet},
-        path::{Path, PathBuf},
+        path::PathBuf,
     };
 
     fn keystroke(key: &str, key_char: Option<&str>, modifiers: Modifiers) -> Keystroke {
@@ -1519,7 +1519,9 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            let mode = |path: &std::path::Path| {
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+            };
             assert_eq!(mode(&dir), 0o700);
             assert_eq!(mode(&second), 0o600);
         }

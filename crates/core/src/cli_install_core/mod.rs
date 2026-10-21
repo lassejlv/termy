@@ -878,13 +878,12 @@ fn expand_percent_env_vars(value: &str) -> String {
         } else {
             std::env::var(name).ok()
         };
-        match expanded {
-            Some(expanded) => output.push_str(&expanded),
-            None => {
-                output.push('%');
-                output.push_str(name);
-                output.push('%');
-            }
+        if let Some(expanded) = expanded {
+            output.push_str(&expanded);
+        } else {
+            output.push('%');
+            output.push_str(name);
+            output.push('%');
         }
         rest = &after[end + 1..];
     }

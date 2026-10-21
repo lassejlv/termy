@@ -212,15 +212,14 @@ impl ConPtyApi {
             return None;
         }
         let api = Self::from_module(module);
-        match api {
-            Some(_) => log::debug!("using bundled ConPTY from {}", library.display()),
-            None => {
-                log::warn!("bundled {} lacks the ConPTY exports", library.display());
-                // SAFETY: the module was loaded above and no symbol from it
-                // has been retained.
-                unsafe {
-                    let _ = FreeLibrary(module);
-                }
+        if api.is_some() {
+            log::debug!("using bundled ConPTY from {}", library.display());
+        } else {
+            log::warn!("bundled {} lacks the ConPTY exports", library.display());
+            // SAFETY: the module was loaded above and no symbol from it
+            // has been retained.
+            unsafe {
+                let _ = FreeLibrary(module);
             }
         }
         // A loaded module stays loaded for the process lifetime: the cached

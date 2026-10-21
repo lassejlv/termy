@@ -47,8 +47,10 @@ impl JobObject {
         let job = OwnedHandle::new(handle)
             .map(Self)
             .ok_or_else(io::Error::last_os_error)?;
-        let mut limits = JobObjectBasicLimitInformation::default();
-        limits.limit_flags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+        let limits = JobObjectBasicLimitInformation {
+            limit_flags: JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+            ..Default::default()
+        };
         // SAFETY: `limits` is a fully initialized JOBOBJECT_BASIC_LIMIT_
         // INFORMATION whose exact size is passed alongside it.
         let set = unsafe {
