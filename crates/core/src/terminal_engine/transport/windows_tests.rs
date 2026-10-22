@@ -125,6 +125,7 @@ fn win32_abi_layouts_match_the_sdk() {
     );
     if cfg!(target_pointer_width = "64") {
         assert_eq!(mem::size_of::<JobObjectBasicLimitInformation>(), 64);
+        assert_eq!(mem::size_of::<JobObjectExtendedLimitInformation>(), 144);
         assert_eq!(mem::size_of::<ProcessEntry32W>(), 568);
     } else {
         assert_eq!(mem::size_of::<JobObjectBasicLimitInformation>(), 40);
