@@ -10,6 +10,8 @@ mod animation;
 mod deletion;
 mod image;
 use image::normalize_image;
+mod inline;
+pub(crate) use inline::InlineMultipart;
 mod snapshot;
 mod upload;
 pub(crate) use upload::{KittyPreparedUpload, KittyUpload};
@@ -19,7 +21,12 @@ use upload::{decompress_zlib, temporary_path_can_be_removed};
 #[cfg(test)]
 mod conformance;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+#[cfg(test)]
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::{
+    Engine as _, alphabet,
+    engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
+};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     io::Cursor,
@@ -34,6 +41,16 @@ const MAX_CONTROL_FIELDS: usize = 64;
 const MAX_DIMENSION: u32 = 32_768;
 const MAX_PIXELS: u64 = (MAX_IMAGE_BYTES / 4) as u64;
 const MAX_PLACEMENTS: usize = 4_096;
+
+/// Decodes payloads as leniently as kitty does: padding is optional and the
+/// unused bits of a final symbol are ignored. chafa encodes every chunk on its
+/// own and leaves those bits set, which the strict standard engine rejects.
+const PAYLOAD_BASE64: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::STANDARD,
+    GeneralPurposeConfig::new()
+        .with_decode_allow_trailing_bits(true)
+        .with_decode_padding_mode(DecodePaddingMode::Indifferent),
+);
 const MAX_RELATIVE_DEPTH: usize = 8;
 
 impl KittyGraphicsCommand {
@@ -484,7 +501,7 @@ impl KittyGraphicsState {
                 screen,
             );
         }
-        let decoded = match BASE64.decode(if oversized { Vec::new() } else { encoded }) {
+        let decoded = match PAYLOAD_BASE64.decode(if oversized { Vec::new() } else { encoded }) {
             Ok(decoded) if decoded.len() <= MAX_IMAGE_BYTES && !oversized => decoded,
             Ok(_) => {
                 let response_command = self
@@ -992,6 +1009,15 @@ impl KittyGraphicsState {
             Ok(image) => image,
             Err(error) => return self.failure(&command, &error),
         };
+        if let Some(inline) = command.inline {
+            let (cols, rows) = inline.display_cells(width, height, size, cursor.0);
+            command
+                .control
+                .extend(cols.map(|cols| ('c', cols.to_string())));
+            command
+                .control
+                .extend(rows.map(|rows| ('r', rows.to_string())));
+        }
 
         if command.char_value('a') == Some('f') {
             return match self.edit_animation(&command, Some(image)) {

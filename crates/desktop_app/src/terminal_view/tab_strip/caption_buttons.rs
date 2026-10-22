@@ -210,6 +210,7 @@ impl TerminalView {
     /// horizontal tab strip (vertical tabs, or the strip is hidden): a
     /// full-width drag surface plus the caption buttons, laid over the row.
     /// `None` on other platforms, which do not draw their own caption.
+    #[cfg_attr(target_os = "windows", allow(clippy::unnecessary_wraps))]
     pub(crate) fn render_windows_titlebar_controls(
         &self,
         window: &Window,

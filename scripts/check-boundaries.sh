@@ -208,7 +208,7 @@ require_pattern 'TermyOpenTab' \
 require_pattern 'Open new Termy tab here' \
   "scripts/installer/termy.iss" \
   "Windows installer Explorer verb must use the Open new Termy tab here label"
-require_pattern '--working-directory ""%V""' \
+require_pattern '--working-directory ""%V\\\.""' \
   "scripts/installer/termy.iss" \
   "Windows installer Explorer verb must pass the selected folder as --working-directory"
 require_pattern 'MimeType=inode/directory;x-scheme-handler/termy;' \

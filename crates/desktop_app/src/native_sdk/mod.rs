@@ -31,8 +31,8 @@ use std::process::Command;
 use windows::Win32::Foundation::{HWND, POINT};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Controls::{
-    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TD_WARNING_ICON, TDF_ALLOW_DIALOG_CANCELLATION,
-    TDF_POSITION_RELATIVE_TO_WINDOW, TaskDialogIndirect,
+    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TD_WARNING_ICON,
+    TDF_ALLOW_DIALOG_CANCELLATION, TDF_POSITION_RELATIVE_TO_WINDOW, TaskDialogIndirect,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -597,7 +597,7 @@ pub fn show_copy_paste_context_menu(
             .0
         };
 
-        return context_menu_action_for_id(result);
+        context_menu_action_for_id(result)
     }
 
     #[cfg(any(
@@ -747,13 +747,13 @@ pub fn show_tab_context_menu(
             .0
         };
 
-        return match result {
+        match result {
             TAB_CONTEXT_MENU_RENAME_ID => Some(TabContextMenuAction::Rename),
             TAB_CONTEXT_MENU_PIN_ID => Some(TabContextMenuAction::Pin),
             TAB_CONTEXT_MENU_UNPIN_ID => Some(TabContextMenuAction::Unpin),
             TAB_CONTEXT_MENU_CLOSE_ID => Some(TabContextMenuAction::Close),
             _ => None,
-        };
+        }
     }
 
     #[cfg(any(
@@ -983,18 +983,22 @@ fn clipboard_permission_task_dialog(
         pszButtonText: windows::core::PCWSTR(deny.as_ptr()),
     });
 
-    let mut config = TASKDIALOGCONFIG::default();
-    config.cbSize = std::mem::size_of::<TASKDIALOGCONFIG>() as u32;
-    config.hwndParent = owner.unwrap_or_default();
-    config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
-    config.pszWindowTitle = windows::core::PCWSTR(window_title.as_ptr());
-    config.Anonymous1.pszMainIcon = TD_WARNING_ICON;
-    config.pszMainInstruction = windows::core::PCWSTR(instruction.as_ptr());
-    config.pszContent = windows::core::PCWSTR(content.as_ptr());
-    config.cButtons = buttons.len() as u32;
-    config.pButtons = buttons.as_ptr();
-    // Enter must never grant access by accident.
-    config.nDefaultButton = CLIPBOARD_DIALOG_DENY_ID;
+    let config = TASKDIALOGCONFIG {
+        cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+        hwndParent: owner.unwrap_or_default(),
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
+        pszWindowTitle: windows::core::PCWSTR(window_title.as_ptr()),
+        Anonymous1: TASKDIALOGCONFIG_0 {
+            pszMainIcon: TD_WARNING_ICON,
+        },
+        pszMainInstruction: windows::core::PCWSTR(instruction.as_ptr()),
+        pszContent: windows::core::PCWSTR(content.as_ptr()),
+        cButtons: buttons.len() as u32,
+        pButtons: buttons.as_ptr(),
+        // Enter must never grant access by accident.
+        nDefaultButton: CLIPBOARD_DIALOG_DENY_ID,
+        ..Default::default()
+    };
 
     let mut pressed = 0i32;
     if let Err(error) = unsafe { TaskDialogIndirect(&config, Some(&mut pressed), None, None) } {

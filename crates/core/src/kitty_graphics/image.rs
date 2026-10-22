@@ -4,6 +4,9 @@ pub(super) fn normalize_image(
     command: &KittyGraphicsCommand,
     data: Vec<u8>,
 ) -> Result<(crate::terminal_engine::media::GraphicsImage, u32, u32), String> {
+    if command.inline.is_some() {
+        return inline::decode(data);
+    }
     let (rgba, width, height) = match command.u32_value('f').unwrap_or(32) {
         100 => {
             let mut decoder = png::Decoder::new(Cursor::new(data));

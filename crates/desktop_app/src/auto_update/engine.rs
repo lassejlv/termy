@@ -57,8 +57,7 @@ const PARTIAL_DOWNLOAD_SUFFIX: &str = ".part";
 #[cfg(target_os = "windows")]
 fn update_cache_dir() -> PathBuf {
     std::env::var("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir())
+        .map_or_else(|_| std::env::temp_dir(), PathBuf::from)
         .join("Termy")
         .join("Cache")
 }
