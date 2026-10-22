@@ -87,6 +87,8 @@ shell = none
 term = xterm-256color
 # COLORTERM value exposed to child applications
 colorterm = truecolor
+# Terminal identity exposed to child applications: ghostty enables features such as Claude Code progress bars, termy reports Termy in tools like neofetch
+term_program = ghostty
 # Send macOS Option plus printable keys as escape-prefixed terminal Alt input
 macos_option_as_alt = false
 # Startup window width in pixels before a window size has been saved

@@ -442,11 +442,19 @@ mod tests {
     #[test]
     fn dismissing_loading_toast_keeps_follow_up_toast() {
         let mut manager = ToastManager::new();
-        let loading_id = loading("Running plugin");
-        success("Plugin finished");
-        dismiss_toast(loading_id);
-
-        manager.ingest_pending();
+        // The application queues are shared with parallel desktop tests;
+        // exercise this manager's dismissal using its own toast requests.
+        let loading_id = manager.push(ToastRequest {
+            kind: ToastKind::Loading,
+            message: "Running plugin".into(),
+            duration: Duration::from_secs(60 * 60),
+        });
+        manager.push(ToastRequest {
+            kind: ToastKind::Success,
+            message: "Plugin finished".into(),
+            duration: DEFAULT_TOAST_DURATION,
+        });
+        manager.dismiss(loading_id);
 
         assert_eq!(manager.active().len(), 1);
         assert_eq!(manager.active()[0].message, "Plugin finished");

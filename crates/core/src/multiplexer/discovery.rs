@@ -277,6 +277,24 @@ mod tests {
         assert!(!host_is_running(temp.path()));
     }
 
+    #[test]
+    fn client_rejects_runtime_config_from_a_version_two_host() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join("endpoint.json"),
+            serde_json::json!({ "version": 2, "port": 0, "token": "legacy" }).to_string(),
+        )
+        .unwrap();
+        let Err(error) = connect_with_capabilities(temp.path()) else {
+            panic!("a version-two host must be rejected before connecting");
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("a different multiplexer protocol")
+        );
+    }
+
     /// After a host crash another local user can bind the freed port. The
     /// client must not hand that listener the token or accept it as the host.
     #[test]

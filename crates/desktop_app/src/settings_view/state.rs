@@ -24,6 +24,7 @@ pub(super) enum EditableField {
     Shell,
     Term,
     Colorterm,
+    TermProgram,
     TmuxBinary,
     TmuxCommandPrefix,
     ScrollbackHistory,
@@ -426,6 +427,7 @@ impl SettingsWindow {
             | EditableField::Shell
             | EditableField::Term
             | EditableField::Colorterm
+            | EditableField::TermProgram
             | EditableField::TmuxBinary
             | EditableField::TmuxCommandPrefix
             | EditableField::ScrollbackHistory
@@ -555,6 +557,7 @@ impl SettingsWindow {
             EditableField::Shell => Self::text_field_spec(Some(RootSettingId::Shell)),
             EditableField::Term => Self::text_field_spec(Some(RootSettingId::Term)),
             EditableField::Colorterm => Self::text_field_spec(Some(RootSettingId::Colorterm)),
+            EditableField::TermProgram => Self::enum_field_spec(RootSettingId::TermProgram),
             EditableField::TmuxBinary => Self::text_field_spec(Some(RootSettingId::TmuxBinary)),
             EditableField::TmuxCommandPrefix => {
                 Self::text_field_spec(Some(RootSettingId::TmuxCommandPrefix))
@@ -919,6 +922,7 @@ impl SettingsWindow {
             EditableField::Shell => self.config.shell.clone().unwrap_or_default(),
             EditableField::Term => self.config.term.clone(),
             EditableField::Colorterm => self.config.colorterm.clone().unwrap_or_default(),
+            EditableField::TermProgram => self.config.term_program.as_str().to_string(),
             EditableField::TmuxBinary => self.config.tmux_binary.clone(),
             EditableField::TmuxCommandPrefix => {
                 self.config.tmux_command_prefix.clone().unwrap_or_default()
@@ -1294,6 +1298,7 @@ mod tests {
             EditableField::Shell,
             EditableField::Term,
             EditableField::Colorterm,
+            EditableField::TermProgram,
             EditableField::TmuxBinary,
             EditableField::TmuxCommandPrefix,
             EditableField::ScrollbackHistory,
@@ -1343,6 +1348,7 @@ mod tests {
             EditableField::ScrollbarStyle,
             EditableField::PaneFocusEffect,
             EditableField::ClipboardRead,
+            EditableField::TermProgram,
             EditableField::AppIcon,
             EditableField::TabTitleMode,
             EditableField::TabCloseVisibility,

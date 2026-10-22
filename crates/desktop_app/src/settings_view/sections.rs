@@ -324,6 +324,7 @@ impl SettingsWindow {
         let shell_meta = Self::setting_metadata_or_fallback("shell");
         let term_meta = Self::setting_metadata_or_fallback("term");
         let colorterm_meta = Self::setting_metadata_or_fallback("colorterm");
+        let term_program_meta = Self::setting_metadata_or_fallback("term_program");
         #[cfg(target_os = "windows")]
         let shell = self
             .config
@@ -377,6 +378,14 @@ impl SettingsWindow {
                 colorterm_meta.title,
                 colorterm_meta.description,
                 colorterm,
+                cx,
+            ),
+            self.render_editable_row(
+                "term_program",
+                EditableField::TermProgram,
+                term_program_meta.title,
+                term_program_meta.description,
+                self.editable_field_value(EditableField::TermProgram),
                 cx,
             ),
         ]);

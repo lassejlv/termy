@@ -343,6 +343,24 @@ fn env_overrides_advertise_ghostty_progress_capability() {
 }
 
 #[test]
+fn env_overrides_can_report_termy_as_term_program() {
+    let config = TerminalRuntimeConfig {
+        term_program: TermProgram::Termy,
+        ..TerminalRuntimeConfig::default()
+    };
+    let env = terminal_environment_overrides(None, &config);
+    assert_eq!(
+        env.get("TERM_PROGRAM").map(String::as_str),
+        Some(TERMY_TERM_PROGRAM)
+    );
+    assert!(!env.contains_key("TERM_PROGRAM_VERSION"));
+    assert_eq!(
+        env.get("TERMY_TERM_PROGRAM").map(String::as_str),
+        Some(TERMY_TERM_PROGRAM)
+    );
+}
+
+#[test]
 fn env_overrides_allow_disabling_colorterm() {
     let config = TerminalRuntimeConfig {
         colorterm: None,

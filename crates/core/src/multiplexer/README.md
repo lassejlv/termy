@@ -16,6 +16,10 @@ Client and host prove knowledge of the `endpoint.json` token to each other
 (HMAC challenge-response) before any request, so a process that binds the
 port after a host crash neither learns the token nor receives input.
 
+Protocol version 3 includes `term_program` in the binary launch configuration.
+Clients reject older hosts before connecting. Use the matching Termy version
+to close an older host's sessions before starting a new host after upgrading.
+
 ## Validation
 
 ```sh

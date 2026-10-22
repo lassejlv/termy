@@ -363,6 +363,17 @@ pub const CLIPBOARD_READ_ENUM_CHOICES: &[EnumChoice] = &[
     },
 ];
 
+pub const TERM_PROGRAM_ENUM_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        value: "ghostty",
+        label: "Ghostty (compatible)",
+    },
+    EnumChoice {
+        value: "termy",
+        label: "Termy",
+    },
+];
+
 pub const PANE_FOCUS_EFFECT_ENUM_CHOICES: &[EnumChoice] = &[
     EnumChoice {
         value: "off",
@@ -427,6 +438,7 @@ define_root_settings! {
     (Shell, "shell", [], Terminal, "SHELL", "Shell", "Optional executable path used for new sessions; overrides the Windows shell preset on Windows", ["shell", "bash", "zsh", "fish", "custom"], RootSettingValueKind::Text, false),
     (Term, "term", [], Terminal, "SHELL", "TERM", "TERM value exposed to child applications", ["term", "terminal", "env"], RootSettingValueKind::Text, false),
     (Colorterm, "colorterm", [], Terminal, "SHELL", "COLORTERM", "COLORTERM value exposed to child applications", ["colorterm", "color", "env"], RootSettingValueKind::Text, false),
+    (TermProgram, "term_program", [], Terminal, "SHELL", "TERM_PROGRAM", "Terminal identity exposed to child applications: ghostty enables features such as Claude Code progress bars, termy reports Termy in tools like neofetch", ["term_program", "terminal", "identity", "ghostty", "neofetch", "env"], RootSettingValueKind::Enum, false),
     (MacosOptionAsAlt, "macos_option_as_alt", [], Terminal, "KEYBOARD", "Use Option As Alt", "Send macOS Option plus printable keys as escape-prefixed terminal Alt input", ["macos", "option", "alt", "meta", "escape", "keyboard"], RootSettingValueKind::Boolean, false),
     (WindowWidth, "window_width", [], Advanced, "WINDOW", "Window Width", "Startup window width in pixels before a window size has been saved", ["window", "width", "startup", "size"], RootSettingValueKind::Numeric, false),
     (WindowHeight, "window_height", [], Advanced, "WINDOW", "Window Height", "Startup window height in pixels before a window size has been saved", ["window", "height", "startup", "size"], RootSettingValueKind::Numeric, false),
@@ -508,6 +520,7 @@ pub fn root_setting_enum_choices(id: RootSettingId) -> Option<&'static [EnumChoi
         RootSettingId::ScrollbarStyle => Some(SCROLLBAR_STYLE_ENUM_CHOICES),
         RootSettingId::PaneFocusEffect => Some(PANE_FOCUS_EFFECT_ENUM_CHOICES),
         RootSettingId::ClipboardRead => Some(CLIPBOARD_READ_ENUM_CHOICES),
+        RootSettingId::TermProgram => Some(TERM_PROGRAM_ENUM_CHOICES),
 
         _ => None,
     }
@@ -615,6 +628,7 @@ pub fn root_setting_default_value(config: &AppConfig, id: RootSettingId) -> Opti
         RootSettingId::Shell => config.shell.clone(),
         RootSettingId::Term => Some(config.term.clone()),
         RootSettingId::Colorterm => config.colorterm.clone(),
+        RootSettingId::TermProgram => Some(config.term_program.as_str().to_string()),
         RootSettingId::MacosOptionAsAlt => Some(config.macos_option_as_alt.to_string()),
         RootSettingId::WindowWidth => Some(config.window_width.to_string()),
         RootSettingId::WindowHeight => Some(config.window_height.to_string()),
@@ -771,6 +785,15 @@ mod tests {
         assert_eq!(
             enum_choice_values(RootSettingId::ClipboardRead),
             vec!["ask", "allow", "deny"]
+        );
+
+        assert_eq!(
+            root_setting_value_kind(RootSettingId::TermProgram),
+            RootSettingValueKind::Enum
+        );
+        assert_eq!(
+            enum_choice_values(RootSettingId::TermProgram),
+            vec!["ghostty", "termy"]
         );
 
         assert_eq!(

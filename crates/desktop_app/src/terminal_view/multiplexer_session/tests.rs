@@ -420,6 +420,9 @@ fn multiplexer_text_selection_survives_scrolling_and_output(cx: &mut TestAppCont
             .unwrap();
     });
 
+    // Settle pending layout before taking the scroll baseline. Real PTY/IPC
+    // wakeups also need the test UI executor to run while waiting for output.
+    cx.run_until_parked();
     let (selected, history) = update(cx, handle, |view, _| {
         let selected = view.selected_text().unwrap();
         let terminal = view.active_terminal().unwrap();
@@ -428,6 +431,7 @@ fn multiplexer_text_selection_survives_scrolling_and_output(cx: &mut TestAppCont
         (selected, history)
     });
     wait(|| {
+        cx.run_until_parked();
         update(cx, handle, |view, _| {
             view.active_terminal().unwrap().scroll_state().1 > history
         })

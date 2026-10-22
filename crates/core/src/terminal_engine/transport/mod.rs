@@ -165,8 +165,8 @@ mod tests {
 /// Variables describing the terminal or multiplexer that launched Termy (for
 /// example from an IDE or tmux). A shell inside Termy is in neither, and tools
 /// such as tmux and editors misbehave when they believe otherwise. `COLORTERM`
-/// is Termy's own to set (or omit when configured off), so an inherited value
-/// must not leak through either.
+/// and `TERM_PROGRAM_VERSION` are Termy's own to set (or omit when configured
+/// off), so an inherited value must not leak through either.
 pub(crate) fn belongs_to_parent_terminal(name: &std::ffi::OsStr) -> bool {
     const NAMES: &[&str] = &[
         "TMUX",
@@ -206,6 +206,7 @@ pub(crate) fn belongs_to_parent_terminal(name: &std::ffi::OsStr) -> bool {
         "KONSOLE_DBUS_SESSION",
         "TERMINAL_EMULATOR",
         "COLORTERM",
+        "TERM_PROGRAM_VERSION",
         "COLUMNS",
         "LINES",
     ];

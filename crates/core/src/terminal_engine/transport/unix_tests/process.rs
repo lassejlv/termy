@@ -980,6 +980,7 @@ fn child_environment_drops_the_parent_terminals_identity() {
         "VSCODE_INJECTION",
         "KITTY_WINDOW_ID",
         "COLORTERM",
+        "TERM_PROGRAM_VERSION",
         "LC_TERMINAL",
         "WEZTERM_EXECUTABLE",
     ] {

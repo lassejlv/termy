@@ -28,6 +28,18 @@ const TERMY_TERM_PROGRAM: &str = "termy";
 const GHOSTTY_COMPAT_TERM_PROGRAM: &str = "ghostty";
 const GHOSTTY_COMPAT_TERM_PROGRAM_VERSION: &str = "1.2.0";
 
+/// Value advertised to child processes through `TERM_PROGRAM`.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TermProgram {
+    Termy,
+    /// Claude Code and similar CLIs gate terminal progress escape sequences on
+    /// known terminal identities. Termy supports Ghostty's OSC progress
+    /// protocol, so this advertises that compatibility while keeping TERM
+    /// conservative for terminfo.
+    #[default]
+    Ghostty,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkingDirFallback {
     Home,
@@ -116,6 +128,8 @@ pub struct TerminalRuntimeConfig {
     pub windows_shell: WindowsShell,
     pub term: String,
     pub colorterm: Option<String>,
+    #[serde(default)]
+    pub term_program: TermProgram,
     pub environment: HashMap<String, String>,
     pub query_colors: TerminalQueryColors,
     pub working_dir_fallback: WorkingDirFallback,
@@ -141,6 +155,7 @@ impl Default for TerminalRuntimeConfig {
             windows_shell: WindowsShell::default(),
             term: DEFAULT_TERM.to_string(),
             colorterm: Some(DEFAULT_COLORTERM.to_string()),
+            term_program: TermProgram::default(),
             environment: HashMap::new(),
             query_colors: TerminalQueryColors::default(),
             working_dir_fallback: WorkingDirFallback::default(),
@@ -410,18 +425,23 @@ pub fn terminal_environment_overrides(
         env_overrides.insert("COLORTERM".to_string(), colorterm.to_string());
     }
 
-    // Claude Code and similar CLIs gate terminal progress escape sequences on
-    // known terminal identities. Termy supports Ghostty's OSC progress
-    // protocol, so advertise that compatibility to child processes while
-    // keeping TERM conservative for terminfo.
-    env_overrides.insert(
-        "TERM_PROGRAM".to_string(),
-        GHOSTTY_COMPAT_TERM_PROGRAM.to_string(),
-    );
-    env_overrides.insert(
-        "TERM_PROGRAM_VERSION".to_string(),
-        GHOSTTY_COMPAT_TERM_PROGRAM_VERSION.to_string(),
-    );
+    match runtime_config.term_program {
+        TermProgram::Ghostty => {
+            env_overrides.insert(
+                "TERM_PROGRAM".to_string(),
+                GHOSTTY_COMPAT_TERM_PROGRAM.to_string(),
+            );
+            env_overrides.insert(
+                "TERM_PROGRAM_VERSION".to_string(),
+                GHOSTTY_COMPAT_TERM_PROGRAM_VERSION.to_string(),
+            );
+        }
+        // No TERM_PROGRAM_VERSION: the engine only knows its own crate
+        // version, not the app's, and an inherited one is scrubbed.
+        TermProgram::Termy => {
+            env_overrides.insert("TERM_PROGRAM".to_string(), TERMY_TERM_PROGRAM.to_string());
+        }
+    }
     env_overrides.insert(
         "TERMY_TERM_PROGRAM".to_string(),
         TERMY_TERM_PROGRAM.to_string(),

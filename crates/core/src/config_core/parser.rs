@@ -12,8 +12,8 @@ use crate::config_core::schema::{RootSettingId, root_setting_from_key, root_sett
 use crate::config_core::types::{
     AppConfig, AppearanceMode, ClipboardReadPolicy, CursorStyle, KeybindConfigLine,
     PaneFocusEffect, TabBarPosition, TabCloseVisibility, TabStyle, TabTitleMode, TabTitleSource,
-    TabWidthMode, TaskConfig, TerminalScrollbarStyle, TerminalScrollbarVisibility, ThemeId,
-    WindowsShell, WorkingDirFallback,
+    TabWidthMode, TaskConfig, TermProgram, TerminalScrollbarStyle, TerminalScrollbarVisibility,
+    ThemeId, WindowsShell, WorkingDirFallback,
 };
 
 #[derive(Default)]
@@ -634,6 +634,19 @@ impl AppConfig {
                 }
                 RootSettingId::Colorterm => {
                     config.colorterm = parse_optional_string_value(value);
+                }
+                RootSettingId::TermProgram => {
+                    if let Ok(parsed) = value.parse::<TermProgram>() {
+                        config.term_program = parsed;
+                    } else {
+                        push_invalid_value(
+                            &mut diagnostics,
+                            line_number,
+                            key,
+                            value,
+                            "one of: ghostty, termy",
+                        );
+                    }
                 }
                 RootSettingId::MacosOptionAsAlt => {
                     if let Some(parsed) =
