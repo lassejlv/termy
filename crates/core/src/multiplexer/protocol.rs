@@ -6,7 +6,8 @@ use std::io::{Read, Write};
 use std::sync::Arc;
 
 // Version 2 adds the OSC 7501 snapshot event to the bincode event enum.
-pub(crate) const VERSION: u32 = 2;
+// Version 3 adds TERM_PROGRAM identity to PaneLaunch's binary runtime config.
+pub(crate) const VERSION: u32 = 3;
 const MAX_MESSAGE_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
