@@ -30,15 +30,45 @@ pub(super) struct Graphics {
     // `Engine::feed_deferring_uploads`) and waits in `deferred`. Boxed so
     // the per-feed checks don't move a large, almost always empty value.
     defer_uploads: bool,
-    deferred: Option<Box<KittyUpload>>,
-    // An OSC 1337 multipart image still receiving parts. Unlike a pending
-    // kitty upload, snapshots omit it.
-    multipart: Option<Box<InlineMultipart>>,
+    // The parser checks this per callback without following the cold pointer.
+    has_deferred: bool,
+    transfers: Option<Box<Transfers>>,
     #[cfg(test)]
     placeholder_scans: usize,
 }
 
+// Keep both transfer protocols behind the same cold pointer. Adding inline
+// images must not enlarge the state moved and checked by ordinary text feeds.
+#[derive(Default)]
+struct Transfers {
+    deferred: Option<KittyUpload>,
+    multipart: Option<InlineMultipart>,
+}
+
 impl Graphics {
+    fn release_empty_transfers(&mut self) {
+        if self
+            .transfers
+            .as_ref()
+            .is_some_and(|transfers| transfers.deferred.is_none() && transfers.multipart.is_none())
+        {
+            self.transfers = None;
+        }
+    }
+
+    fn take_multipart(&mut self) -> Option<InlineMultipart> {
+        let upload = self.transfers.as_mut()?.multipart.take();
+        self.release_empty_transfers();
+        upload
+    }
+
+    fn take_deferred(&mut self) -> Option<KittyUpload> {
+        self.has_deferred = false;
+        let upload = self.transfers.as_mut()?.deferred.take();
+        self.release_empty_transfers();
+        upload
+    }
+
     fn changed(&mut self) {
         self.revision = self.revision.wrapping_add(1);
     }
@@ -289,7 +319,7 @@ impl State {
     pub(super) fn apply_inline_image(&mut self, bytes: &mut Vec<u8>) {
         const FILE: &[u8] = b"1337;File=";
         if bytes.starts_with(FILE) {
-            self.graphics.multipart = None;
+            self.graphics.take_multipart();
             let Some(colon) = bytes.iter().position(|byte| *byte == b':') else {
                 return;
             };
@@ -301,18 +331,22 @@ impl State {
                 self.apply_graphics_command(command);
             }
         } else if let Some(args) = bytes.strip_prefix(b"1337;MultipartFile=") {
-            self.graphics.multipart = Some(Box::new(InlineMultipart::new(args)));
+            self.graphics.transfers.get_or_insert_default().multipart =
+                Some(InlineMultipart::new(args));
         } else if let Some(part) = bytes.strip_prefix(b"1337;FilePart=") {
-            if let Some(upload) = &mut self.graphics.multipart
+            if let Some(upload) = self
+                .graphics
+                .transfers
+                .as_mut()
+                .and_then(|transfers| transfers.multipart.as_mut())
                 && !upload.push(part)
             {
-                self.graphics.multipart = None;
+                self.graphics.take_multipart();
             }
         } else if bytes.as_slice() == b"1337;FileEnd"
             && let Some(command) = self
                 .graphics
-                .multipart
-                .take()
+                .take_multipart()
                 .and_then(|upload| upload.finish())
         {
             self.apply_graphics_command(command);
@@ -342,7 +376,12 @@ impl State {
                 screen,
                 placeholders,
             );
-            self.graphics.deferred = upload.map(Box::new);
+            if upload.is_some() {
+                self.graphics.has_deferred = true;
+                self.graphics.transfers.get_or_insert_default().deferred = upload;
+            } else {
+                self.graphics.take_deferred();
+            }
             result
         } else {
             self.graphics.state.apply_on_screen_with_placeholders(
@@ -362,7 +401,7 @@ impl State {
     }
 
     pub(super) fn has_deferred_upload(&self) -> bool {
-        self.graphics.deferred.is_some()
+        self.graphics.has_deferred
     }
 
     /// Whether this feed's animation edits used up their pixel budget. Only
@@ -380,7 +419,7 @@ impl State {
     }
 
     pub(super) fn take_deferred_upload(&mut self) -> Option<KittyUpload> {
-        self.graphics.deferred.take().map(|upload| *upload)
+        self.graphics.take_deferred()
     }
 
     pub(super) fn commit_upload(&mut self, prepared: KittyPreparedUpload) {
@@ -1000,6 +1039,60 @@ mod tests {
         // Parts and ends without a started upload are ignored.
         engine.feed(b"\x1b]1337;FilePart=AAAA\x07\x1b]1337;FileEnd\x07");
         assert_eq!(engine.graphics_placements().len(), 1);
+    }
+
+    #[test]
+    fn multipart_inline_and_deferred_kitty_uploads_can_overlap() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let encoded = STANDARD.encode(inline_file(::image::ImageFormat::Png, 9, 18));
+        let input = [
+            b"\x1b]1337;MultipartFile=inline=1\x07\x1b]1337;FilePart=".as_slice(),
+            encoded.as_bytes(),
+            b"\x07\x1b_Ga=T,f=32,s=1,v=1,i=7,c=2,r=1,q=2;AQID/w==\x1b\\",
+            b"\x1b]1337;FileEnd\x07after",
+        ]
+        .concat();
+        let size = Size { cols: 20, rows: 6 };
+        let mut expected = Engine::new(size, Options::default());
+        expected.feed(&input);
+
+        let mut engine = Engine::new(size, Options::default());
+        let consumed = engine.feed_deferring_uploads(&input);
+        let kitty = engine.take_deferred_upload().expect("Kitty image deferred");
+        assert!(engine.state.graphics.transfers.is_some());
+        engine.commit_upload(kitty.prepare());
+        assert_eq!(engine.graphics_placements().len(), 1);
+
+        let inline_end = engine.feed_deferring_uploads(&input[consumed..]);
+        let inline = engine
+            .take_deferred_upload()
+            .expect("inline image deferred");
+        engine.commit_upload(inline.prepare());
+        engine.feed(&input[consumed + inline_end..]);
+
+        assert!(engine.state.graphics.transfers.is_none());
+        let geometry = |engine: &mut Engine| {
+            engine
+                .graphics_placements()
+                .iter()
+                .map(|placement| {
+                    (
+                        placement.image_id,
+                        placement.viewport_row,
+                        placement.col,
+                        placement.image_width,
+                        placement.image_height,
+                        placement.occupied_cols,
+                        placement.occupied_rows,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(geometry(&mut engine), geometry(&mut expected));
+        assert_eq!(engine.graphics_placements().len(), 2);
+        assert_eq!(engine.cursor(), expected.cursor());
+        assert_eq!(row_text(&engine, 0), row_text(&expected, 0));
+        assert!(drain(&mut engine).is_empty());
     }
 
     #[test]
