@@ -727,12 +727,15 @@ impl Handler for State {
     }
 
     fn csi(&mut self, params: &[Param], private: Option<u8>, intermediates: &[u8], final_byte: u8) {
-        if final_byte != b'm' || private.is_some() || !intermediates.is_empty() {
-            self.grid.flush_pending_clear();
-            self.grid.end_grapheme();
+        // SGR only changes the pen. Handle it before the control-sequence
+        // dispatch, without computing a cursor count or flushing a clear.
+        // A pending clear keeps the blank chosen when its line feed scrolled.
+        if final_byte == b'm' && private.is_none() && intermediates.is_empty() {
+            self.sgr(params);
+            return;
         }
-        // SGR only changes the pen. A pending clear keeps the blank chosen
-        // when its line feed scrolled, so it may stay pending across colors.
+        self.grid.flush_pending_clear();
+        self.grid.end_grapheme();
         let count = count(params, 0);
         if intermediates == b"$" && final_byte == b'p' && matches!(private, None | Some(b'?')) {
             for param in params {
@@ -873,7 +876,6 @@ impl Handler for State {
             }
             (None, b's') => self.save_cursor(),
             (None, b'u') => self.restore_cursor(),
-            (None, b'm') => self.sgr(params),
             (None | Some(b'?'), b'h' | b'l') => {
                 for param in params {
                     if !param.subparams().is_empty() {
