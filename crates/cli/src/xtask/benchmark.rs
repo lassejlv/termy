@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod echo_tests;
 mod presentation;
 mod workloads;
 
@@ -940,13 +942,12 @@ fn run_echo_train(duration: Duration) -> Result<()> {
     let budget_iterations = (emit_budget.as_millis() / ECHO_TRAIN_INTERVAL.as_millis()) as u64;
     let iterations = budget_iterations.clamp(1, ECHO_TRAIN_DEFAULT_ITERATIONS);
     let glyphs = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    let emission_start = Instant::now();
 
     for seq in 0..iterations {
+        thread::sleep(echo_train_offset(seq).saturating_sub(emission_start.elapsed()));
         let glyph = [glyphs[(seq as usize) % glyphs.len()]];
         echo_starts.push(emit_timed_output(&mut out, &glyph)?);
-        if seq + 1 != iterations {
-            thread::sleep(ECHO_TRAIN_INTERVAL);
-        }
     }
     writeln!(out)?;
     out.flush()?;
@@ -966,6 +967,14 @@ fn emit_timed_output(out: &mut impl Write, bytes: &[u8]) -> io::Result<u64> {
     out.write_all(bytes)?;
     out.flush()?;
     Ok(monotonic_ns)
+}
+
+fn echo_train_offset(seq: u64) -> Duration {
+    // 250 ms is exactly 15 refresh periods at 60 Hz (30 at 120 Hz).
+    // Sweep a full refresh period so launch phase cannot bias the whole run.
+    // Use the same deterministic schedule for both compared applications.
+    let phase_offset = Duration::from_millis((seq * 7) % 17);
+    ECHO_TRAIN_INTERVAL * seq as u32 + phase_offset
 }
 
 fn run_steady_scroll(duration: Duration) -> Result<()> {
