@@ -287,7 +287,6 @@ impl State {
         }
     }
 
-    #[inline(never)]
     fn sgr(&mut self, params: &[Param]) {
         if params.is_empty() {
             self.reset_sgr();
@@ -613,18 +612,127 @@ impl State {
     }
 }
 
-impl State {
-    // Keep the large control dispatcher out of the parser's style path.
+impl Handler for State {
+    fn pause_requested(&self) -> bool {
+        self.modes.synchronized_update
+            || self.has_deferred_upload()
+            || self.pauses_for_animation_work()
+    }
+
+    fn print(&mut self, character: char) {
+        self.grid.flush_pending_clear();
+        let character = if self.charsets[self.active_charset] {
+            dec_graphic(character)
+        } else {
+            character
+        };
+        self.grid.put_char(character);
+        self.last_printed = Some(character);
+    }
+
+    fn print_utf8(&mut self, bytes: &[u8]) -> usize {
+        if self.charsets[self.active_charset] {
+            return 0;
+        }
+        let (written, last) = self.grid.write_utf8_run(bytes);
+        if let Some(character) = last {
+            self.last_printed = Some(character);
+        }
+        written
+    }
+
+    // Out of line, as the parser's loop runs faster without it on some
+    // targets; left to the inliner, unrelated changes to the crate flip it.
     #[inline(never)]
-    fn csi_control(
-        &mut self,
-        params: &[Param],
-        private: Option<u8>,
-        intermediates: &[u8],
-        final_byte: u8,
-    ) {
+    fn print_ascii(&mut self, bytes: &[u8]) {
+        // Byte-at-a-time output (echo, small PTY reads) writes one cell.
+        if let &[byte] = bytes
+            && self.print_ascii_cell(byte)
+        {
+            return;
+        }
+        self.print_ascii_run(bytes);
+    }
+
+    fn execute(&mut self, byte: u8) {
         self.grid.flush_pending_clear();
         self.grid.end_grapheme();
+        match byte {
+            0x07 => self.event(Event::Bell),
+            0x08 => self.grid.backspace(),
+            0x09 => self.grid.tab(),
+            0x0a..=0x0c => self.grid.linefeed_deferring_clear(),
+            0x0d => self.grid.carriage_return(),
+            0x0e => self.active_charset = 1,
+            0x0f => self.active_charset = 0,
+            _ => {}
+        }
+    }
+
+    fn escape(&mut self, intermediates: &[u8], final_byte: u8) {
+        self.grid.flush_pending_clear();
+        self.grid.end_grapheme();
+        match (intermediates, final_byte) {
+            ([], b'D') => {
+                let newline_mode = self.grid.newline_mode;
+                self.grid.newline_mode = false;
+                self.grid.linefeed();
+                self.grid.newline_mode = newline_mode;
+            }
+            ([], b'E') => {
+                self.grid.linefeed();
+                self.grid.carriage_return();
+            }
+            ([], b'M') => self.grid.reverse_index(),
+            ([], b'H') => self.grid.set_tab(),
+            ([], b'7') => self.save_cursor(),
+            ([], b'8') => self.restore_cursor(),
+            ([], b'=') => self.modes.application_keypad = true,
+            ([], b'>') => self.modes.application_keypad = false,
+            ([], b'Z') => self.reply(b"\x1b[?62;22c"),
+            ([b'#'], b'8') => self.grid.screen_alignment_test(),
+            ([], b'c') => {
+                self.grid.reset();
+                self.program_status.clear();
+                self.grid.cursor.shape = self.default_cursor_shape;
+                self.cursor_shape_overridden = false;
+                self.modes = Modes::default();
+                self.alternate_screen = false;
+                self.charsets = [false; 2];
+                self.active_charset = 0;
+                self.saved_charsets = [([false; 2], 0); 2];
+                self.saved_private_modes.clear();
+                self.column_mode = false;
+                self.last_printed = None;
+                self.keyboard_stack.iter_mut().for_each(Vec::clear);
+                self.keyboard_flags = [0; 2];
+                self.palette.fill(None);
+                self.foreground = None;
+                self.background = None;
+                self.cursor_color = None;
+                self.palette_revision = self.palette_revision.wrapping_add(1);
+                self.title.clear();
+                self.title_stack.clear();
+                self.event(Event::ResetTitle);
+                self.event(Event::KittyClipboardControl(
+                    crate::KittyClipboardControl::Reset,
+                ));
+            }
+            // Only DEC special graphics is translated. Other designations,
+            // such as UK or national sets, select an ASCII-equivalent set.
+            ([b'('], _) => self.charsets[0] = final_byte == b'0',
+            ([b')'], _) => self.charsets[1] = final_byte == b'0',
+            _ => {}
+        }
+    }
+
+    fn csi(&mut self, params: &[Param], private: Option<u8>, intermediates: &[u8], final_byte: u8) {
+        if final_byte != b'm' || private.is_some() || !intermediates.is_empty() {
+            self.grid.flush_pending_clear();
+            self.grid.end_grapheme();
+        }
+        // SGR only changes the pen. A pending clear keeps the blank chosen
+        // when its line feed scrolled, so it may stay pending across colors.
         let count = count(params, 0);
         if intermediates == b"$" && final_byte == b'p' && matches!(private, None | Some(b'?')) {
             for param in params {
@@ -765,6 +873,7 @@ impl State {
             }
             (None, b's') => self.save_cursor(),
             (None, b'u') => self.restore_cursor(),
+            (None, b'm') => self.sgr(params),
             (None | Some(b'?'), b'h' | b'l') => {
                 for param in params {
                     if !param.subparams().is_empty() {
@@ -831,132 +940,6 @@ impl State {
                 _ => {}
             },
             _ => {}
-        }
-    }
-}
-
-impl Handler for State {
-    fn pause_requested(&self) -> bool {
-        self.modes.synchronized_update
-            || self.has_deferred_upload()
-            || self.pauses_for_animation_work()
-    }
-
-    fn print(&mut self, character: char) {
-        self.grid.flush_pending_clear();
-        let character = if self.charsets[self.active_charset] {
-            dec_graphic(character)
-        } else {
-            character
-        };
-        self.grid.put_char(character);
-        self.last_printed = Some(character);
-    }
-
-    fn print_utf8(&mut self, bytes: &[u8]) -> usize {
-        if self.charsets[self.active_charset] {
-            return 0;
-        }
-        let (written, last) = self.grid.write_utf8_run(bytes);
-        if let Some(character) = last {
-            self.last_printed = Some(character);
-        }
-        written
-    }
-
-    // Out of line, as the parser's loop runs faster without it on some
-    // targets; left to the inliner, unrelated changes to the crate flip it.
-    #[inline(never)]
-    fn print_ascii(&mut self, bytes: &[u8]) {
-        // Byte-at-a-time output (echo, small PTY reads) writes one cell.
-        if let &[byte] = bytes
-            && self.print_ascii_cell(byte)
-        {
-            return;
-        }
-        self.print_ascii_run(bytes);
-    }
-
-    fn execute(&mut self, byte: u8) {
-        self.grid.flush_pending_clear();
-        self.grid.end_grapheme();
-        match byte {
-            0x07 => self.event(Event::Bell),
-            0x08 => self.grid.backspace(),
-            0x09 => self.grid.tab(),
-            0x0a..=0x0c => self.grid.linefeed_deferring_clear(),
-            0x0d => self.grid.carriage_return(),
-            0x0e => self.active_charset = 1,
-            0x0f => self.active_charset = 0,
-            _ => {}
-        }
-    }
-
-    fn escape(&mut self, intermediates: &[u8], final_byte: u8) {
-        self.grid.flush_pending_clear();
-        self.grid.end_grapheme();
-        match (intermediates, final_byte) {
-            ([], b'D') => {
-                let newline_mode = self.grid.newline_mode;
-                self.grid.newline_mode = false;
-                self.grid.linefeed();
-                self.grid.newline_mode = newline_mode;
-            }
-            ([], b'E') => {
-                self.grid.linefeed();
-                self.grid.carriage_return();
-            }
-            ([], b'M') => self.grid.reverse_index(),
-            ([], b'H') => self.grid.set_tab(),
-            ([], b'7') => self.save_cursor(),
-            ([], b'8') => self.restore_cursor(),
-            ([], b'=') => self.modes.application_keypad = true,
-            ([], b'>') => self.modes.application_keypad = false,
-            ([], b'Z') => self.reply(b"\x1b[?62;22c"),
-            ([b'#'], b'8') => self.grid.screen_alignment_test(),
-            ([], b'c') => {
-                self.grid.reset();
-                self.program_status.clear();
-                self.grid.cursor.shape = self.default_cursor_shape;
-                self.cursor_shape_overridden = false;
-                self.modes = Modes::default();
-                self.alternate_screen = false;
-                self.charsets = [false; 2];
-                self.active_charset = 0;
-                self.saved_charsets = [([false; 2], 0); 2];
-                self.saved_private_modes.clear();
-                self.column_mode = false;
-                self.last_printed = None;
-                self.keyboard_stack.iter_mut().for_each(Vec::clear);
-                self.keyboard_flags = [0; 2];
-                self.palette.fill(None);
-                self.foreground = None;
-                self.background = None;
-                self.cursor_color = None;
-                self.palette_revision = self.palette_revision.wrapping_add(1);
-                self.title.clear();
-                self.title_stack.clear();
-                self.event(Event::ResetTitle);
-                self.event(Event::KittyClipboardControl(
-                    crate::KittyClipboardControl::Reset,
-                ));
-            }
-            // Only DEC special graphics is translated. Other designations,
-            // such as UK or national sets, select an ASCII-equivalent set.
-            ([b'('], _) => self.charsets[0] = final_byte == b'0',
-            ([b')'], _) => self.charsets[1] = final_byte == b'0',
-            _ => {}
-        }
-    }
-
-    #[inline(always)]
-    fn csi(&mut self, params: &[Param], private: Option<u8>, intermediates: &[u8], final_byte: u8) {
-        // SGR only changes the pen. A pending clear keeps the blank chosen
-        // when its line feed scrolled, so it may stay pending across colors.
-        if final_byte == b'm' && private.is_none() && intermediates.is_empty() {
-            self.sgr(params);
-        } else {
-            self.csi_control(params, private, intermediates, final_byte);
         }
     }
 
