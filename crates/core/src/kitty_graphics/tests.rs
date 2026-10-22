@@ -397,6 +397,44 @@ fn assembles_chunked_upload_before_displaying() {
 }
 
 #[test]
+fn chunks_decode_with_their_own_padding_and_trailing_bits() {
+    // chafa's shape: an empty header, then chunks base64-encoded one by one,
+    // padded and with the unused bits of their last symbol set.
+    let mut state = KittyGraphicsState::default();
+    for chunk in [
+        &b"a=T,f=32,s=2,v=1,i=9,m=1"[..],
+        b"m=1;AQIDBP==",
+        b"m=1;BQb=",
+        b"m=1;B/8",
+        b"m=0",
+    ] {
+        let result = state.apply(
+            KittyGraphicsCommand::parse(chunk.to_vec(), false),
+            0,
+            0,
+            0,
+            size(),
+        );
+        assert!(!reply(&result).contains("EINVAL"), "{}", reply(&result));
+    }
+    assert_eq!(state.render_placements(0, 0, 24, 80).len(), 1);
+}
+
+#[test]
+fn single_chunk_payload_ignores_trailing_bits_and_missing_padding() {
+    let mut state = KittyGraphicsState::default();
+    let upload = state.apply(
+        KittyGraphicsCommand::parse(b"a=T,f=32,s=1,v=1,i=9;AQIDBP".to_vec(), false),
+        0,
+        0,
+        0,
+        size(),
+    );
+    assert!(upload.changed, "{}", reply(&upload));
+    assert_eq!(state.render_placements(0, 0, 24, 80).len(), 1);
+}
+
+#[test]
 fn chunked_upload_places_on_the_screen_and_cursor_at_completion() {
     let png = one_pixel_png();
     let split = png.len() / 2;

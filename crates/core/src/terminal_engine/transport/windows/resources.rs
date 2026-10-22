@@ -10,7 +10,7 @@ const CLOSE_GRACE_MS: Dword = 250;
 const FORCED_EXIT_CODE: u32 = 0xC000_013A;
 
 const JOB_OBJECT_LIMIT_BREAKAWAY_OK: Dword = 0x0000_0800;
-const JOB_OBJECT_BASIC_LIMIT_INFORMATION_CLASS: i32 = 2;
+const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
 const JOB_OBJECT_BASIC_PROCESS_ID_LIST_CLASS: i32 = 3;
 const ERROR_MORE_DATA: i32 = 234;
 const PROCESS_TERMINATE: Dword = 0x0000_0001;
@@ -32,6 +32,17 @@ struct JobObjectBasicLimitInformation {
     scheduling_class: Dword,
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct JobObjectExtendedLimitInformation {
+    basic_limit_information: JobObjectBasicLimitInformation,
+    io_counters: [u64; 6],
+    process_memory_limit: usize,
+    job_memory_limit: usize,
+    peak_process_memory_used: usize,
+    peak_job_memory_used: usize,
+}
+
 /// A job holding the terminal's child and, by inheritance, everything it
 /// starts. It only records membership: nothing dies when it closes, so GUI
 /// programs launched from the shell (`code .`, `notepad`, `start ...`)
@@ -47,16 +58,23 @@ impl JobObject {
         let job = OwnedHandle::new(handle)
             .map(Self)
             .ok_or_else(io::Error::last_os_error)?;
-        let mut limits = JobObjectBasicLimitInformation::default();
-        limits.limit_flags = JOB_OBJECT_LIMIT_BREAKAWAY_OK;
-        // SAFETY: `limits` is a fully initialized JOBOBJECT_BASIC_LIMIT_
-        // INFORMATION whose exact size is passed alongside it.
+        let limits = JobObjectExtendedLimitInformation {
+            basic_limit_information: JobObjectBasicLimitInformation {
+                limit_flags: JOB_OBJECT_LIMIT_BREAKAWAY_OK,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // BREAKAWAY_OK requires JobObjectExtendedLimitInformation; setting
+        // it through the basic information class fails with ERROR_INVALID_PARAMETER.
+        // SAFETY: `limits` has the documented extended information layout
+        // and its exact size is passed alongside it.
         let set = unsafe {
             SetInformationJobObject(
                 job.0.raw(),
-                JOB_OBJECT_BASIC_LIMIT_INFORMATION_CLASS,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
                 (&raw const limits).cast::<c_void>(),
-                mem::size_of::<JobObjectBasicLimitInformation>() as Dword,
+                mem::size_of::<JobObjectExtendedLimitInformation>() as Dword,
             )
         };
         if set == FALSE {

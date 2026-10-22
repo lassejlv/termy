@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::terminal_engine::media::GraphicsImage;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use base64::Engine as _;
 use flate2::read::ZlibDecoder;
 use std::{
     fs::File,
@@ -49,7 +49,7 @@ fn decode(
     data: UploadData,
 ) -> Result<(GraphicsImage, u32, u32), String> {
     let decoded = match data {
-        UploadData::Base64(encoded) => match BASE64.decode(encoded) {
+        UploadData::Base64(encoded) => match PAYLOAD_BASE64.decode(encoded) {
             Ok(decoded) if decoded.len() <= MAX_IMAGE_BYTES => decoded,
             Ok(_) => return Err("EFBIG:image payload exceeds storage limit".into()),
             Err(_) => return Err("EINVAL:invalid base64 payload".into()),

@@ -964,6 +964,16 @@ impl Handler for State {
         self.osc_with_terminator(bytes, false);
     }
 
+    fn osc_owned(&mut self, bytes: &mut Vec<u8>, bell: bool) {
+        if bytes.starts_with(b"1337;") {
+            self.grid.flush_pending_clear();
+            self.grid.end_grapheme();
+            self.apply_inline_image(bytes);
+        } else {
+            self.osc_terminated(bytes, bell);
+        }
+    }
+
     fn dcs(&mut self, bytes: &[u8]) {
         self.grid.flush_pending_clear();
         self.device_control_query(bytes);

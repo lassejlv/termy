@@ -114,12 +114,14 @@ output:
   a pending synchronized update
 - the scrollback and payload limits
 - kitty graphics: stored images and animations, placements, and an upload
-  still arriving in chunks (version 2 and later)
+  still arriving in chunks (version 2 and later). OSC 1337 (iTerm2) inline
+  images are stored and placed as kitty images.
 
 Decoding a snapshot and feeding it bytes B ends in the same state as feeding
 B to the original, including which scrollback rows are evicted. Snapshots do
-not include queued replies and events (drain them first) or render damage (a
-decoded engine starts with a full frame).
+not include queued replies and events (drain them first), render damage (a
+decoded engine starts with a full frame) or an OSC 1337 multipart image still
+receiving parts.
 
 The format starts with the magic `TRMYSNAP` and a version number, and all
 integers are little-endian, so snapshots move between Linux and macOS
@@ -175,7 +177,8 @@ OSC 52 clipboard writes longer than `max_clipboard_bytes` (8 MiB by default),
 are dropped whole. The defaults are also the maxima: you can lower the limits
 but not raise them. `termy_engine_set_payload_limits` changes them on a live
 handle; a server and its replicas should use the same values, and snapshots
-carry them. Kitty graphics uploads have their own limit.
+carry them. Kitty graphics uploads and OSC 1337 inline images have their own
+limit.
 
 ## Frames
 

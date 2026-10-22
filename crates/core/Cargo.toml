@@ -45,6 +45,7 @@ dirs = { workspace = true, optional = true }
 flate2 = "1.1"
 fontdb = { version = "0.23", optional = true }
 parking_lot = { version = "0.12", optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "tiff", "bmp"] }
 png = "0.18"
 rand_core = { workspace = true }
 ttf-parser = "0.25"

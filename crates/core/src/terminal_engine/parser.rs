@@ -3,7 +3,9 @@
 //! Parsing text and CSI sequences allocates nothing. String payloads share one
 //! reusable buffer and are delivered only after a complete terminator. The
 //! generic string limit is 64 KiB. Kitty graphics APCs and OSC 52 clipboard
-//! writes, chosen by their first bytes, get their own larger bounds.
+//! writes, chosen by their first bytes, get their own larger bounds. OSC 1337
+//! inline images share the APC bound; the 3-byte prefix that selects it also
+//! covers OSC 133, whose small prompt marks never approach it.
 
 const MAX_PARAMS: usize = 32;
 const MAX_SUBPARAMS: usize = 8;
@@ -164,6 +166,11 @@ pub(super) trait Handler {
     fn osc(&mut self, bytes: &[u8]);
     fn osc_terminated(&mut self, bytes: &[u8], _bell: bool) {
         self.osc(bytes);
+    }
+    /// Like `osc_terminated`, but large payloads (OSC 1337 inline images)
+    /// may be taken with `mem::take` instead of copied.
+    fn osc_owned(&mut self, bytes: &mut Vec<u8>, bell: bool) {
+        self.osc_terminated(bytes, bell);
     }
     fn dcs(&mut self, bytes: &[u8]);
     /// Large graphics payloads may be taken with `mem::take` instead of copied.
@@ -672,6 +679,7 @@ impl Parser {
         let limit = match kind {
             StringKind::Apc if self.prefix[0] == b'G' => self.apc_limit,
             StringKind::Osc if self.prefix == *b"52;" => self.clipboard_limit,
+            StringKind::Osc if self.prefix == *b"133" => self.apc_limit,
             _ => self.string_limit,
         };
         if bytes.len() > limit.saturating_sub(self.string_len) {
@@ -722,7 +730,7 @@ impl Parser {
             && self.string_wire_len > 4092;
         if !self.discarded && !oversized_status {
             match kind {
-                StringKind::Osc => handler.osc_terminated(&self.string, bell),
+                StringKind::Osc => handler.osc_owned(&mut self.string, bell),
                 StringKind::Dcs => handler.dcs(&self.string),
                 StringKind::Apc => handler.apc(&mut self.string),
                 StringKind::Ignore => {}

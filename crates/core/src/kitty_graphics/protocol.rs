@@ -1,10 +1,12 @@
-use super::{MAX_CONTROL_BYTES, MAX_CONTROL_FIELDS};
+use super::{MAX_CONTROL_BYTES, MAX_CONTROL_FIELDS, inline::InlineImage};
 
 #[derive(Clone, Debug)]
 pub struct KittyGraphicsCommand {
     pub(super) control: Vec<(char, String)>,
     pub(super) payload: Vec<u8>,
     pub(super) oversized: bool,
+    /// Set for an OSC 1337 image, which kitty's protocol can't send.
+    pub(super) inline: Option<InlineImage>,
 }
 
 impl KittyGraphicsCommand {
@@ -64,6 +66,7 @@ impl KittyGraphicsCommand {
             control,
             payload,
             oversized,
+            inline: None,
         }
     }
 

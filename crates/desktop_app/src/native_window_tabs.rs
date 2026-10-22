@@ -165,7 +165,7 @@ mod tests {
         assert!(!windows_native_tab_style(&custom));
 
         // Termy keeps its own tab model, so tmux and workspaces still apply.
-        let mut tmux_and_sidebar = config.clone();
+        let mut tmux_and_sidebar = config;
         tmux_and_sidebar.tmux_enabled = true;
         tmux_and_sidebar.sidebar_enabled = true;
         assert_eq!(

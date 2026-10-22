@@ -7717,6 +7717,7 @@ dependencies = [
  "fontdb",
  "fs4",
  "getrandom 0.2.17",
+ "image",
  "keyring",
  "libc",
  "log",

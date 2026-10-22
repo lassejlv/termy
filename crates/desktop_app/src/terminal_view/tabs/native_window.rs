@@ -107,25 +107,21 @@ impl TerminalView {
         if self.native_window_chrome.as_ref() == Some(&chrome) {
             return;
         }
-        self.native_window_chrome = Some(chrome.clone());
         #[cfg(target_os = "macos")]
         {
             let [red, green, blue, _] = chrome.background;
             let dark = 0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5;
+            let (title, background) = (chrome.title.clone(), chrome.background);
             let window = self.window_handle;
             App::defer(cx, move |cx| {
                 let _ = window.update(cx, |_, window, _| {
-                    crate::macos_native_tabs::set_window_chrome(
-                        window,
-                        chrome.title,
-                        chrome.background,
-                        dark,
-                    );
+                    crate::macos_native_tabs::set_window_chrome(window, title, background, dark);
                 });
             });
         }
         #[cfg(not(target_os = "macos"))]
         let _ = cx;
+        self.native_window_chrome = Some(chrome);
     }
 
     /// A native tab window shows one tab. Any extra tab (a new tab, or a

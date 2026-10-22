@@ -257,6 +257,7 @@ fn read_command(reader: &mut Reader<'_>) -> Result<KittyGraphicsCommand> {
         control,
         payload: reader.bytes()?.to_vec(),
         oversized: reader.bool()?,
+        inline: None,
     })
 }
 

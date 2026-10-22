@@ -67,7 +67,7 @@ jobs:
         run: |
           $release = "target\iscc-smoke\release"
           New-Item -ItemType Directory -Force -Path $release | Out-Null
-          foreach ($name in @("termy.exe", "termy-cli.exe")) {
+          foreach ($name in @("termy.exe", "termy-cli.exe", "Microsoft.UI.Xaml.dll", "resources.pri")) {
             Set-Content -Path (Join-Path $release $name) -Value "placeholder"
           }
           $iscc = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"

@@ -45,6 +45,7 @@ pub(super) enum EditableField {
     TabCloseVisibility,
     TabWidthMode,
     TabBarPosition,
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
     TabStyle,
     SidebarWidth,
     WorkingDirectory,
