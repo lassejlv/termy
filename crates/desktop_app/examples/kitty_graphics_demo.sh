@@ -9,7 +9,8 @@ if [[ ! -f "${image}" ]]; then
   exit 1
 fi
 
-# Kitty graphics protocol: transmit and display a PNG in 40x20 terminal cells.
+# Kitty graphics protocol: transmit and display a PNG 40 terminal cells wide.
+# Rows follow the image's aspect ratio; giving both c and r would stretch it.
 # Stream 4096-byte Base64 chunks so larger images do not live in one shell variable.
 first_chunk=1
 
@@ -19,7 +20,7 @@ emit_chunk() {
   if ((first_chunk)); then
     # Leave image and placement IDs anonymous so each invocation creates a
     # distinct placement instead of replacing the previous demo image.
-    printf '\033_Ga=T,f=100,t=d,c=40,r=20,C=0,q=2,m=%d;%s\033\\' \
+    printf '\033_Ga=T,f=100,t=d,c=40,C=0,q=2,m=%d;%s\033\\' \
       "${more}" "${chunk}"
     first_chunk=0
   else

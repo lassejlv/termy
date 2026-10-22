@@ -4,6 +4,9 @@ pub(super) fn normalize_image(
     command: &KittyGraphicsCommand,
     data: Vec<u8>,
 ) -> Result<(crate::terminal_engine::media::GraphicsImage, u32, u32), String> {
+    if command.inline.is_some() {
+        return inline::decode(data);
+    }
     let (rgba, width, height) = match command.u32_value('f').unwrap_or(32) {
         100 => {
             let mut decoder = png::Decoder::new(Cursor::new(data));
@@ -71,4 +74,11 @@ pub(super) fn normalize_image(
         width,
         height,
     ))
+}
+
+/// Cells a placement covers: the requested count, else enough for `extent`
+/// pixels. The tolerance keeps float error in a fractional cell size from
+/// adding a cell to an extent that is a whole number of cells.
+pub(super) fn occupied_cells(requested: Option<u32>, extent: f32, cell: f32) -> u32 {
+    requested.unwrap_or_else(|| (extent / cell - 1e-3).ceil().max(1.0) as u32)
 }

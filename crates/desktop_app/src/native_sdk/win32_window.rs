@@ -177,7 +177,7 @@ pub fn set_immersive_dark_mode(hwnd: HWND, dark: bool) {
         DwmSetWindowAttribute(
             hwnd,
             DWMWA_USE_IMMERSIVE_DARK_MODE,
-            &value as *const BOOL as *const core::ffi::c_void,
+            std::ptr::from_ref(&value).cast::<core::ffi::c_void>(),
             std::mem::size_of::<BOOL>() as u32,
         )
     };
@@ -194,7 +194,7 @@ pub fn set_caption_color(hwnd: HWND, [r, g, b]: [u8; 3]) {
         DwmSetWindowAttribute(
             hwnd,
             DWMWA_CAPTION_COLOR,
-            &color as *const COLORREF as *const core::ffi::c_void,
+            std::ptr::from_ref(&color).cast::<core::ffi::c_void>(),
             std::mem::size_of::<COLORREF>() as u32,
         )
     };
@@ -234,7 +234,7 @@ fn read_registry_dword(root: HKEY, subkey: PCWSTR, value: PCWSTR) -> Option<u32>
             value,
             RRF_RT_REG_DWORD,
             None,
-            Some((&mut data as *mut u32).cast::<core::ffi::c_void>()),
+            Some(std::ptr::from_mut(&mut data).cast::<core::ffi::c_void>()),
             Some(&mut size),
         )
     };

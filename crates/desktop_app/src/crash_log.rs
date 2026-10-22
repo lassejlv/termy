@@ -308,8 +308,7 @@ fn open_append(path: &Path) -> io::Result<fs::File> {
 fn rotated_log_path(path: &Path) -> PathBuf {
     let mut name = path
         .file_name()
-        .map(OsString::from)
-        .unwrap_or_else(|| OsString::from("termy.log"));
+        .map_or_else(|| OsString::from("termy.log"), OsString::from);
     name.push(".1");
     path.with_file_name(name)
 }

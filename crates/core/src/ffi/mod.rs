@@ -5248,17 +5248,18 @@ mod tests {
             cell_width: 9.0,
             cell_height: 18.0,
         };
-        #[cfg(target_os = "windows")]
-        let command: &[u8] = b"echo abc";
-        #[cfg(not(target_os = "windows"))]
-        let command: &[u8] = b"printf abc";
         let mut terminal = ptr::null_mut();
 
         assert_eq!(
-            unsafe { termy_terminal_new(size, command.as_ptr(), command.len(), &mut terminal) },
+            unsafe { termy_display_terminal_new(size, &mut terminal) },
             TermyFfiStatus::Ok
         );
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        // Frame extraction is independent of PTY startup and shell timing.
+        let output = b"abc";
+        assert_eq!(
+            unsafe { termy_terminal_feed_output(terminal, output.as_ptr(), output.len()) },
+            TermyFfiStatus::Ok
+        );
 
         let mut update = TermyFfiFrameUpdate::default();
         assert_eq!(

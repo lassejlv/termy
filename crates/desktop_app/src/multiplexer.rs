@@ -422,7 +422,7 @@ fn reconcile(saved: &mut SavedState, live: &[termy_core::multiplexer::PaneInfo])
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn install_for_test(client: SessionClient, cx: &mut App) -> Result<(), String> {
     install(client, cx)
 }

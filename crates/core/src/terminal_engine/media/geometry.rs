@@ -7,8 +7,8 @@ pub struct GraphicsDisplayLayout {
     pub image_offset: (f32, f32),
 }
 
-/// Kitty image dimensions, preserving aspect ratio even when both c and r are set.
-/// Use `graphics_display_layout` for the placement box and centering offsets.
+/// Kitty image dimensions. Use `graphics_display_layout` for the placement
+/// box and centering offsets.
 pub fn graphics_display_size(
     source_width: u32,
     source_height: u32,
@@ -30,7 +30,12 @@ pub fn graphics_display_size(
     .image_size
 }
 
-/// Keep the requested box for cursor movement and clipping while fitting the image inside it.
+/// The placement box for cursor movement and clipping, and the image inside it.
+///
+/// As in kitty and ghostty, a direct placement given both `c` and `r` stretches
+/// the image over that box, and one given only one of them derives the other
+/// from the aspect ratio. A virtual (Unicode placeholder) placement fills whole
+/// cells: the image keeps its aspect ratio and is centered in its cell box.
 /// Virtual placements ignore pixel offsets, as required by the protocol.
 pub fn graphics_display_layout(
     source_width: u32,
@@ -64,13 +69,26 @@ pub fn graphics_display_layout(
         }
         (None, None) => (natural_width, natural_height),
     };
-    let image_size = if cols.is_some() && rows.is_some() {
-        let scale = (placement_size.0 / natural_width.max(1.0))
-            .min(placement_size.1 / natural_height.max(1.0));
-        (natural_width * scale, natural_height * scale)
-    } else {
-        placement_size
+    if !virtual_placement {
+        return GraphicsDisplayLayout {
+            image_size: placement_size,
+            placement_size,
+            image_offset: (0.0, 0.0),
+        };
+    }
+    let cells = |count: Option<u32>, extent: f32, cell: f32| {
+        count.map_or_else(
+            || (extent / cell - 1e-3).ceil().max(1.0),
+            |count| count as f32,
+        ) * cell
     };
+    let placement_size = (
+        cells(cols, placement_size.0, cell_width),
+        cells(rows, placement_size.1, cell_height),
+    );
+    let scale =
+        (placement_size.0 / natural_width.max(1.0)).min(placement_size.1 / natural_height.max(1.0));
+    let image_size = (natural_width * scale, natural_height * scale);
     GraphicsDisplayLayout {
         image_size,
         placement_size,
@@ -125,43 +143,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn explicit_boxes_center_images_without_distorting_or_shrinking_the_box() {
-        for virtual_placement in [false, true] {
-            let wide = graphics_display_layout(
-                40,
-                10,
-                Some(2),
-                Some(2),
-                (10.0, 20.0),
-                (0, 0),
-                virtual_placement,
-            );
-            assert_eq!(wide.image_size, (20.0, 5.0));
-            assert_eq!(wide.placement_size, (20.0, 40.0));
-            assert_eq!(wide.image_offset, (0.0, 17.5));
-            let tall = graphics_display_layout(
-                10,
-                40,
-                Some(2),
-                Some(2),
-                (10.0, 20.0),
-                (0, 0),
-                virtual_placement,
-            );
-            assert_eq!(tall.image_size, (10.0, 40.0));
-            assert_eq!(tall.image_offset, (5.0, 0.0));
-        }
+    fn virtual_boxes_center_images_without_distorting_or_shrinking_the_box() {
+        let wide = graphics_display_layout(40, 10, Some(2), Some(2), (10.0, 20.0), (0, 0), true);
+        assert_eq!(wide.image_size, (20.0, 5.0));
+        assert_eq!(wide.placement_size, (20.0, 40.0));
+        assert_eq!(wide.image_offset, (0.0, 17.5));
+        let tall = graphics_display_layout(10, 40, Some(2), Some(2), (10.0, 20.0), (0, 0), true);
+        assert_eq!(tall.image_size, (10.0, 40.0));
+        assert_eq!(tall.image_offset, (5.0, 0.0));
+        // Pixel offsets never apply to placeholders.
+        let offset = graphics_display_layout(40, 10, Some(2), Some(2), (10.0, 20.0), (3, 4), true);
+        assert_eq!(offset, wide);
+    }
+
+    #[test]
+    fn virtual_boxes_round_up_to_whole_cells_and_center_the_image() {
+        // Only `c`: rows follow the aspect ratio, rounded up to whole cells.
+        let layout = graphics_display_layout(40, 10, Some(3), None, (10.0, 20.0), (0, 0), true);
+        assert_eq!(layout.placement_size, (30.0, 20.0));
+        assert_eq!(layout.image_size, (30.0, 7.5));
+        assert_eq!(layout.image_offset, (0.0, 6.25));
+        // Neither: the natural size, scaled to fit its cell box.
+        let layout = graphics_display_layout(16, 10, None, None, (10.0, 20.0), (0, 0), true);
+        assert_eq!(layout.placement_size, (20.0, 20.0));
+        assert_eq!(layout.image_size, (20.0, 12.5));
+        assert_eq!(layout.image_offset, (0.0, 3.75));
+        // A box that is a whole number of fractional cells keeps its size.
+        let layout = graphics_display_layout(96, 10, None, None, (9.6, 20.0), (0, 0), true);
+        assert_eq!(layout.placement_size.0, 96.0);
+    }
+
+    #[test]
+    fn direct_placements_stretch_over_an_explicit_box_like_kitty() {
+        let wide = graphics_display_layout(40, 10, Some(2), Some(2), (10.0, 20.0), (0, 0), false);
+        assert_eq!(wide.image_size, (20.0, 40.0));
+        assert_eq!(wide.placement_size, (20.0, 40.0));
+        assert_eq!(wide.image_offset, (0.0, 0.0));
         let offset = graphics_display_layout(40, 10, Some(2), Some(2), (10.0, 20.0), (3, 4), false);
         assert_eq!(offset.placement_size, (17.0, 36.0));
-        assert_eq!(offset.image_size, (17.0, 4.25));
-        assert_eq!(offset.image_offset, (0.0, 15.875));
+        assert_eq!(offset.image_size, (17.0, 36.0));
+        assert_eq!(offset.image_offset, (0.0, 0.0));
     }
+
     #[test]
-    fn fractional_cells_do_not_stretch_images() {
-        assert_eq!(
-            graphics_display_size(40, 10, Some(2), Some(2), (10.0, 20.0), (3, 4), false),
-            (17.0, 4.25)
-        );
+    fn one_requested_dimension_keeps_the_aspect_ratio() {
         assert_eq!(
             graphics_display_size(40, 10, Some(2), None, (10.0, 20.0), (3, 4), false),
             (17.0, 4.25)
@@ -173,6 +198,10 @@ mod tests {
         assert_eq!(
             graphics_display_size(40, 10, Some(3), None, (10.0, 20.0), (0, 0), false),
             (30.0, 7.5)
+        );
+        assert_eq!(
+            graphics_display_size(40, 10, None, Some(1), (10.0, 20.0), (0, 0), false),
+            (80.0, 20.0)
         );
         assert_eq!(
             graphics_display_size(40, 10, Some(3), Some(2), (10.0, 20.0), (0, 0), true),

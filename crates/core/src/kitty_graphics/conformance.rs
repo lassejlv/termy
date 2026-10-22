@@ -394,3 +394,51 @@ fn wildcard_parent_cycles_reply_with_ecycle() {
         assert_eq!(state.render_placements(0, 0, 24, 80).len(), 2);
     }
 }
+
+#[test]
+fn deletions_never_reply_like_kitty_and_ghostty() {
+    let mut state = KittyGraphicsState::default();
+    state.apply(
+        command("a=T,i=1,f=32,s=1,v=1,q=2", &[1, 2, 3, 255]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    for delete in [
+        "a=d,d=i,i=1",
+        "a=d,d=I,i=1",
+        "a=d,d=f,i=1",
+        "a=d,d=Z,z=4,i=9",
+    ] {
+        let result = state.apply(command(delete, &[]), 0, 0, 0, size());
+        assert!(result.response.is_none(), "{delete}");
+    }
+    assert!(state.images.is_empty());
+}
+
+#[test]
+fn continuations_that_repeat_the_first_chunks_keys_continue_the_upload() {
+    let mut state = KittyGraphicsState::default();
+    let first = state.apply(
+        command("a=T,f=32,s=2,v=1,i=9,c=2,r=1,m=1", &[1, 2, 3]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    assert!(first.response.is_none());
+    let last = state.apply(
+        command("a=T,f=32,s=2,v=1,i=9,c=2,r=1,m=0", &[255, 4, 5, 6, 255]),
+        0,
+        0,
+        0,
+        size(),
+    );
+    assert_eq!(last.response.unwrap(), b"\x1b_Gi=9;OK\x1b\\");
+    assert_eq!(
+        state.images[&9].image.rgba().unwrap(),
+        &[1, 2, 3, 255, 4, 5, 6, 255]
+    );
+    assert_eq!(state.render_placements(0, 0, 24, 80).len(), 1);
+}

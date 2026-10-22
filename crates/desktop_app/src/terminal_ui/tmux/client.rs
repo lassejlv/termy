@@ -1355,7 +1355,7 @@ mod tests {
 
     #[cfg(not(unix))]
     #[test]
-    fn new_reports_unsupported_platform_on_non_unix() {
+    fn new_requires_command_prefix_on_non_unix() {
         let result = TmuxClient::new(
             TmuxRuntimeConfig::default(),
             120,
@@ -1364,12 +1364,8 @@ mod tests {
             None::<flume::Sender<()>>,
         );
         let Err(error) = result else {
-            panic!("non-unix targets must reject tmux runtime startup");
+            panic!("non-unix targets must require a tmux command prefix");
         };
-        assert!(
-            error
-                .to_string()
-                .contains("tmux control mode is only supported on unix targets")
-        );
+        assert!(error.to_string().contains("requires tmux_command_prefix"));
     }
 }
