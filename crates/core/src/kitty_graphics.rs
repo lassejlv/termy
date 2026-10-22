@@ -9,7 +9,7 @@ pub use protocol::KittyGraphicsCommand;
 mod animation;
 mod deletion;
 mod image;
-use image::normalize_image;
+use image::{normalize_image, occupied_cells};
 mod inline;
 pub(crate) use inline::InlineMultipart;
 mod snapshot;
@@ -1468,13 +1468,6 @@ impl KittyGraphicsState {
             ..KittyGraphicsApplyResult::default()
         }
     }
-}
-
-/// Cells a placement covers: the requested count, else enough for `extent`
-/// pixels. The tolerance keeps float error in a fractional cell size from
-/// adding a cell to an extent that is a whole number of cells.
-fn occupied_cells(requested: Option<u32>, extent: f32, cell: f32) -> u32 {
-    requested.unwrap_or_else(|| (extent / cell - 1e-3).ceil().max(1.0) as u32)
 }
 
 fn response(command: &KittyGraphicsCommand, success: bool, message: &str) -> Option<Vec<u8>> {
