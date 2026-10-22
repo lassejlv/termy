@@ -288,6 +288,10 @@ jobs:
         shell: bash
         run: ./scripts/check-platform-builds.sh --native
 
+      - name: Verify initial Windows shell dimensions
+        if: matrix.os == 'windows'
+        run: cargo test --locked -p termy --bin termy terminal_view::startup_size_tests -- --nocapture
+
   tmux-integration:
     name: Tmux integration (${{ matrix.os }})
     runs-on: ${{ matrix.runner }}

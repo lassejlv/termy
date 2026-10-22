@@ -152,23 +152,17 @@ impl TerminalView {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn start_native_terminal(
         native_terminal_wakeup_router: &NativeTerminalWakeupRouter,
         configured_working_dir: Option<&str>,
         tab_shell_integration: &TabTitleShellIntegration,
         terminal_runtime: &TerminalRuntimeConfig,
         startup_command: Option<&str>,
-        initial_cols: u16,
-        initial_rows: u16,
+        size: TerminalSize,
         multiplexer: Option<&termy_core::multiplexer::SessionClient>,
     ) -> Terminal {
         match Terminal::new_native(
-            TerminalSize {
-                cols: initial_cols,
-                rows: initial_rows,
-                ..TerminalSize::default()
-            },
+            size,
             configured_working_dir,
             Some(native_terminal_wakeup_router),
             Some(tab_shell_integration),
@@ -184,34 +178,14 @@ impl TerminalView {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn runtime_startup_from_app_config(
         config: &AppConfig,
         event_wakeup_tx: &Sender<()>,
-        native_terminal_wakeup_router: &NativeTerminalWakeupRouter,
         configured_working_dir: Option<&str>,
-        tab_shell_integration: &TabTitleShellIntegration,
         terminal_runtime: &TerminalRuntimeConfig,
-        startup_command: Option<&str>,
         initial_cols: u16,
         initial_rows: u16,
-        defer_native_terminal: bool,
-        multiplexer: Option<&termy_core::multiplexer::SessionClient>,
-    ) -> (RuntimeState, Option<TmuxSnapshot>, Option<Terminal>) {
-        let start_native = || {
-            let native_terminal = Self::start_native_terminal(
-                native_terminal_wakeup_router,
-                configured_working_dir,
-                tab_shell_integration,
-                terminal_runtime,
-                startup_command,
-                initial_cols,
-                initial_rows,
-                multiplexer,
-            );
-            (RuntimeState::Native, None, Some(native_terminal))
-        };
-
+    ) -> (RuntimeState, Option<TmuxSnapshot>) {
         match RuntimeKind::from_app_config(config) {
             RuntimeKind::Tmux => {
                 let tmux_runtime = Self::tmux_runtime_from_app_config(config);
@@ -235,7 +209,7 @@ impl TerminalView {
                         );
                         log::warn!("{message}");
                         crate::ui::toast::warning(message);
-                        return start_native();
+                        return (RuntimeState::Native, None);
                     }
                 };
                 let initial_snapshot = match tmux_client.refresh_snapshot() {
@@ -253,7 +227,7 @@ impl TerminalView {
                         );
                         log::warn!("{message}");
                         crate::ui::toast::warning(message);
-                        return start_native();
+                        return (RuntimeState::Native, None);
                     }
                 };
                 (
@@ -265,11 +239,11 @@ impl TerminalView {
                         initial_rows,
                     )),
                     Some(initial_snapshot),
-                    None,
                 )
             }
-            RuntimeKind::Native if defer_native_terminal => (RuntimeState::Native, None, None),
-            RuntimeKind::Native => start_native(),
+            // Native shells start after the view can measure the window, font,
+            // padding and chrome. Shell line editors may cache that first size.
+            RuntimeKind::Native => (RuntimeState::Native, None),
         }
     }
 }

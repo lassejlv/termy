@@ -61,6 +61,8 @@ use termy_core::{
     resolve_working_directory_path,
 };
 
+#[cfg(test)]
+mod startup_size_tests;
 #[cfg(all(test, unix))]
 mod working_dir_tests;
 
@@ -3255,8 +3257,8 @@ impl TerminalView {
         );
         let startup_predicted_title =
             Self::predicted_prompt_seed_title(&tab_title, predicted_prompt_cwd.as_deref());
-        let initial_cols = TerminalSize::default().cols;
-        let initial_rows = TerminalSize::default().rows;
+        let mut initial_cols = TerminalSize::default().cols;
+        let mut initial_rows = TerminalSize::default().rows;
         let startup_native_session = if !empty
             && live_session.is_none()
             && owns_persisted_session
@@ -3273,27 +3275,14 @@ impl TerminalView {
         } else {
             None
         };
-        let defer_native_terminal = empty
-            || live_session.is_some()
-            || startup_native_session
-                .as_ref()
-                .is_some_and(|startup| startup.session.is_some());
-        let (runtime, initial_snapshot, mut native_terminal) =
-            Self::runtime_startup_from_app_config(
-                &config,
-                &event_wakeup_tx,
-                &native_terminal_wakeup_router,
-                configured_working_dir.as_deref(),
-                &tab_shell_integration,
-                &terminal_runtime,
-                benchmark_config
-                    .as_ref()
-                    .map(|config| config.command.as_str()),
-                initial_cols,
-                initial_rows,
-                defer_native_terminal,
-                multiplexer.as_ref().map(|window| window.client()),
-            );
+        let (runtime, initial_snapshot) = Self::runtime_startup_from_app_config(
+            &config,
+            &event_wakeup_tx,
+            configured_working_dir.as_deref(),
+            &terminal_runtime,
+            initial_cols,
+            initial_rows,
+        );
         let resolved_runtime_kind = runtime.kind();
         let native_window_tabs = crate::native_window_tabs_enabled(&config)
             && resolved_runtime_kind == RuntimeKind::Native;
@@ -3304,7 +3293,6 @@ impl TerminalView {
         }
 
         let plugin_runtime = PluginRuntime::new(config_path.as_deref());
-        crate::launch_probe::record_stage("terminal_created");
         let mut view = Self {
             session: SessionState::new(),
             workspace_sidebar_enabled: config.sidebar_enabled,
@@ -3542,24 +3530,41 @@ impl TerminalView {
         } else {
             false
         };
-        if resolved_runtime_kind == RuntimeKind::Native
-            && !empty
-            && !restored_native_workspace
-            && native_terminal.is_none()
-        {
-            native_terminal = Some(Self::start_native_terminal(
-                &view.native_terminal_wakeup_router,
-                view.configured_working_dir.as_deref(),
-                &view.tab_shell_integration,
-                &view.terminal_runtime,
-                view.benchmark_session
-                    .as_ref()
-                    .map(|session| session.command()),
-                initial_cols,
-                initial_rows,
-                view.multiplexer_client(),
-            ));
-        }
+        let native_terminal =
+            if resolved_runtime_kind == RuntimeKind::Native && !empty && !restored_native_workspace
+            {
+                let cell_size = view.calculate_cell_size(window, cx);
+                let viewport = window.viewport_size();
+                (initial_cols, initial_rows) = Self::terminal_grid_size_for_pane_count(
+                    1,
+                    viewport.width.into(),
+                    viewport.height.into(),
+                    view.effective_sidebar_width() + view.workspace_sidebar_width(),
+                    view.terminal_content_top_inset(),
+                    view.padding_x,
+                    view.padding_y,
+                    cell_size.width.into(),
+                    cell_size.height.into(),
+                );
+                Some(Self::start_native_terminal(
+                    &view.native_terminal_wakeup_router,
+                    view.configured_working_dir.as_deref(),
+                    &view.tab_shell_integration,
+                    &view.terminal_runtime,
+                    view.benchmark_session
+                        .as_ref()
+                        .map(|session| session.command()),
+                    TerminalSize {
+                        cols: initial_cols,
+                        rows: initial_rows,
+                        cell_width: cell_size.width.into(),
+                        cell_height: cell_size.height.into(),
+                    },
+                    view.multiplexer_client(),
+                ))
+            } else {
+                None
+            };
 
         match initial_snapshot {
             Some(initial_snapshot) => view.apply_tmux_snapshot(initial_snapshot),
@@ -3579,6 +3584,7 @@ impl TerminalView {
                 }
             }
         }
+        crate::launch_probe::record_stage("terminal_created");
 
         if view.benchmark_session.is_some() {
             cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {

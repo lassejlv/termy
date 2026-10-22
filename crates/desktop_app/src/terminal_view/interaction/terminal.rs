@@ -268,7 +268,7 @@ impl TerminalView {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn terminal_grid_size_for_pane_count(
+    pub(in super::super) fn terminal_grid_size_for_pane_count(
         pane_count: usize,
         viewport_width: f32,
         viewport_height: f32,
