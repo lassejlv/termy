@@ -165,10 +165,7 @@ impl SessionClient {
         stream.set_read_timeout(None)?;
         let close_stream = stream.try_clone()?;
         let (input_tx, input_rx) = flume::bounded(256);
-        let mut initial_state = (*state).clone();
-        // Painting reads a completed local snapshot, even before the first
-        // graphics update arrives. It must never make a synchronous image RPC.
-        initial_state.graphics = Some(Vec::new());
+        let initial_state = awaiting_graphics((*state).clone());
         let shared = Arc::new(ClientState {
             state: Mutex::new(Arc::new(initial_state)),
             state_updated: Condvar::new(),
@@ -347,6 +344,15 @@ impl SessionClient {
         self.connection.request(Request::Shutdown)?;
         Ok(())
     }
+}
+
+fn awaiting_graphics(mut state: RemoteState) -> RemoteState {
+    // Keep painting local while the subscription loads its first image snapshot.
+    // Do not label this empty placeholder with the completed host revision:
+    // the renderer must invalidate it when those first streamed images arrive.
+    state.graphics_revision = 0;
+    state.graphics = Some(Vec::new());
+    state
 }
 
 fn validate_state(state: &RemoteState) -> anyhow::Result<()> {
@@ -596,6 +602,20 @@ impl RemoteTransport for ClientTerminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_streamed_images_invalidate_the_pending_graphics_snapshot() {
+        let terminal = Terminal::new_display(crate::TerminalSize::default(), None);
+        terminal.feed_output(b"\x1b_Ga=T,i=1,f=32,s=1,v=1,C=1,q=2;AQID/w==\x1b\\");
+        let ready = RemoteState::capture(&terminal);
+        assert_eq!(ready.graphics.as_ref().unwrap().len(), 1);
+        let pending = awaiting_graphics(ready.clone());
+        assert!(pending.graphics.as_ref().unwrap().is_empty());
+        // A renderer may cache the initial empty snapshot before the reader
+        // publishes these same host placements. Its revision must then change
+        // even when there is no further PTY output or window resize.
+        assert_ne!(pending.graphics_revision, ready.graphics_revision);
+    }
 
     #[test]
     fn program_status_snapshots_do_not_accumulate_for_slow_clients() {
