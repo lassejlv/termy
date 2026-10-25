@@ -35,6 +35,22 @@ update `WIRE_FINGERPRINT`. `endpoint.json` records the host's build ID; a client
 of the same `VERSION` but another build logs a warning. New `endpoint.json`
 fields must be `#[serde(default)]`, since `shutdown_host` reads older files.
 
+Terminal events are either state or things that happened. The host keeps
+the latest title, working directory, OSC 9;4 progress, OSC 7501 status and
+OSC 133 shell phase, and sends them to a new subscriber once, as
+`Update::Replay`, before any live event. A prompt (OSC 133;A) drops the kept
+progress, as the engine drops working and blocked status records. Unless the
+kept phase says a command is running, progress not updated for 30 minutes
+(wall-clock time) is left out of the replay, and working records unchanged for
+30 minutes are left out of the replay and of later live snapshots. Blocked
+records never expire. Record times come from the snapshot order, which the
+engine keeps least recently updated first. Bells, clipboard stores and OSC 133 steps are only
+delivered live; the client passes only state from a replay to the view, so a
+reattached tab does not restart command timers, run command-finished plugins
+or set workspace attention. Live queues of clients that are not reading merge
+state events and keep the latest 64 OSC 133 events, dropping whole prompt
+cycles, so `D` and the `A` that follows it in the same write both arrive.
+
 Hosts write `log` output and panics to `host.log` in the private directory,
 rotating it to `host.log.1` past 1 MiB. A message repeated more than 5 times a
 minute is counted instead of written, and a panic report is cut at 16 KiB.

@@ -551,12 +551,14 @@ fn add_responses(samples: &mut Samples) {
                 request: RemoteHostRequest::Read(read_request()),
             },
             Update::GraphicsState(Arc::new(remote_state()), graphics_update()),
+            Update::Replay(vec![TerminalEvent::WorkingDirectory("/tmp".into())]),
         ],
         |update| match update {
             Update::State(_) => 0,
             Update::Events(_) => 1,
             Update::Host { .. } => 2,
             Update::GraphicsState(..) => 3,
+            Update::Replay(_) => 4,
         },
     );
 }

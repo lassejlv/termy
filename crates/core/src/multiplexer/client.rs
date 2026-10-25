@@ -178,19 +178,20 @@ impl SessionClient {
                                 reader_shared.publish_state(state);
                             }
                             Update::Events(events) => {
-                                tab_chrome = events.iter().any(|event| {
-                                    matches!(
-                                        event,
-                                        TerminalEvent::ProgramStatus(_)
-                                            | TerminalEvent::Title(_)
-                                            | TerminalEvent::ResetTitle
-                                    )
-                                });
+                                tab_chrome = events.iter().any(drives_tab_chrome);
                                 reader_shared
                                     .pending
                                     .lock()
                                     .unwrap()
                                     .extend_events(events)?;
+                            }
+                            Update::Replay(events) => {
+                                tab_chrome = events.iter().any(drives_tab_chrome);
+                                reader_shared
+                                    .pending
+                                    .lock()
+                                    .unwrap()
+                                    .extend_replay(events)?;
                             }
                             Update::Host { id, request } => reader_shared
                                 .pending
@@ -330,6 +331,30 @@ fn validate_state(state: &RemoteState) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn drives_tab_chrome(event: &TerminalEvent) -> bool {
+    matches!(
+        event,
+        TerminalEvent::ProgramStatus(_) | TerminalEvent::Title(_) | TerminalEvent::ResetTitle
+    )
+}
+
+/// Whether a replayed event only restores state. The view handles events as
+/// things that just happened: a replayed OSC 133 event would restart its
+/// command timer or report an old command as finished, and a bell would set
+/// workspace attention. The command lifecycle starts again at the next live
+/// prompt instead (audit I18).
+fn restores_state(event: &TerminalEvent) -> bool {
+    matches!(
+        event,
+        TerminalEvent::Title(_)
+            | TerminalEvent::ResetTitle
+            | TerminalEvent::WorkingDirectory(_)
+            | TerminalEvent::Progress(_)
+            | TerminalEvent::ProgramStatus(_)
+            | TerminalEvent::Exit
+    )
+}
+
 #[derive(Default)]
 struct Pending {
     wakeup: bool,
@@ -340,8 +365,9 @@ struct Pending {
 impl Pending {
     fn extend_events(&mut self, events: Vec<TerminalEvent>) -> anyhow::Result<()> {
         for event in events {
-            // A suspended UI keeps only the latest state and one of each
-            // repeated notification, like the host's queue for slow clients.
+            // A suspended UI keeps only the latest state, one of each
+            // repeated notification and the latest OSC 133 events, like the
+            // host's queue for slow clients.
             if !coalesce_event(&mut self.events, &event) {
                 continue;
             }
@@ -349,6 +375,10 @@ impl Pending {
             self.events.push(event);
         }
         Ok(())
+    }
+
+    fn extend_replay(&mut self, events: Vec<TerminalEvent>) -> anyhow::Result<()> {
+        self.extend_events(events.into_iter().filter(restores_state).collect())
     }
 }
 
@@ -622,6 +652,82 @@ mod tests {
         };
         assert_eq!(layout.as_deref(), Some("second"));
         host.join().unwrap();
+    }
+
+    #[test]
+    fn command_finish_and_prompt_reach_the_view_in_order() {
+        let mut pending = Pending::default();
+        pending
+            .extend_events(vec![
+                TerminalEvent::ShellCommandFinished(Some(1)),
+                TerminalEvent::ShellPromptStart,
+            ])
+            .unwrap();
+        assert!(matches!(
+            pending.events.as_slice(),
+            [
+                TerminalEvent::ShellCommandFinished(Some(1)),
+                TerminalEvent::ShellPromptStart
+            ]
+        ));
+    }
+
+    #[test]
+    fn suspended_ui_queue_survives_a_flood_of_prompts() {
+        let mut pending = Pending::default();
+        for code in 0..10_000 {
+            pending
+                .extend_events(vec![
+                    TerminalEvent::ShellCommandExecuting,
+                    TerminalEvent::ShellCommandFinished(Some(code)),
+                    TerminalEvent::ShellPromptStart,
+                ])
+                .unwrap();
+        }
+        assert!(pending.events.len() <= 64, "{}", pending.events.len());
+        assert!(matches!(
+            pending.events.last(),
+            Some(TerminalEvent::ShellPromptStart)
+        ));
+    }
+
+    #[test]
+    fn replayed_events_restore_state_without_reporting_what_happened() {
+        let mut pending = Pending::default();
+        pending
+            .extend_replay(vec![
+                TerminalEvent::Title("vim".into()),
+                TerminalEvent::WorkingDirectory("/tmp".into()),
+                TerminalEvent::ShellCommandExecuting,
+                TerminalEvent::ShellCommandFinished(Some(1)),
+                TerminalEvent::Bell,
+                TerminalEvent::Progress(ProgressState::Indeterminate),
+                TerminalEvent::ProgramStatus(vec![]),
+                TerminalEvent::Exit,
+            ])
+            .unwrap();
+        assert!(
+            matches!(
+                pending.events.as_slice(),
+                [
+                    TerminalEvent::Title(_),
+                    TerminalEvent::WorkingDirectory(_),
+                    TerminalEvent::Progress(ProgressState::Indeterminate),
+                    TerminalEvent::ProgramStatus(_),
+                    TerminalEvent::Exit,
+                ]
+            ),
+            "{:?}",
+            pending.events
+        );
+        // Live events after the replay are delivered as they happen.
+        pending
+            .extend_events(vec![TerminalEvent::ShellCommandExecuting])
+            .unwrap();
+        assert!(matches!(
+            pending.events.last(),
+            Some(TerminalEvent::ShellCommandExecuting)
+        ));
     }
 
     #[test]

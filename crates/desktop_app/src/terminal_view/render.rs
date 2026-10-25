@@ -182,6 +182,13 @@ const TERMINAL_PROGRESS_LOADER_HEIGHT: f32 = 2.0;
 const TERMINAL_PROGRESS_INDETERMINATE_WIDTH: f32 = 0.22;
 const TERMINAL_PROGRESS_INDETERMINATE_CYCLE_MS: u128 = 3_400;
 
+/// Frame interval of the indeterminate progress bar. Each frame renders the
+/// whole view for a 2 px bar that can stay up for the length of a build, so
+/// it animates at 30 fps, and at 10 fps while the window is in the background.
+fn terminal_progress_indeterminate_frame(window_active: bool) -> Duration {
+    Duration::from_millis(if window_active { 33 } else { 100 })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TerminalProgressLoaderFill {
     left_ratio: f32,
@@ -1835,16 +1842,14 @@ impl TerminalView {
         ))
     }
 
-    fn schedule_progress_indicator_animation(&mut self, cx: &mut Context<Self>) {
+    fn schedule_progress_indicator_animation(&mut self, frame: Duration, cx: &mut Context<Self>) {
         if self.progress_indicator_animation_scheduled {
             return;
         }
 
         self.progress_indicator_animation_scheduled = true;
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            cx.background_executor()
-                .timer(Duration::from_millis(16))
-                .await;
+            cx.background_executor().timer(frame).await;
             let _ = cx.update(|cx| {
                 this.update(cx, |view, cx| {
                     view.progress_indicator_animation_scheduled = false;
@@ -2944,7 +2949,8 @@ impl Render for TerminalView {
         }
 
         if self.progress_indicator_enabled && self.active_tab_has_indeterminate_progress() {
-            self.schedule_progress_indicator_animation(cx);
+            let frame = terminal_progress_indeterminate_frame(window.is_window_active());
+            self.schedule_progress_indicator_animation(frame, cx);
         }
 
         if let Some(active_tab) = self.session.tabs.get(self.session.active_tab)

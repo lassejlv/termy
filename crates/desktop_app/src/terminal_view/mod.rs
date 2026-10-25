@@ -663,6 +663,16 @@ impl Terminal {
         }
     }
 
+    /// Feed a test display terminal as if its program printed `bytes`.
+    #[cfg(test)]
+    fn feed_test_output(&self, bytes: &[u8]) {
+        if let Self::Native(terminal) = self
+            && let Ok(terminal) = terminal.lock()
+        {
+            terminal.feed_output(bytes);
+        }
+    }
+
     fn hydrate_output(&self, bytes: &[u8]) {
         match self {
             Self::Tmux(terminal) => terminal.feed_output(bytes),
@@ -1167,6 +1177,13 @@ impl TerminalPane {
 
     fn terminal(&self) -> &Terminal {
         &self.terminal
+    }
+
+    /// A prompt (OSC 133;A) ends the program that reported progress, so its
+    /// bar must not stay up, like OSC 7501 working records. Returns whether
+    /// the bar was showing.
+    fn clear_progress_at_prompt(&mut self) -> bool {
+        std::mem::take(&mut self.progress_state).is_active()
     }
 }
 
@@ -4318,6 +4335,8 @@ impl TerminalView {
                                     .command_lifecycle
                                     .prompt_start();
                             }
+                            should_redraw |= self.session.tabs[tab_index].panes[pane_index]
+                                .clear_progress_at_prompt();
                         }
                         TerminalEvent::ShellCommandStart => {
                             if self.shell_integration_enabled {

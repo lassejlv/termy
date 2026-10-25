@@ -480,6 +480,128 @@ read finish
     host.client.close(&id).unwrap();
 }
 
+fn shell_pane(host: &Host, script: &str) -> (String, Terminal) {
+    host.client
+        .create(
+            PaneLaunch {
+                size: TerminalSize::default(),
+                working_directory: None,
+                shell_integration: None,
+                config: TerminalRuntimeConfig::default(),
+                launch: Some(TerminalLaunch::Program {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), script.into()],
+                }),
+            },
+            None,
+        )
+        .unwrap()
+}
+
+/// Drains `terminal` until a drained batch has an event for which `done`
+/// returns true, and returns every event drained, without wakeups.
+#[track_caller]
+fn events_until(
+    terminal: &Terminal,
+    mut done: impl FnMut(&TerminalEvent) -> bool,
+) -> Vec<TerminalEvent> {
+    let mut seen = Vec::new();
+    wait_until(|| {
+        let mut finished = false;
+        for event in terminal.drain_events(&mut |_| None).0 {
+            if !matches!(event, TerminalEvent::Wakeup) {
+                finished |= done(&event);
+                seen.push(event);
+            }
+        }
+        finished
+    });
+    seen
+}
+
+fn is_shell_event(event: &TerminalEvent) -> bool {
+    matches!(
+        event,
+        TerminalEvent::ShellPromptStart
+            | TerminalEvent::ShellCommandStart
+            | TerminalEvent::ShellCommandExecuting
+            | TerminalEvent::ShellCommandFinished(_)
+    )
+}
+
+#[test]
+fn command_finish_reaches_the_view_and_is_not_replayed_on_reattach() {
+    let host = Host::new();
+    // The shell integrations print the finish and the next prompt in one
+    // write. Output before the view subscribes would only be replayed.
+    let (id, terminal) = shell_pane(
+        &host,
+        r#"stty -echo
+read start
+printf '\033]2;build\007\033]9;4;3;0\007\007\033]133;C\007\033]133;D;1\007\033]133;A\007'
+read go
+printf '\033]133;C\007\033]133;D;0\007\033]133;A\007'
+read finish
+"#,
+    );
+    terminal.write(b"start\n");
+    let events = events_until(&terminal, |event| {
+        matches!(event, TerminalEvent::ShellPromptStart)
+    });
+    let shell: Vec<_> = events
+        .iter()
+        .filter(|event| is_shell_event(event))
+        .collect();
+    assert!(
+        matches!(
+            shell.as_slice(),
+            [
+                TerminalEvent::ShellCommandExecuting,
+                TerminalEvent::ShellCommandFinished(Some(1)),
+                TerminalEvent::ShellPromptStart,
+            ]
+        ),
+        "{events:?}"
+    );
+    wait_until_quiet(&terminal);
+    drop(terminal);
+
+    // The replay restores the title, but not the finished command, the bell
+    // or the progress of the program that the prompt replaced.
+    let terminal = host.client.attach(&id, None).unwrap();
+    let replay = events_until(
+        &terminal,
+        |event| matches!(event, TerminalEvent::Title(title) if title == "build"),
+    );
+    wait_until_quiet(&terminal);
+    assert!(
+        !replay.iter().any(|event| is_shell_event(event)
+            || matches!(event, TerminalEvent::Bell | TerminalEvent::Progress(_))),
+        "{replay:?}"
+    );
+
+    terminal.write(b"go\n");
+    let events = events_until(&terminal, |event| {
+        matches!(event, TerminalEvent::ShellPromptStart)
+    });
+    let shell: Vec<_> = events
+        .iter()
+        .filter(|event| is_shell_event(event))
+        .collect();
+    assert!(
+        matches!(
+            shell.as_slice(),
+            [
+                TerminalEvent::ShellCommandExecuting,
+                TerminalEvent::ShellCommandFinished(Some(0)),
+                TerminalEvent::ShellPromptStart,
+            ]
+        ),
+        "{events:?}"
+    );
+    host.client.close(&id).unwrap();
+}
+
 #[test]
 fn layout_resizes_keep_the_live_cell_metrics() {
     use termy_core::session_model::*;

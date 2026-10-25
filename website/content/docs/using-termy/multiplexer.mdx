@@ -17,6 +17,8 @@ Quitting Termy or closing a window leaves its programs running in a background T
 
 Each terminal reconnects to its original running process. Its scrollback, scroll position, cursor, colors, alternate screen, input modes, links, and images remain in the background host. Programs can continue producing output while the app is closed. Configured scrollback limits still apply.
 
+Tab titles, working directories, progress bars, and [program status](/docs/using-termy/program-status) badges are restored too. Bells and commands that finished while Termy was closed are not reported again. When no command is running, a progress bar or a working status that has not changed for 30 minutes is treated as left over from a stopped program and is not restored. Statuses waiting for you are always restored.
+
 Closing a **tab**, **pane**, or **workspace** ends the sessions it contains. Exiting a shell also ends that shell normally. Closing the window with its window controls keeps its sessions available for reopening.
 
 Sessions last while the background host and your operating-system session are running. They do not survive logging out, rebooting, or terminating the host. This is live process persistence; named layouts remain reusable layouts that start new terminals.

@@ -871,6 +871,9 @@ impl TerminalView {
                             TerminalEvent::Progress(state) => {
                                 pane.progress_state = state;
                             }
+                            TerminalEvent::ShellPromptStart => {
+                                pane.clear_progress_at_prompt();
+                            }
                             TerminalEvent::WorkingDirectory(path) => {
                                 tab.last_prompt_cwd = Some(path);
                             }
@@ -1035,6 +1038,72 @@ impl TerminalView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui_kit::test]
+    fn prompt_start_clears_progress_in_visible_and_stashed_tabs(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            let window = cx
+                .open_window(gpui_kit::WindowOptions::default(), |window, cx| {
+                    cx.new(|cx| {
+                        let config = crate::config::AppConfig {
+                            tmux_enabled: false,
+                            native_tab_persistence: false,
+                            ..Default::default()
+                        };
+                        let mut view = TerminalView::new_for_window(window, cx, config, true);
+                        view.owns_persisted_session = false;
+                        view
+                    })
+                })
+                .unwrap();
+            window
+                .update(cx, |view, _, cx| {
+                    let size = TerminalSize::default();
+                    let tab = |view: &mut TerminalView| {
+                        let id = view.allocate_tab_id();
+                        let terminal = Terminal::new_test_display(size);
+                        TerminalView::create_native_tab(id, terminal, size.cols, size.rows, None)
+                    };
+                    // Test displays share one wakeup id: drain each tab on its own.
+                    let ready = || HashSet::from([0]);
+                    let progress = |tab: &TerminalTab| tab.panes[0].progress_state;
+
+                    let visible = tab(view);
+                    view.session.tabs = vec![visible];
+                    view.session.active_tab = 0;
+                    let terminal = view.session.tabs[0].panes[0].terminal();
+                    terminal.feed_test_output(b"\x1b]9;4;3;0\x07");
+                    view.process_native_terminal_events(cx, &mut ready());
+                    assert_eq!(
+                        progress(&view.session.tabs[0]),
+                        ProgressState::Indeterminate
+                    );
+                    let terminal = view.session.tabs[0].panes[0].terminal();
+                    terminal.feed_test_output(b"\x1b]133;A\x07");
+                    assert!(view.process_native_terminal_events(cx, &mut ready()));
+                    assert_eq!(progress(&view.session.tabs[0]), ProgressState::Clear);
+
+                    let stashed = tab(view);
+                    view.session.tabs.clear();
+                    let mut entry = WorkspaceEntry::new(99);
+                    entry.tabs.push(stashed);
+                    view.session.workspaces.push(entry);
+                    let mut clipboard = ClipboardTextCache::new(view.clipboard_read);
+                    let workspace = view.session.workspaces.len() - 1;
+                    let terminal = view.session.workspaces[workspace].tabs[0].panes[0].terminal();
+                    terminal.feed_test_output(b"\x1b]9;4;3;0\x07");
+                    view.drain_stashed_workspace_terminal_events(cx, &mut clipboard, &mut ready());
+                    let stashed =
+                        |view: &TerminalView| progress(&view.session.workspaces[workspace].tabs[0]);
+                    assert_eq!(stashed(view), ProgressState::Indeterminate);
+                    let terminal = view.session.workspaces[workspace].tabs[0].panes[0].terminal();
+                    terminal.feed_test_output(b"\x1b]133;A\x07");
+                    view.drain_stashed_workspace_terminal_events(cx, &mut clipboard, &mut ready());
+                    assert_eq!(stashed(view), ProgressState::Clear);
+                })
+                .unwrap();
+        });
+    }
 
     #[test]
     fn workspace_sidebar_width_clamps_to_configured_bounds() {

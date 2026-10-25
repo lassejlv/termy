@@ -8,14 +8,15 @@ use std::sync::Arc;
 // Version 2 adds the OSC 7501 snapshot event to the bincode event enum.
 // Version 3 adds TERM_PROGRAM identity to PaneLaunch's binary runtime config.
 // Version 4 requires mutual authentication, retires the legacy capability
-// fallbacks and freezes the shutdown handshake (see `Request`).
+// fallbacks and freezes the shutdown handshake (see `Request`). It also
+// sends a subscription's replayed state as `Update::Replay`.
 pub(crate) const VERSION: u32 = 4;
 const MAX_MESSAGE_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Hash of the encoding of every wire type, checked by the `wire_golden`
 /// test. When it changes, the wire changed: bump [`VERSION`] (unless the
 /// unreleased change already did) and update this value.
-pub(crate) const WIRE_FINGERPRINT: u64 = 0xd4e3_aba4_febf_8f2d;
+pub(crate) const WIRE_FINGERPRINT: u64 = 0x89c0_369a_3f59_fa83;
 
 /// Identifies the build that wrote `endpoint.json`. A client logs a warning
 /// when it differs from its own under the same [`VERSION`], which points at
@@ -140,6 +141,10 @@ pub(crate) enum Update {
         request: RemoteHostRequest,
     },
     GraphicsState(Arc<RemoteState>, graphics::GraphicsUpdate),
+    /// The pane's current state, sent once before any live [`Update::Events`]
+    /// of a new subscription. Replayed events describe the state at attach
+    /// time; they did not just happen.
+    Replay(Vec<TerminalEvent>),
 }
 
 const HOST_PROOF_LABEL: &[u8] = b"termy-multiplexer host proof v1";
@@ -200,30 +205,82 @@ pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
             == 0
 }
 
-/// Events whose latest value replaces earlier ones, so a reattaching client
-/// can be given the current title, directory, progress and status.
+/// Events whose latest value is the pane's current state, kept by the host
+/// so a reattaching client can be given the current title, directory and
+/// progress. The host also keeps the shell phase (key 3): while it is
+/// `ShellCommandExecuting`, progress and status are never expired as stale.
+/// The client does not pass replayed phases to the view. `ShellCommandFinished`
+/// is not state: replaying it would report a command that finished long ago
+/// (audit I18); it clears the kept phase instead. Program status snapshots are
+/// state too, but the pane keeps them per record.
 pub(crate) fn sticky_key(event: &TerminalEvent) -> Option<u8> {
+    match event {
+        TerminalEvent::ShellPromptStart
+        | TerminalEvent::ShellCommandStart
+        | TerminalEvent::ShellCommandExecuting => Some(3),
+        TerminalEvent::ProgramStatus(_) => None,
+        event => coalesce_key(event),
+    }
+}
+
+/// Events in a live queue that a newer event of the same kind replaces.
+/// OSC 133 events are not merged: each one is a step of the command
+/// lifecycle, and the shell integrations print `D` and `A` back to back.
+fn coalesce_key(event: &TerminalEvent) -> Option<u8> {
     match event {
         TerminalEvent::Title(_) | TerminalEvent::ResetTitle => Some(0),
         TerminalEvent::WorkingDirectory(_) => Some(1),
         TerminalEvent::Progress(_) => Some(2),
         TerminalEvent::ProgramStatus(_) => Some(4),
-        TerminalEvent::ShellPromptStart
-        | TerminalEvent::ShellCommandStart
-        | TerminalEvent::ShellCommandExecuting
-        | TerminalEvent::ShellCommandFinished(_) => Some(3),
         _ => None,
     }
 }
 
+fn is_shell_integration(event: &TerminalEvent) -> bool {
+    matches!(
+        event,
+        TerminalEvent::ShellPromptStart
+            | TerminalEvent::ShellCommandStart
+            | TerminalEvent::ShellCommandExecuting
+            | TerminalEvent::ShellCommandFinished(_)
+    )
+}
+
+/// OSC 133 events a queue keeps for a client that is not draining: 16 full
+/// prompt cycles. The oldest cycles are dropped first, so the latest commands
+/// still report their exit codes.
+const MAX_QUEUED_SHELL_EVENTS: usize = 64;
+
+/// Drops the oldest OSC 133 events of `queue` up to and including the first
+/// prompt start, so no queued `D` is left without the `C` that timed it.
+/// Without a prompt start, drops only the oldest one.
+fn evict_oldest_shell_cycle(queue: &mut Vec<TerminalEvent>) {
+    if queue
+        .iter()
+        .any(|event| matches!(event, TerminalEvent::ShellPromptStart))
+    {
+        let mut evicted = false;
+        queue.retain(|event| {
+            if evicted || !is_shell_integration(event) {
+                return true;
+            }
+            evicted = matches!(event, TerminalEvent::ShellPromptStart);
+            false
+        });
+    } else if let Some(oldest) = queue.iter().position(is_shell_integration) {
+        queue.remove(oldest);
+    }
+}
+
 /// Prepares `queue`, the undelivered events of a client that may not be
-/// draining, for `event`: a newer state replaces the queued one and only the
-/// latest clipboard store matters. Returns false when `event` repeats one
-/// that is already queued (a bell rings once until the client catches up).
-/// This keeps the queue bounded by the number of event kinds.
+/// draining, for `event`: a newer state replaces the queued one, only the
+/// latest clipboard store matters and only the latest OSC 133 events are
+/// kept. Returns false when `event` repeats one that is already queued (a
+/// bell rings once until the client catches up). This keeps the queue
+/// bounded by the number of event kinds plus [`MAX_QUEUED_SHELL_EVENTS`].
 pub(crate) fn coalesce_event(queue: &mut Vec<TerminalEvent>, event: &TerminalEvent) -> bool {
-    if let Some(key) = sticky_key(event) {
-        queue.retain(|old| sticky_key(old) != Some(key));
+    if let Some(key) = coalesce_key(event) {
+        queue.retain(|old| coalesce_key(old) != Some(key));
     }
     match event {
         TerminalEvent::Bell | TerminalEvent::InputDropped | TerminalEvent::Exit => !queue
@@ -231,6 +288,14 @@ pub(crate) fn coalesce_event(queue: &mut Vec<TerminalEvent>, event: &TerminalEve
             .any(|old| std::mem::discriminant(old) == std::mem::discriminant(event)),
         TerminalEvent::ClipboardStore(_) => {
             queue.retain(|old| !matches!(old, TerminalEvent::ClipboardStore(_)));
+            true
+        }
+        event if is_shell_integration(event) => {
+            if queue.iter().filter(|old| is_shell_integration(old)).count()
+                >= MAX_QUEUED_SHELL_EVENTS
+            {
+                evict_oldest_shell_cycle(queue);
+            }
             true
         }
         _ => true,
@@ -336,6 +401,102 @@ mod tests {
         assert_eq!(image.png_encoding_count(), 2);
         let decoded: RemoteReply = bincode::deserialize(&wire).unwrap();
         assert!(matches!(decoded, RemoteReply::Graphics(7, placements) if placements.len() == 10));
+    }
+
+    fn queue(events: impl IntoIterator<Item = TerminalEvent>) -> Vec<TerminalEvent> {
+        let mut queue = Vec::new();
+        for event in events {
+            if coalesce_event(&mut queue, &event) {
+                queue.push(event);
+            }
+        }
+        queue
+    }
+
+    #[test]
+    fn command_finish_and_next_prompt_in_one_write_both_stay_queued() {
+        // The bundled integrations print `133;D;1` and `133;A` back to back.
+        let queued = queue([
+            TerminalEvent::ShellCommandExecuting,
+            TerminalEvent::ShellCommandFinished(Some(1)),
+            TerminalEvent::ShellPromptStart,
+        ]);
+        assert!(
+            matches!(
+                queued.as_slice(),
+                [
+                    TerminalEvent::ShellCommandExecuting,
+                    TerminalEvent::ShellCommandFinished(Some(1)),
+                    TerminalEvent::ShellPromptStart,
+                ]
+            ),
+            "{queued:?}"
+        );
+    }
+
+    #[test]
+    fn prompt_floods_keep_the_latest_shell_events_and_other_state() {
+        let mut events = vec![TerminalEvent::Title("title".into()), TerminalEvent::Bell];
+        for code in 0..10_000 {
+            events.extend([
+                TerminalEvent::ShellPromptStart,
+                TerminalEvent::ShellCommandStart,
+                TerminalEvent::ShellCommandExecuting,
+                TerminalEvent::ShellCommandFinished(Some(code)),
+            ]);
+        }
+        let queued = queue(events);
+        assert!(queued.len() <= 2 + MAX_QUEUED_SHELL_EVENTS, "{queued:?}");
+        assert!(matches!(&queued[0], TerminalEvent::Title(title) if title == "title"));
+        assert!(matches!(queued[1], TerminalEvent::Bell));
+        assert!(matches!(
+            queued.last(),
+            Some(TerminalEvent::ShellCommandFinished(Some(9_999)))
+        ));
+    }
+
+    #[test]
+    fn eviction_drops_whole_command_cycles() {
+        // The integrations print `C` on submit, then `D` and `A` together.
+        let mut queued = Vec::new();
+        for code in 0..1_000 {
+            for event in [
+                TerminalEvent::ShellCommandExecuting,
+                TerminalEvent::ShellCommandFinished(Some(code)),
+                TerminalEvent::ShellPromptStart,
+            ] {
+                if coalesce_event(&mut queued, &event) {
+                    queued.push(event);
+                }
+                assert!(queued.len() <= MAX_QUEUED_SHELL_EVENTS);
+                // Every queued finish follows the start that timed it.
+                for (index, event) in queued.iter().enumerate() {
+                    if matches!(event, TerminalEvent::ShellCommandFinished(_)) {
+                        assert!(
+                            index > 0
+                                && matches!(
+                                    queued[index - 1],
+                                    TerminalEvent::ShellCommandExecuting
+                                ),
+                            "orphan finish in {queued:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // Without prompt starts, the oldest event goes first.
+        let queued = queue((0..100).map(|_| TerminalEvent::ShellCommandExecuting));
+        assert_eq!(queued.len(), MAX_QUEUED_SHELL_EVENTS);
+    }
+
+    #[test]
+    fn command_finish_is_not_sticky_but_the_shell_phase_is() {
+        assert_eq!(
+            sticky_key(&TerminalEvent::ShellCommandFinished(Some(0))),
+            None
+        );
+        assert_eq!(sticky_key(&TerminalEvent::ShellCommandExecuting), Some(3));
+        assert_eq!(coalesce_key(&TerminalEvent::ShellCommandExecuting), None);
     }
 
     #[test]
