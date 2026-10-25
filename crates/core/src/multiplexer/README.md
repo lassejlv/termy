@@ -16,9 +16,36 @@ Client and host prove knowledge of the `endpoint.json` token to each other
 (HMAC challenge-response) before any request, so a process that binds the
 port after a host crash neither learns the token nor receives input.
 
-Protocol version 3 includes `term_program` in the binary launch configuration.
-Clients reject older hosts before connecting. Use the matching Termy version
-to close an older host's sessions before starting a new host after upgrading.
+Protocol version 4 requires that challenge-response; the plaintext-token
+greeting and the capability fallbacks for older hosts are gone. Clients reject
+a host of another version before connecting, and `connect_or_start` never
+replaces one while it holds `host.lock`. `shutdown_host` (`termy mux shutdown`)
+still stops it: `escape.rs` encodes the handshake and shutdown frames by hand,
+and every version must keep their variant indices and shapes (see the wire rules
+on `protocol::Request`). `kill_host` (`termy mux shutdown --force`) signals the
+PID in `endpoint.json` for a host that no longer answers. Both check
+`host.lock` first: without a live host, `endpoint.json` is stale, so they
+remove it and report that no host is running. The desktop falls back to plain
+local terminals (not tmux) with a toast when the host cannot be used or does
+not answer within 8 s.
+
+The `wire_golden` test hashes a sample of every wire type and variant. When the
+hash changes, bump `VERSION` (unless the unreleased change already did) and
+update `WIRE_FINGERPRINT`. `endpoint.json` records the host's build ID; a client
+of the same `VERSION` but another build logs a warning. New `endpoint.json`
+fields must be `#[serde(default)]`, since `shutdown_host` reads older files.
+
+Hosts write `log` output and panics to `host.log` in the private directory,
+rotating it to `host.log.1` past 1 MiB. A message repeated more than 5 times a
+minute is counted instead of written, and a panic report is cut at 16 KiB.
+`connect_or_start` appends the host's stderr to the same file, and start-up
+errors quote its last lines.
+
+The pre-authentication handshake has one 5 s deadline in total, so a slow or
+trickling client loses its slot. At most 32 connections can be in the
+handshake; another one closes the oldest, so a client that reconnects as soon
+as it is dropped cannot lock out real clients, whose handshake takes
+milliseconds.
 
 ## Validation
 

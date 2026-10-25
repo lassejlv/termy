@@ -7,8 +7,25 @@ use std::sync::Arc;
 
 // Version 2 adds the OSC 7501 snapshot event to the bincode event enum.
 // Version 3 adds TERM_PROGRAM identity to PaneLaunch's binary runtime config.
-pub(crate) const VERSION: u32 = 3;
+// Version 4 requires mutual authentication, retires the legacy capability
+// fallbacks and freezes the shutdown handshake (see `Request`).
+pub(crate) const VERSION: u32 = 4;
 const MAX_MESSAGE_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Hash of the encoding of every wire type, checked by the `wire_golden`
+/// test. When it changes, the wire changed: bump [`VERSION`] (unless the
+/// unreleased change already did) and update this value.
+pub(crate) const WIRE_FINGERPRINT: u64 = 0xd4e3_aba4_febf_8f2d;
+
+/// Identifies the build that wrote `endpoint.json`. A client logs a warning
+/// when it differs from its own under the same [`VERSION`], which points at
+/// a wire change that missed a [`VERSION`] bump.
+pub(crate) fn build_id() -> String {
+    format!(
+        "termy_core {} wire {WIRE_FINGERPRINT:016x}",
+        env!("CARGO_PKG_VERSION")
+    )
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaneLaunch {
@@ -28,15 +45,29 @@ pub struct PaneInfo {
     pub exited: bool,
 }
 
+/// Wire rules for [`Request`], [`Response`], [`Update`] and the remote types
+/// they carry:
+///
+/// - Never reorder or remove a variant; add new ones at the end of the enum.
+///   A retired variant stays as a unit placeholder so later indices keep.
+/// - Frozen frames: any client must be able to shut down any host, of any
+///   [`VERSION`], with frames that `escape` encodes by hand (audit B1). These
+///   variants keep their index and field shape forever, as does the framing
+///   (4-byte little-endian length, then fixint bincode): `Request::Shutdown`
+///   (10), `Request::Authenticate` (14), `Request::Proof` (15), `Response::Ok`
+///   (0), `Response::Error` (5) and `Response::Challenge` (8). The test
+///   `frozen_frames_match_the_wire_enums` checks them byte for byte.
+/// - Any other wire change changes the `wire_golden` fingerprint; follow its
+///   failure message.
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Request {
-    Hello {
-        version: u32,
-        token: String,
-    },
+    /// Retired: the plaintext-token greeting of VERSION 1 and early VERSION 2
+    /// hosts. Only `escape` still sends it, and only to those hosts.
+    RetiredHello,
     Create(Box<PaneLaunch>),
     Attach(String),
-    Subscribe(String),
+    /// Retired: the subscription without the graphics stream.
+    RetiredSubscribe,
     Command {
         pane: String,
         command: RemoteCommand,
@@ -50,6 +81,7 @@ pub(crate) enum Request {
     Close(String),
     GetLayout,
     SetLayout(String),
+    /// Frozen (index 10).
     Shutdown,
     CompareAndSetLayout {
         expected: Option<String>,
@@ -57,46 +89,56 @@ pub(crate) enum Request {
     },
     SubscribeGraphics(String),
     /// Scroll or clear the viewport, publish the new frame immediately and
-    /// reply with its generation. Gated by `Endpoint::viewport_replies`.
+    /// reply with its generation.
     ViewportCommand {
         pane: String,
         command: RemoteCommand,
     },
-    /// Mutual authentication, gated by `Endpoint::mutual_auth`: the host must
-    /// answer with [`Response::Challenge`] proving it knows the token before
-    /// the client sends anything else. The token itself never crosses the wire.
+    /// Frozen (index 14). Mutual authentication: the host must answer with
+    /// [`Response::Challenge`] proving it knows the token before the client
+    /// sends anything else. The token itself never crosses the wire.
     Authenticate {
         version: u32,
         client_nonce: [u8; 32],
     },
-    /// The client's proof of the token, answering [`Response::Challenge`].
+    /// Frozen (index 15). The client's proof of the token, answering
+    /// [`Response::Challenge`].
     Proof([u8; 32]),
 }
 
+/// See [`Request`] for the wire rules and the frozen variants.
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Response {
+    /// Frozen (index 0).
     Ok,
     Attached(PaneInfo, Arc<RemoteState>),
     Reply(RemoteReply),
     Panes(Vec<PaneInfo>),
     Layout(Option<String>),
+    /// Frozen (index 5).
     Error(String),
     LayoutUpdated(bool),
     Viewport {
         changed: bool,
         generation: u64,
     },
+    /// Frozen (index 8).
     Challenge {
         server_nonce: [u8; 32],
         server_proof: [u8; 32],
     },
 }
 
+/// See [`Request`] for the wire rules.
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Update {
+    /// A pane's new state inside the host; clients receive `GraphicsState`.
     State(Arc<RemoteState>),
     Events(Vec<TerminalEvent>),
-    Host { id: u64, request: RemoteHostRequest },
+    Host {
+        id: u64,
+        request: RemoteHostRequest,
+    },
     GraphicsState(Arc<RemoteState>, graphics::GraphicsUpdate),
 }
 
@@ -220,8 +262,9 @@ pub(crate) fn write_message(
 }
 
 pub(crate) fn write_response(writer: &mut impl Write, response: &Response) -> anyhow::Result<()> {
-    // Bincode performs sizing and writing passes. Keep legacy PNG exports alive
-    // across both; the negotiated graphics stream sends raw image generations.
+    // Bincode performs sizing and writing passes. Keep the PNG exports of a
+    // `RemoteReply::Graphics` snapshot alive across both, so each image is
+    // encoded once; the graphics stream sends raw image generations instead.
     let _exports = match response {
         Response::Reply(RemoteReply::Graphics(_, placements)) => {
             Some(crate::remote::serde_image::retain_png_exports(placements))

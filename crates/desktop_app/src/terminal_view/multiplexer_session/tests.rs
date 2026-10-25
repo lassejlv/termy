@@ -14,11 +14,11 @@ fn multiplexer_is_off_by_default_and_config_changes_require_restart(cx: &mut Tes
     let mut config = AppConfig::default();
     assert!(!config.multiplexer_enabled);
     cx.update(|cx| {
-        crate::multiplexer::initialize(&config, cx).unwrap();
+        crate::multiplexer::initialize(&config, cx);
         assert!(!crate::multiplexer::enabled(cx));
         assert!(crate::multiplexer::claim_window(cx, true).is_none());
         config.multiplexer_enabled = true;
-        crate::multiplexer::initialize(&config, cx).unwrap();
+        crate::multiplexer::initialize(&config, cx);
         assert!(!crate::multiplexer::enabled(cx));
     });
 }

@@ -72,9 +72,6 @@ impl SessionClient {
     }
     pub fn close_saved_pane(&self, id: &str) -> anyhow::Result<()> {
         self.close(id)?;
-        if !self.supports_conditional_layout_updates() {
-            return Ok(());
-        }
         for _ in 0..8 {
             let expected = self.layout()?;
             let mut layout = decode(expected.as_deref())?;
@@ -144,10 +141,6 @@ impl SessionClient {
         expected: &StoredTab,
         mut launch: PaneLaunch,
     ) -> anyhow::Result<(String, Terminal)> {
-        ensure!(
-            self.supports_conditional_layout_updates(),
-            "This running host does not support split layout editing"
-        );
         let pane = expected
             .panes
             .iter()
@@ -252,20 +245,12 @@ impl SessionClient {
         Ok((new_id, terminal))
     }
     /// Create a live terminal and register its tab in the selected workspace.
-    /// Existing desktops keep their original create behavior on older hosts.
     pub fn create_tab(
         &self,
         launch: PaneLaunch,
         wakeup: Option<TerminalWakeupNotifier>,
         target: Option<WorkspaceTarget>,
     ) -> anyhow::Result<(String, Terminal)> {
-        if !self.supports_conditional_layout_updates() {
-            ensure!(
-                target.is_none(),
-                "This running host does not support workspace-targeted terminal creation"
-            );
-            return self.create(launch, wakeup);
-        }
         let size = launch.size;
         let initial = self.layout()?;
         let layout = decode(initial.as_deref())?;

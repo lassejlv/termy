@@ -7,21 +7,33 @@ use anyhow::{bail, ensure};
 use fs4::fs_std::FileExt;
 use rand_core::{OsRng, RngCore};
 use std::{
-    collections::HashMap,
-    io::Write,
-    net::{SocketAddr, TcpListener, TcpStream},
+    collections::{HashMap, VecDeque},
+    io::{Read, Write},
+    net::{Shutdown, SocketAddr, TcpListener, TcpStream},
     path::Path,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-/// Connections that have not authenticated yet. Each holds a thread for up to
-/// the 5 s greeting timeout; beyond this, new connections are dropped so a
-/// local flood cannot exhaust threads and take down every session.
+/// Connections that have not authenticated yet. Each holds a thread until it
+/// authenticates or its `HANDSHAKE_TIMEOUT` ends. Beyond this, the oldest
+/// pending connection is closed to make room: a local flood cannot exhaust
+/// threads, and since a real handshake finishes in milliseconds, a client
+/// that reconnects as soon as it is dropped cannot lock everyone else out.
 const MAX_UNAUTHENTICATED: usize = 32;
+/// The accept loop's pause after closing a pending connection. A client that
+/// reconnects whenever it is closed turns each eviction into the next one;
+/// the pause keeps that chain from cycling through every slot within a real
+/// client's handshake. Accepts stay in arrival order, so the real client is
+/// still admitted after at most a few pauses.
+const EVICTION_PAUSE: Duration = Duration::from_millis(1);
+/// The whole handshake must finish within this time, however the client
+/// paces its bytes.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 const MAX_ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
 
@@ -31,27 +43,101 @@ struct Server {
     token: String,
     address: SocketAddr,
     stopping: AtomicBool,
-    unauthenticated: AtomicUsize,
+    /// Connections still in the handshake, oldest first, each with a handle
+    /// that can close it.
+    pending: Mutex<VecDeque<(u64, TcpStream)>>,
+    next_pending: AtomicU64,
+    handshake_timeout: Duration,
+}
+
+impl Server {
+    fn new(token: String, address: SocketAddr, handshake_timeout: Duration) -> Self {
+        Self {
+            panes: Mutex::new(HashMap::new()),
+            layout: Mutex::new(None),
+            token,
+            address,
+            stopping: AtomicBool::new(false),
+            pending: Mutex::new(VecDeque::new()),
+            next_pending: AtomicU64::new(0),
+            handshake_timeout,
+        }
+    }
+}
+
+/// A stream whose reads and writes fail once `deadline` passes. A timeout per
+/// read is not enough: a client sending one byte every few seconds would
+/// keep its pre-authentication slot for as long as it likes.
+struct Handshake<'a> {
+    stream: &'a TcpStream,
+    deadline: Instant,
+}
+
+impl Handshake<'_> {
+    fn remaining(&self) -> std::io::Result<Duration> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "session handshake timed out",
+            ));
+        }
+        Ok(remaining)
+    }
+}
+
+impl Read for Handshake<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.stream.set_read_timeout(Some(self.remaining()?))?;
+        (&mut &*self.stream).read(buffer)
+    }
+}
+
+impl Write for Handshake<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        (&mut &*self.stream).write(bytes)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        (&mut &*self.stream).flush()
+    }
 }
 
 /// Counts a connection against `MAX_UNAUTHENTICATED` until it is dropped.
-struct PendingAuth(Arc<Server>);
+struct PendingAuth {
+    server: Arc<Server>,
+    id: u64,
+}
 
 impl PendingAuth {
-    fn acquire(server: &Arc<Server>) -> Option<Self> {
-        // Reserve first and give the slot back when over the cap, so a burst
-        // of accepts can never push the count past it.
-        if server.unauthenticated.fetch_add(1, Ordering::AcqRel) >= MAX_UNAUTHENTICATED {
-            server.unauthenticated.fetch_sub(1, Ordering::AcqRel);
-            return None;
+    /// Registers `stream`, closing the oldest pending connection when every
+    /// slot is taken. Also returns whether one was closed.
+    fn register(server: &Arc<Server>, stream: &TcpStream) -> std::io::Result<(Self, bool)> {
+        let handle = stream.try_clone()?;
+        let id = server.next_pending.fetch_add(1, Ordering::Relaxed);
+        let mut pending = server.pending.lock().unwrap();
+        let mut evicted = false;
+        while pending.len() >= MAX_UNAUTHENTICATED {
+            let Some((_, oldest)) = pending.pop_front() else {
+                break;
+            };
+            // Its thread's next read fails at once, and the thread exits.
+            let _ = oldest.shutdown(Shutdown::Both);
+            evicted = true;
         }
-        Some(Self(Arc::clone(server)))
+        pending.push_back((id, handle));
+        drop(pending);
+        let server = Arc::clone(server);
+        Ok((Self { server, id }, evicted))
     }
 }
 
 impl Drop for PendingAuth {
     fn drop(&mut self) {
-        self.0.unauthenticated.fetch_sub(1, Ordering::AcqRel);
+        let mut pending = self.server.pending.lock().unwrap();
+        if let Some(index) = pending.iter().position(|(id, _)| *id == self.id) {
+            pending.remove(index);
+        }
     }
 }
 
@@ -69,23 +155,26 @@ pub fn serve(root: &Path) -> anyhow::Result<()> {
     }
     discovery::prepare_root(root)?;
     let lock = discovery::private_file(&root.join("host.lock"))?;
-    ensure!(
-        lock.try_lock_exclusive()?,
-        "a session host is already running"
-    );
+    // Clients probe the lock by taking it for a moment; retry briefly so a
+    // probe is not mistaken for a running host.
+    let mut attempts = 0;
+    while !lock.try_lock_exclusive()? {
+        attempts += 1;
+        ensure!(attempts < 10, "a session host is already running");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let listener = TcpListener::bind(("127.0.0.1", 0))?;
     let address = listener.local_addr()?;
     let mut bytes = [0; 32];
     OsRng.fill_bytes(&mut bytes);
     let token: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
     let endpoint = Endpoint {
-        conditional_layout_updates: true,
-        mutual_auth: true,
-        graphics_stream: true,
-        viewport_replies: true,
         version: VERSION,
         port: address.port(),
         token: token.clone(),
+        mutual_auth: true,
+        build: build_id(),
+        pid: std::process::id(),
     };
     let path = root.join("endpoint.json");
     let temp = root.join("endpoint.tmp");
@@ -94,14 +183,7 @@ pub fn serve(root: &Path) -> anyhow::Result<()> {
     file.write_all(&serde_json::to_vec(&endpoint)?)?;
     file.sync_all()?;
     std::fs::rename(temp, &path)?;
-    let server = Arc::new(Server {
-        panes: Mutex::new(HashMap::new()),
-        layout: Mutex::new(None),
-        token,
-        address,
-        stopping: AtomicBool::new(false),
-        unauthenticated: AtomicUsize::new(0),
-    });
+    let server = Arc::new(Server::new(token, address, HANDSHAKE_TIMEOUT));
     accept_connections(&server, listener.incoming());
     let panes: Vec<Pane> = server
         .panes
@@ -142,9 +224,18 @@ fn accept_connections(
                 continue;
             }
         };
-        let Some(pending_auth) = PendingAuth::acquire(server) else {
-            log::warn!("too many unauthenticated session connections; dropping one");
-            continue;
+        let pending_auth = match PendingAuth::register(server, &stream) {
+            Ok((pending_auth, evicted)) => {
+                if evicted {
+                    log::warn!("too many unauthenticated session connections; closed the oldest");
+                    std::thread::sleep(EVICTION_PAUSE);
+                }
+                pending_auth
+            }
+            Err(error) => {
+                log::warn!("session host failed to track a connection: {error}");
+                continue;
+            }
         };
         let server = Arc::clone(server);
         let spawned = std::thread::Builder::new()
@@ -237,10 +328,10 @@ impl Server {
                 Response::LayoutUpdated(updated)
             }
             Request::Shutdown
-            | Request::Hello { .. }
+            | Request::RetiredHello
+            | Request::RetiredSubscribe
             | Request::Authenticate { .. }
             | Request::Proof(_)
-            | Request::Subscribe(_)
             | Request::SubscribeGraphics(_) => {
                 bail!("invalid session request")
             }
@@ -254,12 +345,15 @@ fn serve_client(
     pending_auth: PendingAuth,
 ) -> anyhow::Result<()> {
     stream.set_nodelay(true)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    authenticate(&mut stream, &server.token)?;
-    write_message(&mut stream, &Response::Ok)?;
+    let mut handshake = Handshake {
+        stream: &stream,
+        deadline: Instant::now() + server.handshake_timeout,
+    };
+    authenticate(&mut handshake, &server.token)?;
+    write_message(&mut handshake, &Response::Ok)?;
     drop(pending_auth);
     stream.set_read_timeout(None)?;
+    stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
     loop {
         let request = read_message(&mut stream)?;
         if matches!(request, Request::Shutdown) {
@@ -268,8 +362,7 @@ fn serve_client(
             let _ = TcpStream::connect(server.address);
             return Ok(());
         }
-        let graphics_stream = matches!(&request, Request::SubscribeGraphics(_));
-        if let Request::Subscribe(id) | Request::SubscribeGraphics(id) = request {
+        if let Request::SubscribeGraphics(id) = request {
             let subscription = server.pane(&id)?.subscribe()?;
             write_message(&mut stream, &Response::Ok)?;
             let mut reader = stream.try_clone()?;
@@ -277,13 +370,12 @@ fn serve_client(
             std::thread::Builder::new()
                 .name("termy-session-detach".into())
                 .spawn(move || {
-                    use std::io::Read;
                     let _ = reader.read(&mut [0u8]);
                     monitor.close();
                 })?;
             let mut graphics = crate::remote::graphics::GraphicsEncoder::default();
             while let Some(mut update) = subscription.next() {
-                if graphics_stream && let Update::State(state) = update {
+                if let Update::State(state) = update {
                     let images = graphics.encode(state.graphics.as_deref().unwrap_or_default());
                     update = Update::GraphicsState(state, images);
                 }
@@ -303,53 +395,71 @@ fn serve_client(
     }
 }
 
-fn authenticate(stream: &mut TcpStream, token: &str) -> anyhow::Result<()> {
-    match read_message_limited(stream, 4096)? {
-        Request::Authenticate {
-            version,
-            client_nonce,
-        } => {
-            ensure!(version == VERSION, "invalid session authentication");
-            let mut server_nonce = [0; 32];
-            OsRng.fill_bytes(&mut server_nonce);
-            write_message(
-                stream,
-                &Response::Challenge {
-                    server_nonce,
-                    server_proof: host_proof(token, &client_nonce, &server_nonce),
-                },
-            )?;
-            let Request::Proof(proof) = read_message_limited(stream, 4096)? else {
-                bail!("session authentication required");
-            };
-            ensure!(
-                constant_time_eq(&proof, &client_proof(token, &client_nonce, &server_nonce)),
-                "invalid session authentication"
-            );
-        }
-        // Clients from before mutual authentication send the token itself.
-        Request::Hello {
-            version,
-            token: candidate,
-        } => ensure!(
-            version == VERSION && constant_time_eq(candidate.as_bytes(), token.as_bytes()),
-            "invalid session authentication"
-        ),
-        _ => bail!("session authentication required"),
-    }
+/// The host side of `discovery::authenticate`. Its frames are frozen: any
+/// later client must still be able to stop this host (see `escape`).
+fn authenticate(stream: &mut (impl Read + Write), token: &str) -> anyhow::Result<()> {
+    let Request::Authenticate {
+        version,
+        client_nonce,
+    } = read_message_limited(stream, 4096)?
+    else {
+        bail!("session authentication required");
+    };
+    ensure!(version == VERSION, "invalid session authentication");
+    let mut server_nonce = [0; 32];
+    OsRng.fill_bytes(&mut server_nonce);
+    write_message(
+        stream,
+        &Response::Challenge {
+            server_nonce,
+            server_proof: host_proof(token, &client_nonce, &server_nonce),
+        },
+    )?;
+    let Request::Proof(proof) = read_message_limited(stream, 4096)? else {
+        bail!("session authentication required");
+    };
+    ensure!(
+        constant_time_eq(&proof, &client_proof(token, &client_nonce, &server_nonce)),
+        "invalid session authentication"
+    );
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
-    use std::time::Instant;
+
+    /// Runs the accept loop on a fresh listener; `stop` ends it.
+    fn start(
+        handshake_timeout: Duration,
+        failures: usize,
+    ) -> (Arc<Server>, SocketAddr, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = Arc::new(Server::new("token".into(), address, handshake_timeout));
+        let accept_server = Arc::clone(&server);
+        let host = std::thread::spawn(move || {
+            let failures =
+                (0..failures).map(|_| Err(std::io::Error::other("simulated accept failure")));
+            accept_connections(&accept_server, failures.chain(listener.incoming()));
+        });
+        (server, address, host)
+    }
+
+    fn stop(server: &Server, host: std::thread::JoinHandle<()>) {
+        server.stopping.store(true, Ordering::Release);
+        let _ = TcpStream::connect(server.address);
+        host.join().unwrap();
+    }
+
+    fn pending(server: &Server) -> usize {
+        server.pending.lock().unwrap().len()
+    }
 
     #[track_caller]
     fn wait_for_unauthenticated(server: &Server, count: usize) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        while server.unauthenticated.load(Ordering::Acquire) != count {
+        while pending(server) != count {
             assert!(
                 Instant::now() < deadline,
                 "expected {count} pending connections"
@@ -358,40 +468,59 @@ mod tests {
         }
     }
 
+    /// Whether the host closed `stream`. Windows reports a closed socket as
+    /// reset or aborted rather than as end of file.
+    fn closed_by_host(stream: &mut TcpStream) -> Result<(), String> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        match stream.read(&mut [0; 1]) {
+            Ok(0) => Ok(()),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                Ok(())
+            }
+            result => Err(format!("{result:?}")),
+        }
+    }
+
+    /// A real client's exchange. Like `discovery::open_stream` it disables
+    /// Nagle's algorithm, which would hold a frame's body for a delayed ACK.
+    fn list_panes(address: SocketAddr) -> anyhow::Result<()> {
+        let mut client = TcpStream::connect(address)?;
+        client.set_nodelay(true)?;
+        client.set_read_timeout(Some(Duration::from_secs(5)))?;
+        discovery::authenticate(&mut client, "token")?;
+        ensure!(matches!(
+            read_message_limited(&mut client, 4096)?,
+            Response::Ok
+        ));
+        write_message(&mut client, &Request::List)?;
+        ensure!(matches!(read_message(&mut client)?, Response::Panes(panes) if panes.is_empty()));
+        Ok(())
+    }
+
     #[test]
     fn accept_errors_and_unauthenticated_floods_do_not_stop_the_host() {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = Arc::new(Server {
-            panes: Mutex::new(HashMap::new()),
-            layout: Mutex::new(None),
-            token: "token".into(),
-            address,
-            stopping: AtomicBool::new(false),
-            unauthenticated: AtomicUsize::new(0),
-        });
-        let accept_server = Arc::clone(&server);
-        let host = std::thread::spawn(move || {
-            let failures = (0..3).map(|_| Err(std::io::Error::other("simulated accept failure")));
-            accept_connections(&accept_server, failures.chain(listener.incoming()));
-        });
+        let (server, address, host) = start(HANDSHAKE_TIMEOUT, 3);
 
-        // Silent connections fill every pre-authentication slot; one more is
-        // dropped instead of holding another thread.
-        let idle: Vec<_> = (0..MAX_UNAUTHENTICATED)
+        // Silent connections fill every pre-authentication slot; one more
+        // closes the oldest instead of holding another thread.
+        let mut idle: Vec<_> = (0..MAX_UNAUTHENTICATED)
             .map(|_| TcpStream::connect(address).unwrap())
             .collect();
         wait_for_unauthenticated(&server, MAX_UNAUTHENTICATED);
-        let mut extra = TcpStream::connect(address).unwrap();
-        extra
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        match extra.read(&mut [0; 1]) {
-            Ok(0) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
-            result => panic!("connection over the limit was kept: {result:?}"),
+        let extra = TcpStream::connect(address).unwrap();
+        if let Err(result) = closed_by_host(&mut idle[0]) {
+            panic!("the oldest pending connection was kept: {result}");
         }
+        wait_for_unauthenticated(&server, MAX_UNAUTHENTICATED);
         drop(idle);
+        drop(extra);
         wait_for_unauthenticated(&server, 0);
 
         // A wrong proof is rejected; the real client still gets in.
@@ -424,8 +553,99 @@ mod tests {
             matches!(read_message(&mut client).unwrap(), Response::Panes(panes) if panes.is_empty())
         );
 
-        server.stopping.store(true, Ordering::Release);
-        let _ = TcpStream::connect(address);
-        host.join().unwrap();
+        stop(&server, host);
+    }
+
+    /// Audit L2: an attacker that holds every pre-authentication slot and
+    /// reconnects each socket as soon as the host drops it cannot keep a
+    /// real client out.
+    #[test]
+    fn reconnecting_flood_cannot_lock_out_real_clients() {
+        let (server, address, host) = start(HANDSHAKE_TIMEOUT, 0);
+        let running = Arc::new(AtomicBool::new(true));
+        let attacker = {
+            let running = Arc::clone(&running);
+            std::thread::spawn(move || {
+                let open = || {
+                    let stream = TcpStream::connect(address).unwrap();
+                    stream.set_nonblocking(true).unwrap();
+                    stream
+                };
+                let mut sockets: Vec<_> = (0..MAX_UNAUTHENTICATED).map(|_| open()).collect();
+                let mut reconnects = 0;
+                while running.load(Ordering::Acquire) {
+                    for socket in &mut sockets {
+                        match socket.read(&mut [0; 1]) {
+                            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                            _ => {
+                                *socket = open();
+                                reconnects += 1;
+                            }
+                        }
+                    }
+                    std::thread::yield_now();
+                }
+                reconnects
+            })
+        };
+        wait_for_unauthenticated(&server, MAX_UNAUTHENTICATED);
+        for attempt in 0..5 {
+            if let Err(error) = list_panes(address) {
+                panic!("real client {attempt} was locked out: {error:#}");
+            }
+        }
+        running.store(false, Ordering::Release);
+        let reconnects = attacker.join().unwrap();
+        assert!(
+            reconnects >= 5,
+            "the attacker reconnected {reconnects} times"
+        );
+        assert!(pending(&server) <= MAX_UNAUTHENTICATED);
+        stop(&server, host);
+    }
+
+    /// Audit L2: a client that sends a byte now and then must still lose its
+    /// pre-authentication slot when the handshake deadline passes.
+    #[test]
+    fn trickling_client_is_dropped_at_the_handshake_deadline() {
+        let timeout = Duration::from_secs(1);
+        let (server, address, host) = start(timeout, 0);
+        let mut client = TcpStream::connect(address).unwrap();
+        let started = Instant::now();
+        wait_for_unauthenticated(&server, 1);
+        // An `Authenticate` frame is 44 bytes; send it far slower than the
+        // deadline allows, but well within any per-read timeout.
+        let frame = crate::multiplexer::escape::authenticate(VERSION, &[1; 32]);
+        for byte in &frame[..frame.len() - 1] {
+            if pending(&server) == 0 {
+                break;
+            }
+            if client.write_all(std::slice::from_ref(byte)).is_err() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        wait_for_unauthenticated(&server, 0);
+        let elapsed = started.elapsed();
+        assert!(elapsed >= timeout, "dropped early: {elapsed:?}");
+        assert!(elapsed < timeout * 3, "the slot was held for {elapsed:?}");
+        if let Err(result) = closed_by_host(&mut client) {
+            panic!("trickling client was not disconnected: {result}");
+        }
+        stop(&server, host);
+    }
+
+    /// Hosts no longer accept the plaintext-token greeting (audit I12).
+    #[test]
+    fn retired_plaintext_greeting_is_rejected() {
+        let (server, address, host) = start(HANDSHAKE_TIMEOUT, 0);
+        let mut client = TcpStream::connect(address).unwrap();
+        client
+            .write_all(&crate::multiplexer::escape::hello(VERSION, "token"))
+            .unwrap();
+        if let Err(result) = closed_by_host(&mut client) {
+            panic!("plaintext greeting was answered: {result}");
+        }
+        stop(&server, host);
     }
 }

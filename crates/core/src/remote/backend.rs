@@ -28,29 +28,6 @@ impl GraphicsCacheKey {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct LegacyGraphicsCache {
-    key: Option<GraphicsCacheKey>,
-    placements: Vec<KittyGraphicsRenderPlacement>,
-}
-
-impl LegacyGraphicsCache {
-    pub(crate) fn update(
-        &mut self,
-        state: &mut RemoteState,
-        fetch: impl FnOnce() -> anyhow::Result<(u64, Vec<KittyGraphicsRenderPlacement>)>,
-    ) -> anyhow::Result<()> {
-        let key = GraphicsCacheKey::of(state);
-        if self.key != Some(key) {
-            let (_, placements) = fetch()?;
-            self.placements = placements;
-            self.key = Some(key);
-        }
-        state.graphics = Some(self.placements.clone());
-        Ok(())
-    }
-}
-
 struct GraphicsCache {
     key: Option<GraphicsCacheKey>,
     snapshot: (u64, Vec<KittyGraphicsRenderPlacement>),

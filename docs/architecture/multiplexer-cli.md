@@ -65,9 +65,17 @@ Input is bounded to 1 MiB; terminal sizes to 1–400 columns and 1–200 rows.
 
 Workspace edits use conditional host writes. Independent edits preserve other
 windows; a stale workspace snapshot fails instead of overwriting another client.
-An older running host supports terminal commands but must be replaced after its
-sessions are closed before it can support layout edits. Commands do not restart
-an older host or kill its sessions automatically.
+
+A host started by a Termy version with another session protocol cannot serve
+this version's commands; they fail and name `termy mux shutdown`. Commands
+never restart such a host or kill its sessions automatically. `shutdown` is the
+exception that works with any host version: it authenticates with the frozen
+handshake frames every host understands, stops the host and ends all of its
+terminals. `shutdown --force` stops a host that no longer answers by signalling
+the process ID it recorded in `endpoint.json`. Without a live host (no process
+holds `host.lock`), commands report that no session host is running. The host
+writes its log, including start-up errors and panics, to `host.log` in the
+session directory (rotated to `host.log.1` past 1 MiB).
 
 ## Validation
 

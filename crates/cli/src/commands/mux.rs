@@ -104,7 +104,12 @@ enum Command {
         edit: WorkspaceCommand,
     },
     /// Stop the host and terminate every terminal it owns
-    Shutdown,
+    Shutdown {
+        /// Stop the host's process without asking it, for a host that no
+        /// longer answers (SIGTERM, then SIGKILL; on Windows, terminate it)
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -204,15 +209,29 @@ fn execute(args: Args) -> anyhow::Result<Value> {
     if let Command::Create { cols, rows, .. } | Command::Resize { cols, rows, .. } = &args.command {
         dimensions(*cols, *rows)?;
     }
+    if let Command::Shutdown { force } = args.command {
+        if force {
+            termy_core::multiplexer::kill_host(&root)?;
+        } else {
+            // Also stops a host left running by another Termy version.
+            termy_core::multiplexer::shutdown_host(&root)?;
+        }
+        return Ok(json!({"stopped":true}));
+    }
     let client = if matches!(args.command, Command::Start | Command::Create { .. }) {
         connect_or_start(&root, &std::env::current_exe()?)?
     } else {
-        SessionClient::connect(&root).context("cannot connect to the multiplexer; use mux start")?
+        SessionClient::connect(&root).map_err(|error| {
+            if termy_core::multiplexer::is_version_mismatch(&error) {
+                error
+            } else {
+                error.context("cannot connect to the multiplexer; use mux start")
+            }
+        })?
     };
     match args.command {
-        Command::Start => Ok(
-            json!({"session_dir":root,"conditional_layout_updates":client.supports_conditional_layout_updates()}),
-        ),
+        // Every host this client can reach supports conditional layout edits.
+        Command::Start => Ok(json!({"session_dir":root,"conditional_layout_updates":true})),
         Command::List => Ok(serde_json::to_value(client.list()?)?),
         Command::Create {
             cols,
@@ -477,9 +496,6 @@ fn execute(args: Args) -> anyhow::Result<Value> {
                 client.edit_workspace(&window, index, expected, &edit)?,
             )?)
         }
-        Command::Shutdown => {
-            client.shutdown()?;
-            Ok(json!({"stopped":true}))
-        }
+        Command::Shutdown { .. } => unreachable!("shutdown does not need a client"),
     }
 }

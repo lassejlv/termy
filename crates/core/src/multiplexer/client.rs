@@ -1,6 +1,6 @@
 use crate::multiplexer::{discovery, protocol::*};
 use crate::{remote::*, *};
-use anyhow::{Context, bail, ensure};
+use anyhow::{bail, ensure};
 use flume::Sender;
 use std::{
     net::{Shutdown, TcpStream},
@@ -20,25 +20,20 @@ struct Connection {
     root: PathBuf,
     /// `None` after a failed exchange; the next request reconnects.
     stream: Mutex<Option<TcpStream>>,
-    conditional_layout_updates: bool,
-    viewport_replies: bool,
 }
 
 impl Connection {
     fn connect(root: &Path) -> anyhow::Result<Self> {
-        let (stream, capabilities) = open_rpc_stream(root)?;
         Ok(Self {
             root: root.to_owned(),
-            stream: Mutex::new(Some(stream)),
-            conditional_layout_updates: capabilities.conditional_layout_updates,
-            viewport_replies: capabilities.viewport_replies,
+            stream: Mutex::new(Some(open_rpc_stream(root)?)),
         })
     }
     fn request(&self, request: Request) -> anyhow::Result<Response> {
         let mut slot = self.stream.lock().unwrap();
         let stream = match slot.as_mut() {
             Some(stream) => stream,
-            None => slot.insert(open_rpc_stream(&self.root)?.0),
+            None => slot.insert(open_rpc_stream(&self.root)?),
         };
         let response = match write_message(stream, &request).and_then(|()| read_message(stream)) {
             Ok(response) => response,
@@ -57,10 +52,10 @@ impl Connection {
     }
 }
 
-fn open_rpc_stream(root: &Path) -> anyhow::Result<(TcpStream, discovery::Endpoint)> {
-    let (stream, capabilities) = discovery::connect_with_capabilities(root)?;
+fn open_rpc_stream(root: &Path) -> anyhow::Result<TcpStream> {
+    let stream = discovery::connect(root)?;
     stream.set_read_timeout(Some(RESPONSE_TIMEOUT))?;
-    Ok((stream, capabilities))
+    Ok(stream)
 }
 
 #[derive(Clone)]
@@ -103,9 +98,6 @@ impl SessionClient {
             }
         }
         bail!("Session layout is changing; retry the edit")
-    }
-    pub fn supports_conditional_layout_updates(&self) -> bool {
-        self.connection.conditional_layout_updates
     }
     pub fn connect(root: &Path) -> anyhow::Result<Self> {
         Ok(Self {
@@ -151,13 +143,8 @@ impl SessionClient {
         validate_state(&state)?;
         let rpc = Connection::connect(&self.root)?;
         let input = Connection::connect(&self.root)?;
-        let (mut stream, capabilities) = discovery::connect_with_capabilities(&self.root)?;
-        let subscription = if capabilities.graphics_stream {
-            Request::SubscribeGraphics(id.to_owned())
-        } else {
-            Request::Subscribe(id.to_owned())
-        };
-        write_message(&mut stream, &subscription)?;
+        let mut stream = discovery::connect(&self.root)?;
+        write_message(&mut stream, &Request::SubscribeGraphics(id.to_owned()))?;
         ensure!(
             matches!(read_message(&mut stream)?, Response::Ok),
             "cannot subscribe to terminal session"
@@ -176,41 +163,15 @@ impl SessionClient {
             closing: AtomicBool::new(false),
         });
         let reader_shared = Arc::clone(&shared);
-        let legacy_graphics = if capabilities.graphics_stream {
-            None
-        } else {
-            Some(Connection::connect(&self.root)?)
-        };
-        let reader_pane_id = id.to_owned();
         std::thread::Builder::new()
             .name("termy-session-read".into())
             .spawn(move || {
                 let mut graphics = graphics::GraphicsDecoder::default();
-                let mut legacy_cache = LegacyGraphicsCache::default();
                 let result = (|| -> anyhow::Result<()> {
                     loop {
                         let mut tab_chrome = false;
                         match read_message(&mut stream)? {
-                            Update::State(mut state) => {
-                                validate_state(&state)?;
-                                let connection = legacy_graphics
-                                    .as_ref()
-                                    .context("unexpected legacy terminal update")?;
-                                legacy_cache.update(
-                                    Arc::make_mut(&mut state),
-                                    || match connection.request(Request::Command {
-                                        pane: reader_pane_id.clone(),
-                                        command: RemoteCommand::Graphics,
-                                    })? {
-                                        Response::Reply(RemoteReply::Graphics(
-                                            revision,
-                                            placements,
-                                        )) => Ok((revision, placements)),
-                                        _ => bail!("invalid terminal graphics response"),
-                                    },
-                                )?;
-                                reader_shared.publish_state(state);
-                            }
+                            Update::State(_) => bail!("unexpected terminal update"),
                             Update::GraphicsState(mut state, update) => {
                                 validate_state(&state)?;
                                 Arc::make_mut(&mut state).graphics = Some(graphics.decode(update)?);
@@ -327,19 +288,17 @@ impl SessionClient {
         expected: Option<String>,
         replacement: String,
     ) -> anyhow::Result<bool> {
-        ensure!(
-            self.supports_conditional_layout_updates(),
-            "This running multiplexer predates CLI layout editing; keep its terminals attached or restart it after closing its sessions to enable layout editing"
-        );
         match self.connection.request(Request::CompareAndSetLayout {
             expected,
             replacement,
         })? {
             Response::LayoutUpdated(updated) => Ok(updated),
-            _ => bail!("multiplexer host does not support conditional layout updates"),
+            _ => bail!("invalid session layout update response"),
         }
     }
     /// Explicitly terminate all hosted terminals and the background host.
+    /// [`crate::multiplexer::shutdown_host`] also stops a host of another
+    /// protocol version.
     pub fn shutdown(&self) -> anyhow::Result<()> {
         self.connection.request(Request::Shutdown)?;
         Ok(())
@@ -521,35 +480,14 @@ impl RemoteTransport for ClientTerminal {
                 | RemoteCommand::ScrollToBottom
                 | RemoteCommand::ClearScrollback
         );
-        if changes_viewport && self.rpc.viewport_replies {
+        if changes_viewport {
             return self.viewport_request(command);
         }
         match self.rpc.request(Request::Command {
             pane: self.id.clone(),
             command,
         }) {
-            Ok(Response::Reply(reply)) => {
-                if changes_viewport && matches!(reply, RemoteReply::Changed(true)) {
-                    // Attach refreshes/publishes immediately on every supported
-                    // host. Wait for that generation on the ordered subscription
-                    // (including its graphics), rather than letting selection
-                    // record the old offset during the 16ms frame interval.
-                    let result = (|| {
-                        let Response::Attached(_, state) =
-                            self.rpc.request(Request::Attach(self.id.clone()))?
-                        else {
-                            bail!("invalid terminal refresh response");
-                        };
-                        self.shared
-                            .wait_for_generation(state.render.metadata.generation)
-                    })();
-                    if let Err(error) = result {
-                        self.shared.fail(&error);
-                        return Err(error);
-                    }
-                }
-                Ok(reply)
-            }
+            Ok(Response::Reply(reply)) => Ok(reply),
             Ok(_) => bail!("invalid terminal response"),
             Err(error) => {
                 self.shared.fail(&error);
@@ -645,6 +583,17 @@ mod tests {
         let host = std::thread::spawn(move || {
             let accept = || {
                 let (mut stream, _) = listener.accept().unwrap();
+                let Request::Authenticate { client_nonce, .. } = read_message(&mut stream).unwrap()
+                else {
+                    panic!("expected authentication");
+                };
+                let server_nonce = [2; 32];
+                let server_proof = host_proof("token", &client_nonce, &server_nonce);
+                let challenge = Response::Challenge {
+                    server_nonce,
+                    server_proof,
+                };
+                write_message(&mut stream, &challenge).unwrap();
                 let _: Request = read_message(&mut stream).unwrap();
                 write_message(&mut stream, &Response::Ok).unwrap();
                 let _: Request = read_message(&mut stream).unwrap();

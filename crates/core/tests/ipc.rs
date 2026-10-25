@@ -65,31 +65,7 @@ fn wait_until_quiet(terminal: &Terminal) {
 
 #[test]
 fn scrolling_reply_updates_viewport_before_selection_reads() {
-    assert_scrolling_reply_updates_viewport(&[]);
-}
-
-#[test]
-fn legacy_scrolling_reply_updates_viewport_before_selection_reads() {
-    assert_scrolling_reply_updates_viewport(&["graphics_stream"]);
-}
-
-#[test]
-fn attach_scrolling_reply_updates_viewport_before_selection_reads() {
-    // Hosts without viewport replies still use the attach-and-wait fallback.
-    assert_scrolling_reply_updates_viewport(&["viewport_replies"]);
-}
-
-fn assert_scrolling_reply_updates_viewport(missing_capabilities: &[&str]) {
     let host = Host::new();
-    if !missing_capabilities.is_empty() {
-        let path = host.root.join("endpoint.json");
-        let mut endpoint: serde_json::Value =
-            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        for capability in missing_capabilities {
-            endpoint.as_object_mut().unwrap().remove(*capability);
-        }
-        fs::write(path, serde_json::to_vec(&endpoint).unwrap()).unwrap();
-    }
     let (id, terminal) = host.client.create(
         PaneLaunch {
             size: TerminalSize { cols: 40, rows: 6, ..TerminalSize::default() },
@@ -116,12 +92,9 @@ fn assert_scrolling_reply_updates_viewport(missing_capabilities: &[&str]) {
         assert!(terminal.scroll_to_bottom());
         assert_eq!(terminal.scroll_state().0, 0);
     }
-    eprintln!(
-        "20 acknowledged viewport changes (without {missing_capabilities:?}): {:?}",
-        started.elapsed()
-    );
+    eprintln!("20 acknowledged viewport changes: {:?}", started.elapsed());
     // Once output and scrolling stop, read-only RPCs must not keep publishing
-    // identical frames and waking the desktop (including legacy image reads).
+    // identical frames and waking the desktop.
     wait_until_quiet(&terminal);
     terminal.snapshot();
     terminal.search("line");
@@ -247,6 +220,68 @@ fn authentication_and_pre_authentication_message_limit() {
 }
 
 #[test]
+fn host_records_its_build_and_logs_to_its_private_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let host = Host::new();
+    let endpoint: serde_json::Value =
+        serde_json::from_slice(&fs::read(host.root.join("endpoint.json")).unwrap()).unwrap();
+    assert_eq!(endpoint["mutual_auth"], true);
+    assert!(
+        endpoint["build"]
+            .as_str()
+            .is_some_and(|build| build.contains("wire")),
+        "{endpoint}"
+    );
+    let log = host.root.join("host.log");
+    assert_eq!(
+        fs::metadata(&log).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    wait_until(|| fs::read_to_string(&log).is_ok_and(|text| text.contains("session host started")));
+}
+
+#[test]
+fn shutdown_host_stops_the_running_host() {
+    let host = Host::new();
+    termy_core::multiplexer::shutdown_host(&host.root).unwrap();
+    assert!(!host.root.join("endpoint.json").exists());
+    assert!(SessionClient::connect(&host.root).is_err());
+    assert!(termy_core::multiplexer::shutdown_host(&host.root).is_err());
+}
+
+/// Audit I9: a host that fails to start explains why.
+#[test]
+fn failed_host_start_reports_its_output() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("host");
+    let executable = temp.path().join("broken-host");
+    fs::write(
+        &executable,
+        "#!/bin/sh\necho \"cannot open the session directory: $2\" >&2\nexit 3\n",
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    // Another test's fork can briefly hold the script open for writing.
+    let message = (0..20)
+        .map(|attempt| {
+            std::thread::sleep(Duration::from_millis(50) * attempt);
+            match connect_or_start(&root, &executable) {
+                Ok(_) => panic!("the broken host must not start"),
+                Err(error) => format!("{error:#}"),
+            }
+        })
+        .find(|message| !message.contains("Text file busy"))
+        .unwrap();
+    assert!(message.contains("exited"), "{message}");
+    assert!(message.contains("host.log"), "{message}");
+    assert!(
+        message.contains("cannot open the session directory"),
+        "{message}"
+    );
+}
+
+#[test]
 fn conditional_layout_updates_reject_stale_and_concurrent_writers() {
     let host = Host::new();
     assert!(
@@ -295,29 +330,6 @@ fn conditional_layout_updates_reject_stale_and_concurrent_writers() {
         host.client.layout().unwrap().as_deref(),
         Some("legacy write")
     );
-}
-
-#[test]
-fn missing_layout_capability_does_not_disconnect_older_hosts() {
-    let host = Host::new();
-    let path = host.root.join("endpoint.json");
-    let mut endpoint: serde_json::Value =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    endpoint
-        .as_object_mut()
-        .unwrap()
-        .remove("conditional_layout_updates");
-    fs::write(&path, serde_json::to_vec(&endpoint).unwrap()).unwrap();
-    let client = SessionClient::connect(&host.root).unwrap();
-    assert!(!client.supports_conditional_layout_updates());
-    assert!(
-        client
-            .compare_and_set_layout(None, "unsupported".into())
-            .is_err()
-    );
-    assert!(client.list().unwrap().is_empty());
-    client.set_layout("legacy".into()).unwrap();
-    assert_eq!(client.layout().unwrap().as_deref(), Some("legacy"));
 }
 
 #[test]

@@ -21,6 +21,14 @@ Closing a **tab**, **pane**, or **workspace** ends the sessions it contains. Exi
 
 Sessions last while the background host and your operating-system session are running. They do not survive logging out, rebooting, or terminating the host. This is live process persistence; named layouts remain reusable layouts that start new terminals.
 
+## After upgrading Termy
+
+A background host started by an older Termy version can keep running after you upgrade. If the new version cannot use it, Termy opens with regular terminals and shows a notification instead. The new version cannot attach to the old sessions: you can still reach them with the previous Termy build. To stop them, run `termy mux shutdown`, which ends their processes, and then restart Termy.
+
+If the background host stops responding, `termy mux shutdown --force` stops its process and ends its terminals.
+
+If the background host fails to start, the notification names `host.log`, the host's log, in the `multiplexer` directory next to your config file (`%LOCALAPPDATA%\termy\multiplexer` on Windows).
+
 ## Change back to regular terminals
 
 Turn **Built-in Multiplexer** off and restart Termy. Existing background sessions remain available if you enable it again; close their tabs or panes first if you want to end them.

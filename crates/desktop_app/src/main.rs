@@ -363,7 +363,7 @@ pub(crate) fn open_terminal_window_with_placement(
     empty: bool,
     placement: TerminalWindowPlacement,
 ) -> Result<WindowHandle<TerminalView>, String> {
-    multiplexer::initialize(&startup_config, cx)?;
+    multiplexer::initialize(&startup_config, cx);
     let native_tabs = native_window_tabs_enabled(&startup_config);
     #[cfg(target_os = "macos")]
     if native_tabs {
@@ -766,15 +766,15 @@ fn main() {
         .first()
         .is_some_and(|arg| arg == "--multiplexer-host")
     {
-        env_logger::init();
+        // The host logs to `host.log`; its launcher also appends stderr there.
         let result = match cli_args.as_slice() {
-            [_, directory] => termy_core::multiplexer::serve(std::path::Path::new(directory)),
+            [_, directory] => termy_core::multiplexer::run_host(std::path::Path::new(directory)),
             _ => Err(anyhow::anyhow!(
                 "multiplexer host requires its private session directory"
             )),
         };
         if let Err(error) = result {
-            eprintln!("Termy session host: {error}");
+            eprintln!("Termy session host: {error:#}");
             std::process::exit(1);
         }
         return;

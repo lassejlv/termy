@@ -3030,11 +3030,11 @@ impl TerminalView {
         // windows start fresh and must not mirror its tmux session or overwrite
         // its native workspace snapshot when they close.
         let owns_persisted_session = !crate::app_actions::has_window::<Self>(cx);
-        if let Err(error) = crate::multiplexer::initialize(&config, cx) {
-            crate::StartupBlocker::MainWindowOpen(error).present_alert_and_exit();
-        }
+        // Falls back to regular terminals, with a toast, if the host fails.
+        crate::multiplexer::initialize(&config, cx);
         let multiplexer_enabled_config = config.multiplexer_enabled;
-        config.multiplexer_enabled = crate::multiplexer::enabled(cx);
+        // After a fallback this window uses plain local terminals, not tmux.
+        crate::multiplexer::effective_config(&mut config, cx);
         let (multiplexer, live_session) =
             crate::multiplexer::claim_window(cx, owns_persisted_session)
                 .map_or((None, None), |(window, session)| (Some(window), session));

@@ -181,9 +181,9 @@ fn main() {
         let result = std::env::args_os()
             .nth(2)
             .ok_or_else(|| anyhow::anyhow!("session directory required"))
-            .and_then(|root| termy_core::multiplexer::serve(std::path::Path::new(&root)));
+            .and_then(|root| termy_core::multiplexer::run_host(std::path::Path::new(&root)));
         if let Err(error) = result {
-            eprintln!("{error}");
+            eprintln!("session host failed: {error:#}");
             std::process::exit(1);
         }
         return;

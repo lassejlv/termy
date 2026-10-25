@@ -333,3 +333,125 @@ fn starting_a_host_releases_captured_output_while_host_stays_alive() {
     assert_eq!(ready["ok"], true);
     assert_eq!(host.ok(&["list"]), json!([]));
 }
+
+/// HMAC-SHA256 as an rc.8 (protocol 3) host computes its proofs.
+fn hmac(key: &[u8], message: &[&[u8]]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    block[..key.len()].copy_from_slice(key);
+    let mut inner = Sha256::new();
+    inner.update(block.map(|byte| byte ^ 0x36));
+    for part in message {
+        inner.update(part);
+    }
+    let mut outer = Sha256::new();
+    outer.update(block.map(|byte| byte ^ 0x5c));
+    outer.update(inner.finalize());
+    outer.finalize().into()
+}
+
+/// After an upgrade, `mux shutdown` must still stop the host the previous
+/// version left running (audit B1). The fake host speaks protocol 3 frames.
+#[test]
+fn shutdown_stops_a_host_of_an_older_protocol() {
+    use std::io::Write;
+    let host = Host(tempfile::tempdir().unwrap());
+    let root = host.0.path().join("sessions");
+    std::fs::create_dir(&root).unwrap();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let token = "rc8-token";
+    std::fs::write(
+        root.join("endpoint.json"),
+        json!({
+            "version": 3,
+            "port": listener.local_addr().unwrap().port(),
+            "token": token,
+            "conditional_layout_updates": true,
+            "graphics_stream": true,
+            "viewport_replies": true,
+            "mutual_auth": true,
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let lock = std::fs::File::create(root.join("host.lock")).unwrap();
+    lock.try_lock().unwrap();
+
+    let refused = host.call(&["list"]);
+    assert_eq!(refused.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(error.contains("termy mux shutdown"), "{error}");
+
+    fn read_frame(stream: &mut std::net::TcpStream, length: usize) -> Vec<u8> {
+        let mut frame = vec![0; length];
+        stream.read_exact(&mut frame).unwrap();
+        frame
+    }
+    let fake = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        // Authenticate { version: 3, client_nonce } is variant 14.
+        let greeting = read_frame(&mut stream, 44);
+        assert_eq!(greeting[..12], [40, 0, 0, 0, 14, 0, 0, 0, 3, 0, 0, 0]);
+        let client_nonce = greeting[12..].to_vec();
+        let server_nonce = [9u8; 32];
+        let host_proof = hmac(
+            token.as_bytes(),
+            &[
+                b"termy-multiplexer host proof v1",
+                &client_nonce,
+                &server_nonce,
+            ],
+        );
+        // Challenge is variant 8, Ok 0, Proof 15 and Shutdown 10.
+        let mut challenge = [68u32.to_le_bytes(), 8u32.to_le_bytes()].concat();
+        challenge.extend(server_nonce);
+        challenge.extend(host_proof);
+        let client_proof = hmac(
+            token.as_bytes(),
+            &[
+                b"termy-multiplexer client proof v1",
+                &server_nonce,
+                &client_nonce,
+            ],
+        );
+        let ok = [4, 0, 0, 0, 0, 0, 0, 0];
+        stream.write_all(&challenge).unwrap();
+        let proof = read_frame(&mut stream, 40);
+        assert_eq!(proof[..8], [36, 0, 0, 0, 15, 0, 0, 0]);
+        assert_eq!(proof[8..], client_proof);
+        stream.write_all(&ok).unwrap();
+        assert_eq!(read_frame(&mut stream, 8), [4, 0, 0, 0, 10, 0, 0, 0]);
+        stream.write_all(&ok).unwrap();
+        drop(lock);
+    });
+    assert_eq!(host.ok(&["shutdown"]), json!({"stopped": true}));
+    fake.join().unwrap();
+}
+
+/// `shutdown --force` stops the host process by its recorded PID, and later
+/// commands report that no host runs instead of using its leftover endpoint.
+#[test]
+fn forced_shutdown_stops_the_host_process() {
+    let host = Host(tempfile::tempdir().unwrap());
+    let root = host.0.path().join("sessions");
+    host.ok(&["start"]);
+    let endpoint: Value =
+        serde_json::from_slice(&std::fs::read(root.join("endpoint.json")).unwrap()).unwrap();
+    assert!(
+        endpoint["pid"].as_u64().is_some_and(|pid| pid > 0),
+        "{endpoint}"
+    );
+    host.ok(&["create"]);
+
+    assert_eq!(host.ok(&["shutdown", "--force"]), json!({"stopped": true}));
+    assert!(!root.join("endpoint.json").exists());
+    for args in [&["list"][..], &["shutdown"], &["shutdown", "--force"]] {
+        let output = host.call(args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("no session host is running"),
+            "{args:?}: {error}"
+        );
+    }
+}

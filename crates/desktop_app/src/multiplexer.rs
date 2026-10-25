@@ -6,12 +6,14 @@ use crate::{
 use gpui_kit::{App, Global};
 use std::{
     collections::{HashSet, VecDeque},
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
-use termy_core::multiplexer::{SessionClient, connect_or_start, default_root};
+use termy_core::multiplexer::{PaneInfo, SessionClient, connect_or_start, default_root};
 
 use termy_core::session_model::{StoredMultiplexer as SavedState, StoredWindow as SavedWindow};
 
@@ -31,25 +33,162 @@ struct Manager {
 struct AppSessions(Option<Arc<Manager>>);
 impl Global for AppSessions {}
 
-pub(crate) fn initialize(config: &AppConfig, cx: &mut App) -> Result<(), String> {
+/// Connects to the session host once per app run, starting it if needed. A
+/// failure never blocks launch: the app falls back to regular terminals and
+/// shows a toast that says why.
+pub(crate) fn initialize(config: &AppConfig, cx: &mut App) {
     if cx.try_global::<AppSessions>().is_some() {
-        return Ok(());
+        return;
     }
     if !config.multiplexer_enabled {
         cx.set_global(AppSessions(None));
-        return Ok(());
+        return;
     }
-    crate::config::ensure_config_file().map_err(|error| error.to_string())?;
-    // Shared with `termy mux`, so the CLI finds the host this window starts.
-    let root = default_root().ok_or("multiplexer directory is unavailable")?;
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let client = connect_or_start(&root, &executable)
-        .map_err(|error| format!("Cannot start the built-in multiplexer: {error}"))?;
-    install(client, cx)
+    let result = (|| {
+        crate::config::ensure_config_file().map_err(anyhow::Error::msg)?;
+        // Shared with `termy mux`, so the CLI finds the host this window starts.
+        let root = default_root().ok_or_else(|| anyhow::anyhow!("its directory is unavailable"))?;
+        Ok((root, std::env::current_exe()?))
+    })();
+    match result {
+        Ok((root, executable)) => start(&root, &executable, cx),
+        Err(error) => fall_back_to_local(&error, None, cx),
+    }
 }
 
-fn install(client: SessionClient, cx: &mut App) -> Result<(), String> {
-    let mut saved = match client.layout().map_err(|error| error.to_string())? {
+/// How long launch waits for the session host. Starting a new host takes up
+/// to about five seconds; a hung host would otherwise hold the first window
+/// for the sum of every request timeout.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// What start-up reads from the host before the first window opens.
+struct Connected {
+    client: SessionClient,
+    layout: Option<String>,
+    panes: Vec<PaneInfo>,
+}
+
+fn load(client: SessionClient) -> anyhow::Result<Connected> {
+    Ok(Connected {
+        layout: client.layout()?,
+        panes: client.list()?,
+        client,
+    })
+}
+
+fn start(root: &Path, executable: &Path, cx: &mut App) {
+    let (root, executable) = (root.to_owned(), executable.to_owned());
+    let log = root.join("host.log");
+    start_within(
+        STARTUP_TIMEOUT,
+        move || connect_or_start(&root, &executable).and_then(load),
+        &log,
+        cx,
+    );
+}
+
+/// Runs `connect` on a thread and gives up on it after `timeout`; the thread
+/// then finishes, or keeps waiting on a hung host, on its own.
+fn start_within(
+    timeout: Duration,
+    connect: impl FnOnce() -> anyhow::Result<Connected> + Send + 'static,
+    log: &Path,
+    cx: &mut App,
+) {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("termy-multiplexer-start".into())
+        .spawn(move || {
+            let _ = sender.send(connect());
+        });
+    let result = match spawned {
+        Ok(_) => match receiver.recv_timeout(timeout) {
+            Ok(result) => result,
+            Err(_) => Err(anyhow::Error::new(StartupTimedOut(timeout))),
+        },
+        Err(error) => Err(anyhow::Error::new(error).context("start the multiplexer thread")),
+    };
+    let result = result.and_then(|connected| install(connected, cx).map_err(anyhow::Error::msg));
+    if let Err(error) = result {
+        fall_back_to_local(&error, Some(log), cx);
+    }
+}
+
+#[derive(Debug)]
+struct StartupTimedOut(Duration);
+
+impl std::fmt::Display for StartupTimedOut {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            formatter,
+            "the session host did not respond within {} s",
+            self.0.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for StartupTimedOut {}
+
+/// Records why, and leaves this run on regular terminals. Callers that read
+/// `tmux_enabled` must apply [`effective_config`], so the fallback never
+/// starts tmux in place of the multiplexer.
+fn fall_back_to_local(error: &anyhow::Error, log: Option<&Path>, cx: &mut App) {
+    log::error!("Cannot start the built-in multiplexer: {error:#}");
+    cx.set_global(AppSessions(None));
+    cx.set_global(FellBackToLocal);
+    let log = log.filter(|log| log.exists());
+    crate::ui::toast::enqueue_toast(
+        crate::ui::toast::ToastKind::Error,
+        startup_failure_message(error, log),
+        Some(Duration::from_secs(20)),
+    );
+}
+
+/// A short toast: the first line of the error, and where the details are.
+/// The whole error, with the host's last log lines, goes to the app log.
+fn startup_failure_message(error: &anyhow::Error, log: Option<&Path>) -> String {
+    const STOP: &str = "Run `termy mux shutdown` to stop it (this ends its terminals), then restart Termy. Using regular terminals for now.";
+    if termy_core::multiplexer::is_version_mismatch(error) {
+        return format!(
+            "Built-in multiplexer unavailable: a session host from another Termy version is still running. {STOP}"
+        );
+    }
+    if error.chain().any(|cause| cause.is::<StartupTimedOut>()) {
+        return "Built-in multiplexer unavailable: the session host did not respond. If it is hung, `termy mux shutdown --force` stops it (this ends its terminals). Using regular terminals for now.".into();
+    }
+    let full = format!("{error:#}");
+    let first_line = full.lines().next().unwrap_or_default();
+    let mut message =
+        format!("Built-in multiplexer unavailable, using regular terminals: {first_line}");
+    if let Some(log) = log {
+        message.push_str(&format!(" (see {})", log.display()));
+    }
+    message
+}
+
+/// The configuration this run actually uses. When the multiplexer was
+/// configured but could not start, the run falls back to plain local
+/// terminals: neither the multiplexer nor tmux, whatever `tmux_enabled` says,
+/// so it matches the startup keybindings and the fallback toast.
+pub(crate) fn effective_config(config: &mut AppConfig, cx: &App) {
+    // The host started at launch, or not, applies until restart.
+    config.multiplexer_enabled = enabled(cx);
+    if cx.try_global::<FellBackToLocal>().is_some() {
+        config.tmux_enabled = false;
+    }
+}
+
+/// Set when the configured multiplexer could not start.
+struct FellBackToLocal;
+impl Global for FellBackToLocal {}
+
+fn install(connected: Connected, cx: &mut App) -> Result<(), String> {
+    let Connected {
+        client,
+        layout,
+        panes,
+    } = connected;
+    let mut saved = match layout {
         Some(json) => serde_json::from_str::<SavedState>(&json)
             .map_err(|error| format!("Cannot restore multiplexer layout: {error}"))?,
         None => SavedState {
@@ -65,7 +204,6 @@ fn install(client: SessionClient, cx: &mut App) -> Result<(), String> {
         .iter()
         .map(|window| window.id.clone())
         .collect();
-    let panes = client.list().map_err(|error| error.to_string())?;
     reconcile(&mut saved, &panes);
     let pending = saved
         .windows
@@ -175,88 +313,68 @@ impl WindowSession {
             .iter()
             .find(|window| window.id == self.id)
             .map(|window| window.session.clone());
-        if self.manager.client.supports_conditional_layout_updates() {
-            let mut published = false;
-            for _ in 0..8 {
-                let expected = self
-                    .manager
-                    .client
-                    .layout()
-                    .map_err(|error| error.to_string())?;
-                let mut remote = match &expected {
-                    Some(json) => serde_json::from_str::<SavedState>(json)
-                        .map_err(|error| error.to_string())?,
-                    None => SavedState {
-                        version: 1,
-                        windows: Vec::new(),
-                    },
-                };
-                if remote.version != 1 {
-                    return Err("Unsupported multiplexer layout version".into());
+        let mut published = false;
+        for _ in 0..8 {
+            let expected = self
+                .manager
+                .client
+                .layout()
+                .map_err(|error| error.to_string())?;
+            let mut remote = match &expected {
+                Some(json) => {
+                    serde_json::from_str::<SavedState>(json).map_err(|error| error.to_string())?
                 }
-                if let Some(window) = remote
-                    .windows
-                    .iter_mut()
-                    .find(|window| window.id == self.id)
-                {
-                    window.session = match &previous {
-                        Some(base) => termy_core::session_model::merge_session(
-                            base,
-                            &session,
-                            &window.session,
-                        )
-                        .map_err(str::to_owned)?,
-                        None if window.session == session => session.clone(),
-                        None => return Err("This window was created by another client".into()),
-                    };
-                } else {
-                    if self
-                        .manager
-                        .state
-                        .lock()
-                        .unwrap()
-                        .published_windows
-                        .contains(&self.id)
-                        && expected.is_some()
-                    {
-                        return Err("This window was removed by another client".into());
+                None => SavedState {
+                    version: 1,
+                    windows: Vec::new(),
+                },
+            };
+            if remote.version != 1 {
+                return Err("Unsupported multiplexer layout version".into());
+            }
+            if let Some(window) = remote
+                .windows
+                .iter_mut()
+                .find(|window| window.id == self.id)
+            {
+                window.session = match &previous {
+                    Some(base) => {
+                        termy_core::session_model::merge_session(base, &session, &window.session)
+                            .map_err(str::to_owned)?
                     }
-                    remote.windows.push(SavedWindow {
-                        id: self.id.clone(),
-                        session: session.clone(),
-                    });
-                }
-                let replacement =
-                    serde_json::to_string(&remote).map_err(|error| error.to_string())?;
+                    None if window.session == session => session.clone(),
+                    None => return Err("This window was created by another client".into()),
+                };
+            } else {
                 if self
                     .manager
-                    .client
-                    .compare_and_set_layout(expected, replacement)
-                    .map_err(|error| error.to_string())?
+                    .state
+                    .lock()
+                    .unwrap()
+                    .published_windows
+                    .contains(&self.id)
+                    && expected.is_some()
                 {
-                    published = true;
-                    break;
+                    return Err("This window was removed by another client".into());
                 }
-            }
-            if !published {
-                return Err("The session layout is changing; try saving again".into());
-            }
-        } else {
-            // Older hosts cannot accept CLI layout edits. Keep their
-            // original save protocol without interrupting live terminals.
-            let mut saved = self.manager.state.lock().unwrap().saved.clone();
-            if let Some(window) = saved.windows.iter_mut().find(|window| window.id == self.id) {
-                window.session = session.clone();
-            } else {
-                saved.windows.push(SavedWindow {
+                remote.windows.push(SavedWindow {
                     id: self.id.clone(),
                     session: session.clone(),
                 });
             }
-            self.manager
+            let replacement = serde_json::to_string(&remote).map_err(|error| error.to_string())?;
+            if self
+                .manager
                 .client
-                .set_layout(serde_json::to_string(&saved).map_err(|error| error.to_string())?)
-                .map_err(|error| error.to_string())?;
+                .compare_and_set_layout(expected, replacement)
+                .map_err(|error| error.to_string())?
+            {
+                published = true;
+                break;
+            }
+        }
+        if !published {
+            return Err("The session layout is changing; try saving again".into());
         }
         // Retain what this view actually knows, not the merged remote state.
         // Otherwise its next unchanged save would undo remote-only edits.
@@ -424,5 +542,151 @@ fn reconcile(saved: &mut SavedState, live: &[termy_core::multiplexer::PaneInfo])
 
 #[cfg(all(test, unix))]
 pub(crate) fn install_for_test(client: SessionClient, cx: &mut App) -> Result<(), String> {
-    install(client, cx)
+    install(load(client).map_err(|error| error.to_string())?, cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_failure_toast_says_how_to_stop_an_old_host() {
+        let mismatch = termy_core::multiplexer::VersionMismatch { running: 3 }.into();
+        let message = startup_failure_message(&mismatch, None);
+        assert!(message.contains("termy mux shutdown"), "{message}");
+        assert!(message.contains("regular terminals"), "{message}");
+        let message = startup_failure_message(&anyhow::anyhow!("layout is corrupt"), None);
+        assert!(message.contains("layout is corrupt"), "{message}");
+        assert!(message.contains("regular terminals"), "{message}");
+        let timeout = anyhow::Error::new(StartupTimedOut(STARTUP_TIMEOUT));
+        let message = startup_failure_message(&timeout, None);
+        assert!(message.contains("termy mux shutdown --force"), "{message}");
+    }
+
+    /// Finding 9: the host's log lines go to the app log, not the toast.
+    #[test]
+    fn startup_failure_toast_shows_one_line_and_the_log_path() {
+        let error = anyhow::anyhow!(
+            "background terminal host exited: exit status: 3\nLast lines of host.log:\nfirst\nsecond"
+        );
+        let log = Path::new("/sessions/host.log");
+        let message = startup_failure_message(&error, Some(log));
+        assert!(message.contains("exit status: 3"), "{message}");
+        assert!(message.contains("see /sessions/host.log"), "{message}");
+        assert!(!message.contains('\n'), "{message}");
+        assert!(!message.contains("second"), "{message}");
+    }
+
+    #[cfg(unix)]
+    fn private_root(temp: &tempfile::TempDir) -> std::path::PathBuf {
+        use std::os::unix::fs::DirBuilderExt;
+        let root = temp.path().join("host");
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap();
+        root
+    }
+
+    fn multiplexer_and_tmux_config() -> AppConfig {
+        AppConfig {
+            multiplexer_enabled: true,
+            tmux_enabled: true,
+            ..AppConfig::default()
+        }
+    }
+
+    /// Audit B1: a host that is running but cannot be used (here, one of an
+    /// older protocol) must not stop the app from launching. Finding 3: the
+    /// fallback uses plain local terminals, not tmux.
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn unusable_host_falls_back_to_local_terminals(cx: &mut gpui_kit::TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = private_root(&temp);
+        std::fs::write(
+            root.join("endpoint.json"),
+            r#"{"version":3,"port":1,"token":"old","mutual_auth":true}"#,
+        )
+        .unwrap();
+        let lock = std::fs::File::create(root.join("host.lock")).unwrap();
+        lock.try_lock().unwrap();
+        cx.update(|cx| {
+            start(&root, Path::new("/nonexistent/termy"), cx);
+            assert!(!enabled(cx));
+            assert!(claim_window(cx, true).is_none());
+            let mut config = multiplexer_and_tmux_config();
+            effective_config(&mut config, cx);
+            assert!(!config.multiplexer_enabled);
+            assert!(!config.tmux_enabled);
+            assert!(!crate::terminal_view::tmux_runtime_requested(&config));
+        });
+    }
+
+    /// Without a fallback, `tmux_enabled` is left alone.
+    #[gpui_kit::test]
+    fn disabled_multiplexer_keeps_the_tmux_setting(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            let mut config = AppConfig {
+                multiplexer_enabled: false,
+                tmux_enabled: true,
+                ..AppConfig::default()
+            };
+            initialize(&config, cx);
+            effective_config(&mut config, cx);
+            assert!(config.tmux_enabled);
+        });
+    }
+
+    /// A layout the app cannot parse falls back instead of failing launch.
+    #[cfg(unix)]
+    #[gpui_kit::test]
+    fn unparsable_layout_falls_back_to_local_terminals(cx: &mut gpui_kit::TestAppContext) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = private_root(&temp);
+        let host = {
+            let root = root.clone();
+            std::thread::spawn(move || termy_core::multiplexer::serve(&root))
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let client = loop {
+            match SessionClient::connect(&root) {
+                Ok(client) => break client,
+                Err(error) => {
+                    assert!(std::time::Instant::now() < deadline, "{error:#}");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        };
+        client.set_layout("{ not a layout".into()).unwrap();
+        cx.update(|cx| {
+            start(&root, Path::new("/nonexistent/termy"), cx);
+            assert!(!enabled(cx));
+            let mut config = multiplexer_and_tmux_config();
+            effective_config(&mut config, cx);
+            assert!(!config.tmux_enabled);
+        });
+        termy_core::multiplexer::shutdown_host(&root).unwrap();
+        host.join().unwrap().unwrap();
+    }
+
+    /// Finding 4: a host that never answers holds launch for at most the
+    /// start-up timeout.
+    #[gpui_kit::test]
+    fn hung_host_falls_back_within_the_startup_timeout(cx: &mut gpui_kit::TestAppContext) {
+        let started = std::time::Instant::now();
+        cx.update(|cx| {
+            start_within(
+                Duration::from_millis(200),
+                || {
+                    std::thread::sleep(Duration::from_secs(30));
+                    anyhow::bail!("unreachable")
+                },
+                Path::new("/nonexistent/host.log"),
+                cx,
+            );
+            assert!(!enabled(cx));
+        });
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 }

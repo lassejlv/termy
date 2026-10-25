@@ -7,7 +7,7 @@ pub(crate) mod serde_image;
 pub(crate) mod serde_palette;
 
 use crate::*;
-pub(crate) use backend::{LegacyGraphicsCache, RemoteBackend};
+pub(crate) use backend::RemoteBackend;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -25,8 +25,8 @@ pub struct RemoteState {
     pub graphics_revision: u64,
     #[serde(with = "serde_deadline")]
     pub graphics_deadline: Option<std::time::Instant>,
-    /// Local snapshot supplied by the negotiated graphics stream. Skipped in
-    /// the legacy state format so existing sessions remain attachable.
+    /// Local snapshot that a client rebuilds from the graphics stream
+    /// (`Update::GraphicsState`). Never encoded with the state itself.
     #[serde(skip)]
     pub graphics: Option<Vec<KittyGraphicsRenderPlacement>>,
 }
