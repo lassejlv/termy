@@ -28,6 +28,9 @@ struct Manager {
     client: SessionClient,
     state: Mutex<State>,
     write_gate: Mutex<()>,
+    /// Set once this app run has marked the SQLite session store as imported
+    /// into the host (see `TerminalView::record_multiplexer_import`).
+    import_recorded: AtomicBool,
 }
 
 struct AppSessions(Option<Arc<Manager>>);
@@ -219,6 +222,7 @@ fn install(connected: Connected, cx: &mut App) -> Result<(), String> {
             published_windows,
         }),
         write_gate: Mutex::new(()),
+        import_recorded: AtomicBool::new(false),
     }))));
     Ok(())
 }
@@ -232,6 +236,70 @@ pub(crate) fn pending_windows(cx: &App) -> usize {
     cx.try_global::<AppSessions>()
         .and_then(|app| app.0.as_ref())
         .map_or(0, |manager| manager.state.lock().unwrap().pending.len())
+}
+
+/// Saved windows that no open window shows and that still have a running
+/// terminal in the host: a window closed while others stayed open, or one
+/// not reopened yet. A window whose terminals all ended or exited is left
+/// out, so reopening never brings back (and then saves over) a dead window.
+fn detached_window_ids(state: &State, live: &[PaneInfo]) -> Vec<String> {
+    let running: HashSet<&str> = live
+        .iter()
+        .filter(|pane| !pane.exited)
+        .map(|pane| pane.id.as_str())
+        .collect();
+    state
+        .saved
+        .windows
+        .iter()
+        .filter(|window| !state.claimed.contains(&window.id))
+        .filter(|window| session_ids(&window.session).any(|id| running.contains(id)))
+        .map(|window| window.id.clone())
+        .collect()
+}
+
+fn manager(cx: &App) -> Option<&Arc<Manager>> {
+    cx.try_global::<AppSessions>()
+        .and_then(|app| app.0.as_ref())
+}
+
+pub(crate) fn detached_windows(cx: &App) -> usize {
+    let Some(manager) = manager(cx) else {
+        return 0;
+    };
+    let Ok(live) = manager.client.list() else {
+        return 0;
+    };
+    detached_window_ids(&manager.state.lock().unwrap(), &live).len()
+}
+
+/// Queue a detached window so the next window opened claims it instead of
+/// starting empty. Returns `false` when there is nothing to reopen.
+pub(crate) fn queue_detached_window(cx: &App) -> bool {
+    let Some(manager) = manager(cx) else {
+        return false;
+    };
+    let Ok(live) = manager.client.list() else {
+        return false;
+    };
+    let mut state = manager.state.lock().unwrap();
+    let Some(id) = detached_window_ids(&state, &live).into_iter().next() else {
+        return false;
+    };
+    // Panes that ended since the window was saved cannot be reattached.
+    let live_ids: HashSet<&str> = live.iter().map(|pane| pane.id.as_str()).collect();
+    if let Some(window) = state
+        .saved
+        .windows
+        .iter_mut()
+        .find(|window| window.id == id)
+    {
+        prune_session(&mut window.session, &live_ids);
+    }
+    if !state.pending.contains(&id) {
+        state.pending.push_front(id);
+    }
+    true
 }
 
 pub(crate) struct WindowSession {
@@ -286,6 +354,14 @@ impl WindowSession {
         &self.manager.client
     }
 
+    pub(crate) fn import_recorded(&self) -> bool {
+        self.manager.import_recorded.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_import_recorded(&self) {
+        self.manager.import_recorded.store(true, Ordering::Release);
+    }
+
     pub(crate) fn is_released(&self) -> bool {
         self.released.load(Ordering::Acquire)
     }
@@ -294,6 +370,50 @@ impl WindowSession {
         if !self.released.swap(true, Ordering::AcqRel) {
             self.manager.state.lock().unwrap().claimed.remove(&self.id);
         }
+    }
+
+    /// Release this window and remove it from the host layout, for a window
+    /// closed with "Terminate": its terminals end, so there is nothing left
+    /// to reopen. A layout that keeps changing is left for the next start's
+    /// reconcile, which drops windows whose terminals are gone.
+    pub(crate) fn forget(&self) -> Result<(), String> {
+        let _gate = self.manager.write_gate.lock().unwrap();
+        if self.released.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        {
+            let mut state = self.manager.state.lock().unwrap();
+            state.claimed.remove(&self.id);
+            state.pending.retain(|id| id != &self.id);
+            state.saved.windows.retain(|window| window.id != self.id);
+        }
+        for _ in 0..8 {
+            let expected = self
+                .manager
+                .client
+                .layout()
+                .map_err(|error| error.to_string())?;
+            let Some(json) = &expected else {
+                return Ok(());
+            };
+            let mut remote =
+                serde_json::from_str::<SavedState>(json).map_err(|error| error.to_string())?;
+            let before = remote.windows.len();
+            remote.windows.retain(|window| window.id != self.id);
+            if remote.windows.len() == before {
+                return Ok(());
+            }
+            let replacement = serde_json::to_string(&remote).map_err(|error| error.to_string())?;
+            if self
+                .manager
+                .client
+                .compare_and_set_layout(expected, replacement)
+                .map_err(|error| error.to_string())?
+            {
+                return Ok(());
+            }
+        }
+        Err("The session layout is changing".into())
     }
 
     pub(crate) fn save(&self, session: StoredSession) -> Result<(), String> {
@@ -453,36 +573,39 @@ fn session_ids(session: &StoredSession) -> impl Iterator<Item = &str> {
         .filter_map(|pane| pane.session_id.as_deref())
 }
 
-fn reconcile(saved: &mut SavedState, live: &[termy_core::multiplexer::PaneInfo]) {
+/// Drop the panes of `session` whose host terminals are gone.
+fn prune_session(session: &mut StoredSession, live_ids: &HashSet<&str>) {
+    for workspace in &mut session.workspaces {
+        for tab in &mut workspace.tabs {
+            let original = tab.panes.len();
+            tab.panes.retain(|pane| {
+                pane.session_id
+                    .as_deref()
+                    .is_some_and(|id| live_ids.contains(id))
+            });
+            if tab.panes.len() != original {
+                tab.layout_tree_json = None;
+                tab.zoomed = false;
+            }
+            tab.active_pane = tab.active_pane.min(tab.panes.len().saturating_sub(1));
+        }
+        workspace.tabs.retain(|tab| !tab.panes.is_empty());
+        workspace.active_tab = workspace
+            .active_tab
+            .min(workspace.tabs.len().saturating_sub(1));
+    }
+    session
+        .workspaces
+        .retain(|workspace| !workspace.tabs.is_empty());
+    session.active_workspace = session
+        .active_workspace
+        .min(session.workspaces.len().saturating_sub(1));
+}
+
+fn reconcile(saved: &mut SavedState, live: &[PaneInfo]) {
     let live_ids: HashSet<&str> = live.iter().map(|pane| pane.id.as_str()).collect();
     for window in &mut saved.windows {
-        for workspace in &mut window.session.workspaces {
-            for tab in &mut workspace.tabs {
-                let original = tab.panes.len();
-                tab.panes.retain(|pane| {
-                    pane.session_id
-                        .as_deref()
-                        .is_some_and(|id| live_ids.contains(id))
-                });
-                if tab.panes.len() != original {
-                    tab.layout_tree_json = None;
-                    tab.zoomed = false;
-                }
-                tab.active_pane = tab.active_pane.min(tab.panes.len().saturating_sub(1));
-            }
-            workspace.tabs.retain(|tab| !tab.panes.is_empty());
-            workspace.active_tab = workspace
-                .active_tab
-                .min(workspace.tabs.len().saturating_sub(1));
-        }
-        window
-            .session
-            .workspaces
-            .retain(|workspace| !workspace.tabs.is_empty());
-        window.session.active_workspace = window
-            .session
-            .active_workspace
-            .min(window.session.workspaces.len().saturating_sub(1));
+        prune_session(&mut window.session, &live_ids);
     }
     saved
         .windows

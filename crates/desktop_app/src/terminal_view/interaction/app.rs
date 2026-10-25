@@ -32,6 +32,10 @@ impl TerminalView {
                 let _ = crate::open_main_window_with_runtime_config_overrides(cx, None);
                 true
             }
+            CommandAction::ReopenDetachedWindow => {
+                self.reopen_detached_window_action(cx);
+                true
+            }
             CommandAction::CheckForUpdates => {
                 self.check_for_updates_action(cx);
                 true
@@ -42,6 +46,22 @@ impl TerminalView {
             }
             _ => false,
         }
+    }
+
+    /// Closing one of several windows detaches its terminals; they keep
+    /// running in the session host. Reopen the first such window.
+    fn reopen_detached_window_action(&mut self, cx: &mut Context<Self>) {
+        if !crate::multiplexer::queue_detached_window(cx) {
+            crate::ui::toast::info(if self.multiplexer.is_some() {
+                "No detached windows to reopen"
+            } else {
+                "Reopening detached windows needs the built-in multiplexer"
+            });
+            self.notify_overlay(cx);
+            return;
+        }
+        // Errors are already logged and surfaced as a toast.
+        let _ = crate::open_main_window_with_runtime_config_overrides(cx, None);
     }
 
     fn open_config_action(&mut self, cx: &mut Context<Self>) {

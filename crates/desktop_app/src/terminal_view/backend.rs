@@ -1,5 +1,9 @@
 use super::*;
-use std::ops::Deref;
+use std::{
+    collections::VecDeque,
+    ops::Deref,
+    time::{Duration, Instant},
+};
 
 /// The terminal-engine facade used by the desktop view. Backend-specific
 /// details stay behind this enum so panes do not branch on engine internals.
@@ -10,10 +14,94 @@ pub(super) enum Terminal {
 }
 
 pub(super) struct NativeTerminalInstance {
+    // Fields drop in declaration order. `terminal` must drop before `session`:
+    // dropping the session closes the host pane, and a terminal still attached
+    // at that point reports the closed connection as a lost session.
+    pub(super) terminal: Mutex<NativeTerminal>,
     pub(super) session: Option<crate::multiplexer::PaneSession>,
     pub(super) wakeup_id: NativeTerminalWakeupId,
     pub(super) wakeup_route: Arc<Mutex<Option<NativeTerminalWakeupRouter>>>,
-    pub(super) terminal: Mutex<NativeTerminal>,
+    /// What this view wants from a session-host pane's size; `None` for local
+    /// terminals (see `HostSizeClaim`).
+    pub(super) host_size: Option<Mutex<HostSizeClaim>>,
+}
+
+/// The attached desktop wins a size conflict over a session-host pane, but
+/// only within limits: two views of one pane (two Termy processes, or a
+/// script that keeps running `termy mux resize`) would otherwise resize it
+/// back and forth forever.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct HostSizeClaim {
+    /// The size this view created, attached or last resized the pane at.
+    wanted: TerminalSize,
+    /// When this view re-asserted `wanted` after another client's resize.
+    reasserts: VecDeque<Instant>,
+    /// Out of re-asserts: the view shows the host's size until its own
+    /// layout changes the size it wants.
+    yielded: bool,
+}
+
+impl HostSizeClaim {
+    pub(super) const MAX_REASSERTS: usize = 3;
+    pub(super) const REASSERT_WINDOW: Duration = Duration::from_secs(10);
+
+    pub(super) fn new(wanted: TerminalSize) -> Self {
+        Self {
+            wanted,
+            reasserts: VecDeque::new(),
+            yielded: false,
+        }
+    }
+
+    /// Record a resize this view sent. `overridden` is whether another
+    /// client had resized the pane just before.
+    pub(super) fn applied(&mut self, size: TerminalSize, overridden: bool, now: Instant) {
+        if size != self.wanted {
+            // The view's own layout changed: a new size, a fresh budget.
+            *self = Self::new(size);
+        } else if overridden {
+            self.reasserts.push_back(now);
+        }
+    }
+
+    /// `true` while another client's resize is waiting to be re-asserted.
+    pub(super) fn wants_reassert(&self, overridden: bool) -> bool {
+        overridden && !self.yielded
+    }
+
+    /// The resize decision for one pane. `stale` is whether the size the
+    /// host has, or was last asked for, differs from `next`. `overridden`
+    /// is whether another client resized the pane after the host showed
+    /// `wanted`: then `next == wanted` is re-asserted at most
+    /// `MAX_REASSERTS` times within `REASSERT_WINDOW`, after which the view
+    /// keeps the host's size until its own layout changes.
+    pub(super) fn needs_resize(
+        &mut self,
+        next: TerminalSize,
+        stale: bool,
+        overridden: bool,
+        now: Instant,
+    ) -> bool {
+        if !overridden {
+            // The host is back at `wanted`; a later conflict is a new one.
+            self.yielded = false;
+            return stale;
+        }
+        if next != self.wanted {
+            return stale;
+        }
+        if !self.yielded {
+            while self
+                .reasserts
+                .front()
+                .is_some_and(|at| now.duration_since(*at) > Self::REASSERT_WINDOW)
+            {
+                self.reasserts.pop_front();
+            }
+            self.yielded = self.reasserts.len() >= Self::MAX_REASSERTS;
+        }
+        !self.yielded
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -126,7 +126,7 @@ pub fn default_root() -> Option<PathBuf> {
 
 /// Whether a session host holds the host lock in `root`. Creates nothing, so
 /// probing a directory no host ever used leaves no files behind.
-fn host_is_running(root: &Path) -> bool {
+pub fn host_is_running(root: &Path) -> bool {
     let Ok(lock) = OpenOptions::new()
         .read(true)
         .write(true)

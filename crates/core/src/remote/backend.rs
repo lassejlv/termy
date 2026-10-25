@@ -89,14 +89,19 @@ impl RemoteBackend {
         let current = self.size();
         let mut requested = self.requested_size.lock().unwrap();
         match *requested {
-            Some(size) if size != current => size,
+            Some(size) if size != current && !self.transport.host_size_overridden() => size,
             _ => {
                 // Once a frame catches up, follow the host again so a resize
                 // from another client is not hidden by this stale request.
+                // The transport notices the catch-up as frames arrive, also
+                // when nobody read this size while that frame was current.
                 *requested = None;
                 current
             }
         }
+    }
+    pub(crate) fn host_size_overridden(&self) -> bool {
+        self.transport.host_size_overridden()
     }
     pub(crate) fn resize(&mut self, size: TerminalSize) {
         *self.requested_size.get_mut().unwrap() = Some(size.clamped());

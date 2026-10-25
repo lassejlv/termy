@@ -12,7 +12,8 @@ mod wire_golden;
 
 pub use client::SessionClient;
 pub use discovery::{
-    VersionMismatch, connect_or_start, default_root, is_version_mismatch, kill_host, shutdown_host,
+    VersionMismatch, connect_or_start, default_root, host_is_running, is_version_mismatch,
+    kill_host, shutdown_host,
 };
 pub use host::run_host;
 pub use protocol::{PaneInfo, PaneLaunch};

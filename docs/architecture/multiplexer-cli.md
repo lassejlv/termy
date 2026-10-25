@@ -62,6 +62,11 @@ The default uses the desktop config directory's `multiplexer` subdirectory
 (`%LOCALAPPDATA%\termy\multiplexer` on Windows, falling back to the old location
 while an older host still runs there).
 Input is bounded to 1 MiB; terminal sizes to 1–400 columns and 1–200 rows.
+A desktop window that shows the pane normally wins a size conflict: after
+`resize`, it sets the pane back to the size it draws on its next layout pass.
+It does so at most 3 times within 10 seconds per pane. After that (for example
+when two windows or two Termy processes show the same pane at different sizes),
+it keeps the size the host has until its own layout changes.
 
 Workspace edits use conditional host writes. Independent edits preserve other
 windows; a stale workspace snapshot fails instead of overwriting another client.

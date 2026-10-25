@@ -150,6 +150,12 @@ pub trait RemoteTransport: Send + Sync {
     fn reply_to_host(&self, id: u64, reply: RemoteHostReply);
     fn has_pending_events(&self) -> bool;
     fn set_wakeup_enabled(&self, enabled: bool);
+    /// `true` when another client resized the pane after a frame showed the
+    /// size this client last asked for (or attached at). A transport with a
+    /// single client never reports one.
+    fn host_size_overridden(&self) -> bool {
+        false
+    }
 }
 
 /// Execute a client operation against the authoritative terminal. No output

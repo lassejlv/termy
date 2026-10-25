@@ -154,6 +154,7 @@ impl SessionClient {
         let (input_tx, input_rx) = flume::bounded(256);
         let initial_state = awaiting_graphics((*state).clone());
         let shared = Arc::new(ClientState {
+            size_claim: Mutex::new(SizeClaim::attached(&initial_state)),
             state: Mutex::new(Arc::new(initial_state)),
             state_updated: Condvar::new(),
             pending: Mutex::new(Pending::default()),
@@ -382,7 +383,44 @@ impl Pending {
     }
 }
 
+/// The grid size this client last asked the host for, and whether a frame
+/// has shown it. Frames lag queued resizes, so a different host size means
+/// another client resized the pane only after this size was confirmed.
+/// Confirmation is recorded as frames arrive, also for panes not on screen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SizeClaim {
+    grid: (u16, u16),
+    confirmed: bool,
+}
+
+impl SizeClaim {
+    /// A created or attached pane starts out claiming the host's size.
+    fn attached(state: &RemoteState) -> Self {
+        Self {
+            grid: grid(state),
+            confirmed: true,
+        }
+    }
+    fn requested(&mut self, size: TerminalSize, state: &RemoteState) {
+        let size = size.clamped();
+        self.grid = (size.cols, size.rows);
+        self.confirmed = grid(state) == self.grid;
+    }
+    fn published(&mut self, state: &RemoteState) {
+        self.confirmed |= grid(state) == self.grid;
+    }
+    fn overridden(self, state: &RemoteState) -> bool {
+        self.confirmed && grid(state) != self.grid
+    }
+}
+
+fn grid(state: &RemoteState) -> (u16, u16) {
+    (state.size.cols, state.size.rows)
+}
+
 struct ClientState {
+    /// Locked before `state` wherever both are held.
+    size_claim: Mutex<SizeClaim>,
     state: Mutex<Arc<RemoteState>>,
     state_updated: Condvar,
     pending: Mutex<Pending>,
@@ -394,7 +432,10 @@ struct ClientState {
 
 impl ClientState {
     fn publish_state(&self, state: Arc<RemoteState>) {
+        let mut claim = self.size_claim.lock().unwrap();
+        claim.published(&state);
         *self.state.lock().unwrap() = state;
+        drop(claim);
         self.pending.lock().unwrap().wakeup = true;
         self.state_updated.notify_all();
     }
@@ -529,6 +570,10 @@ impl RemoteTransport for ClientTerminal {
         if self.shared.disconnected.load(Ordering::Acquire) {
             return;
         }
+        if let RemoteCommand::Resize(size) = &command {
+            let mut claim = self.shared.size_claim.lock().unwrap();
+            claim.requested(*size, &self.shared.state.lock().unwrap());
+        }
         if let Err(error) = self.input.send_timeout(command, Duration::from_millis(100)) {
             self.shared.fail(&anyhow::anyhow!(error.to_string()));
         }
@@ -565,11 +610,50 @@ impl RemoteTransport for ClientTerminal {
             self.shared.notify();
         }
     }
+    fn host_size_overridden(&self) -> bool {
+        let claim = self.shared.size_claim.lock().unwrap();
+        claim.overridden(&self.shared.state.lock().unwrap())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn size(cols: u16, rows: u16) -> TerminalSize {
+        TerminalSize {
+            cols,
+            rows,
+            ..TerminalSize::default()
+        }
+    }
+
+    fn frame(cols: u16, rows: u16) -> RemoteState {
+        RemoteState::capture(&Terminal::new_display(size(cols, rows), None))
+    }
+
+    #[test]
+    fn size_claim_reports_an_override_only_after_a_frame_showed_this_size() {
+        let mut claim = SizeClaim::attached(&frame(80, 24));
+        assert!(!claim.overridden(&frame(80, 24)));
+        // Created or reattached at this size: another client's resize counts.
+        assert!(claim.overridden(&frame(40, 10)));
+
+        claim.requested(size(120, 40), &frame(80, 24));
+        // The resize is still queued: the host reports its old size.
+        claim.published(&frame(80, 24));
+        assert!(!claim.overridden(&frame(80, 24)));
+        // A frame showed it (whether or not a view drew that frame), then
+        // another client resized the pane.
+        claim.published(&frame(120, 40));
+        claim.published(&frame(40, 10));
+        assert!(claim.overridden(&frame(40, 10)));
+
+        // Asking for the size the host already has is confirmed at once.
+        claim.requested(size(40, 10), &frame(40, 10));
+        assert!(!claim.overridden(&frame(40, 10)));
+        assert!(claim.overridden(&frame(41, 10)));
+    }
 
     #[test]
     fn first_streamed_images_invalidate_the_pending_graphics_snapshot() {

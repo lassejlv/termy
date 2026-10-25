@@ -15,13 +15,13 @@ It is off by default. No tmux installation or session commands are needed.
 
 Quitting Termy or closing a window leaves its programs running in a background Termy process. Reopening Termy restores your windows, workspaces, tabs, split layouts, active panes, zoom, pins, and custom tab names.
 
-Each terminal reconnects to its original running process. Its scrollback, scroll position, cursor, colors, alternate screen, input modes, links, and images remain in the background host. Programs can continue producing output while the app is closed. Configured scrollback limits still apply.
+Each terminal reconnects to its original running process. Its scrollback, scroll position, cursor, colors, alternate screen, input modes, links, and images remain in the background host. Programs can continue producing output while the app is closed. Configured scrollback limits still apply; `inactive_tab_scrollback` does not, so background tabs keep their full history.
 
 Tab titles, working directories, progress bars, and [program status](/docs/using-termy/program-status) badges are restored too. Bells and commands that finished while Termy was closed are not reported again. When no command is running, a progress bar or a working status that has not changed for 30 minutes is treated as left over from a stopped program and is not restored. Statuses waiting for you are always restored.
 
-Closing a **tab**, **pane**, or **workspace** ends the sessions it contains. Exiting a shell also ends that shell normally. Closing the window with its window controls keeps its sessions available for reopening.
+Closing a **tab**, **pane**, or **workspace** ends the sessions it contains. Exiting a shell also ends that shell normally. Closing the window with its window controls keeps its sessions available for reopening. While other windows stay open, run **Reopen Detached Window** from the command palette or the Window menu to bring it back; otherwise it returns the next time Termy starts. When the close warnings (`warn_on_quit`, `warn_on_quit_with_running_process`) ask for confirmation, closing one of several windows offers **Detach** (keep its processes running for reopening) or **Terminate** (end them).
 
-Sessions last while the background host and your operating-system session are running. They do not survive logging out, rebooting, or terminating the host. This is live process persistence; named layouts remain reusable layouts that start new terminals.
+Sessions last while the background host and your operating-system session are running. They do not survive logging out, rebooting, or terminating the host. After that, Termy starts with a fresh window instead of restoring an old regular session. Your regular saved tabs are imported once each time you switch from regular terminals to the multiplexer. This is live process persistence; named layouts remain reusable layouts that start new terminals. Saved scrollback is not carried into multiplexer terminals, whether they come from imported tabs or from a named layout.
 
 ## After upgrading Termy
 
@@ -33,7 +33,7 @@ If the background host fails to start, the notification names `host.log`, the ho
 
 ## Change back to regular terminals
 
-Turn **Built-in Multiplexer** off and restart Termy. Existing background sessions remain available if you enable it again; close their tabs or panes first if you want to end them.
+Turn **Built-in Multiplexer** off and restart Termy. Turning it off does not stop the background host: its sessions keep running and remain available if you enable it again. Close their tabs or panes first, or run `termy mux shutdown`, to end them.
 
 The built-in multiplexer takes precedence over `tmux_enabled`. To use [tmux sessions](/docs/using-termy/tmux-sessions), disable the built-in multiplexer and restart Termy.
 

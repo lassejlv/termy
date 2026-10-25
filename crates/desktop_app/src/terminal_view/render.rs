@@ -3926,6 +3926,7 @@ impl Render for TerminalView {
                     .on_action(cx.listener(Self::handle_rename_tab_action))
                     .on_action(cx.listener(Self::handle_check_for_updates_action))
                     .on_action(cx.listener(Self::handle_view_release_notes_action))
+                    .on_action(cx.listener(Self::handle_reopen_detached_window_action))
                     .on_action(cx.listener(Self::handle_browse_release_notes_action))
                     .on_action(cx.listener(Self::handle_toggle_workspace_sidebar_action))
                     .on_action(cx.listener(Self::handle_new_tab_action))

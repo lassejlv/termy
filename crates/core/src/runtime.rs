@@ -916,6 +916,14 @@ impl Terminal {
         self.backend.requested_size()
     }
 
+    /// `true` when another client resized this session-host pane after a
+    /// frame showed the size this terminal last asked for, or the size it was
+    /// created or attached at. `requested_size` then follows the host again.
+    /// Always `false` for local terminals.
+    pub fn host_size_overridden(&self) -> bool {
+        self.backend.host_size_overridden()
+    }
+
     pub fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
         self.backend.kitty_graphics_placements()
     }

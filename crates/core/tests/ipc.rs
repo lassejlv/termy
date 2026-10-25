@@ -680,3 +680,60 @@ fn layout_resizes_keep_the_live_cell_metrics() {
     host.client.close(&new_id).unwrap();
     host.client.close(&id).unwrap();
 }
+
+/// Audit B20: a view learns that another client resized its pane, also when
+/// it never resized the pane itself and when nobody read the size while the
+/// frame that confirmed its own resize was current.
+#[test]
+fn another_clients_resize_overrides_the_size_this_client_claimed() {
+    let host = Host::new();
+    let size = |cols, rows| TerminalSize {
+        cols,
+        rows,
+        ..TerminalSize::default()
+    };
+    let grid = |size: TerminalSize| (size.cols, size.rows);
+    let (id, mut terminal) = host
+        .client
+        .create(
+            PaneLaunch {
+                size: size(100, 30),
+                working_directory: None,
+                shell_integration: None,
+                config: TerminalRuntimeConfig::default(),
+                launch: Some(TerminalLaunch::Program {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), "read done".into()],
+                }),
+            },
+            None,
+        )
+        .unwrap();
+    assert!(!terminal.host_size_overridden());
+
+    // Created at the view's size: this client never sent a resize.
+    host.client.resize(&id, size(40, 10)).unwrap();
+    wait_until(|| grid(terminal.size()) == (40, 10));
+    assert!(terminal.host_size_overridden());
+    assert_eq!(grid(terminal.requested_size()), (40, 10));
+
+    // Re-asserting clears the override.
+    terminal.resize(size(100, 30));
+    assert!(!terminal.host_size_overridden());
+    wait_until(|| grid(terminal.size()) == (100, 30));
+    assert!(!terminal.host_size_overridden());
+
+    // `requested_size` is not read while the 90x20 frame is current.
+    terminal.resize(size(90, 20));
+    wait_until(|| grid(terminal.size()) == (90, 20));
+    host.client.resize(&id, size(30, 8)).unwrap();
+    wait_until(|| grid(terminal.size()) == (30, 8));
+    assert!(terminal.host_size_overridden());
+    assert_eq!(
+        grid(terminal.requested_size()),
+        (30, 8),
+        "a stale request must not hide the other client's size"
+    );
+    drop(terminal);
+    host.client.close(&id).unwrap();
+}

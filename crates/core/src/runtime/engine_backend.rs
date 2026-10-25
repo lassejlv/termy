@@ -206,6 +206,13 @@ impl Backend {
         }
     }
 
+    pub(super) fn host_size_overridden(&self) -> bool {
+        match self {
+            Self::Custom(_) => false,
+            Self::Remote(backend) => backend.host_size_overridden(),
+        }
+    }
+
     pub(super) fn requested_size(&self) -> TerminalSize {
         match self {
             Self::Custom(backend) => backend.size(),

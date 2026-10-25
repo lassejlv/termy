@@ -546,3 +546,368 @@ fn desktop_windows_restore_live_sessions_after_client_exit() {
     client.shutdown().unwrap();
     assert!(host.0.wait().unwrap().success());
 }
+
+/// Start a host in a separate process and install a client for this app.
+fn start_host(cx: &mut TestAppContext) -> (tempfile::TempDir, Host, SessionClient) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("host");
+    let host = Host(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("{PREFIX}host_process"), "--nocapture"])
+            .env("TERMY_DESKTOP_MUX_ROOT", &root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| SessionClient::connect(&root).is_ok());
+    let client = SessionClient::connect(&root).unwrap();
+    cx.update(|cx| crate::multiplexer::install_for_test(client.clone(), cx).unwrap());
+    (temp, host, client)
+}
+
+fn shell(script: &str) -> TerminalLaunch {
+    TerminalLaunch::Program {
+        program: "/bin/sh".into(),
+        args: vec!["-c".into(), format!("stty -echo; {script}")],
+    }
+}
+
+fn terminal_text(terminal: &Terminal) -> String {
+    let Terminal::Native(native) = terminal else {
+        panic!("native runtime required");
+    };
+    native
+        .terminal
+        .lock()
+        .unwrap()
+        .render_read(true)
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect()
+}
+
+#[gpui_kit::test]
+fn inactive_tab_cap_leaves_host_history_alone(cx: &mut TestAppContext) {
+    let (_temp, _host, client) = start_host(cx);
+    let handle = window(cx, true);
+    update(cx, handle, |view, cx| {
+        view.inactive_tab_scrollback = Some(2);
+        let history = shell(
+            "i=0; while [ $i -lt 200 ]; do printf 'line-%03d\\r\\n' $i; i=$((i+1)); done; \
+             printf READY; read go; printf '\\r\\nDONE\\r\\n'; read done",
+        );
+        assert!(view.add_tab_with_launch(None, Some(&history), cx));
+    });
+    wait(|| {
+        cx.run_until_parked();
+        update(cx, handle, |view, _| {
+            core_text(view).contains("READY")
+                && view.active_terminal().unwrap().scroll_state().1 > 100
+        })
+    });
+    update(cx, handle, |view, cx| {
+        // Opening a second tab parks the first one as inactive.
+        assert!(view.add_tab_with_launch(None, Some(&shell("read done")), cx));
+        assert_eq!(view.session.active_tab, 1);
+        view.switch_tab(0, cx);
+        // Input queues behind any option change, so once DONE is drawn the
+        // host has applied whatever this view sent while the tab was hidden.
+        view.active_terminal().unwrap().write_input(b"go\n");
+    });
+    wait(|| {
+        cx.run_until_parked();
+        update(cx, handle, |view, _| core_text(view).contains("DONE"))
+    });
+    update(cx, handle, |view, _| {
+        assert!(
+            view.active_terminal().unwrap().scroll_state().1 > 100,
+            "the inactive-tab cap must not trim history in the shared host"
+        );
+    });
+    client.shutdown().unwrap();
+}
+
+/// Audit B20: a pane this view created at exactly its own size, and never
+/// resized, still gets that size back after another client resizes it.
+#[gpui_kit::test]
+fn desktop_reasserts_its_size_after_another_client_resizes_a_pane(cx: &mut TestAppContext) {
+    let (_temp, _host, client) = start_host(cx);
+    let handle = window(cx, true);
+    let new_tab = |cx: &mut TestAppContext| {
+        update(cx, handle, |view, cx| {
+            assert!(view.add_tab_with_launch(None, Some(&shell("printf READY; read done")), cx));
+        });
+        wait(|| {
+            cx.run_until_parked();
+            update(cx, handle, |view, _| core_text(view).contains("READY"))
+        });
+    };
+    // Runs one layout pass and reports whether it resized a terminal. A
+    // `full` pass ignores that nothing changed in the window's layout.
+    let sync = |cx: &mut TestAppContext, full: bool| {
+        cx.update(|cx| {
+            handle
+                .update(cx, |view, window, cx| {
+                    if full {
+                        view.last_terminal_resize_signature = None;
+                    }
+                    view.last_resize_applied_at = None;
+                    let cell_size = view.calculate_cell_size(window, cx);
+                    view.sync_terminal_size(window, cell_size, cx);
+                    view.last_resize_applied_at.is_some()
+                })
+                .unwrap()
+        })
+    };
+    let host_size = |cx: &mut TestAppContext| {
+        update(cx, handle, |view, _| {
+            let size = view.active_terminal().unwrap().size();
+            (size.cols, size.rows)
+        })
+    };
+    // Two tabs first, so the tab strip no longer changes the layout.
+    new_tab(cx);
+    new_tab(cx);
+    sync(cx, true);
+    let desktop = update(cx, handle, |view, _| {
+        let size = view.active_terminal().unwrap().requested_size();
+        (size.cols, size.rows)
+    });
+    assert_ne!(desktop, (40, 10));
+    wait(|| {
+        cx.run_until_parked();
+        host_size(cx) == desktop
+    });
+
+    // New Tab: the pane starts at the view's size, so no resize is ever sent.
+    new_tab(cx);
+    assert_eq!(host_size(cx), desktop);
+    assert!(
+        !sync(cx, true),
+        "the new pane was not created at the view's size"
+    );
+    assert!(!sync(cx, false));
+
+    let id = update(cx, handle, |view, _| {
+        view.active_terminal()
+            .unwrap()
+            .session_id()
+            .unwrap()
+            .to_owned()
+    });
+    client
+        .resize(
+            &id,
+            TerminalSize {
+                cols: 40,
+                rows: 10,
+                ..TerminalSize::default()
+            },
+        )
+        .unwrap();
+    wait(|| {
+        cx.run_until_parked();
+        host_size(cx) == (40, 10)
+    });
+    assert!(
+        sync(cx, false),
+        "an unchanged layout must re-assert the size"
+    );
+    wait(|| {
+        cx.run_until_parked();
+        host_size(cx) == desktop
+    });
+    assert!(!sync(cx, false));
+    client.shutdown().unwrap();
+}
+
+#[gpui_kit::test]
+fn a_new_host_pane_does_not_replay_a_saved_buffer_above_its_prompt(cx: &mut TestAppContext) {
+    let (_temp, _host, client) = start_host(cx);
+    let handle = window(cx, true);
+    let terminal = update(cx, handle, |view, _| {
+        Terminal::new_native_restoring(
+            TerminalSize::default(),
+            None,
+            Some(&view.native_terminal_wakeup_router),
+            Some(&view.tab_shell_integration),
+            Some(&view.terminal_runtime),
+            view.multiplexer_client(),
+            b"SAVED-BUFFER\r\n",
+        )
+        .unwrap()
+    });
+    terminal.write_input(b"echo MARK-$((40+2))\n");
+    wait(|| terminal_text(&terminal).contains("MARK-42"));
+    assert!(!terminal_text(&terminal).contains("SAVED-BUFFER"));
+    drop(terminal);
+    client.shutdown().unwrap();
+}
+
+#[gpui_kit::test]
+fn a_closed_window_can_be_reopened_while_others_stay_open(cx: &mut TestAppContext) {
+    let (_temp, _host, client) = start_host(cx);
+    let first = window(cx, true);
+    update(cx, first, |view, cx| {
+        assert!(view.add_tab_with_launch(None, Some(&shell("read done")), cx));
+    });
+    let second = window(cx, true);
+    update(cx, second, |view, cx| {
+        assert!(view.add_tab_with_launch(None, Some(&shell("read done")), cx));
+        view.session.tabs[0].manual_title = Some("second window".into());
+    });
+    assert_eq!(cx.update(|cx| crate::multiplexer::detached_windows(cx)), 0);
+    cx.update(|cx| {
+        second
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+    });
+    cx.run_until_parked();
+    assert_eq!(ids(&client).len(), 2, "closing a window detaches its panes");
+    assert_eq!(cx.update(|cx| crate::multiplexer::detached_windows(cx)), 1);
+
+    assert!(cx.update(|cx| crate::multiplexer::queue_detached_window(cx)));
+    let reopened = window(cx, false);
+    update(cx, reopened, |view, _| {
+        assert_eq!(view.session.tabs.len(), 1);
+        assert_eq!(
+            view.session.tabs[0].manual_title.as_deref(),
+            Some("second window")
+        );
+    });
+    assert_eq!(cx.update(|cx| crate::multiplexer::detached_windows(cx)), 0);
+    assert!(!cx.update(|cx| crate::multiplexer::queue_detached_window(cx)));
+    assert_eq!(ids(&client).len(), 2);
+    client.shutdown().unwrap();
+}
+
+fn layout_window_count(client: &SessionClient) -> usize {
+    client.layout().unwrap().map_or(0, |json| {
+        serde_json::from_str::<termy_core::session_model::StoredMultiplexer>(&json)
+            .unwrap()
+            .windows
+            .len()
+    })
+}
+
+/// Audit I6: with the close warning on, closing one of several windows asks
+/// whether to detach it (its processes keep running for Reopen Detached
+/// Window) or to terminate its processes.
+#[gpui_kit::test]
+fn closing_one_of_several_windows_offers_detach_or_terminate(cx: &mut TestAppContext) {
+    cx.update(|cx| cx.set_prompt_builder(crate::linux_prompt::render_prompt));
+    let (_temp, _host, client) = start_host(cx);
+    let first = window(cx, true);
+    update(cx, first, |view, cx| {
+        assert!(view.add_tab_with_launch(None, Some(&shell("read done")), cx));
+        view.sync_persisted_native_workspace();
+    });
+    let close_with = |cx: &mut TestAppContext, handle: WindowHandle<TerminalView>, keys: &str| {
+        cx.update(|cx| {
+            handle
+                .update(cx, |view, window, cx| {
+                    view.warn_on_quit = true;
+                    view.sync_persisted_native_workspace();
+                    assert!(!view.handle_window_should_close_request(window, cx));
+                    assert!(view.quit_prompt_in_flight);
+                })
+                .unwrap();
+        });
+        cx.simulate_keystrokes(handle.into(), keys);
+        cx.run_until_parked();
+    };
+
+    let second = window(cx, true);
+    update(cx, second, |view, cx| {
+        assert!(view.add_tab_with_launch(None, Some(&shell("read done")), cx));
+    });
+    close_with(cx, second, "enter");
+    assert_eq!(ids(&client).len(), 2, "Detach keeps the processes running");
+    assert_eq!(cx.update(|cx| crate::multiplexer::detached_windows(cx)), 1);
+
+    assert!(cx.update(|cx| crate::multiplexer::queue_detached_window(cx)));
+    let reopened = window(cx, false);
+    update(cx, reopened, |view, _| {
+        assert_eq!(view.session.tabs.len(), 1);
+    });
+    assert_eq!(layout_window_count(&client), 2);
+    close_with(cx, reopened, "tab enter");
+    wait(|| {
+        cx.run_until_parked();
+        ids(&client).len() == 1
+    });
+    assert_eq!(cx.update(|cx| crate::multiplexer::detached_windows(cx)), 0);
+    assert_eq!(layout_window_count(&client), 1, "nothing is left to reopen");
+    client.shutdown().unwrap();
+}
+
+/// Audit I6: a detached window whose processes all ended is not offered for
+/// reopening, so it can never come back empty and be saved over.
+#[gpui_kit::test]
+fn a_detached_window_whose_processes_ended_is_not_reopened(cx: &mut TestAppContext) {
+    let (_temp, _host, client) = start_host(cx);
+    let first = window(cx, true);
+    update(cx, first, |view, cx| {
+        assert!(view.add_tab_with_launch(None, Some(&shell("read done")), cx));
+    });
+    let second = window(cx, true);
+    let id = update(cx, second, |view, cx| {
+        assert!(view.add_tab_with_launch(None, Some(&shell("read done")), cx));
+        view.sync_persisted_native_workspace();
+        view.active_terminal()
+            .unwrap()
+            .session_id()
+            .unwrap()
+            .to_owned()
+    });
+    cx.update(|cx| {
+        second
+            .update(cx, |_, window, _| window.remove_window())
+            .unwrap();
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| crate::multiplexer::detached_windows(cx)), 1);
+
+    client.write(&id, b"go\n".to_vec()).unwrap();
+    wait(|| {
+        client
+            .list()
+            .unwrap()
+            .iter()
+            .any(|pane| pane.id == id && pane.exited)
+    });
+    assert_eq!(cx.update(|cx| crate::multiplexer::detached_windows(cx)), 0);
+    assert!(!cx.update(|cx| crate::multiplexer::queue_detached_window(cx)));
+    client.shutdown().unwrap();
+}
+
+/// Audit B23: a user who turned the multiplexer on before the import marker
+/// existed gets it with the first host save, so a later host restart (for
+/// example after a reboot) does not import their old local tabs again.
+#[gpui_kit::test]
+fn the_first_host_save_marks_the_local_session_as_imported(cx: &mut TestAppContext) {
+    let (_temp, _host, client) = start_host(cx);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        crate::workspace_store::WorkspaceStore::open(&dir.path().join("workspaces.db")).unwrap(),
+    );
+    store
+        .save_session(&super::import_tests::local_session())
+        .unwrap();
+    let handle = window(cx, true);
+    update(cx, handle, |view, cx| {
+        view.owns_persisted_session = true;
+        view.native_tab_persistence = true;
+        assert!(view.workspace_store.set(Some(Arc::clone(&store))).is_ok());
+        assert!(view.multiplexer_import_pending());
+        assert!(view.add_tab_with_launch(None, Some(&shell("read done")), cx));
+        view.sync_persisted_native_workspace();
+    });
+    wait(|| store.imported_into_multiplexer().unwrap());
+    update(cx, handle, |view, _| {
+        assert!(!view.multiplexer_import_pending(), "recorded once per run");
+    });
+    client.shutdown().unwrap();
+}

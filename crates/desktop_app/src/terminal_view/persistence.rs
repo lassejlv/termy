@@ -73,6 +73,9 @@ struct PersistedNativeWorkspaceWriteRequest {
     /// applies; updates the named layout row if it still exists.
     named_layout_autosave: Option<(String, String)>,
     persist_last_session: bool,
+    /// Set until this app run has recorded, after a successful host save,
+    /// that the host holds the session (see `record_multiplexer_import`).
+    multiplexer_import_store: Option<Arc<WorkspaceStore>>,
 }
 
 pub(super) struct StartupNativeSession {
@@ -224,7 +227,7 @@ impl TerminalView {
 
     /// Open (or return the cached) SQLite session store. A fresh database is
     /// seeded from the legacy `native-tabs.json` file when one exists.
-    fn workspace_store(&self) -> Option<Arc<WorkspaceStore>> {
+    pub(super) fn workspace_store(&self) -> Option<Arc<WorkspaceStore>> {
         self.workspace_store
             .get_or_init(|| match Self::open_workspace_store() {
                 Ok(store) => Some(store),
@@ -1138,6 +1141,7 @@ impl TerminalView {
     }
 
     fn finish_workspace_restore(&mut self, cx: &mut Context<Self>) {
+        self.sync_all_tab_scrollback();
         self.mark_tab_strip_layout_dirty();
         self.sync_tab_strip_for_active_tab();
         self.sync_plugin_lifecycle_state(false, cx);
@@ -1154,6 +1158,12 @@ impl TerminalView {
     ) -> Result<(), String> {
         if let Some(window) = &request.multiplexer {
             window.save(request.session.clone())?;
+            if let Some(store) = &request.multiplexer_import_store
+                && !window.import_recorded()
+            {
+                store.mark_imported_into_multiplexer()?;
+                window.set_import_recorded();
+            }
         }
         if let Some(store) = request.store {
             if let Some((name, snapshot)) = &request.named_layout_autosave {
@@ -1188,12 +1198,17 @@ impl TerminalView {
         } else {
             None
         };
+        let multiplexer_import_store = self
+            .multiplexer_import_pending()
+            .then(|| self.workspace_store())
+            .flatten();
         Some(PersistedNativeWorkspaceWriteRequest {
             store,
             multiplexer: self.multiplexer.clone(),
             session,
             named_layout_autosave,
             persist_last_session: self.should_persist_last_native_session(),
+            multiplexer_import_store,
         })
     }
 
