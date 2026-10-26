@@ -720,7 +720,9 @@ impl TerminalView {
             && self.session.tabs.is_empty()
             && !self.has_other_workspaces()
         {
-            self.sync_persisted_native_workspace();
+            if !self.discard_multiplexer_window() {
+                self.sync_persisted_native_workspace();
+            }
             crate::app_actions::close_terminal_window::<Self>(self.window_handle, cx);
         }
     }
@@ -1087,6 +1089,16 @@ impl TerminalView {
         let Some(tab_index) = self.tab_index_by_id(tab_id) else {
             return false;
         };
+        // A zoomed tab holds only its zoomed pane; put the parked ones back
+        // first, so closing (say, an exited zoomed pane) keeps them running.
+        if let Some(mut zoom) = self.session.native_pane_zoom_snapshots.remove(&tab_id) {
+            if let Some(layout_tree) = zoom.layout_tree.take() {
+                self.session
+                    .native_pane_layout_trees
+                    .insert(tab_id, layout_tree);
+            }
+            Self::unzoom_panes(&mut self.session.tabs[tab_index], zoom);
+        }
         let Some(tab) = self.session.tabs.get(tab_index) else {
             return false;
         };
@@ -1516,7 +1528,10 @@ impl TerminalView {
         .map_err(|error| format!("Failed to split pane: {error}"))
     }
 
-    fn dispose_native_terminals(terminals: Vec<Terminal>, cx: &mut Context<Self>) {
+    pub(in crate::terminal_view) fn dispose_native_terminals(
+        terminals: Vec<Terminal>,
+        cx: &mut Context<Self>,
+    ) {
         if terminals.is_empty() {
             return;
         }
@@ -1542,7 +1557,7 @@ impl TerminalView {
         terminals
     }
 
-    fn invalidate_native_split_generation(&mut self) {
+    pub(in crate::terminal_view) fn invalidate_native_split_generation(&mut self) {
         self.native_split_generation = self.native_split_generation.saturating_add(1);
     }
 

@@ -473,7 +473,7 @@ fn add_requests(samples: &mut Samples) {
             R::SetLayout("{}".into()),
             R::Shutdown,
             R::CompareAndSetLayout {
-                expected: Some("{}".into()),
+                expected: 3,
                 replacement: "{\"version\":1}".into(),
             },
             R::SubscribeGraphics("pane".into()),
@@ -486,6 +486,7 @@ fn add_requests(samples: &mut Samples) {
                 client_nonce: [1; 32],
             },
             R::Proof([2; 32]),
+            R::WatchLayout,
         ],
         |request| match request {
             R::RetiredHello => 0,
@@ -504,6 +505,7 @@ fn add_requests(samples: &mut Samples) {
             R::ViewportCommand { .. } => 13,
             R::Authenticate { .. } => 14,
             R::Proof(_) => 15,
+            R::WatchLayout => 16,
         },
     );
 }
@@ -517,9 +519,15 @@ fn add_responses(samples: &mut Samples) {
             R::Attached(pane_info(), Arc::new(remote_state())),
             R::Reply(RemoteReply::Changed(true)),
             R::Panes(vec![pane_info()]),
-            R::Layout(Some("{}".into())),
+            R::Layout {
+                revision: 4,
+                layout: Some("{}".into()),
+            },
             R::Error("failed".into()),
-            R::LayoutUpdated(true),
+            R::LayoutUpdated {
+                updated: true,
+                revision: 5,
+            },
             R::Viewport {
                 changed: true,
                 generation: 11,
@@ -528,17 +536,19 @@ fn add_responses(samples: &mut Samples) {
                 server_nonce: [3; 32],
                 server_proof: [4; 32],
             },
+            R::LayoutChanged { revision: 6 },
         ],
         |response| match response {
             R::Ok => 0,
             R::Attached(..) => 1,
             R::Reply(_) => 2,
             R::Panes(_) => 3,
-            R::Layout(_) => 4,
+            R::Layout { .. } => 4,
             R::Error(_) => 5,
-            R::LayoutUpdated(_) => 6,
+            R::LayoutUpdated { .. } => 6,
             R::Viewport { .. } => 7,
             R::Challenge { .. } => 8,
+            R::LayoutChanged { .. } => 9,
         },
     );
     samples.variants(
@@ -993,5 +1003,5 @@ fn samples_encode_the_same_every_time() {
     // Guards the fingerprint against samples that depend on time or order.
     assert_eq!(encode(&remote_state()), encode(&remote_state()));
     assert_eq!(encode(&graphics_update()), encode(&graphics_update()));
-    assert_eq!(variant_count::<Request>(), 16);
+    assert_eq!(variant_count::<Request>(), 17);
 }

@@ -5,23 +5,29 @@ use crate::{
 };
 use gpui_kit::{App, Global};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     path::Path,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
-use termy_core::multiplexer::{PaneInfo, SessionClient, connect_or_start, default_root};
+use termy_core::multiplexer::{
+    LayoutWatch, PaneInfo, SessionClient, connect_or_start, default_root,
+};
 
 use termy_core::session_model::{StoredMultiplexer as SavedState, StoredWindow as SavedWindow};
 
 struct State {
+    /// Per window, the session it last synced with the host: the merge base
+    /// for its next save and for remote changes.
     saved: SavedState,
+    /// Per window, the newest layout revision it already reflects. Older
+    /// notifications are stale and skipped.
+    floors: HashMap<String, u64>,
     pending: VecDeque<String>,
     claimed: HashSet<String>,
-    published_windows: HashSet<String>,
 }
 
 struct Manager {
@@ -31,6 +37,14 @@ struct Manager {
     /// Set once this app run has marked the SQLite session store as imported
     /// into the host (see `TerminalView::record_multiplexer_import`).
     import_recorded: AtomicBool,
+    /// Open windows waiting for layout changes (see [`WindowSession::layout_changes`]).
+    listeners: Mutex<Vec<flume::Sender<Arc<RemoteLayout>>>>,
+}
+
+/// The host's layout at one revision, as the layout watcher read it.
+pub(crate) struct RemoteLayout {
+    pub(crate) revision: u64,
+    pub(crate) layout: SavedState,
 }
 
 struct AppSessions(Option<Arc<Manager>>);
@@ -67,15 +81,23 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
 /// What start-up reads from the host before the first window opens.
 struct Connected {
     client: SessionClient,
-    layout: Option<String>,
-    panes: Vec<PaneInfo>,
+    /// The layout as reconciled and published (see [`reconcile_on_host`]).
+    saved: SavedState,
+    watch: Option<LayoutWatch>,
 }
 
 fn load(client: SessionClient) -> anyhow::Result<Connected> {
+    let saved = reconcile_on_host(&client).map_err(anyhow::Error::msg)?;
+    let watch = client
+        .watch_layout()
+        // Windows still save; they only miss other clients' edits until the
+        // next launch.
+        .inspect_err(|error| log::error!("Cannot watch the multiplexer layout: {error:#}"))
+        .ok();
     Ok(Connected {
-        layout: client.layout()?,
-        panes: client.list()?,
         client,
+        saved,
+        watch,
     })
 }
 
@@ -111,7 +133,7 @@ fn start_within(
         },
         Err(error) => Err(anyhow::Error::new(error).context("start the multiplexer thread")),
     };
-    let result = result.and_then(|connected| install(connected, cx).map_err(anyhow::Error::msg));
+    let result = result.map(|connected| install(connected, cx));
     if let Err(error) = result {
         fall_back_to_local(&error, Some(log), cx);
     }
@@ -185,46 +207,117 @@ pub(crate) fn effective_config(config: &mut AppConfig, cx: &App) {
 struct FellBackToLocal;
 impl Global for FellBackToLocal {}
 
-fn install(connected: Connected, cx: &mut App) -> Result<(), String> {
+fn install(connected: Connected, cx: &mut App) {
     let Connected {
         client,
-        layout,
-        panes,
+        saved,
+        watch,
     } = connected;
-    let mut saved = match layout {
-        Some(json) => serde_json::from_str::<SavedState>(&json)
-            .map_err(|error| format!("Cannot restore multiplexer layout: {error}"))?,
-        None => SavedState {
-            version: 1,
-            windows: Vec::new(),
-        },
-    };
-    if saved.version != 1 {
-        return Err("Unsupported multiplexer layout version".into());
-    }
-    let published_windows = saved
-        .windows
-        .iter()
-        .map(|window| window.id.clone())
-        .collect();
-    reconcile(&mut saved, &panes);
     let pending = saved
         .windows
         .iter()
         .map(|window| window.id.clone())
         .collect();
-    cx.set_global(AppSessions(Some(Arc::new(Manager {
+    let manager = Arc::new(Manager {
         client,
         state: Mutex::new(State {
             saved,
+            floors: HashMap::new(),
             pending,
             claimed: HashSet::new(),
-            published_windows,
         }),
         write_gate: Mutex::new(()),
         import_recorded: AtomicBool::new(false),
-    }))));
-    Ok(())
+        listeners: Mutex::new(Vec::new()),
+    });
+    if let Some(watch) = watch {
+        spawn_layout_watcher(&manager, watch);
+    }
+    cx.set_global(AppSessions(Some(manager)));
+}
+
+/// Closes panes whose process exited, reconciles the host's layout with the
+/// panes that are still alive and publishes the result (audit B2, B4).
+fn reconcile_on_host(client: &SessionClient) -> Result<SavedState, String> {
+    let panes = client.list().map_err(|error| error.to_string())?;
+    let (exited, live): (Vec<_>, Vec<_>) = panes.into_iter().partition(|pane| pane.exited);
+    for pane in exited {
+        // Reattaching would replay `Exit` and close the window again.
+        if let Err(error) = client.close(&pane.id) {
+            log::warn!(
+                "Cannot close exited multiplexer pane {}: {error:#}",
+                pane.id
+            );
+        }
+    }
+    client
+        .update_layout(|layout| {
+            reconcile(layout, &live);
+            Ok(())
+        })
+        .map(|update| update.layout)
+        .map_err(|error| format!("Cannot restore multiplexer layout: {error:#}"))
+}
+
+/// Reads the layout after every revision the host reports and hands it to
+/// each open window. A lost watch is reopened with backoff (the host may
+/// have restarted); the thread ends with the manager.
+fn spawn_layout_watcher(manager: &Arc<Manager>, watch: LayoutWatch) {
+    const MAX_BACKOFF: Duration = Duration::from_secs(30);
+    let manager: Weak<Manager> = Arc::downgrade(manager);
+    let spawned = std::thread::Builder::new()
+        .name("termy-layout-watch".into())
+        .spawn(move || {
+            let mut watch = Some(watch);
+            let mut backoff = Duration::from_millis(250);
+            loop {
+                let Some(current) = watch.as_mut() else {
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(MAX_BACKOFF);
+                    let Some(manager) = manager.upgrade() else {
+                        return;
+                    };
+                    match manager.client.watch_layout() {
+                        Ok(reopened) => watch = Some(reopened),
+                        Err(error) => log::debug!("Cannot watch the multiplexer layout: {error:#}"),
+                    }
+                    continue;
+                };
+                if let Err(error) = current.recv() {
+                    log::warn!("Lost the multiplexer layout watch: {error:#}");
+                    watch = None;
+                    continue;
+                }
+                backoff = Duration::from_millis(250);
+                let Some(manager) = manager.upgrade() else {
+                    return;
+                };
+                let remote = manager
+                    .client
+                    .layout_revision()
+                    .map_err(|error| error.to_string())
+                    .and_then(|(revision, json)| {
+                        Ok(RemoteLayout {
+                            revision,
+                            layout: SavedState::parse(json.as_deref())?,
+                        })
+                    });
+                match remote {
+                    Ok(remote) => {
+                        let remote = Arc::new(remote);
+                        manager
+                            .listeners
+                            .lock()
+                            .unwrap()
+                            .retain(|listener| listener.send(Arc::clone(&remote)).is_ok());
+                    }
+                    Err(error) => log::warn!("Cannot read the multiplexer layout: {error}"),
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        log::error!("Cannot watch the multiplexer layout: {error}");
+    }
 }
 
 pub(crate) fn enabled(cx: &App) -> bool {
@@ -253,7 +346,7 @@ fn detached_window_ids(state: &State, live: &[PaneInfo]) -> Vec<String> {
         .windows
         .iter()
         .filter(|window| !state.claimed.contains(&window.id))
-        .filter(|window| session_ids(&window.session).any(|id| running.contains(id)))
+        .filter(|window| window.session.session_ids().any(|id| running.contains(id)))
         .map(|window| window.id.clone())
         .collect()
 }
@@ -282,19 +375,74 @@ pub(crate) fn queue_detached_window(cx: &App) -> bool {
     let Ok(live) = manager.client.list() else {
         return false;
     };
-    let mut state = manager.state.lock().unwrap();
-    let Some(id) = detached_window_ids(&state, &live).into_iter().next() else {
-        return false;
+    let (id, gone) = {
+        let state = manager.state.lock().unwrap();
+        let Some(id) = detached_window_ids(&state, &live).into_iter().next() else {
+            return false;
+        };
+        let running: HashSet<&str> = live
+            .iter()
+            .filter(|pane| !pane.exited)
+            .map(|pane| pane.id.as_str())
+            .collect();
+        let gone: Vec<String> = state
+            .saved
+            .windows
+            .iter()
+            .filter(|window| window.id == id)
+            .flat_map(|window| window.session.session_ids())
+            .filter(|pane| !running.contains(pane))
+            .map(str::to_owned)
+            .collect();
+        (id, gone)
     };
-    // Panes that ended since the window was saved cannot be reattached.
-    let live_ids: HashSet<&str> = live.iter().map(|pane| pane.id.as_str()).collect();
-    if let Some(window) = state
-        .saved
-        .windows
-        .iter_mut()
-        .find(|window| window.id == id)
+    // Panes that ended since the window was saved cannot be reattached:
+    // close the exited ones and drop them from the layout, collapsing their
+    // tabs as a close would, before the window claims it.
+    for pane in live
+        .iter()
+        .filter(|pane| pane.exited && gone.contains(&pane.id))
     {
-        prune_session(&mut window.session, &live_ids);
+        if let Err(error) = manager.client.close(&pane.id) {
+            log::warn!(
+                "Cannot close exited multiplexer pane {}: {error:#}",
+                pane.id
+            );
+        }
+    }
+    let published = manager.client.update_layout(|layout| {
+        if let Some(window) = layout.windows.iter_mut().find(|window| window.id == id) {
+            for pane in &gone {
+                window.session.remove_pane(pane);
+            }
+        }
+        Ok(())
+    });
+    let mut state = manager.state.lock().unwrap();
+    match published {
+        Ok(update) => {
+            if let Some(window) = update
+                .layout
+                .windows
+                .into_iter()
+                .find(|window| window.id == id)
+            {
+                set_base(&mut state, &id, window.session);
+            }
+        }
+        Err(error) => {
+            log::warn!("Cannot prune the detached window's layout: {error:#}");
+            if let Some(window) = state
+                .saved
+                .windows
+                .iter_mut()
+                .find(|window| window.id == id)
+            {
+                for pane in &gone {
+                    window.session.remove_pane(pane);
+                }
+            }
+        }
     }
     if !state.pending.contains(&id) {
         state.pending.push_front(id);
@@ -306,6 +454,9 @@ pub(crate) struct WindowSession {
     manager: Arc<Manager>,
     id: String,
     released: AtomicBool,
+    /// Set by a failed save, cleared by a successful one: failures are shown
+    /// once per streak rather than on every debounced save.
+    save_failing: AtomicBool,
 }
 
 pub(crate) fn claim_window(
@@ -315,8 +466,14 @@ pub(crate) fn claim_window(
     let manager = Arc::clone(cx.try_global::<AppSessions>()?.0.as_ref()?);
     let mut state = manager.state.lock().unwrap();
     if reopen && state.claimed.is_empty() && state.pending.is_empty() {
-        if let Ok(panes) = manager.client.list() {
-            reconcile(&mut state.saved, &panes);
+        // Other clients may have changed the layout since launch: reconcile
+        // what the host has now, not this process's copy (audit B16).
+        match reconcile_on_host(&manager.client) {
+            Ok(saved) => {
+                state.saved = saved;
+                state.floors.clear();
+            }
+            Err(error) => log::error!("{error}"),
         }
         state.pending = state
             .saved
@@ -344,6 +501,7 @@ pub(crate) fn claim_window(
             manager,
             id,
             released: AtomicBool::new(false),
+            save_failing: AtomicBool::new(false),
         }),
         saved.map(|window| window.session),
     ))
@@ -372,10 +530,9 @@ impl WindowSession {
         }
     }
 
-    /// Release this window and remove it from the host layout, for a window
-    /// closed with "Terminate": its terminals end, so there is nothing left
-    /// to reopen. A layout that keeps changing is left for the next start's
-    /// reconcile, which drops windows whose terminals are gone.
+    /// Release this window and remove it from the host layout: it closed
+    /// for good, because it was closed with "Terminate", its last shell
+    /// exited (audit B2) or its last tab went. Nothing is left to reopen.
     pub(crate) fn forget(&self) -> Result<(), String> {
         let _gate = self.manager.write_gate.lock().unwrap();
         if self.released.swap(true, Ordering::AcqRel) {
@@ -386,45 +543,64 @@ impl WindowSession {
             state.claimed.remove(&self.id);
             state.pending.retain(|id| id != &self.id);
             state.saved.windows.retain(|window| window.id != self.id);
+            state.floors.remove(&self.id);
         }
-        for _ in 0..8 {
-            let expected = self
-                .manager
-                .client
-                .layout()
-                .map_err(|error| error.to_string())?;
-            let Some(json) = &expected else {
-                return Ok(());
-            };
-            let mut remote =
-                serde_json::from_str::<SavedState>(json).map_err(|error| error.to_string())?;
-            let before = remote.windows.len();
-            remote.windows.retain(|window| window.id != self.id);
-            if remote.windows.len() == before {
-                return Ok(());
-            }
-            let replacement = serde_json::to_string(&remote).map_err(|error| error.to_string())?;
-            if self
-                .manager
-                .client
-                .compare_and_set_layout(expected, replacement)
-                .map_err(|error| error.to_string())?
-            {
-                return Ok(());
-            }
-        }
-        Err("The session layout is changing".into())
+        self.manager
+            .client
+            .update_layout(|layout| {
+                layout.windows.retain(|window| window.id != self.id);
+                Ok(())
+            })
+            .map(drop)
+            .map_err(|error| format!("{error:#}"))
     }
 
-    pub(crate) fn save(&self, session: StoredSession) -> Result<(), String> {
-        // Serialize writes from all windows so an older snapshot cannot
-        // overwrite a newer tab transfer or a different window's changes.
-        let _gate = self.manager.write_gate.lock().unwrap();
+    /// Every layout the host publishes from now on (audit B5).
+    pub(crate) fn layout_changes(&self) -> flume::Receiver<Arc<RemoteLayout>> {
+        let (sender, receiver) = flume::unbounded();
+        self.manager.listeners.lock().unwrap().push(sender);
+        receiver
+    }
+
+    /// This window's `(base, remote)` sessions when `remote` changed it since
+    /// it last synced. `None` for stale revisions and unchanged windows.
+    pub(crate) fn remote_change(
+        &self,
+        remote: &RemoteLayout,
+    ) -> Option<(StoredSession, StoredSession)> {
         if self.is_released() {
-            return Ok(());
+            return None;
         }
-        let previous = self
-            .manager
+        let state = self.manager.state.lock().unwrap();
+        if state.floors.get(&self.id).copied().unwrap_or(0) > remote.revision {
+            return None;
+        }
+        let session = &remote
+            .layout
+            .windows
+            .iter()
+            .find(|window| window.id == self.id)?
+            .session;
+        let base = &state
+            .saved
+            .windows
+            .iter()
+            .find(|window| window.id == self.id)?
+            .session;
+        (base != session).then(|| (base.clone(), session.clone()))
+    }
+
+    /// Records that the view now reflects `session` at `revision`.
+    pub(crate) fn adopt_remote(&self, revision: u64, session: StoredSession) {
+        let mut state = self.manager.state.lock().unwrap();
+        set_base(&mut state, &self.id, session);
+        let floor = state.floors.entry(self.id.clone()).or_default();
+        *floor = (*floor).max(revision);
+    }
+
+    /// The session this window last synced with the host.
+    pub(crate) fn base(&self) -> Option<StoredSession> {
+        self.manager
             .state
             .lock()
             .unwrap()
@@ -432,88 +608,94 @@ impl WindowSession {
             .windows
             .iter()
             .find(|window| window.id == self.id)
-            .map(|window| window.session.clone());
-        let mut published = false;
-        for _ in 0..8 {
-            let expected = self
-                .manager
-                .client
-                .layout()
-                .map_err(|error| error.to_string())?;
-            let mut remote = match &expected {
-                Some(json) => {
-                    serde_json::from_str::<SavedState>(json).map_err(|error| error.to_string())?
-                }
-                None => SavedState {
-                    version: 1,
-                    windows: Vec::new(),
-                },
-            };
-            if remote.version != 1 {
-                return Err("Unsupported multiplexer layout version".into());
-            }
-            if let Some(window) = remote
+            .map(|window| window.session.clone())
+    }
+
+    /// Publishes `session`, the view's state, merged onto the host's copy of
+    /// this window. `base` must be [`Self::base`] as read together with
+    /// `session` on the foreground: a remote change adopted while this save
+    /// waited (see [`Self::adopt_remote`]) is not in `session`, and merging
+    /// against the newer base would read its additions as local closures.
+    pub(crate) fn save(
+        &self,
+        session: StoredSession,
+        base: Option<StoredSession>,
+    ) -> Result<(), String> {
+        // Serialize writes from all windows so an older snapshot cannot
+        // overwrite a newer tab transfer or a different window's changes.
+        let _gate = self.manager.write_gate.lock().unwrap();
+        if self.is_released() {
+            return Ok(());
+        }
+        let result = self.manager.client.update_layout(|remote| {
+            match remote
                 .windows
                 .iter_mut()
                 .find(|window| window.id == self.id)
             {
-                window.session = match &previous {
-                    Some(base) => {
-                        termy_core::session_model::merge_session(base, &session, &window.session)
-                            .map_err(str::to_owned)?
-                    }
-                    None if window.session == session => session.clone(),
-                    None => return Err("This window was created by another client".into()),
-                };
-            } else {
-                if self
-                    .manager
-                    .state
-                    .lock()
-                    .unwrap()
-                    .published_windows
-                    .contains(&self.id)
-                    && expected.is_some()
-                {
-                    return Err("This window was removed by another client".into());
+                Some(window) => {
+                    let base = base.as_ref().unwrap_or(&window.session);
+                    window.session =
+                        termy_core::session_model::rebase_session(base, &session, &window.session);
                 }
-                remote.windows.push(SavedWindow {
+                // A window that is open exists, even if another client
+                // removed it from the layout.
+                None => remote.windows.push(SavedWindow {
                     id: self.id.clone(),
                     session: session.clone(),
-                });
+                }),
             }
-            let replacement = serde_json::to_string(&remote).map_err(|error| error.to_string())?;
-            if self
-                .manager
-                .client
-                .compare_and_set_layout(expected, replacement)
-                .map_err(|error| error.to_string())?
-            {
-                published = true;
-                break;
+            Ok(())
+        });
+        match result {
+            Ok(update) => {
+                // Retain what this view actually knows, not the merged remote
+                // state. Otherwise its next unchanged save would undo
+                // remote-only edits. A remote change adopted meanwhile is what
+                // the view shows now; keep that base instead. A failed save
+                // leaves the base alone: its local edits were not published,
+                // so the next save must still see them as edits (audit B3).
+                let mut state = self.manager.state.lock().unwrap();
+                let current = state
+                    .saved
+                    .windows
+                    .iter()
+                    .find(|window| window.id == self.id)
+                    .map(|window| &window.session);
+                if current == base.as_ref() {
+                    set_base(&mut state, &self.id, session);
+                }
+                let floor = state.floors.entry(self.id.clone()).or_default();
+                *floor = (*floor).max(update.revision);
+                self.save_failing.store(false, Ordering::Release);
+                Ok(())
+            }
+            Err(error) => {
+                let error = format!("{error:#}");
+                if !self.save_failing.swap(true, Ordering::AcqRel) {
+                    crate::ui::toast::error(format!(
+                        "Could not save this window's multiplexer layout: {error}"
+                    ));
+                }
+                Err(error)
             }
         }
-        if !published {
-            return Err("The session layout is changing; try saving again".into());
-        }
-        // Retain what this view actually knows, not the merged remote state.
-        // Otherwise its next unchanged save would undo remote-only edits.
-        let mut state = self.manager.state.lock().unwrap();
-        state.published_windows.insert(self.id.clone());
-        if let Some(window) = state
-            .saved
-            .windows
-            .iter_mut()
-            .find(|window| window.id == self.id)
-        {
-            window.session = session;
-        } else {
-            state.saved.windows.push(SavedWindow {
-                id: self.id.clone(),
-                session,
-            });
-        }
-        Ok(())
+    }
+}
+
+fn set_base(state: &mut State, id: &str, session: StoredSession) {
+    if let Some(window) = state
+        .saved
+        .windows
+        .iter_mut()
+        .find(|window| window.id == id)
+    {
+        window.session = session;
+    } else {
+        state.saved.windows.push(SavedWindow {
+            id: id.to_owned(),
+            session,
+        });
     }
 }
 
@@ -564,58 +746,50 @@ impl Drop for PaneSession {
     }
 }
 
-fn session_ids(session: &StoredSession) -> impl Iterator<Item = &str> {
-    session
-        .workspaces
-        .iter()
-        .flat_map(|workspace| &workspace.tabs)
-        .flat_map(|tab| &tab.panes)
-        .filter_map(|pane| pane.session_id.as_deref())
-}
-
-/// Drop the panes of `session` whose host terminals are gone.
-fn prune_session(session: &mut StoredSession, live_ids: &HashSet<&str>) {
-    for workspace in &mut session.workspaces {
+/// Brings a saved layout in line with the host's live panes: dead panes leave
+/// their tabs the way a close would (collapsing split trees, following the
+/// active tab and pane), empty workspaces stay, and live panes no window
+/// lists are collected in a "Recovered sessions" workspace.
+fn reconcile(saved: &mut SavedState, live: &[PaneInfo]) {
+    let live_ids: HashSet<&str> = live.iter().map(|pane| pane.id.as_str()).collect();
+    let dead: Vec<String> = saved
+        .session_ids()
+        .filter(|id| !live_ids.contains(id))
+        .map(str::to_owned)
+        .collect();
+    for id in dead {
+        saved.remove_pane(&id);
+    }
+    for workspace in saved
+        .windows
+        .iter_mut()
+        .flat_map(|window| &mut window.session.workspaces)
+    {
+        // Live layouts always carry session IDs; drop anything else.
         for tab in &mut workspace.tabs {
-            let original = tab.panes.len();
-            tab.panes.retain(|pane| {
-                pane.session_id
-                    .as_deref()
-                    .is_some_and(|id| live_ids.contains(id))
-            });
-            if tab.panes.len() != original {
+            if tab.panes.iter().any(|pane| pane.session_id.is_none()) {
+                tab.panes.retain(|pane| pane.session_id.is_some());
                 tab.layout_tree_json = None;
                 tab.zoomed = false;
+                tab.active_pane = tab.active_pane.min(tab.panes.len().saturating_sub(1));
             }
-            tab.active_pane = tab.active_pane.min(tab.panes.len().saturating_sub(1));
         }
         workspace.tabs.retain(|tab| !tab.panes.is_empty());
         workspace.active_tab = workspace
             .active_tab
             .min(workspace.tabs.len().saturating_sub(1));
     }
-    session
-        .workspaces
-        .retain(|workspace| !workspace.tabs.is_empty());
-    session.active_workspace = session
-        .active_workspace
-        .min(session.workspaces.len().saturating_sub(1));
-}
-
-fn reconcile(saved: &mut SavedState, live: &[PaneInfo]) {
-    let live_ids: HashSet<&str> = live.iter().map(|pane| pane.id.as_str()).collect();
-    for window in &mut saved.windows {
-        prune_session(&mut window.session, &live_ids);
-    }
-    saved
-        .windows
-        .retain(|window| !window.session.workspaces.is_empty());
-    let referenced: HashSet<String> = saved
-        .windows
-        .iter()
-        .flat_map(|window| session_ids(&window.session))
-        .map(str::to_owned)
-        .collect();
+    // A window with no tab anywhere has nothing to show: its panes were all
+    // closed or exited. Opening it would only add a blank window. An empty
+    // workspace beside live tabs stays (`mux window W create-workspace`).
+    saved.windows.retain(|window| {
+        window
+            .session
+            .workspaces
+            .iter()
+            .any(|workspace| !workspace.tabs.is_empty())
+    });
+    let referenced: HashSet<String> = saved.session_ids().map(str::to_owned).collect();
     let recovered: Vec<_> = live
         .iter()
         .filter(|pane| !referenced.contains(&pane.id))
@@ -665,12 +839,159 @@ fn reconcile(saved: &mut SavedState, live: &[PaneInfo]) {
 
 #[cfg(all(test, unix))]
 pub(crate) fn install_for_test(client: SessionClient, cx: &mut App) -> Result<(), String> {
-    install(load(client).map_err(|error| error.to_string())?, cx)
+    install(load(client).map_err(|error| error.to_string())?, cx);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pane(id: &str, left: u16, top: u16, width: u16, height: u16) -> StoredPane {
+        StoredPane {
+            session_id: Some(id.into()),
+            left,
+            top,
+            width,
+            height,
+            buffer: None,
+            zoom_steps: 0,
+        }
+    }
+
+    fn tab(panes: Vec<StoredPane>) -> StoredTab {
+        StoredTab {
+            zoomed: false,
+            presentation: None,
+            pinned: false,
+            manual_title: None,
+            active_pane: 0,
+            layout_tree_json: None,
+            panes,
+        }
+    }
+
+    fn workspace(name: &str, tabs: Vec<StoredTab>, active_tab: usize) -> StoredWorkspace {
+        StoredWorkspace {
+            name: name.into(),
+            pinned: false,
+            active_tab,
+            tabs,
+        }
+    }
+
+    fn live(ids: &[&str]) -> Vec<PaneInfo> {
+        ids.iter()
+            .map(|id| PaneInfo {
+                id: (*id).into(),
+                child_pid: None,
+                title: None,
+                working_directory: None,
+                exited: false,
+            })
+            .collect()
+    }
+
+    fn saved(workspaces: Vec<StoredWorkspace>, active_workspace: usize) -> SavedState {
+        SavedState {
+            version: 1,
+            windows: vec![SavedWindow {
+                id: "window".into(),
+                session: StoredSession {
+                    workspaces,
+                    active_workspace,
+                    zoom_steps: 0,
+                },
+            }],
+        }
+    }
+
+    /// Audit B4: an empty workspace (`mux window W create-workspace`) and the
+    /// active workspace selection survive a relaunch.
+    #[test]
+    fn reconcile_keeps_empty_workspaces() {
+        let mut layout = saved(
+            vec![
+                workspace("Work", vec![tab(vec![pane("a", 0, 0, 80, 24)])], 0),
+                workspace("Review", Vec::new(), 0),
+            ],
+            1,
+        );
+        let before = layout.clone();
+        reconcile(&mut layout, &live(&["a"]));
+        assert_eq!(layout, before);
+    }
+
+    /// Audit B16: removing a dead pane collapses the split tree, so the tab
+    /// has no hole and later CLI edits can infer it.
+    #[test]
+    fn reconcile_collapses_split_trees() {
+        let mut layout = saved(
+            vec![workspace(
+                "Work",
+                vec![tab(vec![
+                    pane("a", 0, 0, 40, 24),
+                    pane("b", 40, 0, 40, 12),
+                    pane("c", 40, 12, 40, 12),
+                ])],
+                0,
+            )],
+            0,
+        );
+        reconcile(&mut layout, &live(&["a", "b"]));
+        let tab = &layout.windows[0].session.workspaces[0].tabs[0];
+        assert_eq!(
+            tab.panes,
+            vec![pane("a", 0, 0, 40, 24), pane("b", 40, 0, 40, 24)]
+        );
+        assert!(tab.layout_tree().is_ok());
+    }
+
+    /// A window whose panes all went away is not reopened as a blank window.
+    #[test]
+    fn reconcile_drops_windows_without_tabs() {
+        let mut layout = saved(
+            vec![
+                workspace("Work", vec![tab(vec![pane("gone", 0, 0, 80, 24)])], 0),
+                workspace("Review", Vec::new(), 0),
+            ],
+            0,
+        );
+        reconcile(&mut layout, &[]);
+        assert!(layout.windows.is_empty());
+    }
+
+    /// Audit L5: tabs [A, B, C] with B active and A dead keep B selected.
+    #[test]
+    fn reconcile_follows_the_active_tab_by_identity() {
+        let mut layout = saved(
+            vec![workspace(
+                "Work",
+                vec![
+                    tab(vec![pane("a", 0, 0, 80, 24)]),
+                    tab(vec![pane("b", 0, 0, 80, 24)]),
+                    tab(vec![pane("c", 0, 0, 80, 24)]),
+                ],
+                1,
+            )],
+            0,
+        );
+        reconcile(&mut layout, &live(&["b", "c", "orphan"]));
+        let session = &layout.windows[0].session;
+        let workspace = &session.workspaces[0];
+        assert_eq!(workspace.tabs.len(), 2);
+        assert_eq!(
+            workspace.tabs[workspace.active_tab].panes[0]
+                .session_id
+                .as_deref(),
+            Some("b")
+        );
+        assert_eq!(session.workspaces[1].name, "Recovered sessions");
+        assert_eq!(
+            session.workspaces[1].tabs[0].panes[0].session_id.as_deref(),
+            Some("orphan")
+        );
+    }
 
     #[test]
     fn startup_failure_toast_says_how_to_stop_an_old_host() {
@@ -761,10 +1082,11 @@ mod tests {
         });
     }
 
-    /// A layout the app cannot parse falls back instead of failing launch.
+    /// The host refuses a layout the app cannot parse (audit I4), so such a
+    /// layout can no longer stop the multiplexer from starting.
     #[cfg(unix)]
     #[gpui_kit::test]
-    fn unparsable_layout_falls_back_to_local_terminals(cx: &mut gpui_kit::TestAppContext) {
+    fn unparsable_layouts_never_reach_the_app(cx: &mut gpui_kit::TestAppContext) {
         let temp = tempfile::tempdir().unwrap();
         let root = private_root(&temp);
         let host = {
@@ -781,13 +1103,10 @@ mod tests {
                 }
             }
         };
-        client.set_layout("{ not a layout".into()).unwrap();
+        assert!(client.set_layout("{ not a layout".into()).is_err());
         cx.update(|cx| {
             start(&root, Path::new("/nonexistent/termy"), cx);
-            assert!(!enabled(cx));
-            let mut config = multiplexer_and_tmux_config();
-            effective_config(&mut config, cx);
-            assert!(!config.tmux_enabled);
+            assert!(enabled(cx));
         });
         termy_core::multiplexer::shutdown_host(&root).unwrap();
         host.join().unwrap().unwrap();

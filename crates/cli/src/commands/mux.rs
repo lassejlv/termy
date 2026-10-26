@@ -200,6 +200,15 @@ fn capture(id: &str, terminal: &Terminal) -> Value {
         "display_offset":render.metadata.display_offset,"history_size":render.metadata.history_size})
 }
 
+/// Steps that failed after a layout change was committed (audit L7): the
+/// command succeeded, so scripts must not retry it.
+fn with_warnings(mut result: Value, warnings: Vec<String>) -> Value {
+    if !warnings.is_empty() {
+        result["warnings"] = json!(warnings);
+    }
+    result
+}
+
 fn execute(args: Args) -> anyhow::Result<Value> {
     let root = args
         .session_dir
@@ -241,39 +250,27 @@ fn execute(args: Args) -> anyhow::Result<Value> {
             window,
             workspace,
         } => {
-            let target = if let Some(window_id) = window {
-                let layout: termy_core::session_model::StoredMultiplexer =
-                    serde_json::from_str(&client.layout()?.context("No saved session layout")?)?;
-                let index = workspace.unwrap_or(0);
-                let expected = layout
-                    .windows
-                    .iter()
-                    .find(|window| window.id == window_id)
-                    .and_then(|window| window.session.workspaces.get(index))
-                    .context("Workspace does not exist")?
-                    .clone();
-                Some(termy_core::session_model::WorkspaceTarget {
-                    window_id,
-                    index,
-                    expected,
-                })
-            } else {
-                None
-            };
-            let (id, terminal) = client.create_tab(
-                PaneLaunch {
-                    size: dimensions(cols, rows)?,
-                    working_directory,
-                    config: TerminalRuntimeConfig {
-                        shell,
-                        ..Default::default()
-                    },
-                    launch: None,
-                    shell_integration: None,
+            let launch = PaneLaunch {
+                size: dimensions(cols, rows)?,
+                working_directory,
+                config: TerminalRuntimeConfig {
+                    shell,
+                    ..Default::default()
                 },
-                None,
-                target,
-            )?;
+                launch: None,
+                shell_integration: None,
+            };
+            // The CLI has no snapshot of its own to protect: the workspace
+            // only has to exist (audit B17).
+            let (id, terminal) = match window {
+                Some(window_id) => client.create_tab_in_workspace(
+                    launch,
+                    None,
+                    &window_id,
+                    workspace.unwrap_or(0),
+                )?,
+                None => client.create_tab(launch, None, None)?,
+            };
             drop(terminal);
             Ok(json!({"id":id}))
         }
@@ -358,8 +355,8 @@ fn execute(args: Args) -> anyhow::Result<Value> {
             Ok(json!({"id":id,"cols":cols,"rows":rows}))
         }
         Command::Close { id } => {
-            client.close_saved_pane(&id)?;
-            Ok(json!({"id":id}))
+            let warnings = client.close_saved_pane(&id)?;
+            Ok(with_warnings(json!({"id":id}), warnings))
         }
         Command::Layout => match client.layout()? {
             Some(layout) => Ok(serde_json::from_str(&layout)?),
@@ -399,9 +396,8 @@ fn execute(args: Args) -> anyhow::Result<Value> {
                     },
                 },
             };
-            Ok(serde_json::to_value(
-                client.edit_tab(&id, expected, &edit)?,
-            )?)
+            let (layout, warnings) = client.edit_tab(&id, expected, &edit)?;
+            Ok(with_warnings(serde_json::to_value(layout)?, warnings))
         }
         Command::Split { id, axis } => {
             let layout: termy_core::session_model::StoredMultiplexer =
@@ -427,7 +423,7 @@ fn execute(args: Args) -> anyhow::Result<Value> {
             } else {
                 termy_core::session_model::PaneResizeAxis::Vertical
             };
-            let (new_id, terminal) = client.split_pane(
+            let (new_id, terminal, warnings) = client.split_pane(
                 &id,
                 axis,
                 tab,
@@ -440,7 +436,10 @@ fn execute(args: Args) -> anyhow::Result<Value> {
                 },
             )?;
             drop(terminal);
-            Ok(json!({"id":new_id,"source_id":id,"axis":axis}))
+            Ok(with_warnings(
+                json!({"id":new_id,"source_id":id,"axis":axis}),
+                warnings,
+            ))
         }
         Command::Window { id, edit } => {
             use termy_core::session_model::WindowEdit;

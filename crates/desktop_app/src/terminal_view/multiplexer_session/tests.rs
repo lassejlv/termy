@@ -7,6 +7,8 @@ use std::{
 };
 use termy_core::multiplexer::SessionClient;
 
+mod layout;
+
 const PREFIX: &str = "terminal_view::multiplexer_session::tests::";
 
 #[gpui_kit::test]
@@ -473,7 +475,7 @@ fn desktop_saves_preserve_cli_workspace_edits(cx: &mut TestAppContext) {
             tabs: Vec::new(),
         }],
     };
-    session.save(local.clone()).unwrap();
+    session.save(local.clone(), session.base()).unwrap();
     let saved: termy_core::session_model::StoredMultiplexer =
         serde_json::from_str(&client.layout().unwrap().unwrap()).unwrap();
     client
@@ -484,14 +486,14 @@ fn desktop_saves_preserve_cli_workspace_edits(cx: &mut TestAppContext) {
             &termy_core::session_model::WorkspaceEdit::SetPinned { pinned: true },
         )
         .unwrap();
-    session.save(local.clone()).unwrap();
-    session.save(local.clone()).unwrap();
+    session.save(local.clone(), session.base()).unwrap();
+    session.save(local.clone(), session.base()).unwrap();
     let saved: termy_core::session_model::StoredMultiplexer =
         serde_json::from_str(&client.layout().unwrap().unwrap()).unwrap();
     assert!(saved.windows[0].session.workspaces[0].pinned);
     let mut changed = local;
     changed.workspaces[0].name = "Desktop renamed".into();
-    session.save(changed).unwrap();
+    session.save(changed, session.base()).unwrap();
     let saved: termy_core::session_model::StoredMultiplexer =
         serde_json::from_str(&client.layout().unwrap().unwrap()).unwrap();
     assert_eq!(

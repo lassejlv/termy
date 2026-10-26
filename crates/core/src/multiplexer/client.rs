@@ -1,4 +1,5 @@
 use crate::multiplexer::{discovery, protocol::*};
+use crate::session_model::{StoredMultiplexer, StoredWorkspace, WorkspaceEdit};
 use crate::{remote::*, *};
 use anyhow::{bail, ensure};
 use flume::Sender;
@@ -15,6 +16,8 @@ use std::{
 /// Longer than the host's own per-request deadline, so a slow host answers
 /// with its error before the client gives up on the reply.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Read-modify-write attempts before a busy layout is reported to the caller.
+const LAYOUT_ATTEMPTS: usize = 16;
 
 struct Connection {
     root: PathBuf,
@@ -70,16 +73,10 @@ impl SessionClient {
         &self,
         window_id: &str,
         index: usize,
-        expected: &crate::session_model::StoredWorkspace,
-        edit: &crate::session_model::WorkspaceEdit,
-    ) -> anyhow::Result<crate::session_model::StoredMultiplexer> {
-        for _ in 0..8 {
-            let serialized = self
-                .layout()?
-                .ok_or_else(|| anyhow::anyhow!("No saved session layout"))?;
-            let mut layout: crate::session_model::StoredMultiplexer =
-                serde_json::from_str(&serialized)?;
-            ensure!(layout.version == 1, "Unsupported session layout version");
+        expected: &StoredWorkspace,
+        edit: &WorkspaceEdit,
+    ) -> anyhow::Result<StoredMultiplexer> {
+        let update = self.update_layout(|layout| {
             let workspace = layout
                 .windows
                 .iter_mut()
@@ -90,15 +87,45 @@ impl SessionClient {
                 workspace == expected,
                 "Workspace changed in another client; refresh before editing"
             );
-            edit.apply(workspace)
-                .map_err(|error| anyhow::anyhow!(error))?;
-            let replacement = serde_json::to_string(&layout)?;
-            if self.compare_and_set_layout(Some(serialized), replacement)? {
-                return Ok(layout);
+            edit.apply(workspace).map_err(anyhow::Error::msg)
+        })?;
+        Ok(update.layout)
+    }
+
+    /// Reads the layout, lets `edit` change it and publishes the result only
+    /// if no other client wrote in between, retrying a bounded number of times.
+    /// `edit` runs once per attempt on a fresh copy; an error from it ends the
+    /// update without writing; when it changes nothing, nothing is written.
+    pub fn update_layout<T>(
+        &self,
+        mut edit: impl FnMut(&mut StoredMultiplexer) -> anyhow::Result<T>,
+    ) -> anyhow::Result<LayoutUpdate<T>> {
+        for attempt in 0..LAYOUT_ATTEMPTS {
+            if attempt > 0 {
+                // Writers that collided retry at different moments.
+                let jitter = u64::from(rand_core::RngCore::next_u32(&mut rand_core::OsRng) % 4);
+                std::thread::sleep(Duration::from_millis(attempt as u64 + jitter));
+            }
+            let (revision, json) = self.layout_revision()?;
+            let original = StoredMultiplexer::parse(json.as_deref()).map_err(anyhow::Error::msg)?;
+            let mut layout = original.clone();
+            let value = edit(&mut layout)?;
+            let revision = if layout == original {
+                Some(revision)
+            } else {
+                self.compare_and_set_layout(revision, serde_json::to_string(&layout)?)?
+            };
+            if let Some(revision) = revision {
+                return Ok(LayoutUpdate {
+                    value,
+                    layout,
+                    revision,
+                });
             }
         }
-        bail!("Session layout is changing; retry the edit")
+        bail!("Session layout is changing; retry")
     }
+
     pub fn connect(root: &Path) -> anyhow::Result<Self> {
         Ok(Self {
             root: root.to_owned(),
@@ -119,6 +146,16 @@ impl SessionClient {
         let id = info.id;
         let terminal = self.attach_state(&id, state, wakeup)?;
         Ok((id, terminal))
+    }
+
+    /// Starts a terminal without attaching to it and returns its ID.
+    pub fn create_detached(&self, launch: PaneLaunch) -> anyhow::Result<String> {
+        let Response::Attached(info, _) =
+            self.connection.request(Request::Create(Box::new(launch)))?
+        else {
+            bail!("invalid create response");
+        };
+        Ok(info.id)
     }
 
     pub fn attach(
@@ -273,30 +310,47 @@ impl SessionClient {
             _ => bail!("invalid terminal command response"),
         }
     }
+    /// The layout as JSON, `None` before any client stored one.
     pub fn layout(&self) -> anyhow::Result<Option<String>> {
+        Ok(self.layout_revision()?.1)
+    }
+    /// The layout with its revision, which every accepted write increments.
+    pub fn layout_revision(&self) -> anyhow::Result<(u64, Option<String>)> {
         match self.connection.request(Request::GetLayout)? {
-            Response::Layout(layout) => Ok(layout),
+            Response::Layout { revision, layout } => Ok((revision, layout)),
             _ => bail!("invalid session layout"),
         }
     }
-    pub fn set_layout(&self, layout: String) -> anyhow::Result<()> {
-        self.connection.request(Request::SetLayout(layout))?;
-        Ok(())
+    /// Replaces the layout regardless of other clients' edits. The host
+    /// rejects a layout it cannot read. Returns the new revision.
+    pub fn set_layout(&self, layout: String) -> anyhow::Result<u64> {
+        match self.connection.request(Request::SetLayout(layout))? {
+            Response::LayoutUpdated { revision, .. } => Ok(revision),
+            _ => bail!("invalid session layout update response"),
+        }
     }
-    /// Publish a layout only if no other client changed the snapshot we read.
-    /// A false result leaves the host's layout untouched.
+    /// Publish a layout only if it is still at revision `expected`. Returns
+    /// the new revision, or `None` (leaving the layout untouched) when another
+    /// client wrote first. Prefer [`Self::update_layout`].
     pub fn compare_and_set_layout(
         &self,
-        expected: Option<String>,
+        expected: u64,
         replacement: String,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<u64>> {
         match self.connection.request(Request::CompareAndSetLayout {
             expected,
             replacement,
         })? {
-            Response::LayoutUpdated(updated) => Ok(updated),
+            Response::LayoutUpdated { updated, revision } => Ok(updated.then_some(revision)),
             _ => bail!("invalid session layout update response"),
         }
+    }
+    /// Opens a stream that reports each new layout revision.
+    pub fn watch_layout(&self) -> anyhow::Result<LayoutWatch> {
+        let mut stream = discovery::connect(&self.root)?;
+        write_message(&mut stream, &Request::WatchLayout)?;
+        stream.set_read_timeout(None)?;
+        Ok(LayoutWatch { stream })
     }
     /// Explicitly terminate all hosted terminals and the background host.
     /// [`crate::multiplexer::shutdown_host`] also stops a host of another
@@ -304,6 +358,48 @@ impl SessionClient {
     pub fn shutdown(&self) -> anyhow::Result<()> {
         self.connection.request(Request::Shutdown)?;
         Ok(())
+    }
+}
+
+/// The outcome of [`SessionClient::update_layout`].
+pub struct LayoutUpdate<T> {
+    /// What the edit returned.
+    pub value: T,
+    /// The layout as published, or as read when the edit changed nothing.
+    pub layout: StoredMultiplexer,
+    /// The revision of `layout`.
+    pub revision: u64,
+}
+
+/// Layout revisions as the host accepts writes, from
+/// [`SessionClient::watch_layout`]. Dropping it ends the stream.
+pub struct LayoutWatch {
+    stream: TcpStream,
+}
+
+impl LayoutWatch {
+    /// Blocks until the host reports a revision: the current one first, then
+    /// each newer one. A slow reader may skip revisions, never the latest.
+    pub fn recv(&mut self) -> anyhow::Result<u64> {
+        match read_message(&mut self.stream)? {
+            Response::LayoutChanged { revision } => Ok(revision),
+            Response::Error(error) => bail!(error),
+            _ => bail!("invalid layout notification"),
+        }
+    }
+
+    /// Makes a blocked or later [`Self::recv`] fail, from any thread.
+    pub fn closer(&self) -> anyhow::Result<impl Fn() + Send + Sync + 'static> {
+        let stream = self.stream.try_clone()?;
+        Ok(move || {
+            let _ = stream.shutdown(Shutdown::Both);
+        })
+    }
+}
+
+impl Drop for LayoutWatch {
+    fn drop(&mut self) {
+        let _ = self.stream.shutdown(Shutdown::Both);
     }
 }
 
@@ -716,9 +812,13 @@ mod tests {
             // The first request is answered only after the client gave up.
             let mut slow = accept();
             std::thread::sleep(Duration::from_millis(300));
-            let _ = write_message(&mut slow, &Response::Layout(Some("first".into())));
+            let layout = |text: &str| Response::Layout {
+                revision: 1,
+                layout: Some(text.into()),
+            };
+            let _ = write_message(&mut slow, &layout("first"));
             let mut next = accept();
-            write_message(&mut next, &Response::Layout(Some("second".into()))).unwrap();
+            write_message(&mut next, &layout("second")).unwrap();
         });
 
         let connection = Connection::connect(temp.path()).unwrap();
@@ -731,7 +831,8 @@ mod tests {
             .unwrap();
         drop(stream);
         assert!(connection.request(Request::GetLayout).is_err());
-        let Response::Layout(layout) = connection.request(Request::GetLayout).unwrap() else {
+        let Response::Layout { layout, .. } = connection.request(Request::GetLayout).unwrap()
+        else {
             panic!("expected a layout reply");
         };
         assert_eq!(layout.as_deref(), Some("second"));

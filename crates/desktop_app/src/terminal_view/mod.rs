@@ -3594,7 +3594,9 @@ impl TerminalView {
             // import marker existed.
             view.record_multiplexer_import();
             match view.restore_stored_session(session, cx) {
-                Ok(()) => true,
+                // A window whose active workspace is empty still gets a
+                // terminal to type in.
+                Ok(()) => !view.session.tabs.is_empty(),
                 Err(error) => {
                     log::error!("Failed to restore multiplexer tabs: {error}");
                     crate::ui::toast::error(format!("Could not restore multiplexer tabs: {error}"));
@@ -3707,6 +3709,7 @@ impl TerminalView {
             })
             .detach();
         }
+        view.start_multiplexer_layout_sync(cx);
         cx.on_release(|view, _cx| view.prepare_multiplexer_detach())
             .detach();
         cx.on_app_quit(|view, _cx| {
@@ -4346,10 +4349,19 @@ impl TerminalView {
                         TerminalEvent::Exit => {
                             let simulated_pane_counts =
                                 simulated_pane_counts.get_or_insert_with(|| {
+                                    // A zoomed tab parks its other panes in
+                                    // the zoom snapshot; they still run.
                                     self.session
                                         .tabs
                                         .iter()
-                                        .map(|tab| (tab.id, tab.panes.len()))
+                                        .map(|tab| {
+                                            let parked = self
+                                                .session
+                                                .native_pane_zoom_snapshots
+                                                .get(&tab.id)
+                                                .map_or(0, |zoom| zoom.other_panes.len());
+                                            (tab.id, tab.panes.len() + parked)
+                                        })
                                         .collect()
                                 });
                             let exit_should_quit = Self::schedule_native_exit(
@@ -4491,7 +4503,9 @@ impl TerminalView {
 
         if should_quit {
             // Shell `exit` in the last native pane closes only its own window.
-            self.sync_persisted_native_workspace();
+            if !self.discard_multiplexer_window() {
+                self.sync_persisted_native_workspace();
+            }
             if self.benchmark_exit_on_complete() {
                 self.schedule_benchmark_exit(cx);
                 should_redraw = true;

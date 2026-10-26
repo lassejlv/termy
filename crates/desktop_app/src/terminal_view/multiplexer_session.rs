@@ -134,6 +134,38 @@ impl TerminalView {
         }
     }
 
+    /// The window closes because nothing is left in it: its last shell
+    /// exited (audit B2), or its last tab was closed or moved to another
+    /// window. Ends any host panes it still shows and removes the window from
+    /// the layout instead of saving it: a saved dead pane would be reattached
+    /// on the next launch, replay its `Exit` and close the window again.
+    /// Returns false, leaving the window to be saved and detached, outside
+    /// multiplexer mode or while any of its panes still runs.
+    pub(super) fn discard_multiplexer_window(&self) -> bool {
+        let Some(window) = &self.multiplexer else {
+            return false;
+        };
+        let ids = self.multiplexer_window_session_ids();
+        let Ok(panes) = window.client().list() else {
+            return false;
+        };
+        let running = ids
+            .iter()
+            .any(|id| panes.iter().any(|pane| &pane.id == id && !pane.exited));
+        if running {
+            return false;
+        }
+        for id in ids {
+            if let Err(error) = window.client().close(&id) {
+                log::error!("Failed to close exited multiplexer pane: {error:#}");
+            }
+        }
+        if let Err(error) = window.forget() {
+            log::error!("Failed to remove the closed window from the session layout: {error}");
+        }
+        true
+    }
+
     /// A window owns the presentation; the host owns the running terminals.
     /// Explicit tab/pane deletion leaves the pane cleanup armed. Window/app
     /// removal first saves the layout, then detaches every owned terminal.

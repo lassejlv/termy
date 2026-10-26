@@ -9,14 +9,15 @@ use std::sync::Arc;
 // Version 3 adds TERM_PROGRAM identity to PaneLaunch's binary runtime config.
 // Version 4 requires mutual authentication, retires the legacy capability
 // fallbacks and freezes the shutdown handshake (see `Request`). It also
-// sends a subscription's replayed state as `Update::Replay`.
+// sends a subscription's replayed state as `Update::Replay`, gives the
+// session layout a revision and adds layout watching.
 pub(crate) const VERSION: u32 = 4;
 const MAX_MESSAGE_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Hash of the encoding of every wire type, checked by the `wire_golden`
 /// test. When it changes, the wire changed: bump [`VERSION`] (unless the
 /// unreleased change already did) and update this value.
-pub(crate) const WIRE_FINGERPRINT: u64 = 0x89c0_369a_3f59_fa83;
+pub(crate) const WIRE_FINGERPRINT: u64 = 0xfb24_2218_c560_f853;
 
 /// Identifies the build that wrote `endpoint.json`. A client logs a warning
 /// when it differs from its own under the same [`VERSION`], which points at
@@ -80,12 +81,16 @@ pub(crate) enum Request {
     },
     List,
     Close(String),
+    /// Answered with [`Response::Layout`].
     GetLayout,
+    /// Replaces the layout unconditionally; answered with
+    /// [`Response::LayoutUpdated`].
     SetLayout(String),
     /// Frozen (index 10).
     Shutdown,
+    /// Replaces the layout only while it is still at revision `expected`.
     CompareAndSetLayout {
-        expected: Option<String>,
+        expected: u64,
         replacement: String,
     },
     SubscribeGraphics(String),
@@ -105,6 +110,9 @@ pub(crate) enum Request {
     /// Frozen (index 15). The client's proof of the token, answering
     /// [`Response::Challenge`].
     Proof([u8; 32]),
+    /// Turns the connection into a stream of [`Response::LayoutChanged`]:
+    /// the current revision first, then one message per accepted write.
+    WatchLayout,
 }
 
 /// See [`Request`] for the wire rules and the frozen variants.
@@ -115,10 +123,19 @@ pub(crate) enum Response {
     Attached(PaneInfo, Arc<RemoteState>),
     Reply(RemoteReply),
     Panes(Vec<PaneInfo>),
-    Layout(Option<String>),
+    /// The layout and its revision: 0 before any layout was stored, then
+    /// one more for every accepted write.
+    Layout {
+        revision: u64,
+        layout: Option<String>,
+    },
     /// Frozen (index 5).
     Error(String),
-    LayoutUpdated(bool),
+    /// Whether a layout write was applied, and the revision now current.
+    LayoutUpdated {
+        updated: bool,
+        revision: u64,
+    },
     Viewport {
         changed: bool,
         generation: u64,
@@ -127,6 +144,10 @@ pub(crate) enum Response {
     Challenge {
         server_nonce: [u8; 32],
         server_proof: [u8; 32],
+    },
+    /// Sent on a [`Request::WatchLayout`] stream.
+    LayoutChanged {
+        revision: u64,
     },
 }
 

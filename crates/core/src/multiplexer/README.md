@@ -3,7 +3,7 @@
 ## Owner
 
 Owns the background session host, private local connection, PTY lifetime,
-remote terminal client, and opaque desktop session layout. The host uses
+remote terminal client, and the shared desktop session layout. The host uses
 `termy_core`; it has no display-server or tmux dependency. The desktop app
 provides its own executable as the host entry point for installed builds.
 
@@ -28,6 +28,16 @@ PID in `endpoint.json` for a host that no longer answers. Both check
 remove it and report that no host is running. The desktop falls back to plain
 local terminals (not tmux) with a toast when the host cannot be used or does
 not answer within 8 s.
+
+The host owns the session layout (`layout_store.rs`): it accepts only layouts
+that decode as `session_model::StoredMultiplexer`, bumps a revision on every
+accepted write, prunes panes it closes (and panes that exit while no client is
+attached) with the same tab collapse as `StoredTab::remove_pane`, and streams
+new revisions to `WatchLayout` connections. Clients edit it with
+`SessionClient::update_layout`, a read, edit and compare-and-set on the
+revision with a bounded retry. The desktop rebases its window edits onto the
+host's with `session_model::rebase_session` and applies the host's changes to
+open windows.
 
 The `wire_golden` test hashes a sample of every wire type and variant. When the
 hash changes, bump `VERSION` (unless the unreleased change already did) and

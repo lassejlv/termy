@@ -281,34 +281,116 @@ fn failed_host_start_reports_its_output() {
     );
 }
 
+fn shell(script: &str) -> PaneLaunch {
+    PaneLaunch {
+        size: TerminalSize::default(),
+        working_directory: None,
+        shell_integration: None,
+        config: TerminalRuntimeConfig::default(),
+        launch: Some(TerminalLaunch::Program {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+        }),
+    }
+}
+
+fn saved_pane(id: &str, left: u16, width: u16) -> session_model::StoredPane {
+    session_model::StoredPane {
+        session_id: Some(id.into()),
+        left,
+        top: 0,
+        width,
+        height: 24,
+        buffer: None,
+        zoom_steps: 0,
+    }
+}
+
+fn saved_tab(panes: Vec<session_model::StoredPane>) -> session_model::StoredTab {
+    session_model::StoredTab {
+        zoomed: false,
+        presentation: None,
+        pinned: false,
+        manual_title: None,
+        active_pane: 0,
+        layout_tree_json: None,
+        panes,
+    }
+}
+
+/// One window, one workspace holding `tabs`, with the last tab active.
+fn saved_layout(tabs: Vec<session_model::StoredTab>) -> String {
+    use session_model::*;
+    serde_json::to_string(&StoredMultiplexer {
+        version: STORED_MULTIPLEXER_VERSION,
+        windows: vec![StoredWindow {
+            id: "window".into(),
+            session: StoredSession {
+                workspaces: vec![StoredWorkspace {
+                    name: "Work".into(),
+                    pinned: false,
+                    active_tab: tabs.len().saturating_sub(1),
+                    tabs,
+                }],
+                active_workspace: 0,
+                zoom_steps: 0,
+            },
+        }],
+    })
+    .unwrap()
+}
+
+fn saved_tabs(client: &SessionClient) -> Vec<Vec<(String, u16)>> {
+    let layout =
+        session_model::StoredMultiplexer::parse(client.layout().unwrap().as_deref()).unwrap();
+    layout.windows[0].session.workspaces[0]
+        .tabs
+        .iter()
+        .map(|tab| {
+            tab.panes
+                .iter()
+                .map(|pane| (pane.session_id.clone().unwrap(), pane.width))
+                .collect()
+        })
+        .collect()
+}
+
+/// Audit I4: the host versions the layout, rejects layouts it cannot read and
+/// tells watchers about every accepted write.
 #[test]
-fn conditional_layout_updates_reject_stale_and_concurrent_writers() {
+fn layout_writes_are_revisioned_validated_and_announced() {
     let host = Host::new();
-    assert!(
+    let mut watch = host.client.watch_layout().unwrap();
+    assert_eq!(watch.recv().unwrap(), 0);
+    assert_eq!(host.client.layout_revision().unwrap(), (0, None));
+    let initial = saved_layout(Vec::new());
+    assert_eq!(
         host.client
-            .compare_and_set_layout(None, "initial".into())
-            .unwrap()
+            .compare_and_set_layout(0, initial.clone())
+            .unwrap(),
+        Some(1)
     );
-    assert!(
-        !host
-            .client
-            .compare_and_set_layout(None, "stale".into())
-            .unwrap()
+    assert_eq!(watch.recv().unwrap(), 1);
+    assert_eq!(
+        host.client.compare_and_set_layout(0, initial).unwrap(),
+        None,
+        "a stale revision must not overwrite"
     );
+
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
     let writers: Vec<_> = ["desktop", "CLI"]
         .into_iter()
-        .map(|value| {
+        .map(|name| {
             let client = SessionClient::connect(&host.root).unwrap();
             let barrier = barrier.clone();
             std::thread::spawn(move || {
+                let mut tab = saved_tab(vec![saved_pane(name, 0, 80)]);
+                tab.manual_title = Some(name.into());
                 barrier.wait();
-                (
-                    value,
-                    client
-                        .compare_and_set_layout(Some("initial".into()), value.into())
-                        .unwrap(),
-                )
+                let written = client
+                    .compare_and_set_layout(1, saved_layout(vec![tab]))
+                    .unwrap();
+                (name, written)
             })
         })
         .collect();
@@ -316,22 +398,233 @@ fn conditional_layout_updates_reject_stale_and_concurrent_writers() {
         .into_iter()
         .map(|writer| writer.join().unwrap())
         .collect();
-    assert_eq!(results.iter().filter(|(_, updated)| *updated).count(), 1);
-    let winner = results.iter().find(|(_, updated)| *updated).unwrap().0;
-    assert_eq!(host.client.layout().unwrap().as_deref(), Some(winner));
-    host.client.set_layout("legacy write".into()).unwrap();
-    assert!(
-        !host
-            .client
-            .compare_and_set_layout(Some(winner.into()), "stale again".into())
-            .unwrap()
-    );
     assert_eq!(
-        host.client.layout().unwrap().as_deref(),
-        Some("legacy write")
+        results
+            .iter()
+            .filter(|(_, written)| written.is_some())
+            .count(),
+        1
     );
+    let winner = results
+        .iter()
+        .find(|(_, written)| written.is_some())
+        .unwrap()
+        .0;
+    assert_eq!(saved_tabs(&host.client), [[(winner.to_owned(), 80)]]);
+    assert_eq!(watch.recv().unwrap(), 2);
+
+    for invalid in [
+        "legacy write",
+        r#"{"tabs":[]}"#,
+        r#"{"version":9,"windows":[]}"#,
+    ] {
+        assert!(host.client.set_layout(invalid.into()).is_err(), "{invalid}");
+        assert!(
+            host.client
+                .compare_and_set_layout(2, invalid.into())
+                .is_err()
+        );
+    }
+    assert_eq!(host.client.layout_revision().unwrap().0, 2);
+    // An unconditional write still gets a revision and a notification.
+    assert_eq!(host.client.set_layout(saved_layout(Vec::new())).unwrap(), 3);
+    assert_eq!(watch.recv().unwrap(), 3);
 }
 
+/// Audit I4 and B2: the host prunes panes it closes and panes that exit while
+/// no client shows them. An attached client still gets `Exit` and decides.
+#[test]
+fn closed_and_exited_panes_leave_the_layout() {
+    let host = Host::new();
+    let (kept, kept_terminal) = host.client.create(shell("read line"), None).unwrap();
+    let (closed, closed_terminal) = host.client.create(shell("read line"), None).unwrap();
+    // Never attached, so no client shows it when it exits.
+    let exited = host
+        .client
+        .create_detached(shell("read line; exit 0"))
+        .unwrap();
+    let (watched, watched_terminal) = host
+        .client
+        .create(shell("read line; exit 0"), None)
+        .unwrap();
+    host.client
+        .set_layout(saved_layout(vec![
+            saved_tab(vec![saved_pane(&watched, 0, 80)]),
+            saved_tab(vec![saved_pane(&kept, 0, 40), saved_pane(&closed, 40, 40)]),
+            saved_tab(vec![saved_pane(&exited, 0, 80)]),
+        ]))
+        .unwrap();
+    let mut watch = host.client.watch_layout().unwrap();
+    let revision = watch.recv().unwrap();
+
+    drop(closed_terminal);
+    host.client.close(&closed).unwrap();
+    assert!(watch.recv().unwrap() > revision);
+    assert_eq!(
+        saved_tabs(&host.client),
+        [
+            vec![(watched.clone(), 80)],
+            vec![(kept.clone(), 80)],
+            vec![(exited.clone(), 80)]
+        ]
+    );
+
+    // Detached: the host removes the pane once its shell exits.
+    host.client.write(&exited, b"\n".to_vec()).unwrap();
+    wait_until(|| saved_tabs(&host.client).len() == 2);
+    let layout =
+        session_model::StoredMultiplexer::parse(host.client.layout().unwrap().as_deref()).unwrap();
+    assert_eq!(
+        layout.windows[0].session.workspaces[0].active_tab, 1,
+        "the remaining neighbour of the closed active tab is selected"
+    );
+
+    // Attached: the client sees `Exit`; the layout keeps the pane for it.
+    host.client.write(&watched, b"\n".to_vec()).unwrap();
+    wait_until(|| {
+        watched_terminal
+            .drain_events(&mut |_| None)
+            .0
+            .iter()
+            .any(|event| matches!(event, TerminalEvent::Exit))
+    });
+    assert_eq!(saved_tabs(&host.client).len(), 2);
+    assert!(
+        host.client
+            .list()
+            .unwrap()
+            .iter()
+            .any(|pane| pane.id == watched && pane.exited)
+    );
+    drop((kept_terminal, watched_terminal));
+    for id in [kept, watched, exited] {
+        host.client.close(&id).unwrap();
+    }
+    assert!(saved_tabs(&host.client).is_empty());
+}
+
+/// Audit B17: creates that resolve their own workspace must not fail, or kill
+/// their new pane, because another client saved in between.
+#[test]
+fn concurrent_creates_and_saves_all_succeed() {
+    let host = Host::new();
+    host.client.set_layout(saved_layout(Vec::new())).unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    // One creator resolves the default workspace, the other names it like
+    // `termy mux create --window window --workspace 0`.
+    let creators: Vec<_> = [false, true]
+        .into_iter()
+        .map(|named| {
+            let client = SessionClient::connect(&host.root).unwrap();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                (0..3)
+                    .map(|_| {
+                        let (id, terminal) = if named {
+                            client.create_tab_in_workspace(shell("read line"), None, "window", 0)
+                        } else {
+                            client.create_tab(shell("read line"), None, None)
+                        }
+                        .unwrap();
+                        drop(terminal);
+                        id
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let saver = {
+        let client = SessionClient::connect(&host.root).unwrap();
+        std::thread::spawn(move || {
+            barrier.wait();
+            for _ in 0..40 {
+                // A desktop save: selection and presentation change.
+                client
+                    .update_layout(|layout| {
+                        let workspace = &mut layout.windows[0].session.workspaces[0];
+                        workspace.pinned = !workspace.pinned;
+                        workspace.active_tab = 0;
+                        Ok(())
+                    })
+                    .unwrap();
+            }
+        })
+    };
+    let mut created: Vec<String> = creators
+        .into_iter()
+        .flat_map(|creator| creator.join().unwrap())
+        .collect();
+    saver.join().unwrap();
+    let mut saved: Vec<String> = saved_tabs(&host.client)
+        .into_iter()
+        .map(|tab| tab[0].0.clone())
+        .collect();
+    created.sort();
+    saved.sort();
+    assert_eq!(saved, created);
+    assert_eq!(host.client.list().unwrap().len(), 6);
+    for id in created {
+        host.client.close(&id).unwrap();
+    }
+}
+
+/// Audit L6: closing a pane whose tab cannot be inferred repairs the layout
+/// instead of failing after the process was killed. Audit L7: once the
+/// layout change is committed, resize failures are warnings.
+#[test]
+fn close_and_split_commit_the_layout_and_warn_about_resizes() {
+    let host = Host::new();
+    let (left, left_terminal) = host.client.create(shell("read line"), None).unwrap();
+    let (right, right_terminal) = host.client.create(shell("read line"), None).unwrap();
+    drop((left_terminal, right_terminal));
+    // Overlapping rects: no split tree can be inferred.
+    host.client
+        .set_layout(saved_layout(vec![saved_tab(vec![
+            saved_pane(&left, 0, 60),
+            saved_pane(&right, 30, 50),
+            saved_pane("ghost", 0, 80),
+        ])]))
+        .unwrap();
+    let warnings = host.client.close_saved_pane(&right).unwrap();
+    assert_eq!(
+        saved_tabs(&host.client),
+        [[(left.clone(), 40), ("ghost".to_owned(), 40)]]
+    );
+    assert!(
+        host.client
+            .list()
+            .unwrap()
+            .iter()
+            .all(|pane| pane.id != right)
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("ghost"), "{warnings:?}");
+
+    let tab = session_model::StoredMultiplexer::parse(host.client.layout().unwrap().as_deref())
+        .unwrap()
+        .windows[0]
+        .session
+        .workspaces[0]
+        .tabs[0]
+        .clone();
+    let (new_id, terminal, warnings) = host
+        .client
+        .split_pane(
+            &left,
+            session_model::PaneResizeAxis::Horizontal,
+            &tab,
+            shell("read line"),
+        )
+        .unwrap();
+    drop(terminal);
+    assert_eq!(saved_tabs(&host.client)[0].len(), 3);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("ghost"), "{warnings:?}");
+    for id in [left, new_id] {
+        host.client.close(&id).unwrap();
+    }
+}
 #[test]
 fn clipboard_requests_use_the_attached_host_and_queries_work_detached() {
     let host = Host::new();
@@ -662,7 +955,7 @@ fn layout_resizes_keep_the_live_cell_metrics() {
         .unwrap();
 
     // The CLI splits without knowing the font; both panes keep 11x23 cells.
-    let (new_id, split) = host
+    let (new_id, split, warnings) = host
         .client
         .split_pane(
             &id,
@@ -671,6 +964,7 @@ fn layout_resizes_keep_the_live_cell_metrics() {
             launch(TerminalSize::default()),
         )
         .unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
     for pane in [&new_id, &id] {
         let size = host.client.attach(pane, None).unwrap().size();
         assert_eq!((size.cell_width, size.cell_height), (11.0, 23.0));

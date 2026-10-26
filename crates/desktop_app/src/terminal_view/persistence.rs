@@ -8,6 +8,8 @@ use std::fs;
 use std::path::PathBuf;
 use termy_core::session_model::PersistedNativeLayoutNode;
 
+mod remote_layout;
+
 /// Legacy JSON state file; read once to seed a fresh SQLite store.
 const NATIVE_WORKSPACE_STATE_FILE: &str = "native-tabs.json";
 
@@ -68,6 +70,8 @@ type RestoredWorkspaceTabs = (
 struct PersistedNativeWorkspaceWriteRequest {
     store: Option<Arc<WorkspaceStore>>,
     multiplexer: Option<Arc<crate::multiplexer::WindowSession>>,
+    /// The multiplexer merge base, read together with `session`.
+    multiplexer_base: Option<StoredSession>,
     session: StoredSession,
     /// `(name, snapshot_json)` of the visible workspace when layout autosave
     /// applies; updates the named layout row if it still exists.
@@ -891,57 +895,16 @@ impl TerminalView {
                 tab.last_prompt_cwd = presentation.last_prompt_cwd;
                 tab.running_process = presentation.running_process;
             }
-            let pane_ids = tab
-                .panes
-                .iter()
-                .map(|pane| pane.id.clone())
-                .collect::<Vec<_>>();
-            let layout_tree = persisted_tab
-                .layout_tree
-                .as_ref()
-                .and_then(|tree| NativeLayout::native_layout_tree_from_persisted(tree, &pane_ids))
-                .map(|root| NativePaneLayoutTree { root })
-                .or_else(|| Self::native_layout_tree_from_panes(&tab.panes));
+            let (layout_tree, zoom) = Self::restored_tab_layout(
+                &mut tab,
+                persisted_tab.layout_tree.as_ref(),
+                persisted_tab.zoomed,
+            );
             if let Some(layout_tree) = layout_tree {
                 restored_layout_trees.insert(tab.id, layout_tree);
             }
-            if persisted_tab.zoomed && tab.panes.len() > 1 {
-                let active = tab.active_pane_index().unwrap_or(0);
-                let cols = tab
-                    .panes
-                    .iter()
-                    .map(|pane| pane.left.saturating_add(pane.width))
-                    .max()
-                    .unwrap_or(1);
-                let rows = tab
-                    .panes
-                    .iter()
-                    .map(|pane| pane.top.saturating_add(pane.height))
-                    .max()
-                    .unwrap_or(1);
-                let mut panes = std::mem::take(&mut tab.panes);
-                let mut active_pane = panes.remove(active);
-                let geometry = (
-                    active_pane.left,
-                    active_pane.top,
-                    active_pane.width,
-                    active_pane.height,
-                );
-                active_pane.left = 0;
-                active_pane.top = 0;
-                active_pane.width = cols;
-                active_pane.height = rows;
-                tab.panes.push(active_pane);
-                restored_zoom.insert(
-                    tab.id,
-                    NativePaneZoomSnapshot {
-                        other_panes: panes,
-                        active_pane_geometry: geometry,
-                        active_pane_id: tab.active_pane_id.clone(),
-                        active_original_index: active,
-                        layout_tree: restored_layout_trees.remove(&tab.id),
-                    },
-                );
+            if let Some(zoom) = zoom {
+                restored_zoom.insert(tab.id, zoom);
             }
             restored_tabs.push(tab);
         }
@@ -970,6 +933,61 @@ impl TerminalView {
         ))
     }
 
+    /// The split tree of a restored tab, or its zoom snapshot (which then
+    /// holds the tree) when the tab was saved zoomed.
+    fn restored_tab_layout(
+        tab: &mut TerminalTab,
+        layout_tree: Option<&PersistedNativeLayoutNode>,
+        zoomed: bool,
+    ) -> (Option<NativePaneLayoutTree>, Option<NativePaneZoomSnapshot>) {
+        let pane_ids = tab
+            .panes
+            .iter()
+            .map(|pane| pane.id.clone())
+            .collect::<Vec<_>>();
+        let layout_tree = layout_tree
+            .and_then(|tree| NativeLayout::native_layout_tree_from_persisted(tree, &pane_ids))
+            .map(|root| NativePaneLayoutTree { root })
+            .or_else(|| Self::native_layout_tree_from_panes(&tab.panes));
+        if !zoomed || tab.panes.len() <= 1 {
+            return (layout_tree, None);
+        }
+        let active = tab.active_pane_index().unwrap_or(0);
+        let cols = tab
+            .panes
+            .iter()
+            .map(|pane| pane.left.saturating_add(pane.width))
+            .max()
+            .unwrap_or(1);
+        let rows = tab
+            .panes
+            .iter()
+            .map(|pane| pane.top.saturating_add(pane.height))
+            .max()
+            .unwrap_or(1);
+        let mut panes = std::mem::take(&mut tab.panes);
+        let mut active_pane = panes.remove(active);
+        let geometry = (
+            active_pane.left,
+            active_pane.top,
+            active_pane.width,
+            active_pane.height,
+        );
+        active_pane.left = 0;
+        active_pane.top = 0;
+        active_pane.width = cols;
+        active_pane.height = rows;
+        tab.panes.push(active_pane);
+        let zoom = NativePaneZoomSnapshot {
+            other_panes: panes,
+            active_pane_geometry: geometry,
+            active_pane_id: tab.active_pane_id.clone(),
+            active_original_index: active,
+            layout_tree,
+        };
+        (None, Some(zoom))
+    }
+
     pub(super) fn materialize_pending_workspace(&mut self, index: usize) -> Result<bool, String> {
         let Some(stored) = self
             .session
@@ -979,6 +997,9 @@ impl TerminalView {
         else {
             return Ok(false);
         };
+        // Panes closed or exited since the layout was read cannot attach;
+        // leave them out rather than failing the whole workspace (audit B15).
+        let stored = self.prune_stored_workspace(stored);
         let (_, _, workspace) = Self::persisted_workspace_from_stored(stored.clone());
         let (tabs, layout_trees, zoom, active_tab) = match self.build_restored_tabs(workspace) {
             Ok(restored) => restored,
@@ -1157,7 +1178,7 @@ impl TerminalView {
         request: PersistedNativeWorkspaceWriteRequest,
     ) -> Result<(), String> {
         if let Some(window) = &request.multiplexer {
-            window.save(request.session.clone())?;
+            window.save(request.session.clone(), request.multiplexer_base.clone())?;
             if let Some(store) = &request.multiplexer_import_store
                 && !window.import_recorded()
             {
@@ -1205,6 +1226,7 @@ impl TerminalView {
         Some(PersistedNativeWorkspaceWriteRequest {
             store,
             multiplexer: self.multiplexer.clone(),
+            multiplexer_base: self.multiplexer.as_ref().and_then(|window| window.base()),
             session,
             named_layout_autosave,
             persist_last_session: self.should_persist_last_native_session(),

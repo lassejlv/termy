@@ -52,7 +52,9 @@ Creation saves a tab in the selected workspace, or the first window's active
 workspace by default. A fresh host creates its first window and workspace.
 Splitting uses desktop's split tree and saves both pane IDs; horizontal means
 left/right and vertical means top/bottom. Closing a split pane removes its
-saved entry and expands its sibling using that same layout tree.
+saved entry and expands its sibling using that same layout tree; a tab whose
+tree cannot be inferred is re-tiled evenly instead. `close` updates the layout
+before it ends the process, so a failed close never leaves a dead pane listed.
 Tab and workspace selection is persisted in the shared layout.
 Reordering preserves the active item. Workspace deletion requires an empty
 workspace and preserves at least one workspace in the window.
@@ -68,8 +70,35 @@ It does so at most 3 times within 10 seconds per pane. After that (for example
 when two windows or two Termy processes show the same pane at different sizes),
 it keeps the size the host has until its own layout changes.
 
-Workspace edits use conditional host writes. Independent edits preserve other
-windows; a stale workspace snapshot fails instead of overwriting another client.
+The host owns the layout. It keeps a revision with it, rejects layouts this
+version cannot read, and removes a pane from it when the pane is closed, or
+when its process exits while no window shows it. Every edit reads the layout,
+changes it and writes it back only if the revision is unchanged, retrying a
+bounded number of times, so independent edits never overwrite each other.
+`create` and `split` check their target before starting a process. Once the
+process runs, they add it to the layout as it is at that moment: concurrent
+edits by the desktop or other commands cause a retry, never a failure that
+kills the new pane. `tab`, `workspace` and `window` edits fail instead when
+their snapshot is stale.
+
+Open desktop windows apply layout changes at once: new tabs and split panes
+attach, closed panes and tabs disappear, split trees, sizes, renames, pins,
+zoom and selections follow, and new or renamed workspaces show up. The window
+re-fits the affected terminals to its own size afterwards. When the desktop
+changed the same window concurrently, its edits are rebased onto the host's by
+pane ID: both sides' new tabs are kept, the host's tab and workspace order
+wins, and if both split the same tab, the desktop's new pane moves to a tab of
+its own beside it.
+
+When the desktop starts, it closes terminals whose process already exited
+and removes them from the layout, so reattaching never replays their exit.
+This trades away their final output: `capture` a script's pane before
+launching Termy if you still need what it printed. A saved window left with no
+tab at all is not restored.
+
+Once a layout change is committed, follow-up terminal resizes are best effort.
+`split`, `close` and `tab ... resize-divider` report their failures in a
+`warnings` array in `result` and still succeed; do not retry them.
 
 A host started by a Termy version with another session protocol cannot serve
 this version's commands; they fail and name `termy mux shutdown`. Commands

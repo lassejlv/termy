@@ -459,7 +459,7 @@ impl TerminalView {
         }
     }
 
-    fn stash_active_workspace_tabs(&mut self) {
+    pub(super) fn stash_active_workspace_tabs(&mut self) {
         let active_tab = self.session.active_tab;
         if let Some(entry) = self
             .session
@@ -471,7 +471,7 @@ impl TerminalView {
         }
     }
 
-    fn restore_workspace_tabs(&mut self, index: usize) {
+    pub(super) fn restore_workspace_tabs(&mut self, index: usize) {
         if let Some(entry) = self.session.workspaces.get_mut(index) {
             self.session.tabs = std::mem::take(&mut entry.tabs);
             self.session.active_tab = entry

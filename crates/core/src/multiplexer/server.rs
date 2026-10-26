@@ -1,5 +1,6 @@
 use crate::multiplexer::{
     discovery::{self, Endpoint},
+    layout_store::LayoutStore,
     pane::Pane,
     protocol::*,
 };
@@ -39,7 +40,7 @@ const MAX_ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
 
 struct Server {
     panes: Mutex<HashMap<String, Pane>>,
-    layout: Mutex<Option<String>>,
+    layout: Arc<LayoutStore>,
     token: String,
     address: SocketAddr,
     stopping: AtomicBool,
@@ -54,7 +55,7 @@ impl Server {
     fn new(token: String, address: SocketAddr, handshake_timeout: Duration) -> Self {
         Self {
             panes: Mutex::new(HashMap::new()),
-            layout: Mutex::new(None),
+            layout: Arc::default(),
             token,
             address,
             stopping: AtomicBool::new(false),
@@ -267,6 +268,16 @@ impl Server {
                 let pane = Pane::create(*launch)?;
                 let info = pane.info();
                 let state = pane.refresh()?;
+                // A pane that exits while no client shows it leaves the
+                // layout at once. An attached client gets `Exit` and closes
+                // the pane itself, which prunes it then.
+                let layout = Arc::downgrade(&self.layout);
+                let id = info.id.clone();
+                pane.on_exit(move |attached| {
+                    if !attached && let Some(layout) = layout.upgrade() {
+                        layout.remove_pane(&id);
+                    }
+                });
                 self.panes.lock().unwrap().insert(info.id.clone(), pane);
                 Response::Attached(info, state)
             }
@@ -303,36 +314,31 @@ impl Server {
                 if let Some(pane) = pane {
                     pane.close();
                 }
+                self.layout.remove_pane(&id);
                 Response::Ok
             }
-            Request::GetLayout => Response::Layout(self.layout.lock().unwrap().clone()),
-            Request::SetLayout(layout) => {
-                ensure!(layout.len() <= 4 * 1024 * 1024, "session layout too large");
-                *self.layout.lock().unwrap() = Some(layout);
-                Response::Ok
+            Request::GetLayout => {
+                let (revision, layout) = self.layout.get();
+                Response::Layout { revision, layout }
             }
+            Request::SetLayout(layout) => Response::LayoutUpdated {
+                updated: true,
+                revision: self.layout.set(layout)?,
+            },
             Request::CompareAndSetLayout {
                 expected,
                 replacement,
             } => {
-                ensure!(
-                    replacement.len() <= 4 * 1024 * 1024,
-                    "session layout too large"
-                );
-                let mut layout = self.layout.lock().unwrap();
-                let updated = *layout == expected;
-                if updated {
-                    *layout = Some(replacement);
-                }
-                drop(layout);
-                Response::LayoutUpdated(updated)
+                let (updated, revision) = self.layout.compare_and_set(expected, replacement)?;
+                Response::LayoutUpdated { updated, revision }
             }
             Request::Shutdown
             | Request::RetiredHello
             | Request::RetiredSubscribe
             | Request::Authenticate { .. }
             | Request::Proof(_)
-            | Request::SubscribeGraphics(_) => {
+            | Request::SubscribeGraphics(_)
+            | Request::WatchLayout => {
                 bail!("invalid session request")
             }
         })
@@ -388,11 +394,43 @@ fn serve_client(
             let _ = stream.shutdown(std::net::Shutdown::Both);
             return Ok(());
         }
+        if let Request::WatchLayout = request {
+            return watch_layout(stream, &server.layout);
+        }
         let response = server
             .execute(request)
             .unwrap_or_else(|error| Response::Error(error.to_string()));
         write_response(&mut stream, &response)?;
     }
+}
+
+/// Streams the layout revision until the client disconnects: the current one
+/// at once, then each new one. A watcher that falls behind skips revisions;
+/// it only ever needs the latest.
+fn watch_layout(mut stream: TcpStream, layout: &Arc<LayoutStore>) -> anyhow::Result<()> {
+    let closed = Arc::new(AtomicBool::new(false));
+    let mut reader = stream.try_clone()?;
+    let monitor = Arc::clone(&closed);
+    let monitor_layout = Arc::clone(layout);
+    std::thread::Builder::new()
+        .name("termy-layout-watch".into())
+        .spawn(move || {
+            let _ = reader.read(&mut [0u8]);
+            monitor.store(true, Ordering::Release);
+            monitor_layout.wake_watchers();
+        })?;
+    let mut revision = layout.revision();
+    let result = (|| -> anyhow::Result<()> {
+        loop {
+            write_message(&mut stream, &Response::LayoutChanged { revision })?;
+            match layout.wait_for_change(revision, &closed) {
+                Some(next) => revision = next,
+                None => return Ok(()),
+            }
+        }
+    })();
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    result
 }
 
 /// The host side of `discovery::authenticate`. Its frames are frozen: any

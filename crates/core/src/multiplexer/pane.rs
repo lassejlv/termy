@@ -89,10 +89,15 @@ impl Subscription {
     }
 }
 
+/// Called once when the pane's process exits, with whether a client was
+/// attached to the pane at that moment.
+type ExitHook = Box<dyn FnOnce(bool) + Send>;
+
 #[derive(Clone)]
 pub(crate) struct Pane {
     tx: Sender<Work>,
     shared: Arc<Mutex<Shared>>,
+    exit_hook: Arc<Mutex<Option<ExitHook>>>,
 }
 
 impl Pane {
@@ -126,10 +131,31 @@ impl Pane {
             next_host_id: 1,
         }));
         let worker_shared = Arc::clone(&shared);
+        let exit_hook = Arc::new(Mutex::new(None));
+        let worker_exit_hook = Arc::clone(&exit_hook);
         std::thread::Builder::new()
             .name("termy-session".into())
-            .spawn(move || run(terminal, rx, worker_shared))?;
-        Ok(Self { tx, shared })
+            .spawn(move || run(terminal, rx, worker_shared, worker_exit_hook))?;
+        Ok(Self {
+            tx,
+            shared,
+            exit_hook,
+        })
+    }
+
+    /// Runs `hook` once the pane's process exits; at once if it already has.
+    pub(crate) fn on_exit(&self, hook: impl FnOnce(bool) + Send + 'static) {
+        // Lock the slot before reading `exited`: the worker marks the pane
+        // exited before it takes the slot, so one of the two runs the hook.
+        let mut slot = self.exit_hook.lock().unwrap();
+        let shared = self.shared.lock().unwrap();
+        if shared.info.exited {
+            let attached = is_attached(&shared);
+            drop((shared, slot));
+            hook(attached);
+        } else {
+            *slot = Some(Box::new(hook));
+        }
     }
 
     pub(crate) fn info(&self) -> PaneInfo {
@@ -369,7 +395,27 @@ fn publish(shared: &mut Shared, state: Option<Arc<RemoteState>>, events: Vec<Ter
     });
 }
 
-fn run(mut terminal: Terminal, rx: Receiver<Work>, shared: Arc<Mutex<Shared>>) {
+fn is_attached(shared: &Shared) -> bool {
+    shared
+        .subscribers
+        .iter()
+        .any(|weak| weak.strong_count() > 0)
+}
+
+fn notify_exit(shared: &Mutex<Shared>, exit_hook: &Mutex<Option<ExitHook>>) {
+    let Some(hook) = exit_hook.lock().unwrap().take() else {
+        return;
+    };
+    let attached = is_attached(&shared.lock().unwrap());
+    hook(attached);
+}
+
+fn run(
+    mut terminal: Terminal,
+    rx: Receiver<Work>,
+    shared: Arc<Mutex<Shared>>,
+    exit_hook: Arc<Mutex<Option<ExitHook>>>,
+) {
     let mut host = HostBridge {
         shared: Arc::clone(&shared),
     };
@@ -457,7 +503,13 @@ fn run(mut terminal: Terminal, rx: Receiver<Work>, shared: Arc<Mutex<Shared>>) {
             } else {
                 None
             };
+        let exited = events
+            .iter()
+            .any(|event| matches!(event, TerminalEvent::Exit));
         publish(&mut shared.lock().unwrap(), update, events);
+        if exited {
+            notify_exit(&shared, &exit_hook);
+        }
     }
     let mut state = shared.lock().unwrap();
     for subscriber in state
@@ -549,7 +601,11 @@ mod tests {
             next_host_id: 1,
         }));
         let (tx, rx) = flume::bounded(256);
-        let pane = Pane { tx, shared };
+        let pane = Pane {
+            tx,
+            shared,
+            exit_hook: Arc::default(),
+        };
         let worker = std::thread::spawn(move || {
             let Work::Refresh(reply) = rx.recv_timeout(REQUEST_TIMEOUT).unwrap() else {
                 panic!("subscription must first refresh the pane");
@@ -643,7 +699,11 @@ mod tests {
                 }
             }
         });
-        Pane { tx, shared }
+        Pane {
+            tx,
+            shared,
+            exit_hook: Arc::default(),
+        }
     }
 
     fn publish_to(pane: &Pane, events: Vec<TerminalEvent>) {
