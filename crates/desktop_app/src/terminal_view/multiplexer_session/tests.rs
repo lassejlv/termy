@@ -350,6 +350,29 @@ fn multiplexer_text_selection_survives_scrolling_and_output(cx: &mut TestAppCont
         assert!(view.add_tab_with_launch(None, Some(&launch), cx));
     });
     wait(|| update(cx, handle, |view, _| core_text(view).contains("READY")));
+    // Lay the new tab out at the window's size, and wait until the host shows
+    // that size, before selecting. The resize goes to the host on the input
+    // connection and the scroll below on a request connection of its own, so
+    // a resize still on its way can land after the scroll: the taller screen
+    // pulls history back onto it, under the selection and the history count
+    // the output is checked against.
+    cx.update(|cx| {
+        handle
+            .update(cx, |view, window, cx| {
+                view.last_terminal_resize_signature = None;
+                view.last_resize_applied_at = None;
+                let cell_size = view.calculate_cell_size(window, cx);
+                view.sync_terminal_size(window, cell_size, cx);
+            })
+            .unwrap();
+    });
+    wait(|| {
+        cx.run_until_parked();
+        update(cx, handle, |view, _| {
+            let terminal = view.active_terminal().unwrap();
+            terminal.size() == terminal.requested_size()
+        })
+    });
 
     let cell_position = |view: &TerminalView, col: usize, row: usize| {
         let (padding_x, padding_y) = view.effective_terminal_padding();
