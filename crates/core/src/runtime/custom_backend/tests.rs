@@ -1,3 +1,4 @@
+use super::damage::{add_spans, normalize_spans};
 use super::*;
 use std::time::Duration;
 
