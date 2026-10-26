@@ -1,7 +1,7 @@
 use crate::multiplexer::{
     discovery::{self, Access, Endpoint, Root},
     layout_store::LayoutStore,
-    pane::Pane,
+    pane::{Pane, PaneNotFound, lock_recovering},
     protocol::*,
 };
 use anyhow::{bail, ensure};
@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -40,6 +40,9 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 const MAX_ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
 /// How long shutdown waits for the pane workers to drop their terminals.
 const PANE_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long shutdown then waits for subscriptions to send their panes'
+/// `Exit`, so views close their tabs rather than find the host gone.
+const SUBSCRIPTION_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct Server {
     /// The session directory, exported to panes as `TERMY_MUX_DIR`.
@@ -58,6 +61,8 @@ struct Server {
     pending: Mutex<VecDeque<(u64, TcpStream)>>,
     next_pending: AtomicU64,
     handshake_timeout: Duration,
+    /// Subscriptions still sending updates.
+    streaming: AtomicUsize,
 }
 
 impl Server {
@@ -73,7 +78,31 @@ impl Server {
             pending: Mutex::new(VecDeque::new()),
             next_pending: AtomicU64::new(0),
             handshake_timeout,
+            streaming: AtomicUsize::new(0),
         }
+    }
+
+    /// Waits until every subscription has sent its last update, or `deadline`.
+    fn wait_for_subscriptions(&self, deadline: Instant) {
+        while self.streaming.load(Ordering::Acquire) > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+}
+
+/// Counts a subscription in [`Server::streaming`] until dropped.
+struct Streaming<'a>(&'a AtomicUsize);
+
+impl<'a> Streaming<'a> {
+    fn new(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::AcqRel);
+        Self(count)
+    }
+}
+
+impl Drop for Streaming<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -206,14 +235,9 @@ pub fn serve(root: &Path) -> anyhow::Result<()> {
     .start(&server)?;
     accept_connections(&server, listener.incoming());
     let watchdog = watchdog.stop();
-    let panes: Vec<Pane> = server
-        .panes
-        .lock()
-        .unwrap()
-        .drain()
-        .map(|(_, pane)| pane)
-        .collect();
+    let panes: Vec<Pane> = server.panes().drain().map(|(_, pane)| pane).collect();
     close_panes(panes);
+    server.wait_for_subscriptions(Instant::now() + SUBSCRIPTION_FLUSH_TIMEOUT);
     // The lock is released last, when `watchdog` drops.
     watchdog.remove_endpoint()
 }
@@ -458,53 +482,84 @@ impl Server {
 
     /// Whether every pane's program has exited.
     fn panes_have_ended(&self) -> bool {
-        self.panes
-            .lock()
-            .unwrap()
-            .values()
-            .all(|pane| pane.info().exited)
+        self.panes().values().all(|pane| pane.info().exited)
     }
 
     fn pane(&self, id: &str) -> anyhow::Result<Pane> {
-        if let Some(pane) = self.panes.lock().unwrap().get(id) {
+        if self.stopping.load(Ordering::Acquire) {
+            bail!(HOST_STOPPING);
+        }
+        if let Some(pane) = self.panes().get(id) {
             return Ok(pane.clone());
         }
-        let mut exited = self.exited.lock().unwrap();
+        let mut exited = lock_recovering(&self.exited);
         exited.retain(|(_, closed)| closed.elapsed() < EXITED_PANES_FOR);
         if exited.iter().any(|(closed, _)| closed == id) {
-            anyhow::bail!("{EXITED_PANE}: {id}");
+            return Err(PaneNotFound(format!("{EXITED_PANE}: {id}")).into());
         }
-        anyhow::bail!("{MISSING_PANE}: {id}")
+        Err(PaneNotFound(format!("{MISSING_PANE}: {id}")).into())
     }
 
     /// Remembers that pane `id`, closed now, had exited.
     fn remember_exited(&self, id: String) {
-        let mut exited = self.exited.lock().unwrap();
+        let mut exited = lock_recovering(&self.exited);
         if exited.len() >= EXITED_PANES {
             exited.pop_front();
         }
         exited.push_back((id, Instant::now()));
     }
 
+    /// The pane map. A panic in one client's thread must not stop every
+    /// other client from finding its panes.
+    fn panes(&self) -> std::sync::MutexGuard<'_, HashMap<String, Pane>> {
+        lock_recovering(&self.panes)
+    }
+
+    /// Starts a pane and registers it once `refresh` read its first state.
+    /// A pane that cannot be registered is closed again, so its shell does
+    /// not run on unseen (audit L3).
+    fn create(
+        &self,
+        launch: PaneLaunch,
+        refresh: impl FnOnce(&Pane) -> anyhow::Result<Arc<crate::remote::RemoteState>>,
+    ) -> anyhow::Result<Response> {
+        let pane = Pane::create(launch, &self.root)?;
+        let info = pane.info();
+        let state = match refresh(&pane) {
+            Ok(state) => state,
+            Err(error) => {
+                close_unregistered(&pane);
+                return Err(error);
+            }
+        };
+        // A pane that exits while no client shows it leaves the layout at
+        // once. An attached client gets `Exit` and closes the pane itself,
+        // which prunes it then.
+        let layout = Arc::downgrade(&self.layout);
+        let id = info.id.clone();
+        pane.on_exit(move |attached| {
+            if !attached && let Some(layout) = layout.upgrade() {
+                layout.remove_pane(&id);
+            }
+        });
+        self.panes().insert(info.id.clone(), pane);
+        Ok(Response::Attached(info, state))
+    }
+
+    /// Closes a pane that `Create` started for a client that will never
+    /// learn its ID.
+    fn abandon_created(&self, id: &str) {
+        let pane = self.panes().remove(id);
+        if let Some(pane) = pane {
+            log::warn!("closing terminal session {id}: its client left before the reply");
+            close_unregistered(&pane);
+        }
+        self.layout.remove_pane(id);
+    }
+
     fn execute(&self, request: Request) -> anyhow::Result<Response> {
         Ok(match request {
-            Request::Create(launch) => {
-                let pane = Pane::create(*launch, &self.root)?;
-                let info = pane.info();
-                let state = pane.refresh()?;
-                // A pane that exits while no client shows it leaves the
-                // layout at once. An attached client gets `Exit` and closes
-                // the pane itself, which prunes it then.
-                let layout = Arc::downgrade(&self.layout);
-                let id = info.id.clone();
-                pane.on_exit(move |attached| {
-                    if !attached && let Some(layout) = layout.upgrade() {
-                        layout.remove_pane(&id);
-                    }
-                });
-                self.panes.lock().unwrap().insert(info.id.clone(), pane);
-                Response::Attached(info, state)
-            }
+            Request::Create(launch) => return self.create(*launch, Pane::refresh),
             Request::Attach(id) => {
                 let pane = self.pane(&id)?;
                 Response::Attached(pane.info(), pane.refresh()?)
@@ -531,23 +586,21 @@ impl Server {
             Request::LaunchConfig(id) => {
                 Response::LaunchConfig(Box::new(self.pane(&id)?.launch_config()))
             }
-            Request::List => Response::Panes(
-                self.panes
-                    .lock()
-                    .unwrap()
-                    .values()
-                    .map(Pane::info)
-                    .collect(),
-            ),
+            Request::List => Response::Panes(self.panes().values().map(Pane::info).collect()),
             Request::Close(id) => {
                 // Closing can wait on the pane worker; don't block every other
                 // client's pane lookups meanwhile.
-                let pane = self.panes.lock().unwrap().remove(&id);
+                let pane = self.panes().get(&id).cloned();
                 if let Some(pane) = pane {
                     if pane.info().exited {
                         self.remember_exited(id.clone());
                     }
-                    pane.close();
+                    // A pane whose worker did not take the request still
+                    // runs: keep it listed, so a later close can end it.
+                    pane.close().inspect_err(|error| {
+                        log::warn!("cannot close terminal session {id}: {error:#}");
+                    })?;
+                    self.panes().remove(&id);
                 }
                 self.layout.remove_pane(&id);
                 Response::Ok
@@ -633,8 +686,33 @@ fn serve_client(
             let _ = TcpStream::connect(server.address);
             return Ok(());
         }
+        // The host is closing its panes: say so, rather than report each
+        // pane as missing as they go (`is_host_unavailable`).
+        if server.stopping.load(Ordering::Acquire) {
+            write_message(&mut stream, &Response::Error(HOST_STOPPING.into()))?;
+            return Ok(());
+        }
         if let Request::Subscribe { pane, host_capable } = request {
-            let subscription = server.pane(&pane)?.subscribe(host_capable)?;
+            let subscription = match server
+                .pane(&pane)
+                .and_then(|pane| pane.subscribe(host_capable))
+            {
+                Ok(subscription) => subscription,
+                Err(error) => {
+                    // Say why, rather than only closing the connection
+                    // (audit I11). Only a pane that is gone ends the
+                    // client's view; any other failure may pass.
+                    let refusal = if error.is::<PaneNotFound>() {
+                        Response::PaneNotFound(error.to_string())
+                    } else {
+                        Response::Error(format!("{error:#}"))
+                    };
+                    write_message(&mut stream, &refusal)?;
+                    let _ = stream.shutdown(std::net::Shutdown::Both);
+                    return Ok(());
+                }
+            };
+            let _streaming = Streaming::new(&server.streaming);
             write_message(&mut stream, &Response::Ok)?;
             let mut reader = stream.try_clone()?;
             let monitor = Arc::clone(&subscription);
@@ -689,10 +767,56 @@ fn serve_client(
         if let Request::WatchLayout = request {
             return watch_layout(stream, &server.layout);
         }
+        let creates = matches!(request, Request::Create(_));
         let response = server
             .execute(request)
             .unwrap_or_else(|error| Response::Error(error.to_string()));
-        write_response(&mut stream, &response)?;
+        // A client that gave up waiting for its new pane never learns its
+        // ID, so nothing would ever close it (audit L3).
+        let created = match &response {
+            Response::Attached(info, _) if creates => Some(info.id.as_str()),
+            _ => None,
+        };
+        if let Some(id) = created
+            && peer_closed(&stream)
+        {
+            server.abandon_created(id);
+            return Ok(());
+        }
+        if let Err(error) = write_response(&mut stream, &response) {
+            if let Some(id) = created {
+                server.abandon_created(id);
+            }
+            return Err(error);
+        }
+    }
+}
+
+/// Closes a pane that no client knows of. The pane is not in the map, so a
+/// failed close can only be logged.
+fn close_unregistered(pane: &Pane) {
+    if let Err(error) = pane.close() {
+        log::error!(
+            "cannot close unregistered terminal session {}: {error:#}",
+            pane.info().id
+        );
+    }
+}
+
+/// Whether the client already closed its end of `stream`. A client sends
+/// nothing while it waits for a reply, so readable data means it is there.
+fn peer_closed(stream: &TcpStream) -> bool {
+    if stream.set_nonblocking(true).is_err() {
+        return false;
+    }
+    let result = stream.peek(&mut [0u8]);
+    let _ = stream.set_nonblocking(false);
+    match result {
+        Ok(read) => read == 0,
+        Err(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+        ),
     }
 }
 
@@ -967,6 +1091,123 @@ mod tests {
         if let Err(result) = closed_by_host(&mut client) {
             panic!("trickling client was not disconnected: {result}");
         }
+        stop(&server, host);
+    }
+
+    /// A shell that writes its process ID to `pid_file`, then waits.
+    #[cfg(unix)]
+    fn pid_writing_shell(pid_file: &Path) -> PaneLaunch {
+        PaneLaunch {
+            size: crate::TerminalSize::default(),
+            working_directory: None,
+            shell_integration: None,
+            config: crate::TerminalRuntimeConfig::default(),
+            launch: Some(crate::TerminalLaunch::Program {
+                program: "/bin/sh".into(),
+                args: vec![
+                    "-c".into(),
+                    format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),
+                ],
+            }),
+            environment: None,
+        }
+    }
+
+    #[cfg(unix)]
+    #[track_caller]
+    fn wait_for_exit(pid: i32) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        // SAFETY: signal 0 only checks that the process exists.
+        while unsafe { libc::kill(pid, 0) } == 0 {
+            assert!(Instant::now() < deadline, "process {pid} kept running");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Audit I11: a subscription the host refuses is answered with the
+    /// reason, not only a closed connection.
+    #[test]
+    fn a_refused_subscription_says_why() {
+        let (server, address, host) = start(HANDSHAKE_TIMEOUT, 0);
+        let mut client = TcpStream::connect(address).unwrap();
+        client.set_nodelay(true).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        discovery::authenticate(&mut client, "token").unwrap();
+        assert!(matches!(
+            read_message_limited(&mut client, 4096).unwrap(),
+            Response::Ok
+        ));
+        let subscribe = Request::Subscribe {
+            pane: "missing".into(),
+            host_capable: true,
+        };
+        write_message(&mut client, &subscribe).unwrap();
+        match read_message(&mut client).unwrap() {
+            Response::PaneNotFound(error) => assert!(error.contains("missing"), "{error}"),
+            _ => panic!("expected a refusal naming the pane"),
+        }
+        stop(&server, host);
+    }
+
+    /// Audit L3: a pane whose first state cannot be read is closed, not
+    /// left running where no client can see or close it.
+    #[cfg(unix)]
+    #[test]
+    fn a_create_whose_refresh_fails_ends_its_shell() {
+        let temp = tempfile::tempdir().unwrap();
+        let server = Server::new(
+            temp.path().to_owned(),
+            "token".into(),
+            ([127, 0, 0, 1], 0).into(),
+            HANDSHAKE_TIMEOUT,
+        );
+        let mut pid = None;
+        let result = server.create(pid_writing_shell(&temp.path().join("pid")), |pane| {
+            pid = pane.info().child_pid;
+            bail!("injected refresh failure")
+        });
+        assert!(result.is_err());
+        assert!(server.panes().is_empty());
+        wait_for_exit(pid.expect("the pane started a process") as i32);
+    }
+
+    /// Audit L3: a client that leaves before reading its `Create` reply
+    /// never learns the pane ID; the host closes that pane.
+    #[cfg(unix)]
+    #[test]
+    fn a_pane_created_for_a_client_that_left_is_closed() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_file = temp.path().join("pid");
+        let (server, address, host) = start(HANDSHAKE_TIMEOUT, 0);
+        let mut client = TcpStream::connect(address).unwrap();
+        client.set_nodelay(true).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        discovery::authenticate(&mut client, "token").unwrap();
+        assert!(matches!(
+            read_message_limited(&mut client, 4096).unwrap(),
+            Response::Ok
+        ));
+        let create = Request::Create(Box::new(pid_writing_shell(&pid_file)));
+        write_message(&mut client, &create).unwrap();
+        drop(client);
+        // The host may end the shell before it writes its ID; a leaked shell
+        // would write it at once and keep running.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if let Some(pid) = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|pid| pid.trim().parse::<i32>().ok())
+            {
+                wait_for_exit(pid);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(server.panes().is_empty());
         stop(&server, host);
     }
 

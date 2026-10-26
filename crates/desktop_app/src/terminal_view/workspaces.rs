@@ -862,6 +862,9 @@ impl TerminalView {
                     if has_more {
                         wakeup_router.mark_ready(wakeup_id);
                     }
+                    if !events.is_empty() && terminal.session_host_lost() {
+                        crate::multiplexer::report_host_lost();
+                    }
                     for event in events {
                         match event {
                             TerminalEvent::Exit => {

@@ -14,7 +14,8 @@ use std::{
     time::Duration,
 };
 use termy_core::multiplexer::{
-    LayoutWatch, PaneInfo, SessionClient, connect_or_start, default_root,
+    LayoutWatch, PaneInfo, PaneLaunch, SessionClient, connect_or_start, default_root,
+    is_connection_error,
 };
 
 use termy_core::session_model::{StoredMultiplexer as SavedState, StoredWindow as SavedWindow};
@@ -270,6 +271,7 @@ fn spawn_layout_watcher(manager: &Arc<Manager>, watch: LayoutWatch) {
         .spawn(move || {
             let mut watch = Some(watch);
             let mut backoff = Duration::from_millis(250);
+            let mut last_revision = None;
             loop {
                 let Some(current) = watch.as_mut() else {
                     std::thread::sleep(backoff);
@@ -283,15 +285,24 @@ fn spawn_layout_watcher(manager: &Arc<Manager>, watch: LayoutWatch) {
                     }
                     continue;
                 };
-                if let Err(error) = current.recv() {
-                    log::warn!("Lost the multiplexer layout watch: {error:#}");
-                    watch = None;
-                    continue;
-                }
+                let revision = match current.recv() {
+                    Ok(revision) => revision,
+                    Err(error) => {
+                        log::warn!("Lost the multiplexer layout watch: {error:#}");
+                        watch = None;
+                        continue;
+                    }
+                };
                 backoff = Duration::from_millis(250);
                 let Some(manager) = manager.upgrade() else {
                     return;
                 };
+                // A new host counts revisions from the start again (audit
+                // B12): what windows reflect of the old one says nothing now.
+                if last_revision.is_some_and(|last| revision < last) {
+                    manager.state.lock().unwrap().floors.clear();
+                }
+                last_revision = Some(revision);
                 let remote = manager
                     .client
                     .layout_revision()
@@ -464,11 +475,17 @@ pub(crate) fn claim_window(
     reopen: bool,
 ) -> Option<(Arc<WindowSession>, Option<StoredSession>)> {
     let manager = Arc::clone(cx.try_global::<AppSessions>()?.0.as_ref()?);
+    let reopening = |state: &State| reopen && state.claimed.is_empty() && state.pending.is_empty();
+    // Other clients may have changed the layout since launch: reconcile what
+    // the host has now, not this process's copy (audit B16). That talks to
+    // the host, which must not hold up other windows' saves (audit I3).
+    let reconciled =
+        reopening(&manager.state.lock().unwrap()).then(|| reconcile_on_host(&manager.client));
     let mut state = manager.state.lock().unwrap();
-    if reopen && state.claimed.is_empty() && state.pending.is_empty() {
-        // Other clients may have changed the layout since launch: reconcile
-        // what the host has now, not this process's copy (audit B16).
-        match reconcile_on_host(&manager.client) {
+    if let Some(reconciled) = reconciled
+        && reopening(&state)
+    {
+        match reconciled {
             Ok(saved) => {
                 state.saved = saved;
                 state.floors.clear();
@@ -702,6 +719,39 @@ fn set_base(state: &mut State, id: &str, session: StoredSession) {
 impl Drop for WindowSession {
     fn drop(&mut self) {
         self.release();
+    }
+}
+
+/// Set once the user was told that the host stopped, until a new one starts.
+pub(crate) static HOST_LOSS_REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// Tells the user, once per lost host, that the host stopped. Its tabs stay
+/// open, marked as ended; nothing starts a new host until a new tab or
+/// window needs one.
+pub(crate) fn report_host_lost() {
+    if !HOST_LOSS_REPORTED.swap(true, Ordering::AcqRel) {
+        crate::ui::toast::warning("The multiplexer host stopped. New tabs start a new one.");
+    }
+}
+
+/// Creates a host pane. When the host cannot be reached, a new one is
+/// started first, so new tabs and windows keep working after the host died
+/// or was shut down (audit B12); the old host's tabs stay, marked as ended.
+pub(crate) fn create_pane(
+    client: &SessionClient,
+    launch: PaneLaunch,
+    wakeup: Option<termy_core::TerminalWakeupNotifier>,
+) -> anyhow::Result<(String, termy_core::Terminal)> {
+    match client.create(launch.clone(), wakeup.clone()) {
+        Err(error) if is_connection_error(&error) => {
+            log::warn!("Cannot reach the session host, starting it again: {error:#}");
+            client
+                .reconnect()
+                .map_err(|reconnect| error.context(format!("{reconnect:#}")))?;
+            HOST_LOSS_REPORTED.store(false, Ordering::Release);
+            client.create(launch, wakeup)
+        }
+        result => result,
     }
 }
 

@@ -609,6 +609,7 @@ fn add_responses(samples: &mut Samples) {
             R::LayoutChanged { revision: 6 },
             R::Size(size()),
             R::LaunchConfig(Box::new(launch_config())),
+            R::PaneNotFound("pane".into()),
         ],
         |response| match response {
             R::Ok => 0,
@@ -623,6 +624,7 @@ fn add_responses(samples: &mut Samples) {
             R::LayoutChanged { .. } => 9,
             R::Size(_) => 10,
             R::LaunchConfig(_) => 11,
+            R::PaneNotFound(_) => 12,
         },
     );
     let (full, delta) = frame_updates();
@@ -644,6 +646,7 @@ fn add_responses(samples: &mut Samples) {
             Update::Frame(Box::new(delta), graphics_update().1),
             Update::Image(graphics_update().0.remove(0)),
             Update::Paused(true),
+            Update::HostShutdown,
         ],
         |update| match update {
             Update::State(_) => 0,
@@ -655,6 +658,7 @@ fn add_responses(samples: &mut Samples) {
             Update::Frame(..) => 6,
             Update::Image(_) => 7,
             Update::Paused(_) => 8,
+            Update::HostShutdown => 9,
         },
     );
 }

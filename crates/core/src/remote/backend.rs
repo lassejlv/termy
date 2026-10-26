@@ -116,6 +116,9 @@ impl RemoteBackend {
     pub(crate) fn frames_paused(&self) -> bool {
         self.transport.frames_paused()
     }
+    pub(crate) fn host_lost(&self) -> bool {
+        self.transport.host_lost()
+    }
     pub(crate) fn resize(&mut self, size: TerminalSize) {
         *self.requested_size.get_mut().unwrap() = Some(size.clamped());
         self.transport.send(RemoteCommand::Resize(size));

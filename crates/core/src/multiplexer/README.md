@@ -204,6 +204,54 @@ shell is reaped, so programs in the group that ignore SIGHUP do not outlive the
 host. Jobs an interactive shell put in process groups of their own get only
 the hang-up, as when a tab closes.
 
+Errors are classified. A request the host answers with `Response::Error`, a
+timed-out request, a viewport wait that times out or an input command that
+fails is returned or logged for that call only; the pane stays usable.
+`is_connection_error` tells a host that cannot be reached from one that
+refused the request. Only the loss of a pane's subscription stream
+disconnects it: the client subscribes again at once, then with backoff (100 ms
+up to 5 s), and the new subscription sends a fresh state and replay. The tab
+says "Session disconnected — reconnecting…" while that fails and until the new
+subscription shows its first frame; meanwhile requests fail at once and input
+is dropped without `InputDropped` (the program is not to blame). The latest
+size, options, scrollback limit and query colors are sent again once the
+pane is back, and a hidden view pauses the new subscription again. A frame
+that does not fit is first answered with `Resync` on the same stream; only a
+full frame that does not fit either ends the stream. A stream whose updates cannot be decoded, or three new streams
+in a row that end before showing a frame, show that title at once and are
+retried only every 30 s. Live events from the gap (bells, clipboard stores,
+command starts and finishes) are not replayed; the replay restores only state.
+A view's input queue never blocks the UI: resizes and option changes replace
+their queued predecessor, behind the input queued before them, and typing
+beyond 256 queued commands is dropped with `InputDropped`.
+
+A pane ends for its views with `Exit` when its process exited, another client
+closed it or its worker panicked (a drop guard covers the panic). A
+subscription delivers its queued events before it closes, so the `Exit`
+arrives. At shutdown the host sends `Update::HostShutdown` instead, and waits
+up to 1 s for subscriptions to send it; requests it gets meanwhile are
+answered with "the session host is shutting down", which
+`is_host_unavailable` (the CLI's `host_unavailable`) recognizes, as it does a
+request whose connection broke because no host runs any more. An ended pane cannot be subscribed
+to: the host answers `Response::PaneNotFound`, and only that refusal ends a
+view with `Exit`; any other refusal (a refresh that timed out) is retried. A
+view whose host shut down, is no longer running, was replaced by another host
+(the endpoint token changed) or runs another protocol version has lost its
+host: the client reports `RemoteTransport::host_lost` (`Terminal::session_host_lost`),
+titles the tab "Session ended — the multiplexer host stopped", takes no more
+input and never starts a host. The desktop keeps such tabs and their windows
+open and says once that the host stopped. `Exit`, both titles and a finished
+command (`ShellCommandFinished`) wake a view even while its render wakeups
+are suspended. `SessionClient::reconnect` starts a new host when the old one
+is gone (only for clients from `connect_or_start`), waiting up to 8 s for a
+host that is still stopping; every clone of the client reaches it, since
+connections find the host through `endpoint.json`. The desktop calls it when
+a new tab or window cannot reach the host, and opens a regular terminal with
+a toast when that fails too. A pane that `Create` started is closed again
+when its first state cannot be read, when the client's attach fails, when the
+client left before the reply, or when the reply reaches the client only after
+it gave up; a pane whose worker does not take a `Close` stays listed.
+
 ## Validation
 
 ```sh

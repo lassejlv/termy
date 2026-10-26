@@ -73,7 +73,7 @@ tell failures apart by `code`:
 | `timeout` | `wait` gave up after `--timeout-ms`. |
 | `output_lost` | `wait` gave up, and output it should have searched left the scrollback (`scrollback_history`) before it could read it, so the text may have been there. |
 | `unsupported` | The pane's state does not allow the command, such as `resize` of a pane that shares its tab. |
-| `host_unavailable` | No host runs in the session directory, or it cannot be reached. |
+| `host_unavailable` | No host runs in the session directory, it cannot be reached, or it shut down while the command ran (a running `wait` ends at once). |
 | `version_mismatch` | A host of another Termy version runs; `termy mux shutdown` stops it. |
 | `failed` | Anything else, such as a layout edit the saved layout rejects. |
 

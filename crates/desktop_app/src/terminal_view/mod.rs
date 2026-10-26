@@ -525,35 +525,46 @@ impl Terminal {
                         configured_working_dir,
                         config.working_dir_fallback,
                     );
-                let (id, terminal) =
-                    client.create(
-                        termy_core::multiplexer::PaneLaunch {
-                            size,
-                            working_directory,
-                            shell_integration: tab_title_shell_integration.cloned(),
-                            config,
-                            launch: launch.cloned(),
-                            environment: Some(
-                                termy_core::multiplexer::PaneLaunch::client_environment(),
-                            ),
-                        },
-                        Some(notifier),
-                    )?;
-                Ok((
-                    terminal,
-                    Some(crate::multiplexer::PaneSession::new(id, client.clone())),
-                ))
-            } else {
-                let terminal = NativeTerminal::new_with_launch_and_wakeup_notifier(
-                    size,
-                    configured_working_dir,
-                    Some(notifier),
-                    tab_title_shell_integration,
-                    runtime_config,
-                    launch,
-                )?;
-                Ok((terminal, None))
+                let created = crate::multiplexer::create_pane(
+                    client,
+                    termy_core::multiplexer::PaneLaunch {
+                        size,
+                        working_directory,
+                        shell_integration: tab_title_shell_integration.cloned(),
+                        config,
+                        launch: launch.cloned(),
+                        environment: Some(termy_core::multiplexer::PaneLaunch::client_environment()),
+                    },
+                    Some(notifier.clone()),
+                );
+                match created {
+                    Ok((id, terminal)) => {
+                        return Ok((
+                            terminal,
+                            Some(crate::multiplexer::PaneSession::new(id, client.clone())),
+                        ));
+                    }
+                    // No host could be reached or started: open a regular
+                    // terminal rather than fail the tab or window (audit B12).
+                    Err(error) if termy_core::multiplexer::is_connection_error(&error) => {
+                        log::error!("Cannot start a multiplexer terminal: {error:#}");
+                        crate::ui::toast::error(format!(
+                            "The built-in multiplexer is unavailable, so this terminal ends when Termy quits: {}",
+                            format!("{error:#}").lines().next().unwrap_or_default()
+                        ));
+                    }
+                    Err(error) => return Err(error),
+                }
             }
+            let terminal = NativeTerminal::new_with_launch_and_wakeup_notifier(
+                size,
+                configured_working_dir,
+                Some(notifier),
+                tab_title_shell_integration,
+                runtime_config,
+                launch,
+            )?;
+            Ok((terminal, None))
         })
     }
 
@@ -660,6 +671,17 @@ impl Terminal {
         match self {
             Self::Native(native) => native.session.as_ref().map(|session| session.id.as_str()),
             Self::Tmux(_) => None,
+        }
+    }
+
+    /// `true` once the session host that ran this pane is gone. The tab
+    /// stays, marked as ended (see [`crate::multiplexer::report_host_lost`]).
+    fn session_host_lost(&self) -> bool {
+        match self {
+            Self::Native(native) => {
+                native.session.is_some() && native.terminal.lock().unwrap().session_host_lost()
+            }
+            Self::Tmux(_) => false,
         }
     }
 
@@ -4329,6 +4351,9 @@ impl TerminalView {
                 };
                 if events.is_empty() && !has_more {
                     continue;
+                }
+                if terminal.session_host_lost() {
+                    crate::multiplexer::report_host_lost();
                 }
 
                 let active_pane_id = active_pane_id

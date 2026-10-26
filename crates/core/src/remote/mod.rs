@@ -424,6 +424,11 @@ pub trait RemoteTransport: Send + Sync {
     fn frames_paused(&self) -> bool {
         false
     }
+    /// `true` once the host that ran this pane is gone (it stopped or was
+    /// replaced): the pane ended with it, though its program did not exit.
+    fn host_lost(&self) -> bool {
+        false
+    }
 }
 
 /// Execute a client operation against the authoritative terminal. No output

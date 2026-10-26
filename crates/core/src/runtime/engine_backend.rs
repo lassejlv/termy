@@ -246,6 +246,13 @@ impl Backend {
         }
     }
 
+    pub(super) fn session_host_lost(&self) -> bool {
+        match self {
+            Self::Custom(_) => false,
+            Self::Remote(backend) => backend.host_lost(),
+        }
+    }
+
     pub(super) fn requested_size(&self) -> TerminalSize {
         match self {
             Self::Custom(backend) => backend.size(),

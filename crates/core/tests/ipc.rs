@@ -1688,3 +1688,102 @@ sleep 30
     assert!(!terminal.frames_paused());
     host.client.close(&id).unwrap();
 }
+
+fn is_disconnected_title(event: &TerminalEvent) -> bool {
+    matches!(event, TerminalEvent::Title(title) if title.starts_with("Session disconnected"))
+}
+
+/// Audit B10: a pane that another client closes ends in its views with
+/// `Exit`, instead of leaving a disconnected tab that swallows typing.
+#[test]
+fn a_pane_closed_by_another_client_ends_with_exit() {
+    let host = Host::new();
+    let (id, terminal) = shell_pane(&host, "read line");
+    let other = SessionClient::connect(&host.root).unwrap();
+    other.close(&id).unwrap();
+    let events = events_until(&terminal, |event| matches!(event, TerminalEvent::Exit));
+    std::thread::sleep(Duration::from_millis(300));
+    let later = terminal.drain_events(&mut |_| None).0;
+    assert!(
+        !events.iter().chain(&later).any(is_disconnected_title),
+        "{events:?} {later:?}"
+    );
+    assert!(host.client.attach(&id, None).is_err());
+}
+
+fn is_ended_title(event: &TerminalEvent) -> bool {
+    matches!(event, TerminalEvent::Title(title) if title.starts_with("Session ended"))
+}
+
+/// Audit B12: when the host dies, its panes end in their views, not as an
+/// exit of their programs (so a window keeps its tabs), and a client that
+/// can start hosts gets a new one.
+#[test]
+fn a_dead_hosts_panes_end_and_the_client_starts_a_new_host() {
+    let host = Host::new();
+    let (id, terminal) = shell_pane(&host, "read line");
+    termy_core::multiplexer::kill_host(&host.root).unwrap();
+    let events = events_until(&terminal, is_ended_title);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, TerminalEvent::Exit))
+    );
+    assert!(terminal.session_host_lost());
+    assert!(host.client.list().is_err());
+    host.client.reconnect().unwrap();
+    assert!(host.client.list().unwrap().is_empty());
+    let error = host.client.attach(&id, None).err().unwrap();
+    assert!(!termy_core::multiplexer::is_connection_error(&error));
+}
+
+/// Review finding 2: `termy mux shutdown` ends the panes in their views as
+/// a lost host, not as exits of their programs.
+#[test]
+fn a_host_shutdown_ends_views_as_a_lost_host() {
+    let host = Host::new();
+    let (_id, terminal) = shell_pane(&host, "read line");
+    host.client.shutdown().unwrap();
+    let events = events_until(&terminal, is_ended_title);
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, TerminalEvent::Exit))
+    );
+    assert!(terminal.session_host_lost());
+}
+
+/// Audit B11: a hidden view, whose render wakeups are off, still wakes when
+/// a command finishes (workspace attention) and when its pane ends.
+#[test]
+fn command_finish_and_exit_wake_a_hidden_view() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let host = Host::new();
+    let wakeups = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&wakeups);
+    let notifier = TerminalWakeupNotifier::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let script = "stty -echo; printf READY; read line; printf '\\033]133;D;0\\007'; read line";
+    let (id, terminal) = host.client.create(shell(script), Some(notifier)).unwrap();
+    wait_for_text(&terminal, "READY");
+    wait_until_quiet(&terminal);
+    terminal.set_wakeup_enabled(false);
+
+    wakeups.store(0, Ordering::SeqCst);
+    terminal.write(b"\n");
+    wait_until(|| wakeups.load(Ordering::SeqCst) > 0);
+    events_until(&terminal, |event| {
+        matches!(event, TerminalEvent::ShellCommandFinished(Some(0)))
+    });
+
+    wakeups.store(0, Ordering::SeqCst);
+    terminal.write(b"\n");
+    wait_until(|| wakeups.load(Ordering::SeqCst) > 0);
+    events_until(&terminal, |event| matches!(event, TerminalEvent::Exit));
+    drop(terminal);
+    host.client.close(&id).unwrap();
+}

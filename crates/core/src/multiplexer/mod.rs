@@ -13,7 +13,7 @@ mod windows_acl;
 #[cfg(test)]
 mod wire_golden;
 
-pub use client::{LayoutUpdate, LayoutWatch, SessionClient};
+pub use client::{LayoutUpdate, LayoutWatch, SessionClient, is_connection_error};
 pub use discovery::{
     VersionMismatch, connect_or_start, default_root, host_is_running, is_host_unavailable,
     is_version_mismatch, kill_host, shutdown_host,

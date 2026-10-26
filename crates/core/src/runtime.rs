@@ -1096,6 +1096,13 @@ impl Terminal {
         self.backend.frames_paused()
     }
 
+    /// `true` once the session host that ran this pane is gone: the pane
+    /// ended with it, though its program did not exit, and it takes no more
+    /// input. Always `false` for local terminals.
+    pub fn session_host_lost(&self) -> bool {
+        self.backend.session_host_lost()
+    }
+
     pub fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
         self.backend.kitty_graphics_placements()
     }

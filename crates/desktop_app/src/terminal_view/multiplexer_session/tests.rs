@@ -913,3 +913,115 @@ fn the_first_host_save_marks_the_local_session_as_imported(cx: &mut TestAppConte
     });
     client.shutdown().unwrap();
 }
+
+/// A program that starts a host the way Termy's own executable does: this
+/// test binary runs `host_process` for `--multiplexer-host <root>`.
+fn host_launcher(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let launcher = dir.join("termy-host");
+    let script = format!(
+        "#!/bin/sh\nTERMY_DESKTOP_MUX_ROOT=\"$2\" exec '{}' --exact '{PREFIX}host_process' --nocapture\n",
+        std::env::current_exe().unwrap().display()
+    );
+    fs::write(&launcher, script).unwrap();
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+    launcher
+}
+
+use crate::multiplexer::HOST_LOSS_REPORTED;
+
+fn kill_host(root: &Path) {
+    termy_core::multiplexer::kill_host(root).unwrap();
+    wait(|| !termy_core::multiplexer::host_is_running(root));
+}
+
+/// Stops whatever host runs in its directory, also when a test fails.
+struct HostDirectory(std::path::PathBuf);
+impl Drop for HostDirectory {
+    fn drop(&mut self) {
+        if termy_core::multiplexer::host_is_running(&self.0) {
+            let _ = termy_core::multiplexer::kill_host(&self.0);
+        }
+    }
+}
+
+/// Audit B12, review finding 2: when the host dies, its tabs stay open,
+/// marked as ended, and Termy keeps running; a new tab and a new window then
+/// start a new host instead of failing.
+#[gpui_kit::test]
+fn new_tabs_and_windows_start_a_new_host_after_it_died(cx: &mut TestAppContext) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("host");
+    let _host = HostDirectory(root.clone());
+    let client =
+        termy_core::multiplexer::connect_or_start(&root, &host_launcher(temp.path())).unwrap();
+    cx.update(|cx| crate::multiplexer::install_for_test(client.clone(), cx).unwrap());
+    let handle = window(cx, true);
+    update(cx, handle, |view, cx| {
+        assert!(view.add_tab_with_launch(None, Some(&shell("read done")), cx));
+    });
+    let old = ids(&client);
+    assert_eq!(old.len(), 1);
+
+    // The window learns that the host is gone, and keeps its tab.
+    kill_host(&root);
+    wait(|| {
+        cx.run_until_parked();
+        update(cx, handle, |view, cx| {
+            view.process_terminal_events(cx);
+            view.active_terminal().unwrap().session_host_lost()
+        })
+    });
+    cx.run_until_parked();
+    update(cx, handle, |view, cx| {
+        view.process_terminal_events(cx);
+        assert_eq!(view.session.tabs.len(), 1, "the ended tab stays");
+    });
+    assert!(HOST_LOSS_REPORTED.load(Ordering::Acquire));
+    assert!(!termy_core::multiplexer::host_is_running(&root));
+
+    update(cx, handle, |view, cx| {
+        assert!(view.add_tab_with_launch(None, Some(&shell("read done")), cx));
+        assert_eq!(view.session.tabs.len(), 2);
+    });
+    let new = ids(&client);
+    assert_eq!(new.len(), 1);
+    assert_ne!(new, old);
+    update(cx, handle, |view, _| {
+        let session = view
+            .active_terminal()
+            .unwrap()
+            .session_id()
+            .map(str::to_owned);
+        assert_eq!(session, Some(new[0].0.clone()));
+    });
+
+    kill_host(&root);
+    let second = window(cx, false);
+    update(cx, second, |view, _| {
+        assert_eq!(view.session.tabs.len(), 1);
+        assert!(view.active_terminal().unwrap().session_id().is_some());
+    });
+    assert_eq!(ids(&client).len(), 1);
+    // Both windows are still open.
+    cx.run_until_parked();
+    update(cx, handle, |view, cx| {
+        view.process_terminal_events(cx);
+        assert_eq!(view.session.tabs.len(), 2);
+    });
+    client.shutdown().unwrap();
+}
+
+/// Audit B12: when no host can be started either, a new window still opens,
+/// with a regular terminal.
+#[gpui_kit::test]
+fn a_new_window_without_a_host_opens_a_regular_terminal(cx: &mut TestAppContext) {
+    let (_temp, host, client) = start_host(cx);
+    drop(host);
+    let handle = window(cx, false);
+    update(cx, handle, |view, _| {
+        assert_eq!(view.session.tabs.len(), 1);
+        assert!(view.active_terminal().unwrap().session_id().is_none());
+    });
+    assert!(client.list().is_err());
+}

@@ -16,8 +16,12 @@ use std::sync::Arc;
 // images in messages of their own, paused subscriptions, text history
 // queries, motion reports and anchored link queries. It also reports
 // rejected input, each pane's shell-integration state and launch settings,
-// and the working directory a pane actually started in.
+// and the working directory a pane actually started in. A refused
+// subscription says whether the pane is gone, and a subscription is told
+// when the host shuts down.
 pub(crate) const VERSION: u32 = 4;
+/// The error a host that is shutting down answers requests with.
+pub(crate) const HOST_STOPPING: &str = "the session host is shutting down";
 /// The largest message either side accepts. One streamed image (at most the
 /// engine's image quota) fits with room to spare; every other message stays
 /// far smaller, because frames are deltas and history replies are chunked.
@@ -27,7 +31,7 @@ pub(crate) const MAX_MESSAGE_BYTES: u64 =
 /// Hash of the encoding of every wire type, checked by the `wire_golden`
 /// test. When it changes, the wire changed: bump [`VERSION`] (unless the
 /// unreleased change already did) and update this value.
-pub(crate) const WIRE_FINGERPRINT: u64 = 0xc2ed_3f3a_6917_9273;
+pub(crate) const WIRE_FINGERPRINT: u64 = 0x0e14_2648_4656_9ebf;
 
 /// Identifies the build that wrote `endpoint.json`. A client logs a warning
 /// when it differs from its own under the same [`VERSION`], which points at
@@ -273,6 +277,10 @@ pub(crate) enum Response {
     },
     Size(TerminalSize),
     LaunchConfig(Box<LaunchConfig>),
+    /// Refuses a [`Request::Subscribe`] for a pane that does not exist or
+    /// has ended, so the client stops trying. Any other refusal is
+    /// [`Response::Error`], which may pass.
+    PaneNotFound(String),
 }
 
 /// See [`Request`] for the wire rules.
@@ -312,6 +320,9 @@ pub(crate) enum Update {
     /// drops the cached images its shown frame does not use; on resume both
     /// ends start their image caches afresh.
     Paused(bool),
+    /// The host is shutting down, so this pane ends with it rather than
+    /// because its program exited. Sent last, before the stream closes.
+    HostShutdown,
 }
 
 const HOST_PROOF_LABEL: &[u8] = b"termy-multiplexer host proof v1";

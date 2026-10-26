@@ -1,11 +1,11 @@
 use crate::multiplexer::protocol::*;
 use crate::{remote::*, *};
-use anyhow::Context;
+use anyhow::{Context, bail};
 use flume::{Receiver, Sender};
 use std::{
     collections::VecDeque,
     path::Path,
-    sync::{Arc, Condvar, Mutex, Weak},
+    sync::{Arc, Condvar, Mutex, MutexGuard, Weak},
     thread::JoinHandle,
     time::{Duration, Instant, SystemTime},
 };
@@ -39,6 +39,9 @@ enum Work {
     Shutdown,
     /// A view was shown again: capture a frame now and send it to that view.
     Resume(Weak<Subscription>),
+    /// Makes the worker panic, to test that a panic still ends the pane.
+    #[cfg(test)]
+    Panic,
 }
 
 struct Shared {
@@ -55,6 +58,9 @@ struct Shared {
     /// changed.
     program_status: Option<Vec<(ProgramStatusRecord, SystemTime)>>,
     subscribers: Vec<Weak<Subscription>>,
+    /// False once the worker stopped: the pane was closed, the host is
+    /// shutting down or the worker panicked. Nothing can subscribe then.
+    alive: bool,
 }
 
 #[derive(Default)]
@@ -66,6 +72,8 @@ struct Pending {
     /// Clipboard requests in the order the program made them, each with the
     /// time the worker denies it.
     host: VecDeque<(u64, RemoteHostRequest, Instant)>,
+    /// The host is shutting down: sent once, after the queued events.
+    host_stopping: bool,
     closed: bool,
     /// A hidden view: send events, but no frames until it resumes (audit I7).
     paused: bool,
@@ -88,7 +96,7 @@ pub(crate) struct Subscription {
 
 impl Subscription {
     pub(crate) fn close(&self) {
-        self.pending.lock().unwrap().closed = true;
+        lock_recovering(&self.pending).closed = true;
         self.ready.notify_one();
     }
 
@@ -143,16 +151,21 @@ impl Subscription {
     fn wants_frames(&self) -> bool {
         !self.pending.lock().unwrap().paused
     }
+
+    /// The next update to send. A closed subscription still delivers the
+    /// events queued before it closed, so a pane that ends sends its `Exit`
+    /// (audit B10); frames and clipboard requests are no longer sent.
     pub(crate) fn next(&self) -> Option<Update> {
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = lock_recovering(&self.pending);
         loop {
-            if pending.closed {
-                return None;
-            }
-            if let Some(paused) = pending.acknowledge.take() {
+            if !pending.closed
+                && let Some(paused) = pending.acknowledge.take()
+            {
                 return Some(Update::Paused(paused));
             }
-            if let Some((id, request, deadline)) = pending.host.pop_front() {
+            if !pending.closed
+                && let Some((id, request, deadline)) = pending.host.pop_front()
+            {
                 if deadline <= Instant::now() {
                     // Already denied; the client would only drop it.
                     continue;
@@ -169,18 +182,38 @@ impl Subscription {
             if !pending.events.is_empty() {
                 return Some(Update::Events(std::mem::take(&mut pending.events)));
             }
+            if std::mem::take(&mut pending.host_stopping) {
+                return Some(Update::HostShutdown);
+            }
+            if pending.closed {
+                return None;
+            }
             if pending.state && !pending.paused {
                 pending.state = false;
                 // Never acquire Shared with Pending held: the worker publishes
                 // in the opposite order.
                 drop(pending);
                 let shared = self.shared.upgrade()?;
-                return Some(Update::State(Arc::clone(&shared.lock().unwrap().state)));
+                return Some(Update::State(Arc::clone(&lock_recovering(&shared).state)));
             }
             pending = self.ready.wait(pending).unwrap();
         }
     }
 }
+
+/// The pane does not exist, or has ended: a client asking for it will never
+/// get it, unlike when a request merely fails. Holds the whole message, which
+/// starts like the server's `is_missing_pane` and `is_exited_pane` expect.
+#[derive(Debug)]
+pub(crate) struct PaneNotFound(pub(crate) String);
+
+impl std::fmt::Display for PaneNotFound {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PaneNotFound {}
 
 /// Called once when the pane's process exits, with whether a client was
 /// attached to the pane at that moment.
@@ -265,6 +298,7 @@ impl Pane {
             sticky_events: Vec::new(),
             program_status: None,
             subscribers: Vec::new(),
+            alive: true,
         }));
         let worker_shared = Arc::clone(&shared);
         let exit_hook = Arc::new(Mutex::new(None));
@@ -284,8 +318,8 @@ impl Pane {
     pub(crate) fn on_exit(&self, hook: impl FnOnce(bool) + Send + 'static) {
         // Lock the slot before reading `exited`: the worker marks the pane
         // exited before it takes the slot, so one of the two runs the hook.
-        let mut slot = self.exit_hook.lock().unwrap();
-        let shared = self.shared.lock().unwrap();
+        let mut slot = lock_recovering(&self.exit_hook);
+        let shared = lock_recovering(&self.shared);
         if shared.info.exited {
             let attached = is_attached(&shared);
             drop((shared, slot));
@@ -296,7 +330,7 @@ impl Pane {
     }
 
     pub(crate) fn info(&self) -> PaneInfo {
-        self.shared.lock().unwrap().info.clone()
+        lock_recovering(&self.shared).info.clone()
     }
 
     pub(crate) fn launch_config(&self) -> LaunchConfig {
@@ -346,8 +380,17 @@ impl Pane {
         )
     }
 
-    pub(crate) fn close(&self) {
-        let _ = self.tx.send_timeout(Work::Close, REQUEST_TIMEOUT);
+    /// Ends the pane: its subscribers get `Exit`, then its process is
+    /// terminated. Fails only when the worker did not take the request in
+    /// time, so the pane still runs; a worker that already stopped needs
+    /// nothing more.
+    pub(crate) fn close(&self) -> anyhow::Result<()> {
+        match self.tx.send_timeout(Work::Close, REQUEST_TIMEOUT) {
+            Ok(()) | Err(flume::SendTimeoutError::Disconnected(_)) => Ok(()),
+            Err(flume::SendTimeoutError::Timeout(_)) => {
+                bail!("terminal session did not answer the close request")
+            }
+        }
     }
 
     /// Closes the pane for a host that is about to exit: the worker ends
@@ -360,7 +403,7 @@ impl Pane {
     /// Waits until the worker has dropped the terminal after [`Self::close`]
     /// or [`Self::shutdown`]. False if `deadline` passed first.
     pub(crate) fn wait_closed(&self, deadline: Instant) -> bool {
-        let mut worker = self.worker.lock().unwrap();
+        let mut worker = lock_recovering(&self.worker);
         let Some(handle) = worker.as_ref() else {
             return true;
         };
@@ -375,8 +418,24 @@ impl Pane {
     }
 
     pub(crate) fn subscribe(&self, host_capable: bool) -> anyhow::Result<Arc<Subscription>> {
-        self.refresh()?;
-        let mut shared = self.shared.lock().unwrap();
+        // The worker ends every subscription it knows of when it stops; one
+        // registered after that would never get its `Exit`.
+        let ensure_alive = |shared: &Shared| {
+            if shared.alive {
+                Ok(())
+            } else {
+                Err(anyhow::Error::new(PaneNotFound(format!(
+                    "terminal session no longer exists: {}",
+                    shared.info.id
+                ))))
+            }
+        };
+        ensure_alive(&lock_recovering(&self.shared))?;
+        // A worker that stopped meanwhile fails the refresh: the pane ended.
+        self.refresh()
+            .or_else(|error| ensure_alive(&lock_recovering(&self.shared)).and(Err(error)))?;
+        let mut shared = lock_recovering(&self.shared);
+        ensure_alive(&shared)?;
         let mut replay = replay_seed(
             &shared.sticky_events,
             shared.program_status.as_deref(),
@@ -731,6 +790,78 @@ fn worker_timeout(
     }
 }
 
+/// Locks `mutex` even when a panicking worker poisoned it, and clears the
+/// poison so the host's other threads keep serving the pane's data.
+pub(crate) fn lock_recovering<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|poisoned| {
+        let guard = poisoned.into_inner();
+        mutex.clear_poison();
+        guard
+    })
+}
+
+/// Ends the pane for its subscribers when the worker stops, however it stops:
+/// closed by a client, at host shutdown, or by a panic (audit B10, I10). Each
+/// subscriber gets `Exit` (or, at host shutdown, `Update::HostShutdown`)
+/// before its subscription closes, the pane is listed as exited, and nothing
+/// can subscribe any more. Runs while unwinding, so it must not panic: every
+/// lock it takes recovers from poison.
+struct WorkerExit {
+    shared: Arc<Mutex<Shared>>,
+    exit_hook: Arc<Mutex<Option<ExitHook>>>,
+    /// Set when the host is shutting down: the pane ends with its host, not
+    /// because its program exited, and views keep their tabs.
+    host_stopping: bool,
+}
+
+impl Drop for WorkerExit {
+    fn drop(&mut self) {
+        let panicked = std::thread::panicking();
+        let mut shared = lock_recovering(&self.shared);
+        if panicked {
+            log::error!(
+                "terminal session {} stopped after a panic; ending it",
+                shared.info.id
+            );
+        }
+        // `publish` locks each subscriber's queue.
+        for subscriber in shared.subscribers.iter().filter_map(Weak::upgrade) {
+            drop(lock_recovering(&subscriber.pending));
+        }
+        shared.alive = false;
+        if self.host_stopping {
+            shared.info.exited = true;
+            for subscriber in shared.subscribers.iter().filter_map(Weak::upgrade) {
+                lock_recovering(&subscriber.pending).host_stopping = true;
+            }
+        } else if !shared.info.exited {
+            publish(&mut shared, None, vec![TerminalEvent::Exit]);
+        }
+        drop(shared);
+        // A panic ends the pane as if its process exited. A close does not
+        // run the hook: whoever closes the pane updates the layout. The hook
+        // runs on its own thread, where a panic of its own cannot abort.
+        if panicked {
+            let hook = lock_recovering(&self.exit_hook).take();
+            if let Some(hook) = hook {
+                let attached = is_attached(&lock_recovering(&self.shared));
+                let _ = std::thread::Builder::new()
+                    .name("termy-session-exit".into())
+                    .spawn(move || hook(attached));
+            }
+        }
+        let mut shared = lock_recovering(&self.shared);
+        for subscriber in shared
+            .subscribers
+            .drain(..)
+            .filter_map(|weak| weak.upgrade())
+        {
+            lock_recovering(&subscriber.pending).closed = true;
+            subscriber.ready.notify_one();
+        }
+    }
+}
+
 fn run(
     mut terminal: Terminal,
     rx: Receiver<Work>,
@@ -738,6 +869,13 @@ fn run(
     exit_hook: Arc<Mutex<Option<ExitHook>>>,
     host_timeout: Duration,
 ) {
+    // Dropped before `terminal`: subscribers learn that the pane ended
+    // before its process is terminated.
+    let mut exit = WorkerExit {
+        shared: Arc::clone(&shared),
+        exit_hook: Arc::clone(&exit_hook),
+        host_stopping: false,
+    };
     let mut host = HostBridge {
         shared: Arc::clone(&shared),
         timeout: host_timeout,
@@ -762,6 +900,7 @@ fn run(
         match rx.recv_timeout(timeout) {
             Ok(Work::Close) | Err(flume::RecvTimeoutError::Disconnected) => break,
             Ok(Work::Shutdown) => {
+                exit.host_stopping = true;
                 terminal.terminate_and_wait();
                 break;
             }
@@ -848,6 +987,8 @@ fn run(
                     view.resumed();
                 }
             }
+            #[cfg(test)]
+            Ok(Work::Panic) => panic!("injected terminal session panic"),
             Err(flume::RecvTimeoutError::Timeout) => {}
         }
         for id in host.expired() {
@@ -883,17 +1024,8 @@ fn run(
             notify_exit(&shared, &exit_hook);
         }
     }
-    let mut state = shared.lock().unwrap();
-    for subscriber in state
-        .subscribers
-        .drain(..)
-        .filter_map(|weak| weak.upgrade())
-    {
-        subscriber.pending.lock().unwrap().closed = true;
-        subscriber.ready.notify_one();
-    }
-    // Dropping the authoritative terminal closes its PTY and terminates the
-    // shell. App/client disconnect never reaches this path.
+    // Dropping the authoritative terminal (after `exit`) closes its PTY and
+    // terminates the shell. App/client disconnect never reaches this path.
 }
 
 /// A clipboard request sent to a subscriber, waiting for its answer.
@@ -1044,6 +1176,7 @@ mod tests {
             sticky_events: Vec::new(),
             program_status: None,
             subscribers: Vec::new(),
+            alive: true,
         }));
         let (tx, rx) = flume::bounded(256);
         let pane = Pane {
@@ -1087,6 +1220,7 @@ mod tests {
             sticky_events: Vec::new(),
             program_status: None,
             subscribers: Vec::new(),
+            alive: true,
         }));
         let subscription = Arc::new(Subscription {
             pending: Mutex::new(Pending::default()),
@@ -1146,6 +1280,7 @@ mod tests {
             sticky_events: Vec::new(),
             program_status: None,
             subscribers: Vec::new(),
+            alive: true,
         }));
         let (tx, rx) = flume::bounded(256);
         std::thread::spawn(move || {
@@ -1415,7 +1550,121 @@ mod tests {
         // A late answer is dropped.
         let late = RemoteHostReply::Read(TerminalClipboardReadResult::Denied);
         pane.host_reply(id, late).unwrap();
-        pane.close();
+        pane.close().unwrap();
+    }
+
+    #[test]
+    fn a_closed_subscription_still_delivers_its_queued_events() {
+        let pane = detached_pane();
+        let subscription = pane.subscribe(true).unwrap();
+        publish_to(&pane, vec![TerminalEvent::Exit]);
+        subscription.close();
+        assert!(matches!(
+            subscription.next(),
+            Some(Update::Events(events)) if matches!(events.as_slice(), [TerminalEvent::Exit])
+        ));
+        assert!(subscription.next().is_none());
+    }
+
+    #[cfg(unix)]
+    fn sleeping_pane() -> Pane {
+        Pane::create(
+            PaneLaunch {
+                size: TerminalSize::default(),
+                working_directory: None,
+                shell_integration: None,
+                config: TerminalRuntimeConfig::default(),
+                launch: Some(TerminalLaunch::Program {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), "sleep 30".into()],
+                }),
+                environment: None,
+            },
+            &std::env::temp_dir(),
+        )
+        .unwrap()
+    }
+
+    /// Updates until the subscription ends, without frames.
+    fn remaining_events(subscription: &Subscription) -> Vec<TerminalEvent> {
+        let mut events = Vec::new();
+        while let Some(update) = subscription.next() {
+            if let Update::Events(batch) | Update::Replay(batch) = update {
+                events.extend(batch);
+            }
+        }
+        events
+    }
+
+    /// Audit B10: a pane closed by another client, or at host shutdown,
+    /// tells its subscribers it ended, and cannot be subscribed to again.
+    #[cfg(unix)]
+    #[test]
+    fn closing_a_pane_sends_exit_and_refuses_new_subscriptions() {
+        let pane = sleeping_pane();
+        let subscription = pane.subscribe(true).unwrap();
+        pane.close().unwrap();
+        let events = remaining_events(&subscription);
+        assert!(
+            matches!(events.last(), Some(TerminalEvent::Exit)),
+            "{events:?}"
+        );
+        assert!(pane.info().exited);
+        let error = pane
+            .subscribe(true)
+            .err()
+            .expect("a closed pane was subscribed");
+        assert!(error.to_string().contains("no longer exists"), "{error:#}");
+        // A pane that is already gone needs no second close.
+        pane.close().unwrap();
+    }
+
+    /// Review finding 2: at host shutdown a pane tells its subscribers the
+    /// host is stopping instead of reporting that its program exited.
+    #[cfg(unix)]
+    #[test]
+    fn a_host_shutdown_is_not_reported_as_an_exit() {
+        let pane = sleeping_pane();
+        let subscription = pane.subscribe(true).unwrap();
+        pane.shutdown();
+        let mut updates = Vec::new();
+        while let Some(update) = subscription.next() {
+            match update {
+                Update::Events(events) => assert!(
+                    !events
+                        .iter()
+                        .any(|event| matches!(event, TerminalEvent::Exit))
+                ),
+                Update::HostShutdown => updates.push("shutdown"),
+                _ => {}
+            }
+        }
+        assert_eq!(updates, ["shutdown"]);
+        assert!(pane.info().exited);
+        assert!(pane.subscribe(true).is_err());
+    }
+
+    /// Audit I10: a panic in the worker ends the pane like an exit of its
+    /// process, instead of leaving it listed as alive with no `Exit`.
+    #[cfg(unix)]
+    #[test]
+    fn a_panicking_worker_ends_the_pane() {
+        let pane = sleeping_pane();
+        let (exited, exit) = flume::bounded(1);
+        pane.on_exit(move |attached| {
+            let _ = exited.send(attached);
+        });
+        let subscription = pane.subscribe(true).unwrap();
+        pane.tx.send(Work::Panic).unwrap();
+        let events = remaining_events(&subscription);
+        assert!(
+            matches!(events.last(), Some(TerminalEvent::Exit)),
+            "{events:?}"
+        );
+        assert_eq!(exit.recv_timeout(REQUEST_TIMEOUT), Ok(true));
+        assert!(pane.info().exited);
+        assert!(pane.subscribe(true).is_err());
+        assert!(pane.refresh().is_err());
     }
 
     /// Audit B14: an animation deadline inside the frame interval, or one
@@ -1529,7 +1778,7 @@ mod tests {
             panic!("expected the frame captured on resume");
         };
         assert!(screen(&state).contains("AB"), "{}", screen(&state));
-        pane.close();
+        pane.close().unwrap();
     }
 
     /// Audit I1: a view that lost track of its frames gets the next one, and
@@ -1632,7 +1881,7 @@ mod tests {
         // is refused.
         flood(&pane, RemoteCommand::Write);
         assert!(dropped(&pane, &view), "the input backlog never filled");
-        pane.close();
+        pane.close().unwrap();
 
         // The same hover sent as plain input fills the backlog and drops
         // the key (the bug).
@@ -1640,7 +1889,7 @@ mod tests {
         flood(&pane, RemoteCommand::Write);
         pane.command(key).unwrap();
         assert!(dropped(&pane, &view));
-        pane.close();
+        pane.close().unwrap();
     }
 
     fn seed(pane: &Pane, now: SystemTime) -> Vec<TerminalEvent> {
@@ -1842,7 +2091,7 @@ mod tests {
             exited.command(RemoteCommand::Write(b"x".to_vec())).unwrap(),
             RemoteReply::InputRejected(InputRejection::Exited)
         ));
-        exited.close();
+        exited.close().unwrap();
 
         // Raw mode: a full input queue blocks the writer instead of
         // discarding characters, as for a stalled full-screen program;
@@ -1864,7 +2113,7 @@ mod tests {
             }
         });
         assert_eq!(rejected, Some(InputRejection::BacklogFull));
-        stalled.close();
+        stalled.close().unwrap();
     }
 
     #[cfg(unix)]
@@ -1926,7 +2175,7 @@ mod tests {
             pane.info().shell.unwrap().input_command,
             Some(InputCommand::Pending)
         );
-        pane.close();
+        pane.close().unwrap();
     }
 
     /// Audit I14: fish reports a finish at its first prompt. Input typed
@@ -1943,7 +2192,7 @@ mod tests {
         write(&pane, "go\r");
         assert!(pane.info().shell.is_none(), "the prompt came too early");
         assert_eq!(command_done(&pane), Some(5));
-        pane.close();
+        pane.close().unwrap();
     }
 
     /// Audit I14: input typed while a command still runs (its prompt hook
@@ -1965,7 +2214,7 @@ mod tests {
         });
         write(&pane, "second\r");
         assert_eq!(command_done(&pane), Some(7));
-        pane.close();
+        pane.close().unwrap();
     }
 
     /// Audit I14: a shell that reports no command starts (PowerShell)
@@ -1981,7 +2230,7 @@ mod tests {
         until(&pane, "no prompt", |info| info.shell.is_some());
         write(&pane, "go\r");
         assert_eq!(command_done(&pane), Some(4));
-        pane.close();
+        pane.close().unwrap();
     }
 
     /// Audit I14: a write's anchor is the line the cursor was on, counted
@@ -2014,7 +2263,7 @@ mod tests {
         assert_eq!(texts.lines[0].text, "READY");
         assert_eq!(texts.rows, 24);
         assert_eq!(texts.scrolled, state.lines_scrolled);
-        pane.close();
+        pane.close().unwrap();
     }
 
     /// Audit B26/B27: a pane lists the directory it started in, not a
@@ -2038,6 +2287,6 @@ mod tests {
                 .shell_integration
                 .is_some_and(|shell| shell.enabled)
         );
-        pane.close();
+        pane.close().unwrap();
     }
 }

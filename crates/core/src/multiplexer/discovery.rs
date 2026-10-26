@@ -52,8 +52,21 @@ impl std::fmt::Display for NoHost {
 
 impl std::error::Error for NoHost {}
 
-fn no_host(root: &Path) -> anyhow::Error {
+pub(crate) fn no_host(root: &Path) -> anyhow::Error {
     NoHost(root.to_owned()).into()
+}
+
+/// Whether `error`, from [`connect_or_start`], says that a host held the
+/// lock but did not answer: it may be stopping, or another client was
+/// probing the lock.
+pub(crate) fn is_unreachable(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<Unreachable>())
+}
+
+/// Whether `error` says that no host runs, so the terminals of the last one
+/// are gone with it.
+pub(crate) fn is_no_host(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<NoHost>())
 }
 
 /// The running host speaks another protocol version. It cannot serve this
@@ -109,9 +122,11 @@ pub fn is_version_mismatch(error: &anyhow::Error) -> bool {
 /// reached. A host of another protocol version is [`is_version_mismatch`].
 pub fn is_host_unavailable(error: &anyhow::Error) -> bool {
     !is_version_mismatch(error)
-        && error
-            .chain()
-            .any(|cause| cause.is::<NoHost>() || cause.is::<Unreachable>())
+        && error.chain().any(|cause| {
+            cause.is::<NoHost>()
+                || cause.is::<Unreachable>()
+                || cause.to_string().starts_with(HOST_STOPPING)
+        })
 }
 
 /// The session host directory for this user: `multiplexer` next to the config
@@ -513,6 +528,12 @@ fn open_stream(port: u16) -> anyhow::Result<TcpStream> {
 /// failure: a probe holds it for a moment, and mutual authentication already
 /// keeps a stale port's new owner from learning anything.
 pub(crate) fn connect(root: &Path) -> anyhow::Result<TcpStream> {
+    connect_identified(root).map(|(stream, _)| stream)
+}
+
+/// Like [`connect`], also returning the host's token, which no other host
+/// shares: a client can tell that the host it reached is a new one.
+pub(crate) fn connect_identified(root: &Path) -> anyhow::Result<(TcpStream, String)> {
     if fs::symlink_metadata(root).is_err() {
         return Err(no_host(root));
     }
@@ -535,7 +556,7 @@ pub(crate) fn connect(root: &Path) -> anyhow::Result<TcpStream> {
         let mut stream = open_stream(endpoint.port)?;
         authenticate(&mut stream, &endpoint.token)?;
         match read_message_limited(&mut stream, 4096)? {
-            Response::Ok => Ok(stream),
+            Response::Ok => Ok((stream, endpoint.token)),
             Response::Error(error) => bail!(error),
             _ => bail!("unexpected multiplexer greeting"),
         }
@@ -679,7 +700,7 @@ fn running_host_endpoint(root: &Path) -> anyhow::Result<Endpoint> {
 }
 
 /// Waits until no host holds `host.lock`; false if one still does at `timeout`.
-fn wait_for_exit(root: &Path, timeout: Duration) -> bool {
+pub(crate) fn wait_for_exit(root: &Path, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while host_is_running(root) {
         if Instant::now() >= deadline {
@@ -857,7 +878,7 @@ pub fn connect_or_start(root: &Path, executable: &Path) -> anyhow::Result<Sessio
     let launch_lock = root.private_file("launch.lock")?;
     launch_lock.lock_exclusive()?;
     let first_error = match SessionClient::connect(root.path()) {
-        Ok(client) => return Ok(client),
+        Ok(client) => return Ok(client.starting_hosts_with(executable)),
         Err(error) => error,
     };
     // A live host's lock is authoritative. Never replace an incompatible or
@@ -910,7 +931,7 @@ pub fn connect_or_start(root: &Path, executable: &Path) -> anyhow::Result<Sessio
             std::thread::spawn(move || {
                 let _ = child.wait();
             });
-            return Ok(client);
+            return Ok(client.starting_hosts_with(executable));
         }
         if let Some(status) = child.try_wait()? {
             bail!(

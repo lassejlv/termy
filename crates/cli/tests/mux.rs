@@ -571,6 +571,34 @@ fn exited_and_closed_panes_fail_fast_with_their_codes() {
     }
 }
 
+/// A `wait` running when the host shuts down fails at once as
+/// `host_unavailable`, not as a missing pane or a timeout.
+#[test]
+fn a_wait_ends_with_host_unavailable_when_the_host_shuts_down() {
+    let host = Host::new();
+    let id = host.shell();
+    let waiting = {
+        let sessions = host.sessions();
+        std::thread::spawn(move || {
+            Command::new(env!("CARGO_BIN_EXE_termy-cli"))
+                .args(["mux", "--session-dir"])
+                .arg(sessions)
+                .args(["wait", &id, "NEVER", "--timeout-ms", "60000"])
+                .stdin(Stdio::null())
+                .output()
+                .unwrap()
+        })
+    };
+    std::thread::sleep(Duration::from_millis(500));
+    let started = Instant::now();
+    assert_eq!(host.ok(&["shutdown"]), json!({"stopped": true}));
+    let output = waiting.join().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "host_unavailable", "{error}");
+}
+
 /// Audit I14: `wait --command-done` reports the exit code of the command
 /// that the latest input started, from OSC 133 reports, which `list
 /// --verbose` shows too.

@@ -33,6 +33,8 @@ A background host started by an older Termy version can keep running after you u
 
 If the background host stops responding, `termy mux shutdown --force` stops its process and ends its terminals.
 
+If the connection to the background host is lost, each terminal reconnects by itself; its tab title says "Session disconnected" while that fails. Bells and finished commands from that gap are not reported. If the host stops (`termy mux shutdown`, a crash, or it was killed), its tabs stay open, titled "Session ended", and a notification says so; close them when you like. The next new tab or window starts a new host. If no host can be started, the new terminal is a regular one that ends when Termy quits, and a notification says so.
+
 If the background host fails to start, the notification names `host.log`, the host's log, in the `multiplexer` directory next to your config file (`%LOCALAPPDATA%\termy\multiplexer` on Windows).
 
 ## Change back to regular terminals
