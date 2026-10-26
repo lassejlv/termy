@@ -231,6 +231,10 @@ impl SessionClient {
         );
         stream.set_read_timeout(None)?;
         let close_stream = stream.try_clone()?;
+        let control = stream.try_clone()?;
+        // Pausing writes a few bytes the host reads at once; never let it
+        // hold up the UI for long.
+        control.set_write_timeout(Some(Duration::from_secs(1)))?;
         let (input_tx, input_rx) = flume::bounded(256);
         let initial_state = awaiting_graphics((*state).clone());
         let shared = Arc::new(ClientState {
@@ -242,23 +246,51 @@ impl SessionClient {
             wakeup_enabled: AtomicBool::new(true),
             disconnected: AtomicBool::new(false),
             closing: AtomicBool::new(false),
+            motion: MotionQueue::default(),
+            damage: Mutex::new(crate::remote::frame::DamageTracker::default()),
+            control: Mutex::new(control),
+            frames_paused: AtomicBool::new(false),
         });
         let reader_shared = Arc::clone(&shared);
         std::thread::Builder::new()
             .name("termy-session-read".into())
             .spawn(move || {
-                let mut graphics = graphics::GraphicsDecoder::default();
+                let mut frames = FrameReader::default();
                 let result = (|| -> anyhow::Result<()> {
                     loop {
                         let mut tab_chrome = false;
                         match read_message(&mut stream)? {
-                            Update::State(_) | Update::RetiredHost => {
+                            Update::State(_)
+                            | Update::RetiredHost
+                            | Update::RetiredGraphicsState => {
                                 bail!("unexpected terminal update")
                             }
-                            Update::GraphicsState(mut state, update) => {
-                                validate_state(&state)?;
-                                Arc::make_mut(&mut state).graphics = Some(graphics.decode(update)?);
-                                reader_shared.publish_state(state);
+                            Update::Image(image) => {
+                                frames.graphics.insert(image);
+                                continue;
+                            }
+                            Update::Frame(frame, images) => {
+                                // Only this thread replaces the state, so it
+                                // is the frame the delta was made against.
+                                let shown = reader_shared.state();
+                                match frames.frame(&shown, *frame, images) {
+                                    Ok(Some((state, change))) => {
+                                        reader_shared.publish_state(Arc::new(state), change);
+                                    }
+                                    Ok(None) => continue,
+                                    Err(error) => {
+                                        // Ask for a full frame rather than
+                                        // give up on the pane.
+                                        log::warn!("terminal frame skipped: {error:#}");
+                                        reader_shared.send_control(&Request::Resync)?;
+                                        continue;
+                                    }
+                                }
+                            }
+                            Update::Paused(paused) => {
+                                frames.paused(paused, &reader_shared.state());
+                                reader_shared.frames_paused.store(paused, Ordering::Release);
+                                continue;
                             }
                             Update::Events(events) => {
                                 tab_chrome = events.iter().any(drives_tab_chrome);
@@ -309,7 +341,19 @@ impl SessionClient {
         std::thread::Builder::new()
             .name("termy-session-input".into())
             .spawn(move || {
-                while let Ok(Input { command, reply }) = input_rx.recv() {
+                while let Ok(Input {
+                    mut command,
+                    reply,
+                    motion,
+                }) = input_rx.recv()
+                {
+                    if let Some(motion) = motion {
+                        // Send the newest report queued in this place.
+                        let Some(bytes) = motion.lock().unwrap().take() else {
+                            continue;
+                        };
+                        command = RemoteCommand::WriteMotion(bytes);
+                    }
                     let response = input.request(Request::Command {
                         pane: pane_id.clone(),
                         command,
@@ -340,6 +384,7 @@ impl SessionClient {
             shared,
             input: input_tx,
             close_stream,
+            paused: Mutex::new(false),
         })))
     }
 
@@ -357,6 +402,36 @@ impl SessionClient {
     /// asynchronous input queue, this is safe for a short-lived CLI process.
     pub fn write(&self, id: &str, bytes: Vec<u8>) -> anyhow::Result<()> {
         self.send_command(id, RemoteCommand::Write(bytes))
+    }
+    /// The text of `id`'s buffer lines `first..=last`, without subscribing.
+    /// Lines are numbered from the top of the screen: 0 is its first row and
+    /// -1 the newest history line. Long ranges are read in several requests,
+    /// numbered as the first one even when output scrolls meanwhile. Lines
+    /// outside the buffer are left out; `first` of the result is the first
+    /// line returned.
+    pub fn line_texts(&self, id: &str, first: i32, last: i32) -> anyhow::Result<LineTexts> {
+        let mut failure = None;
+        let texts = read_line_texts(first, last, None, |command| {
+            match self.connection.request(Request::Command {
+                pane: id.to_owned(),
+                command,
+            }) {
+                Ok(Response::Reply(reply)) => Some(reply),
+                Ok(_) => {
+                    failure = Some(anyhow::anyhow!("invalid line text response"));
+                    None
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    None
+                }
+            }
+        });
+        match (texts, failure) {
+            (Some(texts), _) => Ok(texts),
+            (None, Some(error)) => Err(error),
+            (None, None) => bail!("invalid line text response"),
+        }
     }
     /// The cell metrics (pixels) the attached UI last applied to `id`.
     pub(crate) fn cell_size(&self, id: &str) -> anyhow::Result<(f32, f32)> {
@@ -559,11 +634,106 @@ impl Pending {
     }
 }
 
+/// Decodes the frames of one subscription (audit I1, I2).
+#[derive(Default)]
+struct FrameReader {
+    graphics: graphics::GraphicsDecoder,
+    /// Waiting for the full frame asked for with [`Request::Resync`].
+    resyncing: bool,
+}
+
+impl FrameReader {
+    /// The state `frame` describes on top of `shown`, and what changed.
+    /// `None` while deltas are ignored until a full frame. An error means
+    /// the frame does not fit what this client has: the caller asks the host
+    /// for a full frame, and deltas are ignored until it arrives.
+    fn frame(
+        &mut self,
+        shown: &RemoteState,
+        frame: crate::remote::frame::FrameUpdate,
+        images: graphics::GraphicsUpdate,
+    ) -> anyhow::Result<Option<(RemoteState, crate::remote::frame::FrameChange)>> {
+        if self.resyncing && !frame.is_full() {
+            return Ok(None);
+        }
+        let decoded = (|| {
+            let (mut state, change) = frame.apply(shown)?;
+            validate_state(&state)?;
+            state.graphics = Some(self.graphics.decode(images)?);
+            anyhow::Ok((state, change))
+        })();
+        match decoded {
+            Ok(decoded) => {
+                if std::mem::take(&mut self.resyncing) {
+                    // Images sent before the host started afresh are unknown
+                    // to it now; keep only those on screen.
+                    self.graphics
+                        .retain_shown(decoded.0.graphics.as_deref().unwrap_or_default());
+                }
+                Ok(Some(decoded))
+            }
+            Err(error) => {
+                self.resyncing = true;
+                self.graphics = graphics::GraphicsDecoder::default();
+                Err(error)
+            }
+        }
+    }
+
+    /// Follows [`Update::Paused`]: a hidden view keeps only the images its
+    /// frame shows; on resume the host sends every image again.
+    fn paused(&mut self, paused: bool, shown: &RemoteState) {
+        if paused {
+            self.graphics
+                .retain_shown(shown.graphics.as_deref().unwrap_or_default());
+        } else {
+            self.graphics = graphics::GraphicsDecoder::default();
+        }
+    }
+}
+
 /// A command for the input connection, with a channel for its reply when
 /// the sender waits for it.
 struct Input {
     command: RemoteCommand,
     reply: Option<Sender<anyhow::Result<RemoteReply>>>,
+    /// For a mouse-motion report: the newest report to send in its place.
+    motion: Option<MotionSlot>,
+}
+
+type MotionSlot = Arc<Mutex<Option<Vec<u8>>>>;
+
+/// Coalesces mouse motion on the input queue: a report queued right behind
+/// another one that was not sent yet replaces it, so hovering over a busy
+/// pane queues one report instead of hundreds (audit B22). A report is never
+/// moved past other input.
+#[derive(Default)]
+struct MotionQueue {
+    /// The slot of the last queued input, when that input is a motion report.
+    last: Mutex<Option<MotionSlot>>,
+}
+
+impl MotionQueue {
+    /// Queues `bytes`. Returns the slot to put on the queue, or `None` when
+    /// the report replaced one that is still waiting at the end of it.
+    fn motion(&self, bytes: Vec<u8>) -> Option<MotionSlot> {
+        let mut last = self.last.lock().unwrap();
+        if let Some(slot) = last.as_ref() {
+            let mut waiting = slot.lock().unwrap();
+            if waiting.is_some() {
+                *waiting = Some(bytes);
+                return None;
+            }
+        }
+        let slot = Arc::new(Mutex::new(Some(bytes)));
+        *last = Some(Arc::clone(&slot));
+        Some(slot)
+    }
+
+    /// Records that other input was queued behind the last report.
+    fn other(&self) {
+        *self.last.lock().unwrap() = None;
+    }
 }
 
 /// The grid size this client last asked the host for, and whether a frame
@@ -611,13 +781,35 @@ struct ClientState {
     wakeup_enabled: AtomicBool,
     disconnected: AtomicBool,
     closing: AtomicBool,
+    motion: MotionQueue,
+    /// Render damage since the renderer last read the state; locked only
+    /// while `state` is held.
+    damage: Mutex<crate::remote::frame::DamageTracker>,
+    /// Writes [`Request::SetPaused`] and [`Request::Resync`] on the
+    /// subscription.
+    control: Mutex<TcpStream>,
+    /// Whether the host confirmed that it stopped sending frames.
+    frames_paused: AtomicBool,
 }
 
 impl ClientState {
-    fn publish_state(&self, state: Arc<RemoteState>) {
+    fn state(&self) -> Arc<RemoteState> {
+        Arc::clone(&self.state.lock().unwrap())
+    }
+
+    fn send_control(&self, request: &Request) -> anyhow::Result<()> {
+        write_message(&mut &*self.control.lock().unwrap(), request)
+    }
+
+    fn publish_state(&self, state: Arc<RemoteState>, change: crate::remote::frame::FrameChange) {
         let mut claim = self.size_claim.lock().unwrap();
         claim.published(&state);
-        *self.state.lock().unwrap() = state;
+        let mut shown = self.state.lock().unwrap();
+        // Recorded with the state, so a renderer always takes the damage
+        // that leads to the state it reads.
+        self.damage.lock().unwrap().record(change, &state);
+        *shown = state;
+        drop(shown);
         drop(claim);
         self.pending.lock().unwrap().wakeup = true;
         self.state_updated.notify_all();
@@ -686,7 +878,10 @@ struct ClientTerminal {
     host: Arc<Connection>,
     shared: Arc<ClientState>,
     input: Sender<Input>,
+    /// The subscription stream; also carries [`Request::SetPaused`].
     close_stream: TcpStream,
+    /// Whether the host was told to pause frames (audit I7).
+    paused: Mutex<bool>,
 }
 
 impl Drop for ClientTerminal {
@@ -711,7 +906,9 @@ impl ClientTerminal {
             else {
                 bail!("invalid terminal viewport response");
             };
-            if changed {
+            // A paused view gets no frames until it resumes, which brings
+            // this one too.
+            if changed && !*self.paused.lock().unwrap() {
                 self.shared.wait_for_generation(generation)?;
             }
             Ok(RemoteReply::Changed(changed))
@@ -725,7 +922,12 @@ impl ClientTerminal {
 
 impl RemoteTransport for ClientTerminal {
     fn state(&self) -> Arc<RemoteState> {
-        Arc::clone(&self.shared.state.lock().unwrap())
+        self.shared.state()
+    }
+    fn state_with_damage(&self) -> (Arc<RemoteState>, Option<RemoteDamage>) {
+        let state = self.shared.state.lock().unwrap();
+        let damage = self.shared.damage.lock().unwrap().take(&state);
+        (Arc::clone(&state), damage)
     }
     fn request(&self, command: RemoteCommand) -> anyhow::Result<RemoteReply> {
         let changes_viewport = matches!(
@@ -757,9 +959,27 @@ impl RemoteTransport for ClientTerminal {
             let mut claim = self.shared.size_claim.lock().unwrap();
             claim.requested(*size, &self.shared.state.lock().unwrap());
         }
+        if let RemoteCommand::WriteMotion(bytes) = command {
+            let Some(slot) = self.shared.motion.motion(bytes) else {
+                return;
+            };
+            let input = Input {
+                command: RemoteCommand::WriteMotion(Vec::new()),
+                reply: None,
+                motion: Some(slot),
+            };
+            // Motion may be dropped; the next report carries the newer
+            // position.
+            if self.input.try_send(input).is_err() {
+                self.shared.motion.other();
+            }
+            return;
+        }
+        self.shared.motion.other();
         let input = Input {
             command,
             reply: None,
+            motion: None,
         };
         if let Err(error) = self.input.send_timeout(input, Duration::from_millis(100)) {
             self.shared.fail(&anyhow::anyhow!(error.to_string()));
@@ -771,9 +991,11 @@ impl RemoteTransport for ClientTerminal {
             "terminal session disconnected"
         );
         let (tx, rx) = flume::bounded(1);
+        self.shared.motion.other();
         let input = Input {
             command,
             reply: Some(tx),
+            motion: None,
         };
         let deadline = Instant::now() + RESPONSE_TIMEOUT;
         self.input
@@ -814,6 +1036,15 @@ impl RemoteTransport for ClientTerminal {
         pending.wakeup || !pending.events.is_empty() || !pending.hosts.is_empty()
     }
     fn set_wakeup_enabled(&self, enabled: bool) {
+        // A hidden view needs no frames, only events (audit I7).
+        let mut paused = self.paused.lock().unwrap();
+        if *paused == enabled && !self.shared.disconnected.load(Ordering::Acquire) {
+            match self.shared.send_control(&Request::SetPaused(!enabled)) {
+                Ok(()) => *paused = !enabled,
+                Err(error) => log::warn!("cannot pause terminal session frames: {error:#}"),
+            }
+        }
+        drop(paused);
         self.shared.wakeup_enabled.store(enabled, Ordering::Release);
         if enabled && self.has_pending_events() {
             self.shared.notify();
@@ -822,6 +1053,9 @@ impl RemoteTransport for ClientTerminal {
     fn host_size_overridden(&self) -> bool {
         let claim = self.shared.size_claim.lock().unwrap();
         claim.overridden(&self.shared.state.lock().unwrap())
+    }
+    fn frames_paused(&self) -> bool {
+        self.shared.frames_paused.load(Ordering::Acquire)
     }
 }
 
@@ -876,6 +1110,104 @@ mod tests {
         // publishes these same host placements. Its revision must then change
         // even when there is no further PTY output or window resize.
         assert_ne!(pending.graphics_revision, ready.graphics_revision);
+    }
+
+    /// One frame from `frames` and `images`, as the host sends it: images
+    /// first.
+    fn send(
+        frames: &mut crate::remote::frame::FrameEncoder,
+        images: &mut graphics::GraphicsEncoder,
+        reader: &mut FrameReader,
+        terminal: &Terminal,
+    ) -> (crate::remote::frame::FrameUpdate, graphics::GraphicsUpdate) {
+        let state = RemoteState::capture(terminal);
+        let (uploads, placements) = images.encode(state.graphics.as_deref().unwrap_or_default());
+        for upload in uploads {
+            reader.graphics.insert(upload);
+        }
+        (frames.encode(&state), placements)
+    }
+
+    /// Audit I1: a frame that does not fit the client's frame makes it ask
+    /// for a full one and ignore deltas until then, instead of failing.
+    #[test]
+    fn a_frame_that_does_not_fit_waits_for_a_full_one() {
+        let terminal = Terminal::new_display(size(20, 4), None);
+        terminal.feed_output(b"\x1b_Ga=T,i=1,f=32,s=1,v=1,C=1,q=2;AQID/w==\x1b\\");
+        let mut frames = crate::remote::frame::FrameEncoder::default();
+        let mut images = graphics::GraphicsEncoder::default();
+        let mut reader = FrameReader::default();
+        let initial = frame(20, 4);
+        let (update, placements) = send(&mut frames, &mut images, &mut reader, &terminal);
+        let (shown, _) = reader.frame(&initial, update, placements).unwrap().unwrap();
+        assert_eq!(shown.graphics.as_ref().unwrap().len(), 1);
+
+        // The client's frame is not the one the delta was made against.
+        terminal.feed_output(b"a");
+        let (update, placements) = send(&mut frames, &mut images, &mut reader, &terminal);
+        let corrupted = frame(20, 4);
+        assert!(reader.frame(&corrupted, update, placements).is_err());
+        // Deltas sent before the host saw the resync are ignored.
+        terminal.feed_output(b"b");
+        let (update, placements) = send(&mut frames, &mut images, &mut reader, &terminal);
+        assert!(reader.frame(&shown, update, placements).unwrap().is_none());
+
+        // The host starts afresh: a full frame with its images again.
+        frames.reset();
+        images = graphics::GraphicsEncoder::default();
+        terminal.feed_output(b"c");
+        let (update, placements) = send(&mut frames, &mut images, &mut reader, &terminal);
+        let (state, change) = reader.frame(&shown, update, placements).unwrap().unwrap();
+        assert_eq!(change, crate::remote::frame::FrameChange::Full);
+        assert!(state.same_frame(&RemoteState::capture(&terminal)));
+        assert_eq!(state.graphics.as_ref().unwrap().len(), 1);
+        // Deltas apply again.
+        terminal.feed_output(b"d");
+        let (update, placements) = send(&mut frames, &mut images, &mut reader, &terminal);
+        assert!(reader.frame(&state, update, placements).unwrap().is_some());
+    }
+
+    /// Audit I2: a hidden view keeps only the images on its screen, and
+    /// drops the rest of its cache when the host starts afresh on resume.
+    #[test]
+    fn a_paused_view_releases_images_it_does_not_show() {
+        let terminal = Terminal::new_display(size(20, 4), None);
+        let mut frames = crate::remote::frame::FrameEncoder::default();
+        let mut images = graphics::GraphicsEncoder::default();
+        let mut reader = FrameReader::default();
+        let mut shown = frame(20, 4);
+        for id in 1..=3 {
+            terminal.feed_output(b"\x1b_Ga=d,d=A,q=2\x1b\\");
+            terminal.feed_output(
+                format!("\x1b_Ga=T,i={id},f=32,s=1,v=1,C=1,q=2;AQID/w==\x1b\\").as_bytes(),
+            );
+            let (update, placements) = send(&mut frames, &mut images, &mut reader, &terminal);
+            shown = reader.frame(&shown, update, placements).unwrap().unwrap().0;
+        }
+        assert_eq!(reader.graphics.cached(), 3);
+        reader.paused(true, &shown);
+        assert_eq!(reader.graphics.cached(), 1);
+        reader.paused(false, &shown);
+        assert_eq!(reader.graphics.cached(), 0);
+    }
+
+    /// Audit B22: hovering queues one motion report behind the last one not
+    /// yet sent, and never moves a report past other input.
+    #[test]
+    fn motion_reports_coalesce_only_at_the_end_of_the_queue() {
+        let queue = MotionQueue::default();
+        let first = queue.motion(b"1".to_vec()).unwrap();
+        assert!(queue.motion(b"2".to_vec()).is_none());
+        assert!(queue.motion(b"3".to_vec()).is_none());
+        assert_eq!(first.lock().unwrap().as_deref(), Some(&b"3"[..]));
+        // A key behind it: the next report must queue after the key.
+        queue.other();
+        let second = queue.motion(b"4".to_vec()).unwrap();
+        assert_eq!(first.lock().unwrap().as_deref(), Some(&b"3"[..]));
+        // Once the input thread took a report, the next one queues anew.
+        assert_eq!(second.lock().unwrap().take().as_deref(), Some(&b"4"[..]));
+        let third = queue.motion(b"5".to_vec()).unwrap();
+        assert!(!Arc::ptr_eq(&second, &third));
     }
 
     #[test]

@@ -35,7 +35,7 @@ use std::{
 
 use crate::TerminalSize;
 
-const MAX_IMAGE_BYTES: usize = 128 * 1024 * 1024;
+pub(crate) const MAX_IMAGE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_CONTROL_BYTES: usize = 4096;
 const MAX_CONTROL_FIELDS: usize = 64;
 const MAX_DIMENSION: u32 = 32_768;

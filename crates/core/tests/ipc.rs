@@ -1555,3 +1555,136 @@ fn host_restores_its_files_after_its_directory_is_removed() {
     let locked = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     assert_eq!(locked, -1, "the host must hold the restored host.lock");
 }
+
+/// Audit I1: frames arrive as row deltas. Replaying the damage the client
+/// reports on the previous frame, as the renderer does, reproduces every
+/// frame, and scrolling output is reported as a scroll.
+#[test]
+fn frame_deltas_report_damage_a_renderer_can_replay() {
+    let host = Host::new();
+    let script = r#"
+stty raw -echo
+printf READY
+dd bs=1 count=1 >/dev/null 2>/dev/null
+i=0
+while [ $i -lt 150 ]; do
+  printf 'line %d\r\n' $i
+  i=$((i+1))
+  sleep 0.002
+done
+printf DONE
+sleep 30
+"#;
+    let (id, terminal) = script_pane(&host, script, &[]);
+    wait_for_text(&terminal, "READY");
+    let full_rows = |terminal: &Terminal| -> Vec<Vec<TerminalRenderCell>> {
+        let read = terminal.render_read(true);
+        read.cells
+            .chunks(usize::from(read.metadata.cols))
+            .map(<[_]>::to_vec)
+            .collect()
+    };
+    let mut rows = full_rows(&terminal);
+    terminal.write(b"x");
+    let (mut scrolls, mut partial) = (0, 0);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (full, done) = terminal.with_render_damage(|damage, mut cells| {
+            let TerminalDamageSnapshot::Partial(spans) = damage.damage else {
+                return (true, false);
+            };
+            partial += 1;
+            for scroll in &damage.scrolls {
+                scrolls += 1;
+                let region = &mut rows[scroll.top..=scroll.bottom];
+                match scroll.direction {
+                    TerminalViewportScrollDirection::Up => region.rotate_left(scroll.count),
+                    TerminalViewportScrollDirection::Down => region.rotate_right(scroll.count),
+                }
+            }
+            assert!(cells.visit(&spans, |row, _, _, col, cell| {
+                rows[row][col] = cell.clone();
+            }));
+            // The same frame, read in full.
+            let all: Vec<_> = (0..rows.len())
+                .map(|row| TerminalDirtySpan {
+                    row,
+                    left_col: 0,
+                    right_col: rows[0].len() - 1,
+                })
+                .collect();
+            let mut expected = rows.clone();
+            assert!(cells.visit(&all, |row, _, _, col, cell| {
+                expected[row][col] = cell.clone();
+            }));
+            assert!(rows == expected, "replayed damage differs from the frame");
+            let text: String = rows
+                .iter()
+                .flatten()
+                .map(|cell| cell.text.as_str())
+                .collect();
+            (false, text.contains("DONE"))
+        });
+        if full {
+            rows = full_rows(&terminal);
+        }
+        if done {
+            break;
+        }
+        assert!(Instant::now() < deadline, "output did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        partial > 0 && scrolls > 0,
+        "{partial} partial reads, {scrolls} scrolls"
+    );
+    host.client.close(&id).unwrap();
+}
+
+/// Audit I7: a hidden view still gets events, but no frames until it is
+/// shown again; then it catches up at once.
+#[test]
+fn a_hidden_view_gets_events_but_no_frames_until_shown() {
+    let host = Host::new();
+    let script = r#"
+stty raw -echo
+printf READY
+dd bs=1 count=1 >/dev/null 2>/dev/null
+printf 'HIDDEN\033]2;hidden-title\007'
+sleep 30
+"#;
+    let (id, terminal) = script_pane(&host, script, &[]);
+    wait_for_text(&terminal, "READY");
+    wait_until_quiet(&terminal);
+    terminal.set_wakeup_enabled(false);
+    // The pause travels on the subscription, the key on the input
+    // connection: wait until the host confirmed the pause.
+    wait_until(|| terminal.frames_paused());
+    terminal.write(b"x");
+    let mut title = None;
+    wait_until(|| {
+        let (events, _) = terminal.drain_events(&mut |_| None);
+        title = title
+            .take()
+            .or(events.into_iter().find_map(|event| match event {
+                TerminalEvent::Title(title) => Some(title),
+                _ => None,
+            }));
+        title.is_some()
+    });
+    assert_eq!(title.as_deref(), Some("hidden-title"));
+    // A frame published with the title would follow it at once; give one
+    // sent by mistake time to arrive before checking that none did.
+    std::thread::sleep(Duration::from_millis(300));
+    let screen: String = terminal
+        .render_read(true)
+        .cells
+        .iter()
+        .map(|cell| cell.text.as_str())
+        .collect();
+    assert!(!screen.contains("HIDDEN"), "a paused view received a frame");
+    terminal.set_wakeup_enabled(true);
+    wait_for_text(&terminal, "HIDDEN");
+    assert!(!terminal.frames_paused());
+    host.client.close(&id).unwrap();
+}

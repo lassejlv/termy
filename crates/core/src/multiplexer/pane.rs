@@ -37,6 +37,8 @@ enum Work {
     Close,
     /// Close, and wait until the program has ended: the host is exiting.
     Shutdown,
+    /// A view was shown again: capture a frame now and send it to that view.
+    Resume(Weak<Subscription>),
 }
 
 struct Shared {
@@ -61,6 +63,13 @@ struct Pending {
     /// time the worker denies it.
     host: VecDeque<(u64, RemoteHostRequest, Instant)>,
     closed: bool,
+    /// A hidden view: send events, but no frames until it resumes (audit I7).
+    paused: bool,
+    /// The pause or resume to confirm to the view, before any later frame.
+    acknowledge: Option<bool>,
+    /// The view lost track of the frames and images sent before: start the
+    /// next frame afresh.
+    resync: bool,
 }
 
 pub(crate) struct Subscription {
@@ -69,6 +78,8 @@ pub(crate) struct Subscription {
     shared: Weak<Mutex<Shared>>,
     /// A view that can answer clipboard requests (see [`HostBridge`]).
     host_capable: bool,
+    /// Wakes the worker, which captures no frames while every view is paused.
+    worker: flume::WeakSender<Work>,
 }
 
 impl Subscription {
@@ -76,11 +87,66 @@ impl Subscription {
         self.pending.lock().unwrap().closed = true;
         self.ready.notify_one();
     }
+
+    /// Pauses or resumes frames for a view that is hidden or shown again,
+    /// and confirms it with [`Update::Paused`]. Events and clipboard requests
+    /// are still sent while paused. On resume the worker captures a frame at
+    /// once and sends only that one: a frame published while the view was
+    /// hidden may be older than the screen.
+    pub(crate) fn set_paused(self: &Arc<Self>, paused: bool) {
+        let mut pending = self.pending.lock().unwrap();
+        if pending.paused == paused {
+            return;
+        }
+        pending.paused = paused;
+        pending.acknowledge = Some(paused);
+        let resume = !paused
+            && self
+                .worker
+                .upgrade()
+                .is_some_and(|worker| worker.try_send(Work::Resume(Arc::downgrade(self))).is_ok());
+        // Without a worker to capture a frame, the latest one must do.
+        pending.state = !paused && !resume;
+        drop(pending);
+        self.ready.notify_one();
+    }
+
+    /// Sends the next frame in full and its images anew; see
+    /// [`Self::take_resync`].
+    pub(crate) fn resync(&self) {
+        let mut pending = self.pending.lock().unwrap();
+        pending.resync = true;
+        pending.state = !pending.paused;
+        drop(pending);
+        self.ready.notify_one();
+    }
+
+    /// Whether the view asked to start afresh since the last call.
+    pub(crate) fn take_resync(&self) -> bool {
+        std::mem::take(&mut self.pending.lock().unwrap().resync)
+    }
+
+    /// Marks the frame captured for a view that resumed as due.
+    fn resumed(&self) {
+        let mut pending = self.pending.lock().unwrap();
+        if !pending.paused {
+            pending.state = true;
+            drop(pending);
+            self.ready.notify_one();
+        }
+    }
+
+    fn wants_frames(&self) -> bool {
+        !self.pending.lock().unwrap().paused
+    }
     pub(crate) fn next(&self) -> Option<Update> {
         let mut pending = self.pending.lock().unwrap();
         loop {
             if pending.closed {
                 return None;
+            }
+            if let Some(paused) = pending.acknowledge.take() {
+                return Some(Update::Paused(paused));
             }
             if let Some((id, request, deadline)) = pending.host.pop_front() {
                 if deadline <= Instant::now() {
@@ -99,7 +165,7 @@ impl Subscription {
             if !pending.events.is_empty() {
                 return Some(Update::Events(std::mem::take(&mut pending.events)));
             }
-            if pending.state {
+            if pending.state && !pending.paused {
                 pending.state = false;
                 // Never acquire Shared with Pending held: the worker publishes
                 // in the opposite order.
@@ -300,6 +366,7 @@ impl Pane {
             ready: Condvar::new(),
             shared: Arc::downgrade(&self.shared),
             host_capable,
+            worker: self.tx.downgrade(),
         });
         shared.subscribers.push(Arc::downgrade(&subscription));
         drop(shared);
@@ -315,6 +382,17 @@ impl Pane {
         self.tx
             .send_timeout(Work::HostReply(id, reply), REQUEST_TIMEOUT)
             .context("terminal session did not answer")
+    }
+}
+
+impl Shared {
+    /// Whether a subscriber is attached that is not paused, so frames are
+    /// worth capturing.
+    fn wants_frames(&self) -> bool {
+        self.subscribers
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|subscriber| subscriber.wants_frames())
     }
 }
 
@@ -411,6 +489,9 @@ fn replay_seed(
 }
 
 fn publish(shared: &mut Shared, state: Option<Arc<RemoteState>>, events: Vec<TerminalEvent>) {
+    // A capture that matches the published state (a wakeup or a command
+    // that changed nothing on screen) is not sent again (audit I8).
+    let state = state.filter(|state| !state.same_frame(&shared.state));
     let changed = state.is_some();
     if let Some(state) = state {
         shared.state = state;
@@ -453,16 +534,25 @@ fn publish(shared: &mut Shared, state: Option<Arc<RemoteState>>, events: Vec<Ter
             shared.sticky_events.push((event.clone(), now));
         }
     }
+    if !changed && events.is_empty() {
+        // Nothing to deliver: waking every subscriber thread would only
+        // send it back to sleep (audit B14).
+        return;
+    }
     shared.subscribers.retain(|weak| {
         let Some(subscriber) = weak.upgrade() else {
             return false;
         };
         let mut pending = subscriber.pending.lock().unwrap();
-        pending.state |= changed;
+        // A paused view gets a frame captured for it when it resumes, so a
+        // frame neither waits for it nor wakes it (audit I7).
+        let mut wake = changed && !pending.paused;
+        pending.state |= wake;
         for event in &events {
             if !coalesce_event(&mut pending.events, event) {
                 continue;
             }
+            wake = true;
             // Coalescing bounds the queue by the number of event kinds and a
             // few prompt cycles; this only guards against a future kind that
             // is neither merged nor capped, so a slow client cannot retain an
@@ -473,7 +563,9 @@ fn publish(shared: &mut Shared, state: Option<Arc<RemoteState>>, events: Vec<Ter
             }
             pending.events.push(event.clone());
         }
-        subscriber.ready.notify_one();
+        if wake || pending.closed {
+            subscriber.ready.notify_one();
+        }
         !pending.closed
     });
 }
@@ -491,6 +583,29 @@ fn notify_exit(shared: &Mutex<Shared>, exit_hook: &Mutex<Option<ExitHook>>) {
     };
     let attached = is_attached(&shared.lock().unwrap());
     hook(attached);
+}
+
+/// How long the worker may wait for work. A frame is captured at most once
+/// per [`FRAME_INTERVAL`], so neither a dirty screen nor an animation deadline
+/// inside that interval may wake it earlier: it would find nothing to do and
+/// spin until the interval ends (audit B14).
+fn worker_timeout(
+    pending_events: bool,
+    frame_wanted: bool,
+    animation_deadline: Option<Instant>,
+    last_frame: Instant,
+    now: Instant,
+) -> Duration {
+    let next_frame = last_frame + FRAME_INTERVAL;
+    if pending_events {
+        Duration::ZERO
+    } else if frame_wanted {
+        next_frame.saturating_duration_since(now)
+    } else if let Some(deadline) = animation_deadline {
+        deadline.max(next_frame).saturating_duration_since(now)
+    } else {
+        Duration::from_secs(60)
+    }
 }
 
 fn run(
@@ -511,16 +626,14 @@ fn run(
     loop {
         let timeout = {
             let state = shared.lock().unwrap();
-            let attached = state.subscribers.iter().any(|weak| weak.strong_count() > 0);
-            if pending_events {
-                Duration::ZERO
-            } else if attached && dirty {
-                FRAME_INTERVAL.saturating_sub(last_frame.elapsed())
-            } else if attached && let Some(deadline) = state.state.graphics_deadline {
-                deadline.saturating_duration_since(Instant::now())
-            } else {
-                Duration::from_secs(60)
-            }
+            let attached = state.wants_frames();
+            worker_timeout(
+                pending_events,
+                attached && dirty,
+                attached.then_some(state.state.graphics_deadline).flatten(),
+                last_frame,
+                Instant::now(),
+            )
         }
         .min(host.next_check());
         match rx.recv_timeout(timeout) {
@@ -530,13 +643,20 @@ fn run(
                 break;
             }
             Ok(Work::Command(command, reply)) => {
+                // Input changes the screen only once the program answers,
+                // and that output marks the pane dirty itself (audit I8).
                 let changes_state = !matches!(
                     command,
-                    RemoteCommand::Snapshot
+                    RemoteCommand::Write(_)
+                        | RemoteCommand::WriteMotion(_)
+                        | RemoteCommand::Snapshot
                         | RemoteCommand::Lines { .. }
+                        | RemoteCommand::LineTexts { .. }
                         | RemoteCommand::Search { .. }
-                        | RemoteCommand::Hyperlink { .. }
-                        | RemoteCommand::Link { .. }
+                        | RemoteCommand::HyperlinkAt { .. }
+                        | RemoteCommand::LinkAt { .. }
+                        | RemoteCommand::RetiredHyperlink
+                        | RemoteCommand::RetiredLink
                         | RemoteCommand::Graphics
                 );
                 let result = crate::remote::execute(&mut terminal, command);
@@ -581,6 +701,15 @@ fn run(
                 }
             }
             Ok(Work::Wake) => dirty = true,
+            Ok(Work::Resume(view)) => {
+                let state = Arc::new(RemoteState::capture(&terminal));
+                publish(&mut shared.lock().unwrap(), Some(state), Vec::new());
+                last_frame = Instant::now();
+                dirty = false;
+                if let Some(view) = view.upgrade() {
+                    view.resumed();
+                }
+            }
             Err(flume::RecvTimeoutError::Timeout) => {}
         }
         for id in host.expired() {
@@ -591,7 +720,7 @@ fn run(
         dirty |= !events.is_empty() || more;
         let (attached, animation_due) = {
             let state = shared.lock().unwrap();
-            let attached = state.subscribers.iter().any(|weak| weak.strong_count() > 0);
+            let attached = state.wants_frames();
             let deadline = state.state.graphics_deadline;
             drop(state);
             (
@@ -814,6 +943,7 @@ mod tests {
             ready: Condvar::new(),
             shared: Arc::downgrade(&shared),
             host_capable: true,
+            worker: flume::bounded(1).0.downgrade(),
         });
         let mut state = shared.lock().unwrap();
         state.subscribers.push(Arc::downgrade(&subscription));
@@ -1129,6 +1259,231 @@ mod tests {
         // A late answer is dropped.
         let late = RemoteHostReply::Read(TerminalClipboardReadResult::Denied);
         pane.host_reply(id, late).unwrap();
+        pane.close();
+    }
+
+    /// Audit B14: an animation deadline inside the frame interval, or one
+    /// already past while the interval runs, must not make the worker poll.
+    #[test]
+    fn animation_deadlines_inside_the_frame_interval_do_not_spin_the_worker() {
+        let now = Instant::now();
+        let just_captured = now;
+        for deadline in [
+            now - Duration::from_millis(1),
+            now + Duration::from_millis(2),
+        ] {
+            assert_eq!(
+                worker_timeout(false, false, Some(deadline), just_captured, now),
+                FRAME_INTERVAL
+            );
+        }
+        // A later deadline is kept, and a due frame is not delayed.
+        let later = now + FRAME_INTERVAL * 3;
+        assert_eq!(
+            worker_timeout(false, false, Some(later), just_captured, now),
+            FRAME_INTERVAL * 3
+        );
+        let long_ago = now - FRAME_INTERVAL * 2;
+        assert_eq!(
+            worker_timeout(false, false, Some(now), long_ago, now),
+            Duration::ZERO
+        );
+        assert_eq!(
+            worker_timeout(false, true, None, just_captured, now),
+            FRAME_INTERVAL
+        );
+        assert_eq!(
+            worker_timeout(true, true, None, just_captured, now),
+            Duration::ZERO
+        );
+    }
+
+    /// A pane running `script` with `/bin/sh -c`.
+    #[cfg(unix)]
+    fn script_pane(script: &str) -> Pane {
+        Pane::spawn(
+            PaneLaunch {
+                size: TerminalSize::default(),
+                working_directory: None,
+                shell_integration: None,
+                config: TerminalRuntimeConfig::default(),
+                launch: Some(TerminalLaunch::Program {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), script.into()],
+                }),
+                environment: None,
+            },
+            &std::env::temp_dir(),
+            HOST_REQUEST_TIMEOUT,
+        )
+        .unwrap()
+    }
+
+    fn screen(state: &RemoteState) -> String {
+        state
+            .render
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect()
+    }
+
+    /// The next frame, skipping events.
+    fn next_frame(view: &Subscription) -> Arc<RemoteState> {
+        loop {
+            match view.next() {
+                Some(Update::State(state)) => return state,
+                Some(_) => {}
+                None => panic!("subscription closed"),
+            }
+        }
+    }
+
+    /// Audit I7: a paused view gets events but no frames; on resume it gets
+    /// one frame captured then, never the one from before it was hidden.
+    #[cfg(unix)]
+    #[test]
+    fn a_paused_view_gets_events_and_only_a_fresh_frame_on_resume() {
+        let pane =
+            script_pane("stty -echo; printf A; read x; printf 'B\\033]2;hidden\\007'; sleep 30");
+        let view = pane.subscribe(true).unwrap();
+        while !screen(&next_frame(&view)).contains('A') {}
+        view.set_paused(true);
+        assert!(matches!(view.next(), Some(Update::Paused(true))));
+        assert!(!pane.shared.lock().unwrap().wants_frames());
+        pane.command(RemoteCommand::Write(b"x\n".to_vec())).unwrap();
+        loop {
+            match view.next() {
+                Some(Update::Events(events))
+                    if events
+                        .iter()
+                        .any(|event| matches!(event, TerminalEvent::Title(_))) =>
+                {
+                    break;
+                }
+                Some(Update::State(_)) => panic!("a paused view received a frame"),
+                Some(_) => {}
+                None => panic!("subscription closed"),
+            }
+        }
+        assert!(!view.pending.lock().unwrap().state);
+        view.set_paused(false);
+        assert!(matches!(view.next(), Some(Update::Paused(false))));
+        let Some(Update::State(state)) = view.next() else {
+            panic!("expected the frame captured on resume");
+        };
+        assert!(screen(&state).contains("AB"), "{}", screen(&state));
+        pane.close();
+    }
+
+    /// Audit I1: a view that lost track of its frames gets the next one, and
+    /// the server loop learns to send it in full.
+    #[test]
+    fn a_resync_sends_a_frame_and_is_reported_once() {
+        let pane = detached_pane();
+        let view = pane.subscribe(true).unwrap();
+        assert!(matches!(view.next(), Some(Update::State(_))));
+        assert!(!view.take_resync());
+        view.resync();
+        assert!(matches!(view.next(), Some(Update::State(_))));
+        assert!(view.take_resync());
+        assert!(!view.take_resync());
+    }
+
+    /// Audit B14: a worker pass with no frame and no events must not wake
+    /// the subscriber threads.
+    #[test]
+    fn publishing_nothing_leaves_subscribers_alone() {
+        let pane = detached_pane();
+        let subscription = pane.subscribe(true).unwrap();
+        // Holding a subscriber's queue blocks any publish that touches it.
+        let held = subscription.pending.lock().unwrap();
+        let shared = Arc::clone(&pane.shared);
+        let (done, published) = flume::bounded(1);
+        std::thread::spawn(move || {
+            publish(
+                &mut shared.lock().unwrap(),
+                None,
+                vec![TerminalEvent::Wakeup],
+            );
+            let _ = done.send(());
+        });
+        let result = published.recv_timeout(Duration::from_secs(5));
+        drop(held);
+        assert!(result.is_ok(), "an empty publish woke the subscribers");
+    }
+
+    /// Audit I8: a capture identical to the published state is not sent.
+    #[test]
+    fn an_unchanged_capture_is_not_published_again() {
+        let terminal = Terminal::new_display(TerminalSize::default(), None);
+        let pane = detached_pane();
+        pane.shared.lock().unwrap().state = Arc::new(RemoteState::capture(&terminal));
+        let subscription = pane.subscribe(true).unwrap();
+        assert!(matches!(subscription.next(), Some(Update::State(_))));
+        let republish = |terminal: &Terminal| {
+            publish(
+                &mut pane.shared.lock().unwrap(),
+                Some(Arc::new(RemoteState::capture(terminal))),
+                Vec::new(),
+            );
+            std::mem::take(&mut subscription.pending.lock().unwrap().state)
+        };
+        assert!(!republish(&terminal), "an identical frame was published");
+        terminal.feed_output(b"x");
+        assert!(republish(&terminal));
+        assert!(!republish(&terminal));
+    }
+
+    /// Audit B22: hovering over a program that stopped reading fills at most
+    /// half of the input backlog, so a key typed afterwards still queues and
+    /// nothing reports dropped input.
+    #[cfg(unix)]
+    #[test]
+    fn motion_over_a_stalled_program_leaves_room_for_keys() {
+        // Raw mode, so a full input queue blocks the writer instead of the
+        // line discipline discarding characters; READY says it is set.
+        let stalled = || {
+            let pane = script_pane("stty raw -echo; printf READY; exec sleep 30");
+            let view = pane.subscribe(true).unwrap();
+            while !screen(&next_frame(&view)).contains("READY") {}
+            (pane, view)
+        };
+        // 6 MB in 6000 reports: far more than the PTY buffers, and more
+        // entries than the whole input backlog holds (4096).
+        let flood = |pane: &Pane, command: fn(Vec<u8>) -> RemoteCommand| {
+            for _ in 0..6000 {
+                pane.command(command(vec![b'm'; 1024])).unwrap();
+            }
+        };
+        let dropped = |pane: &Pane, view: &Subscription| {
+            // The worker drains events after each command; one more round
+            // trip makes sure it published those of the last one.
+            pane.snapshot().unwrap();
+            let pending = view.pending.lock().unwrap();
+            pending
+                .events
+                .iter()
+                .any(|event| matches!(event, TerminalEvent::InputDropped))
+        };
+        let key = RemoteCommand::Write(b"q".to_vec());
+
+        let (pane, view) = stalled();
+        flood(&pane, RemoteCommand::WriteMotion);
+        pane.command(key.clone()).unwrap();
+        assert!(!dropped(&pane, &view), "motion crowded out a key");
+        // The program really stopped reading: plain input past the backlog
+        // is refused.
+        flood(&pane, RemoteCommand::Write);
+        assert!(dropped(&pane, &view), "the input backlog never filled");
+        pane.close();
+
+        // The same hover sent as plain input fills the backlog and drops
+        // the key (the bug).
+        let (pane, view) = stalled();
+        flood(&pane, RemoteCommand::Write);
+        pane.command(key).unwrap();
+        assert!(dropped(&pane, &view));
         pane.close();
     }
 

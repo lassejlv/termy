@@ -183,7 +183,7 @@ impl Backend {
     pub(super) fn write_mouse_motion(&self, input: Vec<u8>) {
         match self {
             Self::Custom(backend) => backend.write_mouse_motion(input),
-            Self::Remote(backend) => backend.write_owned(input),
+            Self::Remote(backend) => backend.write_mouse_motion(input),
         }
     }
 
@@ -212,6 +212,13 @@ impl Backend {
         match self {
             Self::Custom(backend) => backend.size(),
             Self::Remote(backend) => backend.size(),
+        }
+    }
+
+    pub(super) fn frames_paused(&self) -> bool {
+        match self {
+            Self::Custom(_) => false,
+            Self::Remote(backend) => backend.frames_paused(),
         }
     }
 
@@ -360,13 +367,6 @@ impl Backend {
         }
     }
 
-    pub(super) fn render_read_with_screen(&self, force_full: bool) -> (TerminalRenderRead, bool) {
-        match self {
-            Self::Custom(backend) => backend.render_read_with_screen(force_full),
-            Self::Remote(backend) => backend.render_read_with_screen(force_full),
-        }
-    }
-
     pub(super) fn visit_viewport_cells(
         &self,
         visitor: impl FnMut(usize, i32, usize, &crate::TerminalRenderCell),
@@ -500,6 +500,43 @@ impl Backend {
         }
     }
 
+    pub(super) fn hyperlink_at_view(
+        &self,
+        row: usize,
+        col: usize,
+        view: crate::remote::ViewportAnchor,
+    ) -> Option<crate::links::DetectedLink> {
+        match self {
+            Self::Custom(backend) => backend.hyperlink_at_view(row, col, view),
+            Self::Remote(backend) => backend.hyperlink_at_view(row, col, view),
+        }
+    }
+
+    pub(super) fn link_at_view(
+        &self,
+        row: usize,
+        col: usize,
+        view: crate::remote::ViewportAnchor,
+    ) -> Option<crate::links::DetectedViewportLink> {
+        match self {
+            Self::Custom(backend) => backend.link_at_view(row, col, view),
+            Self::Remote(backend) => backend.link_at_view(row, col, view),
+        }
+    }
+
+    pub(super) fn line_texts(
+        &self,
+        first: i32,
+        last: i32,
+        anchor: Option<u64>,
+        max_bytes: usize,
+    ) -> crate::remote::LineTexts {
+        match self {
+            Self::Custom(backend) => backend.line_texts(first, last, anchor, max_bytes),
+            Self::Remote(backend) => backend.line_texts(first, last, anchor),
+        }
+    }
+
     pub(super) fn take_damage_snapshot(&self) -> TerminalDamageSnapshot {
         match self {
             Self::Custom(backend) => backend.take_damage_snapshot(),
@@ -588,6 +625,13 @@ impl Backend {
         match self {
             Self::Custom(backend) => backend.keyboard_mode(),
             Self::Remote(backend) => backend.keyboard_mode(),
+        }
+    }
+
+    pub(super) fn remote_state(&self) -> crate::remote::RemoteState {
+        match self {
+            Self::Custom(backend) => backend.remote_state(),
+            Self::Remote(backend) => backend.remote_state(),
         }
     }
 

@@ -32,6 +32,59 @@ overtake typed keys.
 
 `SessionClient::snapshot`, `create_detached` and the `Size` request read or
 create a pane without subscribing; the CLI uses only these.
+`SessionClient::line_texts` reads history as text (`RemoteCommand::LineTexts`)
+the same way.
+
+Frames are deltas (`remote::frame`). Each subscription keeps the frame it sent
+last (without its images) and sends the rows that differ from it, after
+shifting it by the lines output scrolled into history
+(`RemoteState::lines_scrolled`). A subscriber gets a full viewport first, and
+after a resize, a screen switch or a palette change. The client applies the
+rows to the frame it shows and reports the shift and the changed cells as
+render damage (`RemoteTransport::state_with_damage`), so the renderer replays
+the scroll instead of diffing the viewport. When a frame does not fit what the
+client shows, or names an image it lacks, the client sends `Request::Resync`
+on the subscription and ignores deltas until the host, which starts its frame
+and image caches afresh, sends a full frame.
+
+Images travel as `Update::Image`, each in its own message, before the first
+frame that shows them. Both ends cache them up to 32 MiB beyond those on
+screen; the host evicts the least recently shown and names them in the next
+frame, so an image that scrolls back into view or a repeating animation frame
+is not sent again.
+
+The worker captures at most one frame per 16 ms, and none while every view of
+the pane is paused. A hidden tab sends `Request::SetPaused` on its
+subscription; the host confirms it with `Update::Paused` and then sends events
+and clipboard requests only. The paused client keeps only the images its frame
+shows (`Terminal::frames_paused` reports the confirmation). On resume the
+worker captures a frame at once and sends only that one, and both ends start
+their image caches afresh. Input does not mark the pane dirty, and a capture
+identical to the published frame is not sent.
+
+Cells are still encoded with fixint bincode. Varint encoding would roughly
+halve a cell, but deltas already cut a busy pane's frames by well over an
+order of magnitude, and a second codec on the subscription stream would need
+its own framing rules next to the frozen handshake frames and its own golden
+coverage. Revisit it if delta frames show up in profiles.
+
+History queries do not send styled cells of the whole scrollback. Search and
+copying read `LineTexts` (text, cell widths and soft-wrap flags) newest lines
+first, in chunks of at most 2 MiB, all numbered as of the frame on screen even
+while output scrolls; history that output drops meanwhile only shortens the
+result at its start. `Lines` replies carry at most 64 Ki cells. Messages are
+written in one buffer of their final size. The host encodes every reply before
+writing it and answers `Response::Error` when it cannot be sent, instead of
+closing the connection. Messages may be 16 MiB larger than the 128 MiB image
+quota, so the largest image fits.
+
+Link and hyperlink queries carry the clicked frame and a hash of the clicked
+row's text (`ViewportAnchor`). The host finds the row where output moved it
+and answers none when it scrolled away or, after other changes, no longer
+shows the same text (scrolling on the alternate screen, inside a region or
+without scrollback moves rows without counting). Mouse motion is sent as
+`WriteMotion`, which may fill only half of the input backlog, and the client
+keeps only the newest report queued behind the last one not sent.
 
 Client and host prove knowledge of the `endpoint.json` token to each other
 (HMAC challenge-response) before any request, so a process that binds the

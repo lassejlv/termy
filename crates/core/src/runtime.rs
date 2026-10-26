@@ -1066,6 +1066,14 @@ impl Terminal {
         self.backend.host_size_overridden()
     }
 
+    /// `true` once the session host confirmed that it stopped sending frames
+    /// to this terminal after `set_wakeup_enabled(false)`; it sends events
+    /// only until render wakeups are enabled again. Always `false` for local
+    /// terminals.
+    pub fn frames_paused(&self) -> bool {
+        self.backend.frames_paused()
+    }
+
     pub fn kitty_graphics_placements(&self) -> Vec<KittyGraphicsRenderPlacement> {
         self.backend.kitty_graphics_placements()
     }
@@ -1152,10 +1160,6 @@ impl Terminal {
         read: impl FnOnce(TerminalRenderDamageSnapshot, TerminalDamageCells<'_>) -> R,
     ) -> R {
         self.backend.with_render_damage(read)
-    }
-
-    pub(crate) fn render_read_with_screen(&self, force_full: bool) -> (TerminalRenderRead, bool) {
-        self.backend.render_read_with_screen(force_full)
     }
 
     pub fn render_read(&self, force_full: bool) -> TerminalRenderRead {
@@ -1256,6 +1260,38 @@ impl Terminal {
         self.backend.link_at(row, col)
     }
 
+    /// [`Self::hyperlink_at`] for a row of the frame `view` describes, which
+    /// output may have moved since (audit L19).
+    pub(crate) fn hyperlink_at_view(
+        &self,
+        row: usize,
+        col: usize,
+        view: crate::remote::ViewportAnchor,
+    ) -> Option<crate::links::DetectedLink> {
+        self.backend.hyperlink_at_view(row, col, view)
+    }
+
+    /// [`Self::link_at`] for a row of the frame `view` describes.
+    pub(crate) fn link_at_view(
+        &self,
+        row: usize,
+        col: usize,
+        view: crate::remote::ViewportAnchor,
+    ) -> Option<crate::links::DetectedViewportLink> {
+        self.backend.link_at_view(row, col, view)
+    }
+
+    /// Buffer lines as text; see [`crate::remote::RemoteCommand::LineTexts`].
+    pub(crate) fn line_texts(
+        &self,
+        first: i32,
+        last: i32,
+        anchor: Option<u64>,
+        max_bytes: usize,
+    ) -> crate::remote::LineTexts {
+        self.backend.line_texts(first, last, anchor, max_bytes)
+    }
+
     pub fn take_damage_snapshot(&self) -> TerminalDamageSnapshot {
         self.backend.take_damage_snapshot()
     }
@@ -1310,6 +1346,11 @@ impl Terminal {
 
     pub fn alternate_screen_mode(&self) -> bool {
         self.backend.alternate_screen_mode()
+    }
+
+    /// The state a session host publishes, read in one consistent pass.
+    pub(crate) fn remote_state(&self) -> crate::remote::RemoteState {
+        self.backend.remote_state()
     }
 }
 

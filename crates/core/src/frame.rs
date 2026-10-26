@@ -44,6 +44,10 @@ impl TerminalRenderText {
         self.0.as_str()
     }
 
+    pub(crate) fn new(text: &str) -> Self {
+        Self(CompactString::from(text))
+    }
+
     pub(crate) fn from_cell_suffix(base: char, combining: Option<&str>) -> Self {
         let mut text = CompactString::default();
         text.push(base);

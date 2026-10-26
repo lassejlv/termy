@@ -17,7 +17,11 @@
 //!   changes the fingerprint. Groups of `bool`s also get one sample per field
 //!   with only that field set (see [`Samples::one_hot`]).
 use super::protocol::*;
-use crate::remote::{graphics::GraphicsEncoder, *};
+use crate::remote::{
+    frame::{FrameEncoder, FrameUpdate},
+    graphics::GraphicsEncoder,
+    *,
+};
 use crate::*;
 use serde::{Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -243,6 +247,19 @@ fn keyboard_mode(flags: [bool; 6]) -> TerminalKeyboardMode {
     TerminalKeyboardMode::from_flags(a, b, c, d, e, f)
 }
 
+fn viewport_anchor(alternate_screen: bool) -> ViewportAnchor {
+    ViewportAnchor {
+        generation: 14,
+        display_offset: 15,
+        history_size: 16,
+        lines_scrolled: 17,
+        alternate_screen,
+        cols: 18,
+        rows: 19,
+        row_text: 20,
+    }
+}
+
 fn remote_state() -> RemoteState {
     remote_state_with([true, false, true])
 }
@@ -296,6 +313,7 @@ fn remote_state_with(flags: [bool; 3]) -> RemoteState {
         graphics_revision: 5,
         // A passed deadline encodes as zero delay, whenever the test runs.
         graphics_deadline: Some(Instant::now()),
+        lines_scrolled: 11,
         graphics: None,
     }
 }
@@ -334,9 +352,28 @@ fn png_placement() -> KittyGraphicsRenderPlacement {
     placement(2, GraphicsImage::from_png(4, 5, b"\x89PNG sample".to_vec()))
 }
 
-fn graphics_update() -> graphics::GraphicsUpdate {
+/// The images a first update uploads, and a second update that evicts one.
+fn graphics_update() -> (Vec<graphics::ImageUpload>, graphics::GraphicsUpdate) {
     let rgba = placement(7, GraphicsImage::from_rgba(2, 3, (0..24).collect()));
-    GraphicsEncoder::default().encode(&[rgba, png_placement()])
+    let mut encoder = GraphicsEncoder::with_budget(0);
+    let (uploads, _) = encoder.encode(&[rgba, png_placement()]);
+    let (_, update) = encoder.encode(&[png_placement()]);
+    (uploads, update)
+}
+
+/// A full frame and a delta that changes one cell of it.
+fn frame_updates() -> (FrameUpdate, FrameUpdate) {
+    let mut state = remote_state();
+    state.render.cells = vec![render_cell(); 12];
+    let mut next = state.clone();
+    next.render.metadata.generation += 1;
+    next.lines_scrolled += 1;
+    next.render.cells[5] = TerminalRenderCell::default();
+    let mut encoder = FrameEncoder::default();
+    (
+        encoder.encode(&Arc::new(state)),
+        encoder.encode(&Arc::new(next)),
+    )
 }
 
 fn termy_cell(flags: [bool; 8]) -> TermyCell {
@@ -494,6 +531,8 @@ fn add_requests(samples: &mut Samples) {
             },
             R::Snapshot("pane".into()),
             R::Size("pane".into()),
+            R::SetPaused(true),
+            R::Resync,
         ],
         |request| match request {
             R::RetiredHello => 0,
@@ -516,6 +555,8 @@ fn add_requests(samples: &mut Samples) {
             R::Subscribe { .. } => 17,
             R::Snapshot(_) => 18,
             R::Size(_) => 19,
+            R::SetPaused(_) => 20,
+            R::Resync => 21,
         },
     );
 }
@@ -563,13 +604,14 @@ fn add_responses(samples: &mut Samples) {
             R::Size(_) => 10,
         },
     );
+    let (full, delta) = frame_updates();
     samples.variants(
         "Update",
         vec![
             Update::State(Arc::new(remote_state())),
             Update::Events(vec![TerminalEvent::Bell]),
             Update::RetiredHost,
-            Update::GraphicsState(Arc::new(remote_state()), graphics_update()),
+            Update::RetiredGraphicsState,
             Update::Replay(vec![TerminalEvent::WorkingDirectory("/tmp".into())]),
             Update::HostRequest {
                 id: 3,
@@ -577,14 +619,21 @@ fn add_responses(samples: &mut Samples) {
                 // A passed deadline encodes as zero delay, whenever the test runs.
                 deadline: Some(Instant::now()),
             },
+            Update::Frame(Box::new(full), graphics_update().1),
+            Update::Frame(Box::new(delta), graphics_update().1),
+            Update::Image(graphics_update().0.remove(0)),
+            Update::Paused(true),
         ],
         |update| match update {
             Update::State(_) => 0,
             Update::Events(_) => 1,
             Update::RetiredHost => 2,
-            Update::GraphicsState(..) => 3,
+            Update::RetiredGraphicsState => 3,
             Update::Replay(_) => 4,
             Update::HostRequest { .. } => 5,
+            Update::Frame(..) => 6,
+            Update::Image(_) => 7,
+            Update::Paused(_) => 8,
         },
     );
 }
@@ -617,12 +666,28 @@ fn add_remote(samples: &mut Samples) {
                     regex: false,
                 },
             },
-            C::Hyperlink { row: 1, col: 2 },
-            C::Link { row: 3, col: 4 },
+            C::RetiredHyperlink,
+            C::RetiredLink,
             C::Graphics,
             C::ClipboardPaste {
                 location: TerminalClipboardLocation::Primary,
                 formats: vec!["text/plain".into()],
+            },
+            C::WriteMotion(b"motion".to_vec()),
+            C::LineTexts {
+                first: -7,
+                last: 3,
+                anchor: Some(12),
+            },
+            C::HyperlinkAt {
+                row: 1,
+                col: 2,
+                view: viewport_anchor(false),
+            },
+            C::LinkAt {
+                row: 3,
+                col: 4,
+                view: viewport_anchor(true),
             },
         ],
         |command| match command {
@@ -640,10 +705,14 @@ fn add_remote(samples: &mut Samples) {
             C::Snapshot => 11,
             C::Lines { .. } => 12,
             C::Search { .. } => 13,
-            C::Hyperlink { .. } => 14,
-            C::Link { .. } => 15,
+            C::RetiredHyperlink => 14,
+            C::RetiredLink => 15,
             C::Graphics => 16,
             C::ClipboardPaste { .. } => 17,
+            C::WriteMotion(_) => 18,
+            C::LineTexts { .. } => 19,
+            C::HyperlinkAt { .. } => 20,
+            C::LinkAt { .. } => 21,
         },
     );
     use RemoteReply as R;
@@ -676,6 +745,19 @@ fn add_remote(samples: &mut Samples) {
                 target: "file:///tmp".into(),
             })),
             R::Graphics(6, vec![png_placement()]),
+            R::LineTexts(LineTexts {
+                bounds: (-9, 4, 6),
+                first: -3,
+                lines_scrolled: 13,
+                lines: vec![
+                    LineText {
+                        text: "a\u{301}界".into(),
+                        columns: vec![3, 3, 0],
+                        wrapped: true,
+                    },
+                    LineText::default(),
+                ],
+            }),
         ],
         |reply| match reply {
             R::Ok => 0,
@@ -686,6 +768,7 @@ fn add_remote(samples: &mut Samples) {
             R::Hyperlink(_) => 5,
             R::Link(_) => 6,
             R::Graphics(..) => 7,
+            R::LineTexts(_) => 8,
         },
     );
     samples.variants(
@@ -1019,5 +1102,5 @@ fn samples_encode_the_same_every_time() {
     // Guards the fingerprint against samples that depend on time or order.
     assert_eq!(encode(&remote_state()), encode(&remote_state()));
     assert_eq!(encode(&graphics_update()), encode(&graphics_update()));
-    assert_eq!(variant_count::<Request>(), 20);
+    assert_eq!(variant_count::<Request>(), 22);
 }

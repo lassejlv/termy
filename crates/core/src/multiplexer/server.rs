@@ -551,7 +551,9 @@ impl Server {
             | Request::Proof(_)
             | Request::WatchLayout
             | Request::RetiredSubscribeGraphics
-            | Request::Subscribe { .. } => {
+            | Request::Subscribe { .. }
+            | Request::SetPaused(_)
+            | Request::Resync => {
                 bail!("invalid session request")
             }
         })
@@ -589,19 +591,46 @@ fn serve_client(
             std::thread::Builder::new()
                 .name("termy-session-detach".into())
                 .spawn(move || {
-                    let _ = reader.read(&mut [0u8]);
+                    // The client only pauses and resumes the stream; anything
+                    // else, or the connection closing, detaches it.
+                    loop {
+                        match read_message_limited(&mut reader, 64) {
+                            Ok(Request::SetPaused(paused)) => monitor.set_paused(paused),
+                            Ok(Request::Resync) => monitor.resync(),
+                            _ => break,
+                        }
+                    }
                     monitor.close();
                 })?;
+            // Each subscription has its own base frame and image cache.
+            let mut frames = crate::remote::frame::FrameEncoder::default();
             let mut graphics = crate::remote::graphics::GraphicsEncoder::default();
-            while let Some(mut update) = subscription.next() {
-                if let Update::State(state) = update {
-                    let images = graphics.encode(state.graphics.as_deref().unwrap_or_default());
-                    update = Update::GraphicsState(state, images);
+            while let Some(update) = subscription.next() {
+                let mut updates = Vec::new();
+                match update {
+                    Update::State(state) => {
+                        if subscription.take_resync() {
+                            frames.reset();
+                            graphics = Default::default();
+                        }
+                        let (images, placements) =
+                            graphics.encode(state.graphics.as_deref().unwrap_or_default());
+                        updates.extend(images.into_iter().map(Update::Image));
+                        updates.push(Update::Frame(Box::new(frames.encode(&state)), placements));
+                    }
+                    Update::Paused(false) => {
+                        // The client drops its image cache when it reads this.
+                        graphics = Default::default();
+                        updates.push(Update::Paused(false));
+                    }
+                    update => updates.push(update),
                 }
-                if let Err(error) = write_message(&mut stream, &update) {
-                    subscription.close();
-                    let _ = stream.shutdown(std::net::Shutdown::Both);
-                    return Err(error);
+                for update in updates {
+                    if let Err(error) = write_message(&mut stream, &update) {
+                        subscription.close();
+                        let _ = stream.shutdown(std::net::Shutdown::Both);
+                        return Err(error);
+                    }
                 }
             }
             let _ = stream.shutdown(std::net::Shutdown::Both);

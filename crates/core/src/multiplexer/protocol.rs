@@ -12,14 +12,20 @@ use std::sync::Arc;
 // sends a subscription's replayed state as `Update::Replay`, gives the
 // session layout a revision and adds layout watching. It routes clipboard
 // requests only to host-capable subscriptions, with an expiry, and adds the
-// subscription-free `Snapshot` and `Size` requests.
+// subscription-free `Snapshot` and `Size` requests, frame deltas, cached
+// images in messages of their own, paused subscriptions, text history
+// queries, motion reports and anchored link queries.
 pub(crate) const VERSION: u32 = 4;
-const MAX_MESSAGE_BYTES: u64 = 128 * 1024 * 1024;
+/// The largest message either side accepts. One streamed image (at most the
+/// engine's image quota) fits with room to spare; every other message stays
+/// far smaller, because frames are deltas and history replies are chunked.
+pub(crate) const MAX_MESSAGE_BYTES: u64 =
+    crate::kitty_graphics::MAX_IMAGE_BYTES as u64 + 16 * 1024 * 1024;
 
 /// Hash of the encoding of every wire type, checked by the `wire_golden`
 /// test. When it changes, the wire changed: bump [`VERSION`] (unless the
 /// unreleased change already did) and update this value.
-pub(crate) const WIRE_FINGERPRINT: u64 = 0x0bf1_85e9_16e5_bef5;
+pub(crate) const WIRE_FINGERPRINT: u64 = 0xd2a3_de00_80d3_7489;
 
 /// Identifies the build that wrote `endpoint.json`. A client logs a warning
 /// when it differs from its own under the same [`VERSION`], which points at
@@ -170,6 +176,16 @@ pub(crate) enum Request {
     Snapshot(String),
     /// The pane's size and cell metrics, as [`Response::Size`].
     Size(String),
+    /// Sent on a subscription's own connection, after [`Request::Subscribe`]:
+    /// `true` while the view is hidden. The host then sends events and
+    /// clipboard requests, but no frames, and the latest frame once on
+    /// resume (audit I7). The host does not answer it.
+    SetPaused(bool),
+    /// Sent on a subscription's own connection when the client cannot apply
+    /// a frame (it lost the frame or an image the delta builds on). The host
+    /// sends the next frame in full, with its images, and the client ignores
+    /// deltas until then instead of disconnecting.
+    Resync,
 }
 
 /// See [`Request`] for the wire rules and the frozen variants.
@@ -212,12 +228,13 @@ pub(crate) enum Response {
 /// See [`Request`] for the wire rules.
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Update {
-    /// A pane's new state inside the host; clients receive `GraphicsState`.
+    /// A pane's new state inside the host; clients receive [`Update::Frame`].
     State(Arc<RemoteState>),
     Events(Vec<TerminalEvent>),
     /// Retired: the clipboard request without an expiry.
     RetiredHost,
-    GraphicsState(Arc<RemoteState>, graphics::GraphicsUpdate),
+    /// Retired: the full viewport with every frame.
+    RetiredGraphicsState,
     /// The pane's current state, sent once before any live [`Update::Events`]
     /// of a new subscription. Replayed events describe the state at attach
     /// time; they did not just happen.
@@ -231,6 +248,20 @@ pub(crate) enum Update {
         #[serde(with = "crate::serde_deadline")]
         deadline: Option<std::time::Instant>,
     },
+    /// A frame: the rows changed since the frame sent before on this
+    /// subscription, or the whole viewport (audit I1), with its images.
+    Frame(
+        Box<crate::remote::frame::FrameUpdate>,
+        graphics::GraphicsUpdate,
+    ),
+    /// The pixels of an image a later [`Update::Frame`] shows, sent once
+    /// while both ends cache it (audit I2).
+    Image(graphics::ImageUpload),
+    /// Confirms [`Request::SetPaused`], in order with the frames: none
+    /// follows a `Paused(true)` until a `Paused(false)`. A paused client
+    /// drops the cached images its shown frame does not use; on resume both
+    /// ends start their image caches afresh.
+    Paused(bool),
 }
 
 const HOST_PROOF_LABEL: &[u8] = b"termy-multiplexer host proof v1";
@@ -395,24 +426,63 @@ fn codec() -> impl Options {
         .reject_trailing_bytes()
 }
 
-pub(crate) fn write_message(
-    writer: &mut impl Write,
-    message: &impl Serialize,
-) -> anyhow::Result<()> {
-    let bytes = codec()
-        .serialize(message)
-        .context("encode multiplexer message")?;
+/// `message` framed for the wire: its length, then its body. Fails, without
+/// writing anything, when it cannot be encoded or exceeds the limit.
+pub(crate) fn encode_message(message: &impl Serialize) -> anyhow::Result<Vec<u8>> {
+    encode_message_limited(message, MAX_MESSAGE_BYTES)
+}
+
+fn encode_message_limited(message: &impl Serialize, limit: u64) -> anyhow::Result<Vec<u8>> {
+    let encoding_error = |error: bincode::Error| match *error {
+        bincode::ErrorKind::SizeLimit => anyhow::anyhow!("multiplexer message too large"),
+        error => anyhow::Error::new(error).context("encode multiplexer message"),
+    };
+    // Size the body first, so a large image is copied into a buffer of the
+    // right size once instead of growing it step by step.
+    let size = codec()
+        .with_limit(limit.min(MAX_MESSAGE_BYTES))
+        .serialized_size(message)
+        .map_err(encoding_error)?;
+    let mut frame = Vec::with_capacity(4 + size as usize);
+    frame.extend_from_slice(&(size as u32).to_le_bytes());
+    codec()
+        .with_no_limit()
+        .serialize_into(&mut frame, message)
+        .map_err(encoding_error)?;
     ensure!(
-        bytes.len() as u64 <= MAX_MESSAGE_BYTES,
-        "multiplexer message too large"
+        frame.len() as u64 == 4 + size,
+        "multiplexer message changed while it was encoded"
     );
-    writer.write_all(&(bytes.len() as u32).to_le_bytes())?;
-    writer.write_all(&bytes)?;
+    Ok(frame)
+}
+
+/// Writes a frame from [`encode_message`] in one write, so that the length
+/// and the body do not travel as separate packets.
+pub(crate) fn write_frame(writer: &mut impl Write, frame: &[u8]) -> anyhow::Result<()> {
+    writer.write_all(frame)?;
     writer.flush()?;
     Ok(())
 }
 
+pub(crate) fn write_message(
+    writer: &mut impl Write,
+    message: &impl Serialize,
+) -> anyhow::Result<()> {
+    write_frame(writer, &encode_message(message)?)
+}
+
+/// Encodes `response` before writing it. A reply that cannot be encoded, or
+/// is too large, is answered with [`Response::Error`] instead, so the client
+/// gets an error rather than a closed connection (audit B13).
 pub(crate) fn write_response(writer: &mut impl Write, response: &Response) -> anyhow::Result<()> {
+    write_response_limited(writer, response, MAX_MESSAGE_BYTES)
+}
+
+fn write_response_limited(
+    writer: &mut impl Write,
+    response: &Response,
+    limit: u64,
+) -> anyhow::Result<()> {
     // Bincode performs sizing and writing passes. Keep the PNG exports of a
     // `RemoteReply::Graphics` snapshot alive across both, so each image is
     // encoded once; the graphics stream sends raw image generations instead.
@@ -422,7 +492,14 @@ pub(crate) fn write_response(writer: &mut impl Write, response: &Response) -> an
         }
         _ => None,
     };
-    write_message(writer, response)
+    let frame = match encode_message_limited(response, limit) {
+        Ok(frame) => frame,
+        Err(error) => {
+            log::warn!("session reply could not be sent: {error:#}");
+            encode_message(&Response::Error(format!("{error:#}")))?
+        }
+    };
+    write_frame(writer, &frame)
 }
 
 pub(crate) fn read_message<T: DeserializeOwned>(reader: &mut impl Read) -> anyhow::Result<T> {
@@ -487,6 +564,25 @@ mod tests {
         assert_eq!(image.png_encoding_count(), 2);
         let decoded: RemoteReply = bincode::deserialize(&wire).unwrap();
         assert!(matches!(decoded, RemoteReply::Graphics(7, placements) if placements.len() == 10));
+    }
+
+    /// Audit B13: a reply that cannot be sent becomes an error reply, and
+    /// the connection stays usable.
+    #[test]
+    fn oversized_replies_are_answered_with_an_error() {
+        let huge = Response::Layout {
+            revision: 1,
+            layout: Some("x".repeat(4096)),
+        };
+        let mut wire = Vec::new();
+        write_response_limited(&mut wire, &huge, 1024).unwrap();
+        write_response(&mut wire, &Response::Ok).unwrap();
+        let mut reader = wire.as_slice();
+        let Response::Error(error) = read_message(&mut reader).unwrap() else {
+            panic!("expected an error reply");
+        };
+        assert!(error.contains("too large"), "{error}");
+        assert!(matches!(read_message(&mut reader).unwrap(), Response::Ok));
     }
 
     fn queue(events: impl IntoIterator<Item = TerminalEvent>) -> Vec<TerminalEvent> {
