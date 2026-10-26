@@ -12,6 +12,27 @@ images, and live processes. Clients cache the viewport and request history,
 search, and links when needed. Dropping a client detaches it; closing a pane
 is an explicit host operation. Clipboard operations use the attached UI's
 existing permission policy; terminal protocol replies continue when detached.
+
+Clipboard reads and writes (OSC 52 queries, kitty OSC 5522) never block the
+pane: the engine parks the request (`TerminalReplyHost::defer_clipboard_request`)
+and the host sends it to the newest subscription that subscribed as
+host-capable, which a desktop view does and `SessionClient::observe` and the
+CLI do not. The answer may take as long as the user's permission prompt. The
+program still reads every reply in the order of its requests: protocol
+replies to later output (a `CSI c` after an `OSC 52 ?`) wait behind a
+request whose answer is still owed, outside synchronized updates. With no
+host-capable view the request is denied at once, and a request is denied when
+its view detaches or after 60 s; a denied OSC 52 query gets an empty
+clipboard. A reset (RIS) drops the requests still waiting. Each request
+carries its deadline, and the client drops expired requests instead of
+prompting late. Clipboard requests wake a view even while its render wakeups
+are suspended (a hidden tab). Commands that write to the PTY, like the kitty
+paste notification, travel on the ordered input connection so they never
+overtake typed keys.
+
+`SessionClient::snapshot`, `create_detached` and the `Size` request read or
+create a pane without subscribing; the CLI uses only these.
+
 Client and host prove knowledge of the `endpoint.json` token to each other
 (HMAC challenge-response) before any request, so a process that binds the
 port after a host crash neither learns the token nor receives input.

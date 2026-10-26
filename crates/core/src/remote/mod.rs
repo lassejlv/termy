@@ -114,29 +114,8 @@ pub enum RemoteReply {
 
 /// A clipboard operation is executed by the attached UI using its existing
 /// permission policy. Detached sessions have no clipboard host.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum RemoteHostRequest {
-    Load(TerminalClipboardTarget),
-    Read(TerminalClipboardReadRequest),
-    Write(TerminalClipboardWriteRequest),
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum RemoteHostReply {
-    Load(Option<String>),
-    Read(TerminalClipboardReadResult),
-    Write(TerminalClipboardWriteResult),
-}
-
-impl RemoteHostRequest {
-    pub fn execute(self, host: &mut impl TerminalReplyHost) -> RemoteHostReply {
-        match self {
-            Self::Load(target) => RemoteHostReply::Load(host.load_clipboard(target)),
-            Self::Read(request) => RemoteHostReply::Read(host.read_clipboard(request)),
-            Self::Write(request) => RemoteHostReply::Write(host.write_clipboard(request)),
-        }
-    }
-}
+pub type RemoteHostRequest = TerminalClipboardRequest;
+pub type RemoteHostReply = TerminalClipboardReply;
 
 /// Implemented by the IPC client, keeping sockets, process discovery, and
 /// session lifetime outside the terminal engine. Dropping a transport detaches;
@@ -145,6 +124,13 @@ pub trait RemoteTransport: Send + Sync {
     fn state(&self) -> Arc<RemoteState>;
     fn request(&self, command: RemoteCommand) -> anyhow::Result<RemoteReply>;
     fn send(&self, command: RemoteCommand);
+    /// Sends a command behind the commands queued by [`Self::send`] and
+    /// waits for its reply, for commands that write to the PTY and must not
+    /// overtake queued input. An error means the command was not sent;
+    /// `None` means it was, but its reply did not come, so it may still run.
+    fn send_and_wait(&self, command: RemoteCommand) -> anyhow::Result<Option<RemoteReply>> {
+        self.request(command).map(Some)
+    }
     fn take_events(&self) -> Vec<TerminalEvent>;
     fn take_host_requests(&self) -> Vec<(u64, RemoteHostRequest)>;
     fn reply_to_host(&self, id: u64, reply: RemoteHostReply);

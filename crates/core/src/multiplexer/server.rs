@@ -296,9 +296,14 @@ impl Server {
                 }
             }
             Request::HostReply { pane, id, reply } => {
-                self.pane(&pane)?.host_reply(id, reply);
+                self.pane(&pane)?.host_reply(id, reply)?;
                 Response::Ok
             }
+            Request::Snapshot(id) => {
+                let pane = self.pane(&id)?;
+                Response::Attached(pane.info(), pane.snapshot()?)
+            }
+            Request::Size(id) => Response::Size(self.pane(&id)?.size()?),
             Request::List => Response::Panes(
                 self.panes
                     .lock()
@@ -337,8 +342,9 @@ impl Server {
             | Request::RetiredSubscribe
             | Request::Authenticate { .. }
             | Request::Proof(_)
-            | Request::SubscribeGraphics(_)
-            | Request::WatchLayout => {
+            | Request::WatchLayout
+            | Request::RetiredSubscribeGraphics
+            | Request::Subscribe { .. } => {
                 bail!("invalid session request")
             }
         })
@@ -368,8 +374,8 @@ fn serve_client(
             let _ = TcpStream::connect(server.address);
             return Ok(());
         }
-        if let Request::SubscribeGraphics(id) = request {
-            let subscription = server.pane(&id)?.subscribe()?;
+        if let Request::Subscribe { pane, host_capable } = request {
+            let subscription = server.pane(&pane)?.subscribe(host_capable)?;
             write_message(&mut stream, &Response::Ok)?;
             let mut reader = stream.try_clone()?;
             let monitor = Arc::clone(&subscription);

@@ -476,7 +476,7 @@ fn add_requests(samples: &mut Samples) {
                 expected: 3,
                 replacement: "{\"version\":1}".into(),
             },
-            R::SubscribeGraphics("pane".into()),
+            R::RetiredSubscribeGraphics,
             R::ViewportCommand {
                 pane: "pane".into(),
                 command: command(),
@@ -487,6 +487,12 @@ fn add_requests(samples: &mut Samples) {
             },
             R::Proof([2; 32]),
             R::WatchLayout,
+            R::Subscribe {
+                pane: "pane".into(),
+                host_capable: true,
+            },
+            R::Snapshot("pane".into()),
+            R::Size("pane".into()),
         ],
         |request| match request {
             R::RetiredHello => 0,
@@ -501,11 +507,14 @@ fn add_requests(samples: &mut Samples) {
             R::SetLayout(_) => 9,
             R::Shutdown => 10,
             R::CompareAndSetLayout { .. } => 11,
-            R::SubscribeGraphics(_) => 12,
+            R::RetiredSubscribeGraphics => 12,
             R::ViewportCommand { .. } => 13,
             R::Authenticate { .. } => 14,
             R::Proof(_) => 15,
             R::WatchLayout => 16,
+            R::Subscribe { .. } => 17,
+            R::Snapshot(_) => 18,
+            R::Size(_) => 19,
         },
     );
 }
@@ -537,6 +546,7 @@ fn add_responses(samples: &mut Samples) {
                 server_proof: [4; 32],
             },
             R::LayoutChanged { revision: 6 },
+            R::Size(size()),
         ],
         |response| match response {
             R::Ok => 0,
@@ -549,6 +559,7 @@ fn add_responses(samples: &mut Samples) {
             R::Viewport { .. } => 7,
             R::Challenge { .. } => 8,
             R::LayoutChanged { .. } => 9,
+            R::Size(_) => 10,
         },
     );
     samples.variants(
@@ -556,19 +567,23 @@ fn add_responses(samples: &mut Samples) {
         vec![
             Update::State(Arc::new(remote_state())),
             Update::Events(vec![TerminalEvent::Bell]),
-            Update::Host {
-                id: 3,
-                request: RemoteHostRequest::Read(read_request()),
-            },
+            Update::RetiredHost,
             Update::GraphicsState(Arc::new(remote_state()), graphics_update()),
             Update::Replay(vec![TerminalEvent::WorkingDirectory("/tmp".into())]),
+            Update::HostRequest {
+                id: 3,
+                request: RemoteHostRequest::Read(read_request()),
+                // A passed deadline encodes as zero delay, whenever the test runs.
+                deadline: Some(Instant::now()),
+            },
         ],
         |update| match update {
             Update::State(_) => 0,
             Update::Events(_) => 1,
-            Update::Host { .. } => 2,
+            Update::RetiredHost => 2,
             Update::GraphicsState(..) => 3,
             Update::Replay(_) => 4,
+            Update::HostRequest { .. } => 5,
         },
     );
 }
@@ -1003,5 +1018,5 @@ fn samples_encode_the_same_every_time() {
     // Guards the fingerprint against samples that depend on time or order.
     assert_eq!(encode(&remote_state()), encode(&remote_state()));
     assert_eq!(encode(&graphics_update()), encode(&graphics_update()));
-    assert_eq!(variant_count::<Request>(), 17);
+    assert_eq!(variant_count::<Request>(), 20);
 }

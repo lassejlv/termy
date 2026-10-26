@@ -1,9 +1,9 @@
 use crate::multiplexer::protocol::*;
 use crate::{remote::*, *};
-use anyhow::{Context, bail};
+use anyhow::Context;
 use flume::{Receiver, Sender};
 use std::{
-    collections::HashMap,
+    collections::VecDeque,
     sync::{Arc, Condvar, Mutex, Weak},
     time::{Duration, Instant, SystemTime},
 };
@@ -17,12 +17,21 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// after a command finished. Blocked records wait for the user and never
 /// expire.
 const STALE_ACTIVITY_AFTER: Duration = Duration::from_secs(30 * 60);
+/// How long a clipboard request waits for the attached UI, which may be
+/// asking the user. The program is then told it was denied (audit B7).
+const HOST_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often the worker checks that the subscriber holding a clipboard
+/// request is still attached, so a closed view's requests are denied soon.
+const HOST_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 
 enum Work {
     Wake,
     Command(RemoteCommand, Sender<RemoteReply>),
     Viewport(RemoteCommand, Sender<(bool, u64)>),
     Refresh(Sender<Arc<RemoteState>>),
+    Snapshot(Sender<Arc<RemoteState>>),
+    Size(Sender<TerminalSize>),
+    HostReply(u64, RemoteHostReply),
     Close,
 }
 
@@ -36,8 +45,6 @@ struct Shared {
     /// changed.
     program_status: Option<Vec<(ProgramStatusRecord, SystemTime)>>,
     subscribers: Vec<Weak<Subscription>>,
-    host_replies: HashMap<u64, Sender<RemoteHostReply>>,
-    next_host_id: u64,
 }
 
 #[derive(Default)]
@@ -46,7 +53,9 @@ struct Pending {
     /// The replay seed of a new subscription, sent before any live event.
     replay: Vec<TerminalEvent>,
     events: Vec<TerminalEvent>,
-    host: Vec<(u64, RemoteHostRequest)>,
+    /// Clipboard requests in the order the program made them, each with the
+    /// time the worker denies it.
+    host: VecDeque<(u64, RemoteHostRequest, Instant)>,
     closed: bool,
 }
 
@@ -54,6 +63,8 @@ pub(crate) struct Subscription {
     pending: Mutex<Pending>,
     ready: Condvar,
     shared: Weak<Mutex<Shared>>,
+    /// A view that can answer clipboard requests (see [`HostBridge`]).
+    host_capable: bool,
 }
 
 impl Subscription {
@@ -67,8 +78,16 @@ impl Subscription {
             if pending.closed {
                 return None;
             }
-            if let Some((id, request)) = pending.host.pop() {
-                return Some(Update::Host { id, request });
+            if let Some((id, request, deadline)) = pending.host.pop_front() {
+                if deadline <= Instant::now() {
+                    // Already denied; the client would only drop it.
+                    continue;
+                }
+                return Some(Update::HostRequest {
+                    id,
+                    request,
+                    deadline: Some(deadline),
+                });
             }
             if !pending.replay.is_empty() {
                 return Some(Update::Replay(std::mem::take(&mut pending.replay)));
@@ -102,6 +121,10 @@ pub(crate) struct Pane {
 
 impl Pane {
     pub(crate) fn create(launch: PaneLaunch) -> anyhow::Result<Self> {
+        Self::spawn(launch, HOST_REQUEST_TIMEOUT)
+    }
+
+    fn spawn(launch: PaneLaunch, host_timeout: Duration) -> anyhow::Result<Self> {
         let (tx, rx) = flume::bounded(256);
         let wake_tx = tx.clone();
         let terminal = Terminal::new_with_launch_and_wakeup_notifier(
@@ -127,15 +150,13 @@ impl Pane {
             sticky_events: Vec::new(),
             program_status: None,
             subscribers: Vec::new(),
-            host_replies: HashMap::new(),
-            next_host_id: 1,
         }));
         let worker_shared = Arc::clone(&shared);
         let exit_hook = Arc::new(Mutex::new(None));
         let worker_exit_hook = Arc::clone(&exit_hook);
         std::thread::Builder::new()
             .name("termy-session".into())
-            .spawn(move || run(terminal, rx, worker_shared, worker_exit_hook))?;
+            .spawn(move || run(terminal, rx, worker_shared, worker_exit_hook, host_timeout))?;
         Ok(Self {
             tx,
             shared,
@@ -179,6 +200,15 @@ impl Pane {
         self.call(Work::Refresh, "refresh terminal session")
     }
 
+    /// The current state, without publishing it to subscribers.
+    pub(crate) fn snapshot(&self) -> anyhow::Result<Arc<RemoteState>> {
+        self.call(Work::Snapshot, "terminal session did not answer")
+    }
+
+    pub(crate) fn size(&self) -> anyhow::Result<TerminalSize> {
+        self.call(Work::Size, "terminal session did not answer")
+    }
+
     pub(crate) fn command(&self, command: RemoteCommand) -> anyhow::Result<RemoteReply> {
         self.call(
             |tx| Work::Command(command, tx),
@@ -200,7 +230,7 @@ impl Pane {
         let _ = self.tx.send_timeout(Work::Close, REQUEST_TIMEOUT);
     }
 
-    pub(crate) fn subscribe(&self) -> anyhow::Result<Arc<Subscription>> {
+    pub(crate) fn subscribe(&self, host_capable: bool) -> anyhow::Result<Arc<Subscription>> {
         self.refresh()?;
         let mut shared = self.shared.lock().unwrap();
         let mut replay = replay_seed(
@@ -219,6 +249,7 @@ impl Pane {
             }),
             ready: Condvar::new(),
             shared: Arc::downgrade(&self.shared),
+            host_capable,
         });
         shared.subscribers.push(Arc::downgrade(&subscription));
         drop(shared);
@@ -228,10 +259,12 @@ impl Pane {
         Ok(subscription)
     }
 
-    pub(crate) fn host_reply(&self, id: u64, reply: RemoteHostReply) {
-        if let Some(tx) = self.shared.lock().unwrap().host_replies.remove(&id) {
-            let _ = tx.try_send(reply);
-        }
+    /// Hands the answer to a clipboard request to the worker, which writes
+    /// the reply unless the request was already denied.
+    pub(crate) fn host_reply(&self, id: u64, reply: RemoteHostReply) -> anyhow::Result<()> {
+        self.tx
+            .send_timeout(Work::HostReply(id, reply), REQUEST_TIMEOUT)
+            .context("terminal session did not answer")
     }
 }
 
@@ -415,9 +448,12 @@ fn run(
     rx: Receiver<Work>,
     shared: Arc<Mutex<Shared>>,
     exit_hook: Arc<Mutex<Option<ExitHook>>>,
+    host_timeout: Duration,
 ) {
     let mut host = HostBridge {
         shared: Arc::clone(&shared),
+        timeout: host_timeout,
+        parked: Vec::new(),
     };
     let mut dirty = true;
     let mut pending_events = false;
@@ -435,7 +471,8 @@ fn run(
             } else {
                 Duration::from_secs(60)
             }
-        };
+        }
+        .min(host.next_check());
         match rx.recv_timeout(timeout) {
             Ok(Work::Close) | Err(flume::RecvTimeoutError::Disconnected) => break,
             Ok(Work::Command(command, reply)) => {
@@ -478,8 +515,22 @@ fn run(
                 last_frame = Instant::now();
                 dirty = false;
             }
+            Ok(Work::Snapshot(reply)) => {
+                let _ = reply.try_send(Arc::new(RemoteState::capture(&terminal)));
+            }
+            Ok(Work::Size(reply)) => {
+                let _ = reply.try_send(terminal.size());
+            }
+            Ok(Work::HostReply(id, reply)) => {
+                if host.unpark(id) {
+                    terminal.complete_clipboard_request(id, reply);
+                }
+            }
             Ok(Work::Wake) => dirty = true,
             Err(flume::RecvTimeoutError::Timeout) => {}
+        }
+        for id in host.expired() {
+            terminal.deny_clipboard_request(id);
         }
         let (events, more) = terminal.drain_events(&mut host);
         pending_events = more;
@@ -524,56 +575,125 @@ fn run(
     // shell. App/client disconnect never reaches this path.
 }
 
+/// A clipboard request sent to a subscriber, waiting for its answer.
+struct Parked {
+    id: u64,
+    deadline: Instant,
+    subscriber: Weak<Subscription>,
+}
+
+/// Sends the engine's clipboard requests to an attached view and lets the
+/// worker carry on: the engine writes the reply when [`Work::HostReply`]
+/// arrives, or denies the request at its deadline or when the view detaches.
 struct HostBridge {
     shared: Arc<Mutex<Shared>>,
+    timeout: Duration,
+    parked: Vec<Parked>,
 }
 
 impl HostBridge {
-    fn request(&self, request: RemoteHostRequest) -> anyhow::Result<RemoteHostReply> {
-        let (tx, rx) = flume::bounded(1);
-        let (id, subscriber) = {
-            let mut shared = self.shared.lock().unwrap();
-            let Some(subscriber) = shared.subscribers.iter().rev().find_map(Weak::upgrade) else {
-                bail!("no attached clipboard host");
-            };
-            let id = shared.next_host_id;
-            shared.next_host_id = id.wrapping_add(1);
-            shared.host_replies.insert(id, tx);
-            drop(shared);
-            (id, subscriber)
+    /// The view that answers clipboard requests: the newest open
+    /// host-capable subscription. This assumes, and nothing enforces, that
+    /// one view shows a pane at a time: a desktop view subscribes when it
+    /// shows the pane, and an older subscription that is still open is
+    /// usually a view being replaced (a reopened window or a reattach)
+    /// whose connection has not closed yet, so the newest one is the view in
+    /// front of the user. Should two views ever show one pane, the newer
+    /// one is asked. Subscribers that are not host-capable, like scripts,
+    /// never receive requests.
+    fn clipboard_host(&self) -> Option<Arc<Subscription>> {
+        let shared = self.shared.lock().unwrap();
+        shared
+            .subscribers
+            .iter()
+            .rev()
+            .filter_map(Weak::upgrade)
+            .find(|subscriber| {
+                subscriber.host_capable && !subscriber.pending.lock().unwrap().closed
+            })
+    }
+
+    /// Takes a parked request off the list; false when it was already
+    /// denied, or never sent.
+    fn unpark(&mut self, id: u64) -> bool {
+        let Some(index) = self.parked.iter().position(|parked| parked.id == id) else {
+            return false;
         };
-        subscriber.pending.lock().unwrap().host.push((id, request));
-        subscriber.ready.notify_one();
-        let result = rx.recv_timeout(Duration::from_millis(500));
-        self.shared.lock().unwrap().host_replies.remove(&id);
-        Ok(result?)
+        self.parked.remove(index);
+        true
+    }
+
+    /// Requests to deny: past their deadline, or held by a subscriber that
+    /// has detached.
+    fn expired(&mut self) -> Vec<u64> {
+        let now = Instant::now();
+        let mut expired = Vec::new();
+        self.parked.retain(|parked| {
+            let attached = parked
+                .subscriber
+                .upgrade()
+                .is_some_and(|subscriber| !subscriber.pending.lock().unwrap().closed);
+            if attached && parked.deadline > now {
+                return true;
+            }
+            expired.push(parked.id);
+            false
+        });
+        expired
+    }
+
+    /// How long the worker may sleep before [`Self::expired`] has work.
+    fn next_check(&self) -> Duration {
+        self.parked
+            .iter()
+            .map(|parked| parked.deadline.saturating_duration_since(Instant::now()))
+            .min()
+            .map_or(Duration::MAX, |due| due.min(HOST_CHECK_INTERVAL))
     }
 }
 
 impl TerminalReplyHost for HostBridge {
-    fn load_clipboard(&mut self, target: TerminalClipboardTarget) -> Option<String> {
-        match self.request(RemoteHostRequest::Load(target)) {
-            Ok(RemoteHostReply::Load(value)) => value,
-            _ => None,
+    fn defer_clipboard_request(
+        &mut self,
+        id: u64,
+        request: RemoteHostRequest,
+    ) -> Result<(), RemoteHostRequest> {
+        // Without a view to ask, the methods below deny the request now.
+        let Some(subscriber) = self.clipboard_host() else {
+            return Err(request);
+        };
+        let deadline = Instant::now() + self.timeout;
+        let mut pending = subscriber.pending.lock().unwrap();
+        if pending.closed {
+            return Err(request);
         }
+        pending.host.push_back((id, request, deadline));
+        drop(pending);
+        subscriber.ready.notify_one();
+        self.parked.push(Parked {
+            id,
+            deadline,
+            subscriber: Arc::downgrade(&subscriber),
+        });
+        Ok(())
+    }
+
+    fn load_clipboard(&mut self, _target: TerminalClipboardTarget) -> Option<String> {
+        // An empty clipboard, as the desktop's refusal sends, so the
+        // program stops waiting.
+        Some(String::new())
     }
     fn read_clipboard(
         &mut self,
-        request: TerminalClipboardReadRequest,
+        _request: TerminalClipboardReadRequest,
     ) -> TerminalClipboardReadResult {
-        match self.request(RemoteHostRequest::Read(request)) {
-            Ok(RemoteHostReply::Read(value)) => value,
-            _ => TerminalClipboardReadResult::Denied,
-        }
+        TerminalClipboardReadResult::Denied
     }
     fn write_clipboard(
         &mut self,
-        request: TerminalClipboardWriteRequest,
+        _request: TerminalClipboardWriteRequest,
     ) -> TerminalClipboardWriteResult {
-        match self.request(RemoteHostRequest::Write(request)) {
-            Ok(RemoteHostReply::Write(value)) => value,
-            _ => TerminalClipboardWriteResult::Denied,
-        }
+        TerminalClipboardWriteResult::Denied
     }
 }
 
@@ -597,8 +717,6 @@ mod tests {
             sticky_events: Vec::new(),
             program_status: None,
             subscribers: Vec::new(),
-            host_replies: HashMap::new(),
-            next_host_id: 1,
         }));
         let (tx, rx) = flume::bounded(256);
         let pane = Pane {
@@ -615,7 +733,7 @@ mod tests {
             // must wake it even if no more terminal output arrives afterward.
             assert!(matches!(rx.recv_timeout(REQUEST_TIMEOUT), Ok(Work::Wake)));
         });
-        let subscription = pane.subscribe().unwrap();
+        let subscription = pane.subscribe(true).unwrap();
         worker.join().unwrap();
         assert!(matches!(subscription.next(), Some(Update::State(_))));
     }
@@ -635,13 +753,12 @@ mod tests {
             sticky_events: Vec::new(),
             program_status: None,
             subscribers: Vec::new(),
-            host_replies: HashMap::new(),
-            next_host_id: 1,
         }));
         let subscription = Arc::new(Subscription {
             pending: Mutex::new(Pending::default()),
             ready: Condvar::new(),
             shared: Arc::downgrade(&shared),
+            host_capable: true,
         });
         let mut state = shared.lock().unwrap();
         state.subscribers.push(Arc::downgrade(&subscription));
@@ -688,8 +805,6 @@ mod tests {
             sticky_events: Vec::new(),
             program_status: None,
             subscribers: Vec::new(),
-            host_replies: HashMap::new(),
-            next_host_id: 1,
         }));
         let (tx, rx) = flume::bounded(256);
         std::thread::spawn(move || {
@@ -724,7 +839,7 @@ mod tests {
     #[test]
     fn command_finish_and_prompt_in_one_drain_reach_a_subscriber_in_order() {
         let pane = detached_pane();
-        let subscription = pane.subscribe().unwrap();
+        let subscription = pane.subscribe(true).unwrap();
         publish_to(
             &pane,
             vec![
@@ -750,7 +865,7 @@ mod tests {
     #[test]
     fn a_hidden_view_stays_subscribed_through_a_flood_of_prompts() {
         let pane = detached_pane();
-        let subscription = pane.subscribe().unwrap();
+        let subscription = pane.subscribe(true).unwrap();
         for code in 0..10_000 {
             publish_to(
                 &pane,
@@ -791,7 +906,7 @@ mod tests {
                 TerminalEvent::Progress(ProgressState::InProgress(40)),
             ],
         );
-        let subscription = pane.subscribe().unwrap();
+        let subscription = pane.subscribe(true).unwrap();
         publish_to(&pane, vec![TerminalEvent::Bell]);
         let Update::Replay(replay) = next_events(&subscription) else {
             panic!("the seed must be marked as a replay");
@@ -839,6 +954,124 @@ mod tests {
             matches!(replay.as_slice(), [TerminalEvent::ShellPromptStart]),
             "{replay:?}"
         );
+    }
+
+    fn host_requests(subscription: &Subscription, count: usize) -> Vec<u64> {
+        (0..count)
+            .map(|_| match next_events(subscription) {
+                Update::HostRequest { id, .. } => id,
+                _ => panic!("expected a clipboard request"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn clipboard_requests_go_to_the_newest_view_and_are_denied_when_it_leaves() {
+        let pane = detached_pane();
+        let older_view = pane.subscribe(true).unwrap();
+        let view = pane.subscribe(true).unwrap();
+        // A script subscribes last; it cannot ask the user.
+        let script = pane.subscribe(false).unwrap();
+        let mut bridge = HostBridge {
+            shared: Arc::clone(&pane.shared),
+            timeout: HOST_REQUEST_TIMEOUT,
+            parked: Vec::new(),
+        };
+        let load = || RemoteHostRequest::Load(TerminalClipboardTarget::Clipboard);
+        for id in [7, 8] {
+            assert!(bridge.defer_clipboard_request(id, load()).is_ok());
+        }
+        assert!(script.pending.lock().unwrap().host.is_empty());
+        assert!(older_view.pending.lock().unwrap().host.is_empty());
+        // First in, first out.
+        assert_eq!(host_requests(&view, 2), [7, 8]);
+        assert!(bridge.expired().is_empty());
+        assert!(bridge.next_check() <= HOST_CHECK_INTERVAL);
+
+        // The view leaves: its requests are denied, and new ones go to the
+        // older view that is still open.
+        view.close();
+        assert_eq!(bridge.expired(), [7, 8]);
+        assert!(!bridge.unpark(7), "a late answer must not be written");
+        assert!(bridge.defer_clipboard_request(9, load()).is_ok());
+        assert_eq!(host_requests(&older_view, 1), [9]);
+        older_view.close();
+        assert!(
+            bridge.defer_clipboard_request(10, load()).is_err(),
+            "with no view to ask, the request is denied at once"
+        );
+        assert!(bridge.unpark(9));
+        assert_eq!(bridge.next_check(), Duration::MAX);
+    }
+
+    #[test]
+    fn expired_clipboard_requests_are_not_sent() {
+        let pane = detached_pane();
+        let view = pane.subscribe(true).unwrap();
+        let now = Instant::now();
+        let load = RemoteHostRequest::Load(TerminalClipboardTarget::Clipboard);
+        let mut pending = view.pending.lock().unwrap();
+        for (id, deadline) in [
+            (1, now + HOST_REQUEST_TIMEOUT),
+            (2, now),
+            (3, now + HOST_REQUEST_TIMEOUT),
+        ] {
+            pending.host.push_back((id, load.clone(), deadline));
+        }
+        drop(pending);
+        assert_eq!(host_requests(&view, 2), [1, 3]);
+    }
+
+    /// Audit B7: the worker keeps running while a clipboard request waits,
+    /// and denies it at its deadline when nobody answers.
+    #[cfg(unix)]
+    #[test]
+    fn an_unanswered_clipboard_request_is_denied_at_its_deadline() {
+        let temp = tempfile::tempdir().unwrap();
+        let reply = temp.path().join("reply");
+        let expected = b"\x1b]5522;type=read:status=EPERM:id=late\x1b\\";
+        let script = format!(
+            "stty raw -echo; dd bs=1 count=1 >/dev/null 2>/dev/null; \
+             printf '\\033]5522;type=read:id=late;dGV4dC9wbGFpbg==\\033\\\\'; \
+             dd bs=1 count={} > '{}' 2>/dev/null; sleep 30",
+            expected.len(),
+            reply.display()
+        );
+        let timeout = Duration::from_millis(500);
+        let pane = Pane::spawn(
+            PaneLaunch {
+                size: TerminalSize::default(),
+                working_directory: None,
+                shell_integration: None,
+                config: TerminalRuntimeConfig::default(),
+                launch: Some(TerminalLaunch::Program {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), script],
+                }),
+            },
+            timeout,
+        )
+        .unwrap();
+        let view = pane.subscribe(true).unwrap();
+        // Before the request exists, so its deadline cannot precede this.
+        let sent = Instant::now();
+        pane.command(RemoteCommand::Write(b"x".to_vec())).unwrap();
+        let [id] = host_requests(&view, 1)[..] else {
+            unreachable!()
+        };
+        // Other work is still answered meanwhile.
+        pane.snapshot().unwrap();
+        let deadline = sent + Duration::from_secs(5);
+        while std::fs::read(&reply).map_or(true, |bytes| bytes.len() < expected.len()) {
+            assert!(Instant::now() < deadline, "the request was never denied");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(sent.elapsed() >= timeout);
+        assert_eq!(std::fs::read(&reply).unwrap(), expected);
+        // A late answer is dropped.
+        let late = RemoteHostReply::Read(TerminalClipboardReadResult::Denied);
+        pane.host_reply(id, late).unwrap();
+        pane.close();
     }
 
     fn seed(pane: &Pane, now: SystemTime) -> Vec<TerminalEvent> {
@@ -962,7 +1195,7 @@ mod tests {
     #[test]
     fn stale_working_records_stay_hidden_when_the_engine_resends_the_snapshot() {
         let pane = detached_pane();
-        let subscription = pane.subscribe().unwrap();
+        let subscription = pane.subscribe(true).unwrap();
         let stuck = record("", ProgramState::Working);
         let long_ago = SystemTime::now() - STALE_ACTIVITY_AFTER * 2;
         pane.shared.lock().unwrap().program_status = Some(vec![(stuck.clone(), long_ago)]);

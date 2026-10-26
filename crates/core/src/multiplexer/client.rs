@@ -4,13 +4,14 @@ use crate::{remote::*, *};
 use anyhow::{bail, ensure};
 use flume::Sender;
 use std::{
+    collections::VecDeque,
     net::{Shutdown, TcpStream},
     path::{Path, PathBuf},
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Longer than the host's own per-request deadline, so a slow host answers
@@ -133,42 +134,79 @@ impl SessionClient {
         })
     }
 
+    /// Creates a pane and attaches a view to it, which answers the pane's
+    /// clipboard requests (see [`Self::attach`]).
     pub fn create(
         &self,
         launch: PaneLaunch,
         wakeup: Option<TerminalWakeupNotifier>,
     ) -> anyhow::Result<(String, Terminal)> {
+        let (info, state) = self.create_pane(launch)?;
+        let terminal = self.attach_state(&info.id, state, wakeup, true)?;
+        Ok((info.id, terminal))
+    }
+
+    /// Creates a pane without attaching to it, for clients that only start
+    /// programs. Returns the pane ID.
+    pub fn create_detached(&self, launch: PaneLaunch) -> anyhow::Result<String> {
+        Ok(self.create_pane(launch)?.0.id)
+    }
+
+    fn create_pane(&self, launch: PaneLaunch) -> anyhow::Result<(PaneInfo, Arc<RemoteState>)> {
         let Response::Attached(info, state) =
             self.connection.request(Request::Create(Box::new(launch)))?
         else {
             bail!("invalid create response");
         };
-        let id = info.id;
-        let terminal = self.attach_state(&id, state, wakeup)?;
-        Ok((id, terminal))
+        Ok((info, state))
     }
 
-    /// Starts a terminal without attaching to it and returns its ID.
-    pub fn create_detached(&self, launch: PaneLaunch) -> anyhow::Result<String> {
-        let Response::Attached(info, _) =
-            self.connection.request(Request::Create(Box::new(launch)))?
-        else {
-            bail!("invalid create response");
-        };
-        Ok(info.id)
-    }
-
+    /// Attaches a view that streams the pane's frames and events. The view
+    /// also answers the pane's clipboard requests: `drain_events` runs them
+    /// through its reply host, so a view must drain promptly, even while
+    /// hidden (see [`TerminalWakeupNotifier`]).
     pub fn attach(
         &self,
         id: &str,
         wakeup: Option<TerminalWakeupNotifier>,
+    ) -> anyhow::Result<Terminal> {
+        self.attach_with(id, wakeup, true)
+    }
+
+    /// Attaches like [`Self::attach`], but the pane's clipboard requests are
+    /// never sent to this view, for tools that watch a pane with no user to
+    /// ask.
+    pub fn observe(
+        &self,
+        id: &str,
+        wakeup: Option<TerminalWakeupNotifier>,
+    ) -> anyhow::Result<Terminal> {
+        self.attach_with(id, wakeup, false)
+    }
+
+    fn attach_with(
+        &self,
+        id: &str,
+        wakeup: Option<TerminalWakeupNotifier>,
+        host_capable: bool,
     ) -> anyhow::Result<Terminal> {
         let Response::Attached(_, state) =
             self.connection.request(Request::Attach(id.to_owned()))?
         else {
             bail!("invalid attach response");
         };
-        self.attach_state(id, state, wakeup)
+        self.attach_state(id, state, wakeup, host_capable)
+    }
+
+    /// The pane's current state, read once without attaching.
+    pub fn snapshot(&self, id: &str) -> anyhow::Result<Arc<RemoteState>> {
+        let Response::Attached(_, state) =
+            self.connection.request(Request::Snapshot(id.to_owned()))?
+        else {
+            bail!("invalid snapshot response");
+        };
+        validate_state(&state)?;
+        Ok(state)
     }
 
     fn attach_state(
@@ -176,12 +214,17 @@ impl SessionClient {
         id: &str,
         state: Arc<RemoteState>,
         wakeup: Option<TerminalWakeupNotifier>,
+        host_capable: bool,
     ) -> anyhow::Result<Terminal> {
         validate_state(&state)?;
         let rpc = Connection::connect(&self.root)?;
         let input = Connection::connect(&self.root)?;
         let mut stream = discovery::connect(&self.root)?;
-        write_message(&mut stream, &Request::SubscribeGraphics(id.to_owned()))?;
+        let subscribe = Request::Subscribe {
+            pane: id.to_owned(),
+            host_capable,
+        };
+        write_message(&mut stream, &subscribe)?;
         ensure!(
             matches!(read_message(&mut stream)?, Response::Ok),
             "cannot subscribe to terminal session"
@@ -209,7 +252,9 @@ impl SessionClient {
                     loop {
                         let mut tab_chrome = false;
                         match read_message(&mut stream)? {
-                            Update::State(_) => bail!("unexpected terminal update"),
+                            Update::State(_) | Update::RetiredHost => {
+                                bail!("unexpected terminal update")
+                            }
                             Update::GraphicsState(mut state, update) => {
                                 validate_state(&state)?;
                                 Arc::make_mut(&mut state).graphics = Some(graphics.decode(update)?);
@@ -231,12 +276,22 @@ impl SessionClient {
                                     .unwrap()
                                     .extend_replay(events)?;
                             }
-                            Update::Host { id, request } => reader_shared
-                                .pending
-                                .lock()
-                                .unwrap()
-                                .hosts
-                                .push((id, request)),
+                            Update::HostRequest {
+                                id,
+                                request,
+                                deadline,
+                            } => {
+                                // Answered by draining; a hidden tab must
+                                // drain before the host gives up (audit B7).
+                                tab_chrome = true;
+                                let deadline = deadline.unwrap_or_else(Instant::now);
+                                reader_shared
+                                    .pending
+                                    .lock()
+                                    .unwrap()
+                                    .hosts
+                                    .push_back((id, request, deadline));
+                            }
                         }
                         if tab_chrome {
                             reader_shared.notify_tab_chrome();
@@ -254,13 +309,27 @@ impl SessionClient {
         std::thread::Builder::new()
             .name("termy-session-input".into())
             .spawn(move || {
-                while let Ok(command) = input_rx.recv() {
-                    if let Err(error) = input.request(Request::Command {
+                while let Ok(Input { command, reply }) = input_rx.recv() {
+                    let response = input.request(Request::Command {
                         pane: pane_id.clone(),
                         command,
-                    }) {
-                        input_shared.fail(&error);
-                        break;
+                    });
+                    match response {
+                        Ok(response) => {
+                            if let Some(reply) = reply {
+                                let _ = reply.send(match response {
+                                    Response::Reply(result) => Ok(result),
+                                    _ => Err(anyhow::anyhow!("invalid terminal response")),
+                                });
+                            }
+                        }
+                        Err(error) => {
+                            input_shared.fail(&error);
+                            if let Some(reply) = reply {
+                                let _ = reply.send(Err(error));
+                            }
+                            break;
+                        }
                     }
                 }
             })?;
@@ -291,12 +360,10 @@ impl SessionClient {
     }
     /// The cell metrics (pixels) the attached UI last applied to `id`.
     pub(crate) fn cell_size(&self, id: &str) -> anyhow::Result<(f32, f32)> {
-        let Response::Attached(_, state) =
-            self.connection.request(Request::Attach(id.to_owned()))?
-        else {
-            bail!("invalid attach response");
+        let Response::Size(size) = self.connection.request(Request::Size(id.to_owned()))? else {
+            bail!("invalid size response");
         };
-        Ok((state.size.cell_width, state.size.cell_height))
+        Ok((size.cell_width, size.cell_height))
     }
     pub fn resize(&self, id: &str, size: TerminalSize) -> anyhow::Result<()> {
         self.send_command(id, RemoteCommand::Resize(size))
@@ -456,7 +523,9 @@ fn restores_state(event: &TerminalEvent) -> bool {
 struct Pending {
     wakeup: bool,
     events: Vec<TerminalEvent>,
-    hosts: Vec<(u64, RemoteHostRequest)>,
+    /// Clipboard requests in arrival order, each with the time the host
+    /// denies it.
+    hosts: VecDeque<(u64, RemoteHostRequest, Instant)>,
 }
 
 impl Pending {
@@ -477,6 +546,24 @@ impl Pending {
     fn extend_replay(&mut self, events: Vec<TerminalEvent>) -> anyhow::Result<()> {
         self.extend_events(events.into_iter().filter(restores_state).collect())
     }
+
+    /// The clipboard requests to run now, oldest first. Expired ones were
+    /// already denied to the program: running them now would prompt for, or
+    /// write, something nobody waits for.
+    fn take_host_requests(&mut self, now: Instant) -> Vec<(u64, RemoteHostRequest)> {
+        self.hosts
+            .drain(..)
+            .filter(|(_, _, deadline)| *deadline > now)
+            .map(|(id, request, _)| (id, request))
+            .collect()
+    }
+}
+
+/// A command for the input connection, with a channel for its reply when
+/// the sender waits for it.
+struct Input {
+    command: RemoteCommand,
+    reply: Option<Sender<anyhow::Result<RemoteReply>>>,
 }
 
 /// The grid size this client last asked the host for, and whether a frame
@@ -598,7 +685,7 @@ struct ClientTerminal {
     rpc: Connection,
     host: Arc<Connection>,
     shared: Arc<ClientState>,
-    input: Sender<RemoteCommand>,
+    input: Sender<Input>,
     close_stream: TcpStream,
 }
 
@@ -670,9 +757,31 @@ impl RemoteTransport for ClientTerminal {
             let mut claim = self.shared.size_claim.lock().unwrap();
             claim.requested(*size, &self.shared.state.lock().unwrap());
         }
-        if let Err(error) = self.input.send_timeout(command, Duration::from_millis(100)) {
+        let input = Input {
+            command,
+            reply: None,
+        };
+        if let Err(error) = self.input.send_timeout(input, Duration::from_millis(100)) {
             self.shared.fail(&anyhow::anyhow!(error.to_string()));
         }
+    }
+    fn send_and_wait(&self, command: RemoteCommand) -> anyhow::Result<Option<RemoteReply>> {
+        ensure!(
+            !self.shared.disconnected.load(Ordering::Acquire),
+            "terminal session disconnected"
+        );
+        let (tx, rx) = flume::bounded(1);
+        let input = Input {
+            command,
+            reply: Some(tx),
+        };
+        let deadline = Instant::now() + RESPONSE_TIMEOUT;
+        self.input
+            .send_deadline(input, deadline)
+            .map_err(|_| anyhow::anyhow!("terminal input queue is full"))?;
+        // Queued: the host may run it whatever happens next, so a failure
+        // from here on is not a reason to send it another way.
+        Ok(rx.recv_deadline(deadline).ok().and_then(Result::ok))
     }
     fn take_events(&self) -> Vec<TerminalEvent> {
         let mut pending = self.shared.pending.lock().unwrap();
@@ -685,7 +794,11 @@ impl RemoteTransport for ClientTerminal {
         events
     }
     fn take_host_requests(&self) -> Vec<(u64, RemoteHostRequest)> {
-        std::mem::take(&mut self.shared.pending.lock().unwrap().hosts)
+        self.shared
+            .pending
+            .lock()
+            .unwrap()
+            .take_host_requests(Instant::now())
     }
     fn reply_to_host(&self, id: u64, reply: RemoteHostReply) {
         if let Err(error) = self.host.request(Request::HostReply {
@@ -913,6 +1026,26 @@ mod tests {
             pending.events.last(),
             Some(TerminalEvent::ShellCommandExecuting)
         ));
+    }
+
+    /// Audit B7: a request the host already denied must not prompt or write
+    /// later, when a hidden view finally drains; the rest run in order.
+    #[test]
+    fn expired_clipboard_requests_are_dropped_and_the_rest_run_in_order() {
+        let mut pending = Pending::default();
+        let now = Instant::now();
+        let load = || RemoteHostRequest::Load(TerminalClipboardTarget::Clipboard);
+        let later = now + Duration::from_secs(60);
+        for (id, deadline) in [(1, later), (2, now), (3, later)] {
+            pending.hosts.push_back((id, load(), deadline));
+        }
+        let ids: Vec<_> = pending
+            .take_host_requests(now)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(ids, [1, 3]);
+        assert!(pending.hosts.is_empty());
     }
 
     #[test]

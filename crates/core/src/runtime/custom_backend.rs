@@ -17,6 +17,7 @@ use crate::{
     TerminalViewportScrollDirection, TermyCell, TermyColor, TermyFrame, TermyFrameUpdate,
     TermySearchMatch, TermySearchOptions, TermySharedSearchMatch,
     kitty_graphics::KittyPreparedUpload,
+    protocol::{KittyClipboardStep, TerminalClipboardRequest},
     search::search_lines_shared,
     search_engine::SearchLineMapping,
     terminal_engine::transport::{PtySize, SpawnConfig, Transport},
@@ -36,6 +37,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod deferred;
 mod legacy;
 mod lock;
 mod maintenance;
@@ -64,6 +66,7 @@ struct Shared {
     state: lock::EngineMutex,
     lock_waiters: lock::LockWaiters,
     clipboard: Mutex<KittyClipboardHostState>,
+    deferred_clipboard: Mutex<deferred::DeferredClipboard>,
     notifier: Option<TerminalWakeupNotifier>,
     wakeup_enabled: AtomicBool,
     wakeup_queued: AtomicBool,
@@ -124,6 +127,12 @@ struct State {
     // timer may hold a different one. Feeds skip the timer's lock while their
     // deadline is unchanged.
     published_maintenance: Option<Option<Instant>>,
+    /// Queued events that write to the program in order (see
+    /// `PendingEvent::is_ordered`).
+    ordered_events: usize,
+    /// Ordered events that `drain_events` took but has not written yet,
+    /// most of them waiting for a deferred clipboard answer.
+    ordered_in_flight: usize,
 }
 
 enum PendingEvent {
@@ -132,6 +141,9 @@ enum PendingEvent {
     Kitty(KittyClipboardOsc),
     KittyControl(KittyClipboardControl),
     KittyOverflow,
+    /// Protocol replies to output after a clipboard request whose reply is
+    /// still owed: they go out after it.
+    Reply(Vec<u8>),
 }
 
 impl PendingEvent {
@@ -144,8 +156,18 @@ impl PendingEvent {
             )
             | Self::ClipboardLoad(text) => text.capacity(),
             Self::Kitty(packet) => packet.payload_capacity(),
+            Self::Reply(bytes) => bytes.capacity(),
             Self::Terminal(_) | Self::KittyControl(_) | Self::KittyOverflow => 0,
         }
+    }
+
+    /// Events whose output to the program keeps the order of the output
+    /// that caused it: clipboard requests and the replies held behind them.
+    fn is_ordered(&self) -> bool {
+        matches!(
+            self,
+            Self::ClipboardLoad(_) | Self::Kitty(_) | Self::Reply(_)
+        )
     }
 
     fn must_deliver(&self) -> bool {
@@ -248,7 +270,37 @@ impl State {
             title_changed: false,
             replies_enabled: true,
             published_maintenance: None,
+            ordered_events: 0,
+            ordered_in_flight: 0,
         }
+    }
+
+    /// Sends `replies` to `out`, or queues them behind the clipboard
+    /// requests whose replies are still owed, so the program reads every
+    /// reply in the order of its requests (`OSC 52 ?` then `CSI c`).
+    fn route_replies(&mut self, mut replies: Vec<u8>, out: &mut Vec<u8>) {
+        if replies.is_empty() || !self.replies_enabled {
+            return;
+        }
+        if self.ordered_events > 0 || self.ordered_in_flight > 0 {
+            self.queue(PendingEvent::Reply(replies));
+        } else {
+            out.append(&mut replies);
+        }
+    }
+
+    /// The engine's replies, routed by `route_replies`, then its events. A
+    /// deferring feed pauses right after a clipboard request, so the replies
+    /// drained with it answer earlier output.
+    fn take_engine_output(&mut self) -> Vec<u8> {
+        let mut drained = Vec::new();
+        self.engine.drain_replies(&mut drained);
+        let mut replies = Vec::new();
+        self.route_replies(drained, &mut replies);
+        while let Some(event) = self.engine.pop_event() {
+            self.engine_event(event);
+        }
+        replies
     }
 
     fn queue(&mut self, event: PendingEvent) {
@@ -265,6 +317,7 @@ impl State {
             self.compact_saturated_events();
         }
         self.event_payload_bytes += bytes;
+        self.ordered_events += usize::from(event.is_ordered());
         self.events.push_back(event);
     }
 
@@ -279,6 +332,7 @@ impl State {
     fn pop_event(&mut self) -> Option<PendingEvent> {
         let event = self.events.pop_front()?;
         self.event_payload_bytes -= event.payload_bytes();
+        self.ordered_events -= usize::from(event.is_ordered());
         Some(event)
     }
 
@@ -341,14 +395,12 @@ impl State {
             } else {
                 consumed += self.engine.feed_deferring_uploads(chunk);
             }
-            while let Some(event) = self.engine.pop_event() {
-                if !hydrate {
-                    self.engine_event(event);
-                }
-            }
-            self.engine.drain_replies(&mut replies);
             if hydrate {
+                while self.engine.pop_event().is_some() {}
+                self.engine.drain_replies(&mut replies);
                 replies.clear();
+            } else {
+                replies.append(&mut self.take_engine_output());
             }
             // Heavy kitty animation edits pause the parser too, so the lock
             // is released between them instead of after the whole read.
@@ -374,23 +426,14 @@ impl State {
     /// a display terminal.
     #[inline(never)]
     fn drain_engine_output(&mut self) {
-        while let Some(event) = self.engine.pop_event() {
-            self.engine_event(event);
-        }
-        let mut replies = Vec::new();
-        self.engine.drain_replies(&mut replies);
+        let replies = self.take_engine_output();
         self.append_replies(&replies);
     }
 
     fn commit_upload(&mut self, prepared: KittyPreparedUpload) -> Vec<u8> {
         self.engine.commit_upload(prepared);
-        while let Some(event) = self.engine.pop_event() {
-            self.engine_event(event);
-        }
-        let mut replies = Vec::new();
-        self.engine.drain_replies(&mut replies);
         self.generation = self.generation.wrapping_add(1);
-        replies
+        self.take_engine_output()
     }
 
     fn take_tab_chrome_changed(&mut self) -> bool {
@@ -726,11 +769,7 @@ impl CustomBackend {
             move || {
                 let mut state = exit.state();
                 if state.engine.stop_synchronized_update() {
-                    while let Some(event) = state.engine.pop_event() {
-                        state.engine_event(event);
-                    }
-                    let mut replies = Vec::new();
-                    state.engine.drain_replies(&mut replies);
+                    let replies = state.take_engine_output();
                     state.append_replies(&replies);
                     state.generation = state.generation.wrapping_add(1);
                 }
@@ -766,6 +805,7 @@ impl CustomBackend {
                 )),
                 lock_waiters: lock::LockWaiters::default(),
                 clipboard: Mutex::new(KittyClipboardHostState::new()),
+                deferred_clipboard: Mutex::default(),
                 notifier,
                 wakeup_enabled: AtomicBool::new(true),
                 wakeup_queued: AtomicBool::new(false),
@@ -870,11 +910,7 @@ impl CustomBackend {
         state.size = size;
         state.generation = state.generation.wrapping_add(1);
         state.force_full_damage = true;
-        while let Some(event) = state.engine.pop_event() {
-            state.engine_event(event);
-        }
-        let mut replies = Vec::new();
-        state.engine.drain_replies(&mut replies);
+        let replies = state.take_engine_output();
         self.shared.schedule_maintenance(&mut state);
         drop(state);
         self.send_reply(replies);
@@ -928,10 +964,17 @@ impl CustomBackend {
         location: TerminalClipboardLocation,
         formats: &[String],
     ) -> bool {
-        let Some(reply) = self.kitty_clipboard_paste_notification(location, formats) else {
+        let Some(notification) = self.kitty_clipboard_paste_notification(location, formats) else {
             return false;
         };
-        self.send_reply(reply);
+        // The notification stands for the user's paste: it queues behind the
+        // keys typed before it instead of jumping ahead like a protocol
+        // reply (audit L18).
+        if self.transport.is_some() {
+            self.write_owned(notification);
+        } else {
+            self.send_reply(notification);
+        }
         true
     }
 
@@ -944,6 +987,8 @@ impl CustomBackend {
             let mut state = self.shared.state();
             let count = state.events.len().min(EVENT_BATCH);
             let batch: Vec<_> = (0..count).filter_map(|_| state.pop_event()).collect();
+            // Released as each one is written; see `deferred`.
+            state.ordered_in_flight += batch.iter().filter(|event| event.is_ordered()).count();
             let program_status = state.engine.take_program_status();
             (batch, !state.events.is_empty(), program_status)
         };
@@ -967,23 +1012,32 @@ impl CustomBackend {
                     } else {
                         TerminalClipboardTarget::Selection
                     };
-                    if let Some(text) = host.load_clipboard(target) {
-                        self.send_reply(
-                            format!("\x1b]52;{selection};{}\x1b\\", BASE64.encode(text))
-                                .into_bytes(),
-                        );
-                    }
+                    self.ask_clipboard_host(
+                        host,
+                        TerminalClipboardRequest::Load(target),
+                        deferred::Continuation::Load { selection },
+                    );
                 }
                 PendingEvent::Kitty(packet) => {
-                    let replies = self
+                    let step = self
                         .shared
                         .clipboard
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .handle_osc(packet, host);
-                    for reply in replies {
-                        self.send_reply(reply);
+                        .receive(packet);
+                    match step {
+                        KittyClipboardStep::Replies(replies) => {
+                            self.write_ordered(deferred::Slot::Ready(replies));
+                        }
+                        KittyClipboardStep::Ask(request, pending) => self.ask_clipboard_host(
+                            host,
+                            request,
+                            deferred::Continuation::Kitty(pending),
+                        ),
                     }
+                }
+                PendingEvent::Reply(reply) => {
+                    self.write_ordered(deferred::Slot::Ready(vec![reply]));
                 }
                 PendingEvent::KittyOverflow => {
                     self.shared
@@ -991,6 +1045,7 @@ impl CustomBackend {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .reset_preserving_paste_mode();
+                    self.cancel_clipboard_requests();
                 }
                 PendingEvent::KittyControl(control) => {
                     let mut clipboard = self
@@ -1002,7 +1057,13 @@ impl CustomBackend {
                         KittyClipboardControl::Set(enabled) => {
                             clipboard.set_paste_events_enabled(enabled);
                         }
-                        KittyClipboardControl::Reset => clipboard.reset(),
+                        KittyClipboardControl::Reset => {
+                            clipboard.reset();
+                            // A reset (also RIS) may start another program:
+                            // a late answer must not reach it.
+                            drop(clipboard);
+                            self.cancel_clipboard_requests();
+                        }
                         KittyClipboardControl::Query => {}
                     }
                 }

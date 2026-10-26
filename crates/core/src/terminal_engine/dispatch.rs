@@ -21,6 +21,9 @@ pub(super) struct State {
     pub(super) replies: Vec<u8>,
     pub(super) dropped_events: u64,
     pub(super) dropped_reply_bytes: u64,
+    /// Set by a clipboard request in a deferring feed, which then pauses so
+    /// the caller can tell replies before the request from those after it.
+    pub(super) clipboard_pause: bool,
     pub(super) palette: [Option<Color>; 256],
     pub(super) foreground: Option<Color>,
     pub(super) background: Option<Color>,
@@ -58,6 +61,7 @@ impl State {
             replies: Vec::new(),
             dropped_events: 0,
             dropped_reply_bytes: 0,
+            clipboard_pause: false,
             palette: [None; 256],
             foreground: None,
             background: None,
@@ -85,6 +89,12 @@ impl State {
     }
 
     fn event(&mut self, event: Event) {
+        let host_request = match &event {
+            Event::Clipboard { data, .. } => data == "?",
+            Event::KittyClipboard(_) => true,
+            _ => false,
+        };
+        self.clipboard_pause |= host_request && self.defers_uploads();
         enqueue(
             &mut self.events,
             &mut self.dropped_events,
@@ -617,6 +627,7 @@ impl Handler for State {
         self.modes.synchronized_update
             || self.has_deferred_upload()
             || self.pauses_for_animation_work()
+            || self.clipboard_pause
     }
 
     fn print(&mut self, character: char) {

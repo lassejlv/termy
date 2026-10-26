@@ -168,13 +168,22 @@ impl RemoteBackend {
         location: TerminalClipboardLocation,
         formats: &[String],
     ) -> bool {
-        matches!(
-            self.request(RemoteCommand::ClipboardPaste {
-                location,
-                formats: formats.to_vec()
-            }),
-            Some(RemoteReply::Changed(true))
-        )
+        // The notification writes to the PTY, so it goes behind the keys
+        // still queued for the host (audit L18).
+        let reply = self.transport.send_and_wait(RemoteCommand::ClipboardPaste {
+            location,
+            formats: formats.to_vec(),
+        });
+        match reply {
+            Ok(Some(reply)) => matches!(reply, RemoteReply::Changed(true)),
+            // It may still reach the program; pasting the text as well
+            // could paste twice.
+            Ok(None) => true,
+            Err(error) => {
+                log::error!("multiplexer request failed: {error}");
+                false
+            }
+        }
     }
 
     pub(crate) fn kitty_graphics_revision(&self) -> u64 {
@@ -215,6 +224,12 @@ impl RemoteBackend {
         )
     }
     pub(crate) fn scroll_to_bottom(&self) -> bool {
+        // Every keystroke scrolls to the bottom first. The cached frame
+        // already shows whether that changes anything, so typing at the
+        // bottom costs no round trip (audit L17).
+        if self.transport.state().render.metadata.display_offset == 0 {
+            return false;
+        }
         matches!(
             self.request(RemoteCommand::ScrollToBottom),
             Some(RemoteReply::Changed(true))

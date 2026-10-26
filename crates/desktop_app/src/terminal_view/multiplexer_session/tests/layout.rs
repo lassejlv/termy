@@ -201,10 +201,9 @@ fn desktop_saves_rebase_onto_cli_structure_changes(cx: &mut TestAppContext) {
     session.save(base.clone(), session.base()).unwrap();
     let window_id = host_layout(&client).windows[0].id.clone();
 
-    let (created, terminal) = client
+    let created = client
         .create_tab(
             pane_launch("read line"),
-            None,
             Some(WorkspaceTarget {
                 window_id,
                 index: 0,
@@ -212,9 +211,8 @@ fn desktop_saves_rebase_onto_cli_structure_changes(cx: &mut TestAppContext) {
             }),
         )
         .unwrap();
-    drop(terminal);
     let tab = host_layout(&client).windows[0].session.workspaces[0].tabs[0].clone();
-    let (split, terminal, _) = client
+    let (split, _) = client
         .split_pane(
             &first,
             PaneResizeAxis::Horizontal,
@@ -222,7 +220,6 @@ fn desktop_saves_rebase_onto_cli_structure_changes(cx: &mut TestAppContext) {
             pane_launch("read line"),
         )
         .unwrap();
-    drop(terminal);
 
     let mut changed = base;
     changed.workspaces[0].tabs[0].manual_title = Some("server".into());
@@ -314,10 +311,9 @@ fn open_windows_apply_cli_layout_changes(cx: &mut TestAppContext) {
         });
     };
 
-    let (created, terminal) = client
+    let created = client
         .create_tab(
             pane_launch("read line"),
-            None,
             Some(WorkspaceTarget {
                 window_id: window_id.clone(),
                 index: 0,
@@ -325,7 +321,6 @@ fn open_windows_apply_cli_layout_changes(cx: &mut TestAppContext) {
             }),
         )
         .unwrap();
-    drop(terminal);
     settle(cx, &|view| view_tab_ids(view).len() == 2);
     update(cx, handle, |view, _| {
         assert_eq!(view.session.active_tab, 1, "the CLI selected its new tab");
@@ -338,7 +333,7 @@ fn open_windows_apply_cli_layout_changes(cx: &mut TestAppContext) {
         .find(|tab| tab.panes[0].session_id.as_deref() == Some(first.as_str()))
         .unwrap()
         .clone();
-    let (split, terminal, _) = client
+    let (split, _) = client
         .split_pane(
             &first,
             PaneResizeAxis::Horizontal,
@@ -346,7 +341,6 @@ fn open_windows_apply_cli_layout_changes(cx: &mut TestAppContext) {
             pane_launch("read line"),
         )
         .unwrap();
-    drop(terminal);
     settle(cx, &|view| view_tab_ids(view)[0].len() == 2);
     update(cx, handle, |view, _| {
         let tab = &view.session.tabs[0];
@@ -543,10 +537,9 @@ fn a_save_collected_before_a_remote_change_keeps_that_change(cx: &mut TestAppCon
     local.workspaces[0].tabs[0].manual_title = Some("server".into());
     let collected_base = session.base();
     // ...then the CLI adds a tab and the view adopts it before the save runs.
-    let (created, terminal) = client
-        .create_tab_in_workspace(pane_launch("read line"), None, &window_id, 0)
+    let created = client
+        .create_tab_in_workspace(pane_launch("read line"), &window_id, 0)
         .unwrap();
-    drop(terminal);
     let (revision, json) = client.layout_revision().unwrap();
     let remote = StoredMultiplexer::parse(json.as_deref()).unwrap().windows[0]
         .session
@@ -653,7 +646,7 @@ fn a_cli_split_is_refit_to_the_window(cx: &mut TestAppContext) {
         })
         .unwrap();
     let tab = host_layout(&client).windows[0].session.workspaces[0].tabs[0].clone();
-    let (split, terminal, _) = client
+    let (split, _) = client
         .split_pane(
             &first,
             PaneResizeAxis::Horizontal,
@@ -661,7 +654,6 @@ fn a_cli_split_is_refit_to_the_window(cx: &mut TestAppContext) {
             pane_launch("read line"),
         )
         .unwrap();
-    drop(terminal);
     let host_cols = |id: &str| client.attach(id, None).unwrap().size().cols;
     assert_eq!((host_cols(&first), host_cols(&split)), (20, 20));
     wait(|| {

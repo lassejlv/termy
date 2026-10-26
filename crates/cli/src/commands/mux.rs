@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 use termy_core::multiplexer::{PaneLaunch, SessionClient, connect_or_start};
-use termy_core::{Terminal, TerminalRuntimeConfig, TerminalSize};
+use termy_core::{TerminalRuntimeConfig, TerminalSize, remote::RemoteState};
 
 #[derive(ClapArgs)]
 pub struct Args {
@@ -181,8 +181,8 @@ fn dimensions(cols: u16, rows: u16) -> anyhow::Result<TerminalSize> {
     })
 }
 
-fn capture(id: &str, terminal: &Terminal) -> Value {
-    let render = terminal.render_read(true);
+fn capture(id: &str, state: &RemoteState) -> Value {
+    let render = &state.render;
     let lines: Vec<_> = render
         .cells
         .chunks(usize::from(render.metadata.cols).max(1))
@@ -262,16 +262,12 @@ fn execute(args: Args) -> anyhow::Result<Value> {
             };
             // The CLI has no snapshot of its own to protect: the workspace
             // only has to exist (audit B17).
-            let (id, terminal) = match window {
-                Some(window_id) => client.create_tab_in_workspace(
-                    launch,
-                    None,
-                    &window_id,
-                    workspace.unwrap_or(0),
-                )?,
-                None => client.create_tab(launch, None, None)?,
+            let id = match window {
+                Some(window_id) => {
+                    client.create_tab_in_workspace(launch, &window_id, workspace.unwrap_or(0))?
+                }
+                None => client.create_tab(launch, None)?,
             };
-            drop(terminal);
             Ok(json!({"id":id}))
         }
         Command::Send {
@@ -301,7 +297,7 @@ fn execute(args: Args) -> anyhow::Result<Value> {
             alt,
             shift,
         } => {
-            let terminal = client.attach(&id, None)?;
+            let keyboard_mode = client.snapshot(&id)?.keyboard_mode;
             let stroke = termy_core::TermyKeystroke {
                 key,
                 key_char: None,
@@ -316,14 +312,14 @@ fn execute(args: Args) -> anyhow::Result<Value> {
             let bytes = termy_core::keystroke_to_input(
                 &stroke,
                 termy_core::TerminalKeyEventKind::Press,
-                terminal.keyboard_mode(),
+                keyboard_mode,
                 true,
             )
             .context("key has no terminal encoding")?;
             client.write(&id, bytes)?;
             Ok(json!({"id":id}))
         }
-        Command::Capture { id } => Ok(capture(&id, &client.attach(&id, None)?)),
+        Command::Capture { id } => Ok(capture(&id, &*client.snapshot(&id)?)),
         Command::Wait {
             id,
             text,
@@ -333,10 +329,9 @@ fn execute(args: Args) -> anyhow::Result<Value> {
                 (1..=3_600_000).contains(&timeout_ms),
                 "timeout must be between 1 and 3600000 ms"
             );
-            let terminal = client.attach(&id, None)?;
             let deadline = Instant::now() + Duration::from_millis(timeout_ms);
             loop {
-                let output = capture(&id, &terminal);
+                let output = capture(&id, &*client.snapshot(&id)?);
                 if output["text"]
                     .as_str()
                     .is_some_and(|value| value.contains(&text))
@@ -347,7 +342,7 @@ fn execute(args: Args) -> anyhow::Result<Value> {
                     Instant::now() < deadline,
                     "timed out waiting for terminal output"
                 );
-                std::thread::sleep(Duration::from_millis(25));
+                std::thread::sleep(Duration::from_millis(100));
             }
         }
         Command::Resize { id, cols, rows } => {
@@ -423,7 +418,7 @@ fn execute(args: Args) -> anyhow::Result<Value> {
             } else {
                 termy_core::session_model::PaneResizeAxis::Vertical
             };
-            let (new_id, terminal, warnings) = client.split_pane(
+            let (new_id, warnings) = client.split_pane(
                 &id,
                 axis,
                 tab,
@@ -435,7 +430,6 @@ fn execute(args: Args) -> anyhow::Result<Value> {
                     shell_integration: None,
                 },
             )?;
-            drop(terminal);
             Ok(with_warnings(
                 json!({"id":new_id,"source_id":id,"axis":axis}),
                 warnings,

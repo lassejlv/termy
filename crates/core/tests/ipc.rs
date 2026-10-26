@@ -521,14 +521,12 @@ fn concurrent_creates_and_saves_all_succeed() {
                 barrier.wait();
                 (0..3)
                     .map(|_| {
-                        let (id, terminal) = if named {
-                            client.create_tab_in_workspace(shell("read line"), None, "window", 0)
+                        if named {
+                            client.create_tab_in_workspace(shell("read line"), "window", 0)
                         } else {
-                            client.create_tab(shell("read line"), None, None)
+                            client.create_tab(shell("read line"), None)
                         }
-                        .unwrap();
-                        drop(terminal);
-                        id
+                        .unwrap()
                     })
                     .collect::<Vec<_>>()
             })
@@ -608,7 +606,7 @@ fn close_and_split_commit_the_layout_and_warn_about_resizes() {
         .workspaces[0]
         .tabs[0]
         .clone();
-    let (new_id, terminal, warnings) = host
+    let (new_id, warnings) = host
         .client
         .split_pane(
             &left,
@@ -617,7 +615,6 @@ fn close_and_split_commit_the_layout_and_warn_about_resizes() {
             shell("read line"),
         )
         .unwrap();
-    drop(terminal);
     assert_eq!(saved_tabs(&host.client)[0].len(), 3);
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("ghost"), "{warnings:?}");
@@ -955,7 +952,7 @@ fn layout_resizes_keep_the_live_cell_metrics() {
         .unwrap();
 
     // The CLI splits without knowing the font; both panes keep 11x23 cells.
-    let (new_id, split, warnings) = host
+    let (new_id, warnings) = host
         .client
         .split_pane(
             &id,
@@ -966,11 +963,11 @@ fn layout_resizes_keep_the_live_cell_metrics() {
         .unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
     for pane in [&new_id, &id] {
-        let size = host.client.attach(pane, None).unwrap().size();
+        let size = host.client.snapshot(pane).unwrap().size;
         assert_eq!((size.cell_width, size.cell_height), (11.0, 23.0));
         assert!(size.cols < 80, "pane was not resized: {size:?}");
     }
-    drop((terminal, split));
+    drop(terminal);
     host.client.close(&new_id).unwrap();
     host.client.close(&id).unwrap();
 }
@@ -1029,5 +1026,347 @@ fn another_clients_resize_overrides_the_size_this_client_claimed() {
         "a stale request must not hide the other client's size"
     );
     drop(terminal);
+    host.client.close(&id).unwrap();
+}
+
+/// A pane running `script` with `/bin/sh -c`; `$1` is the host directory.
+fn script_pane(host: &Host, script: &str, args: &[&str]) -> (String, Terminal) {
+    let mut argv = vec![
+        "-c".into(),
+        script.into(),
+        "ipc-test".into(),
+        host.root.to_string_lossy().into_owned(),
+    ];
+    argv.extend(args.iter().map(|arg| arg.to_string()));
+    host.client
+        .create(
+            PaneLaunch {
+                size: TerminalSize::default(),
+                working_directory: None,
+                shell_integration: None,
+                config: TerminalRuntimeConfig::default(),
+                launch: Some(TerminalLaunch::Program {
+                    program: "/bin/sh".into(),
+                    args: argv,
+                }),
+            },
+            None,
+        )
+        .unwrap()
+}
+
+#[track_caller]
+fn wait_for_text(terminal: &Terminal, text: &str) {
+    wait_until(|| {
+        let render = terminal.render_read(true);
+        let screen: String = render.cells.iter().map(|cell| cell.text.as_str()).collect();
+        screen.contains(text)
+    });
+}
+
+/// Answers kitty clipboard reads with the name of the requested type and
+/// records the order of the requests.
+#[derive(Default)]
+struct RecordingClipboard {
+    reads: Vec<String>,
+}
+
+impl TerminalReplyHost for RecordingClipboard {
+    fn load_clipboard(&mut self, _: TerminalClipboardTarget) -> Option<String> {
+        None
+    }
+    fn read_clipboard(
+        &mut self,
+        request: TerminalClipboardReadRequest,
+    ) -> TerminalClipboardReadResult {
+        let mime_type = request.mime_types[0].clone();
+        self.reads.push(mime_type.clone());
+        TerminalClipboardReadResult::Success {
+            available_formats: vec![mime_type.clone()],
+            contents: vec![TerminalClipboardContent {
+                data: mime_type.as_bytes().to_vec(),
+                mime_type,
+            }],
+            remember_permission: false,
+        }
+    }
+}
+
+/// The reply host of a view that must never be asked.
+struct NoClipboard;
+
+impl TerminalReplyHost for NoClipboard {
+    fn load_clipboard(&mut self, _: TerminalClipboardTarget) -> Option<String> {
+        panic!("this view must not receive clipboard requests")
+    }
+    fn read_clipboard(&mut self, _: TerminalClipboardReadRequest) -> TerminalClipboardReadResult {
+        panic!("this view must not receive clipboard requests")
+    }
+}
+
+/// What [`RecordingClipboard`] makes the program read for request `id`.
+fn kitty_read_reply(id: &str, mime_type: &str) -> Vec<u8> {
+    use base64::Engine as _;
+    let mime = base64::engine::general_purpose::STANDARD.encode(mime_type);
+    format!(
+        "\x1b]5522;type=read:status=OK:id={id}\x1b\\\
+         \x1b]5522;type=read:status=DATA:id={id}:mime={mime};{mime}\x1b\\\
+         \x1b]5522;type=read:status=DONE:id={id}\x1b\\"
+    )
+    .into_bytes()
+}
+
+/// Audit B7: the user may take seconds to answer the permission prompt. An
+/// answer long after the old 500 ms deadline must still reach the program,
+/// and the pane keeps working while the requests wait: the old host held
+/// output for 500 ms per request.
+#[test]
+fn a_late_clipboard_answer_still_reaches_the_program() {
+    let host = Host::new();
+    let mut expected = Vec::new();
+    for id in ["a", "b", "c"] {
+        expected.extend(kitty_read_reply(id, "text/plain"));
+    }
+    let script = r#"
+stty raw -echo
+printf READY
+dd bs=1 count=1 >/dev/null 2>/dev/null
+for id in a b c; do printf '\033]5522;type=read:id=%s;dGV4dC9wbGFpbg==\033\\' "$id"; done
+printf WAITING
+dd bs=1 count="$2" > "$1/clipboard" 2>/dev/null
+sleep 30
+"#;
+    let length = expected.len().to_string();
+    let (id, terminal) = script_pane(&host, script, &[&length]);
+    wait_for_text(&terminal, "READY");
+    let requested = Instant::now();
+    terminal.write(b"x");
+    wait_for_text(&terminal, "WAITING");
+    assert!(
+        requested.elapsed() < Duration::from_secs(1),
+        "output behind the requests was held for {:?}",
+        requested.elapsed()
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(fs::read(host.root.join("clipboard")).map_or(true, |bytes| bytes.is_empty()));
+    let mut clipboard = RecordingClipboard::default();
+    wait_until(|| {
+        terminal.drain_events(&mut clipboard);
+        fs::read(host.root.join("clipboard")).is_ok_and(|bytes| bytes.len() == expected.len())
+    });
+    assert_eq!(clipboard.reads.len(), 3);
+    assert_eq!(fs::read(host.root.join("clipboard")).unwrap(), expected);
+    host.client.close(&id).unwrap();
+}
+
+/// Audit B7: a script watching the pane (like `termy mux wait` used to)
+/// must not take the view's clipboard requests, and the view runs requests
+/// queued together in the order the program made them.
+#[test]
+fn clipboard_requests_skip_observers_and_keep_their_order() {
+    let host = Host::new();
+    let mime_types = ["text/plain", "text/html", "image/png", "text/uri-list"];
+    let mut expected = Vec::new();
+    for (index, mime_type) in mime_types.iter().enumerate() {
+        expected.extend(kitty_read_reply(&index.to_string(), mime_type));
+    }
+    let script = r#"
+stty raw -echo
+printf READY
+dd bs=1 count=1 >/dev/null 2>/dev/null
+index=0
+for mime in dGV4dC9wbGFpbg== dGV4dC9odG1s aW1hZ2UvcG5n dGV4dC91cmktbGlzdA==; do
+  printf '\033]5522;type=read:id=%s;%s\033\\' "$index" "$mime"
+  index=$((index + 1))
+done
+printf QUEUED
+dd bs=1 count="$2" > "$1/clipboard" 2>/dev/null
+sleep 30
+"#;
+    let length = expected.len().to_string();
+    let (id, terminal) = script_pane(&host, script, &[&length]);
+    // Newer than the view, so the old routing would have picked it.
+    let observer = host.client.observe(&id, None).unwrap();
+    wait_for_text(&terminal, "READY");
+    terminal.write(b"x");
+    // All requests reach the view before it drains any of them.
+    wait_for_text(&terminal, "QUEUED");
+    let queued = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < queued {
+        observer.drain_events(&mut NoClipboard);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut clipboard = RecordingClipboard::default();
+    terminal.drain_events(&mut clipboard);
+    assert_eq!(clipboard.reads, mime_types, "drained in one pass, in order");
+    wait_until(|| {
+        observer.drain_events(&mut NoClipboard);
+        fs::read(host.root.join("clipboard")).is_ok_and(|bytes| bytes.len() == expected.len())
+    });
+    assert_eq!(fs::read(host.root.join("clipboard")).unwrap(), expected);
+    drop(observer);
+    host.client.close(&id).unwrap();
+}
+
+/// Audit B7: a request held by a view that goes away is denied, not kept.
+#[test]
+fn a_detached_view_denies_its_waiting_clipboard_request() {
+    let host = Host::new();
+    let expected = b"\x1b]5522;type=read:status=EPERM:id=gone\x1b\\";
+    let script = r#"
+stty raw -echo
+printf READY
+dd bs=1 count=1 >/dev/null 2>/dev/null
+printf '\033]5522;type=read:id=gone;dGV4dC9wbGFpbg==\033\\'
+printf WAITING
+dd bs=1 count="$2" > "$1/clipboard" 2>/dev/null
+sleep 30
+"#;
+    let length = expected.len().to_string();
+    let (id, terminal) = script_pane(&host, script, &[&length]);
+    wait_for_text(&terminal, "READY");
+    terminal.write(b"x");
+    // The view leaves without answering.
+    wait_for_text(&terminal, "WAITING");
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(fs::read(host.root.join("clipboard")).map_or(true, |bytes| bytes.is_empty()));
+    drop(terminal);
+    wait_until(|| {
+        fs::read(host.root.join("clipboard")).is_ok_and(|bytes| bytes.len() == expected.len())
+    });
+    assert_eq!(fs::read(host.root.join("clipboard")).unwrap(), expected);
+    host.client.close(&id).unwrap();
+}
+
+/// Audit B7: a hidden tab suspends render wakeups, but must still be woken
+/// to answer a clipboard request before the host gives up on it.
+#[test]
+fn clipboard_requests_wake_a_hidden_view() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let host = Host::new();
+    let script = r#"
+stty raw -echo
+printf READY
+dd bs=1 count=1 >/dev/null 2>/dev/null
+printf '\033]5522;type=read:id=hidden;dGV4dC9wbGFpbg==\033\\'
+sleep 30
+"#;
+    let wakeups = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&wakeups);
+    let notifier = TerminalWakeupNotifier::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    });
+    let launch = PaneLaunch {
+        size: TerminalSize::default(),
+        working_directory: None,
+        shell_integration: None,
+        config: TerminalRuntimeConfig::default(),
+        launch: Some(TerminalLaunch::Program {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), script.into()],
+        }),
+    };
+    let (id, terminal) = host.client.create(launch, Some(notifier)).unwrap();
+    wait_for_text(&terminal, "READY");
+    wait_until_quiet(&terminal);
+    terminal.set_wakeup_enabled(false);
+    wakeups.store(0, Ordering::SeqCst);
+    terminal.write(b"x");
+    wait_until(|| wakeups.load(Ordering::SeqCst) > 0);
+    let mut clipboard = RecordingClipboard::default();
+    terminal.drain_events(&mut clipboard);
+    assert_eq!(clipboard.reads, ["text/plain"]);
+    host.client.close(&id).unwrap();
+}
+
+/// Audit L18: a kitty paste notification goes behind the keys typed before
+/// it. The program reads nothing until both were sent, so the keys wait in
+/// the host's input backlog, where the old notification, a protocol reply,
+/// jumped ahead of them.
+#[test]
+fn paste_notification_follows_the_keys_queued_before_it() {
+    let host = Host::new();
+    let script = r#"
+stty raw -echo
+printf '\033[?5522h'
+printf READY
+while [ ! -f "$1/go" ]; do sleep 0.01; done
+exec cat > "$1/input"
+"#;
+    let (id, terminal) = script_pane(&host, script, &[]);
+    wait_for_text(&terminal, "READY");
+    wait_until(|| terminal.kitty_clipboard_paste_events_enabled());
+    // Far more than a PTY buffers for a program that is not reading.
+    let keys = vec![b'k'; 2048];
+    for _ in 0..128 {
+        terminal.write(&keys);
+    }
+    assert!(terminal.send_kitty_clipboard_paste_event(
+        TerminalClipboardLocation::Clipboard,
+        &["text/plain".into()]
+    ));
+    fs::write(host.root.join("go"), b"").unwrap();
+    let typed = keys.len() * 128;
+    wait_until(|| {
+        fs::read(host.root.join("input")).is_ok_and(|bytes| {
+            bytes.len() > typed && String::from_utf8_lossy(&bytes).contains("status=DONE")
+        })
+    });
+    let input = fs::read(host.root.join("input")).unwrap();
+    let first_other = input.iter().position(|byte| *byte != b'k');
+    assert_eq!(
+        first_other,
+        Some(typed),
+        "the notification overtook typed keys"
+    );
+    assert!(input[typed..].starts_with(b"\x1b]5522;type=read:status=OK"));
+    host.client.close(&id).unwrap();
+}
+
+/// Audit I13: scripts create and read panes without subscribing to them,
+/// and reading publishes no frame that would wake the views.
+#[test]
+fn detached_panes_are_read_without_subscribing() {
+    let host = Host::new();
+    let launch = PaneLaunch {
+        size: TerminalSize {
+            cols: 30,
+            rows: 5,
+            cell_width: 7.0,
+            cell_height: 15.0,
+        },
+        working_directory: None,
+        shell_integration: None,
+        config: TerminalRuntimeConfig::default(),
+        launch: Some(TerminalLaunch::Program {
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "printf SNAPSHOT; sleep 30".into()],
+        }),
+    };
+    let id = host.client.create_detached(launch).unwrap();
+    let view = host.client.observe(&id, None).unwrap();
+    wait_for_text(&view, "SNAPSHOT");
+    wait_until_quiet(&view);
+    for _ in 0..3 {
+        let state = host.client.snapshot(&id).unwrap();
+        let screen: String = state
+            .render
+            .cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect();
+        assert!(screen.contains("SNAPSHOT"));
+        assert_eq!((state.size.cols, state.size.rows), (30, 5));
+        assert_eq!((state.size.cell_width, state.size.cell_height), (7.0, 15.0));
+    }
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        !view.has_pending_events(),
+        "a snapshot published a frame to the view"
+    );
+    drop(view);
     host.client.close(&id).unwrap();
 }

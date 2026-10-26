@@ -10,14 +10,16 @@ use std::sync::Arc;
 // Version 4 requires mutual authentication, retires the legacy capability
 // fallbacks and freezes the shutdown handshake (see `Request`). It also
 // sends a subscription's replayed state as `Update::Replay`, gives the
-// session layout a revision and adds layout watching.
+// session layout a revision and adds layout watching. It routes clipboard
+// requests only to host-capable subscriptions, with an expiry, and adds the
+// subscription-free `Snapshot` and `Size` requests.
 pub(crate) const VERSION: u32 = 4;
 const MAX_MESSAGE_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Hash of the encoding of every wire type, checked by the `wire_golden`
 /// test. When it changes, the wire changed: bump [`VERSION`] (unless the
 /// unreleased change already did) and update this value.
-pub(crate) const WIRE_FINGERPRINT: u64 = 0xfb24_2218_c560_f853;
+pub(crate) const WIRE_FINGERPRINT: u64 = 0x3b20_0d69_bd4b_db6c;
 
 /// Identifies the build that wrote `endpoint.json`. A client logs a warning
 /// when it differs from its own under the same [`VERSION`], which points at
@@ -93,7 +95,8 @@ pub(crate) enum Request {
         expected: u64,
         replacement: String,
     },
-    SubscribeGraphics(String),
+    /// Retired: the subscription without the host-capable flag.
+    RetiredSubscribeGraphics,
     /// Scroll or clear the viewport, publish the new frame immediately and
     /// reply with its generation.
     ViewportCommand {
@@ -113,6 +116,18 @@ pub(crate) enum Request {
     /// Turns the connection into a stream of [`Response::LayoutChanged`]:
     /// the current revision first, then one message per accepted write.
     WatchLayout,
+    /// Stream the pane's frames, graphics and events on this connection.
+    /// Only a `host_capable` subscriber, a view that can ask the user, is
+    /// sent the pane's clipboard requests.
+    Subscribe {
+        pane: String,
+        host_capable: bool,
+    },
+    /// The pane's current state, as [`Response::Attached`], without
+    /// subscribing and without publishing a frame to subscribers.
+    Snapshot(String),
+    /// The pane's size and cell metrics, as [`Response::Size`].
+    Size(String),
 }
 
 /// See [`Request`] for the wire rules and the frozen variants.
@@ -149,6 +164,7 @@ pub(crate) enum Response {
     LayoutChanged {
         revision: u64,
     },
+    Size(TerminalSize),
 }
 
 /// See [`Request`] for the wire rules.
@@ -157,15 +173,22 @@ pub(crate) enum Update {
     /// A pane's new state inside the host; clients receive `GraphicsState`.
     State(Arc<RemoteState>),
     Events(Vec<TerminalEvent>),
-    Host {
-        id: u64,
-        request: RemoteHostRequest,
-    },
+    /// Retired: the clipboard request without an expiry.
+    RetiredHost,
     GraphicsState(Arc<RemoteState>, graphics::GraphicsUpdate),
     /// The pane's current state, sent once before any live [`Update::Events`]
     /// of a new subscription. Replayed events describe the state at attach
     /// time; they did not just happen.
     Replay(Vec<TerminalEvent>),
+    /// A clipboard request to answer with [`Request::HostReply`]. The host
+    /// denies it once `deadline` passes, so the client drops it unanswered
+    /// after that instead of prompting or writing late.
+    HostRequest {
+        id: u64,
+        request: RemoteHostRequest,
+        #[serde(with = "crate::serde_deadline")]
+        deadline: Option<std::time::Instant>,
+    },
 }
 
 const HOST_PROOF_LABEL: &[u8] = b"termy-multiplexer host proof v1";

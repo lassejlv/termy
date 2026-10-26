@@ -44,8 +44,10 @@ Pane and window IDs come from `list` and `layout`. Workspace indices are
 zero-based positions in the returned layout. `send` sends literal UTF-8;
 `--enter` appends Enter. It waits for host acceptance, not command completion.
 Use `wait` to check output. `capture` returns the visible viewport, not the
-entire scrollback. A capture or input command detaches when it exits; the
-terminal remains alive. `close` terminates one terminal. `shutdown` terminates
+entire scrollback. Commands never attach to a pane: `capture`, `wait` and
+`key` read one snapshot of it (`wait` polls), and `create` and `split` start
+panes without attaching, so the CLI never receives a pane's clipboard
+requests. The terminal remains alive when a command exits. `close` terminates one terminal. `shutdown` terminates
 all terminals and stops the host.
 
 Creation saves a tab in the selected workspace, or the first window's active

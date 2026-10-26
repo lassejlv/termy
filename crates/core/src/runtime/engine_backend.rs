@@ -287,6 +287,18 @@ impl Backend {
         }
     }
 
+    pub(super) fn complete_clipboard_request(
+        &self,
+        id: u64,
+        reply: Option<crate::TerminalClipboardReply>,
+    ) {
+        match self {
+            Self::Custom(backend) => backend.complete_clipboard_request(id, reply),
+            // Remote terminals never defer: their host engine does.
+            Self::Remote(_) => {}
+        }
+    }
+
     pub(super) fn set_query_colors(&mut self, query_colors: TerminalQueryColors) {
         match self {
             Self::Custom(backend) => backend.set_query_colors(query_colors),

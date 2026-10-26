@@ -965,6 +965,19 @@ impl Terminal {
         self.backend.drain_events(host)
     }
 
+    /// Answers a clipboard request the reply host deferred (see
+    /// [`TerminalReplyHost::defer_clipboard_request`]) and sends the program
+    /// every reply now due, in request order. Unknown ids are ignored.
+    pub fn complete_clipboard_request(&self, id: u64, reply: crate::TerminalClipboardReply) {
+        self.backend.complete_clipboard_request(id, Some(reply));
+    }
+
+    /// Denies a deferred clipboard request, for a host that will not answer
+    /// it: the program gets the same reply as for a refused request.
+    pub fn deny_clipboard_request(&self, id: u64) {
+        self.backend.complete_clipboard_request(id, None);
+    }
+
     pub fn set_query_colors(&mut self, query_colors: TerminalQueryColors) {
         self.backend.set_query_colors(query_colors);
     }

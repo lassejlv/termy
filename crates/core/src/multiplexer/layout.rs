@@ -1,6 +1,5 @@
 use crate::multiplexer::{PaneLaunch, SessionClient};
 use crate::session_model::*;
-use crate::{Terminal, TerminalWakeupNotifier};
 use anyhow::{Context, ensure};
 
 impl SessionClient {
@@ -86,7 +85,7 @@ impl SessionClient {
         axis: PaneResizeAxis,
         expected: &StoredTab,
         mut launch: PaneLaunch,
-    ) -> anyhow::Result<(String, Terminal, Vec<String>)> {
+    ) -> anyhow::Result<(String, Vec<String>)> {
         let pane = expected
             .panes
             .iter()
@@ -117,7 +116,7 @@ impl SessionClient {
             .cell_size(id)
             .unwrap_or((launch.size.cell_width, launch.size.cell_height));
         launch.size = saved_size(pane, cell);
-        let (new_id, terminal) = self.create(launch, None)?;
+        let new_id = self.create_detached(launch)?;
         let result = self.update_layout(|layout| {
             // A start-up reconcile elsewhere may already list the new pane.
             layout.remove_pane(&new_id);
@@ -146,11 +145,11 @@ impl SessionClient {
                 Vec::new()
             }
         };
-        Ok((new_id, terminal, warnings))
+        Ok((new_id, warnings))
     }
 
-    /// Create a live terminal and register its tab in the selected workspace.
-    /// A `target` must still match its expected workspace before the process
+    /// Create a live terminal, without attaching to it, and register its
+    /// tab in the selected workspace. Returns the new pane ID. A `target` must still match its expected workspace before the process
     /// starts. Afterwards the tab goes into that workspace (found again by its
     /// panes or name if it moved), or into the first window's active
     /// workspace, as it is at that moment: other clients' edits meanwhile
@@ -158,9 +157,8 @@ impl SessionClient {
     pub fn create_tab(
         &self,
         launch: PaneLaunch,
-        wakeup: Option<TerminalWakeupNotifier>,
         target: Option<WorkspaceTarget>,
-    ) -> anyhow::Result<(String, Terminal)> {
+    ) -> anyhow::Result<String> {
         let placement = match target {
             Some(target) => {
                 let layout = StoredMultiplexer::parse(self.layout()?.as_deref())
@@ -174,7 +172,7 @@ impl SessionClient {
             }
             None => Placement::FirstWindow,
         };
-        self.create_tab_at(launch, wakeup, placement)
+        self.create_tab_at(launch, placement)
     }
 
     /// Like [`Self::create_tab`] into workspace `index` of `window_id`, for a
@@ -183,10 +181,9 @@ impl SessionClient {
     pub fn create_tab_in_workspace(
         &self,
         launch: PaneLaunch,
-        wakeup: Option<TerminalWakeupNotifier>,
         window_id: &str,
         index: usize,
-    ) -> anyhow::Result<(String, Terminal)> {
+    ) -> anyhow::Result<String> {
         let layout =
             StoredMultiplexer::parse(self.layout()?.as_deref()).map_err(anyhow::Error::msg)?;
         let snapshot = layout
@@ -198,7 +195,6 @@ impl SessionClient {
             .clone();
         self.create_tab_at(
             launch,
-            wakeup,
             Placement::Workspace {
                 window_id: window_id.to_owned(),
                 index,
@@ -207,14 +203,9 @@ impl SessionClient {
         )
     }
 
-    fn create_tab_at(
-        &self,
-        launch: PaneLaunch,
-        wakeup: Option<TerminalWakeupNotifier>,
-        placement: Placement,
-    ) -> anyhow::Result<(String, Terminal)> {
+    fn create_tab_at(&self, launch: PaneLaunch, placement: Placement) -> anyhow::Result<String> {
         let size = launch.size;
-        let (id, terminal) = self.create(launch, wakeup)?;
+        let id = self.create_detached(launch)?;
         let new_window_id = uuid::Uuid::new_v4().to_string();
         let tab = StoredTab {
             zoomed: false,
@@ -238,7 +229,7 @@ impl SessionClient {
         if let Err(error) = result {
             self.forget_unregistered_pane(&id, error)?;
         }
-        Ok((id, terminal))
+        Ok(id)
     }
 }
 

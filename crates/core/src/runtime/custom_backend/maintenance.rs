@@ -102,10 +102,7 @@ impl Shared {
                             if state.engine.take_history_activity() {
                                 state.defer_history_compaction(now);
                             }
-                            while let Some(event) = state.engine.pop_event() {
-                                state.engine_event(event);
-                            }
-                            state.engine.drain_replies(&mut replies);
+                            replies = state.take_engine_output();
                             state.generation = state.generation.wrapping_add(1);
                         }
                         let tab_chrome_changed = committed && state.take_tab_chrome_changed();

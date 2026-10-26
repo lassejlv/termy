@@ -9,8 +9,11 @@ pub use kitty_clipboard::{
     TerminalClipboardContent, TerminalClipboardLocation, TerminalClipboardReadRequest,
     TerminalClipboardReadResult, TerminalClipboardWriteRequest, TerminalClipboardWriteResult,
 };
+pub(crate) use kitty_clipboard::{KittyClipboardPending, KittyClipboardStep};
 pub use kitty_clipboard_control::{
     KittyClipboardControl, KittyClipboardInput, KittyClipboardInterceptor,
 };
 pub use query_colors::TerminalQueryColors;
-pub use replies::{TerminalClipboardTarget, TerminalReplyHost};
+pub use replies::{
+    TerminalClipboardReply, TerminalClipboardRequest, TerminalClipboardTarget, TerminalReplyHost,
+};
