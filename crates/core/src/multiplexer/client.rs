@@ -146,7 +146,7 @@ impl Connection {
         };
         if let Err(error) = write_message(stream, &request) {
             *slot = None;
-            return Err(error);
+            return Err(self.broken_exchange(error));
         }
         let response = match read_message(stream) {
             Ok(response) => response,
@@ -156,8 +156,8 @@ impl Connection {
                 let stream = slot.take();
                 // A host that is gone is reported as such, so callers can
                 // tell it from a request that failed (`is_host_unavailable`).
-                if !timed_out(&error) && !discovery::host_is_running(&self.root) {
-                    return Err(discovery::no_host(&self.root).context(format!("{error:#}")));
+                if !timed_out(&error) {
+                    return Err(self.broken_exchange(error));
                 }
                 if let (Some(late), Some(mut stream)) = (late, stream)
                     && timed_out(&error)
@@ -178,6 +178,22 @@ impl Connection {
         match response {
             Response::Error(error) => Err(RequestFailed(error).into()),
             response => Ok(response),
+        }
+    }
+
+    /// Reports an exchange that broke (not one that timed out) as a missing
+    /// host when the host is gone, so callers can tell it from a request that
+    /// failed (`is_host_unavailable`). A stopping host can reset connections
+    /// while it still holds its lock (Windows does), so when it no longer
+    /// accepts connections, wait for it to finish exiting.
+    fn broken_exchange(&self, error: anyhow::Error) -> anyhow::Error {
+        let gone = !discovery::host_is_running(&self.root)
+            || (discovery::connect(&self.root).is_err()
+                && discovery::wait_for_exit(&self.root, STOPPING_HOST_GRACE));
+        if gone {
+            discovery::no_host(&self.root).context(format!("{error:#}"))
+        } else {
+            error
         }
     }
 

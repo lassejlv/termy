@@ -360,6 +360,58 @@ fn suspended_ui_queue_coalesces_bells_progress_and_clipboard_writes() {
 
 /// A host that authenticates every connection and hands it to the test,
 /// which then plays the host's part on it.
+/// A stopping host may reset a connection while it still holds its lock
+/// (Windows does). The request must then report the host as gone, not as a
+/// failed request, once the host stops accepting connections and exits.
+#[test]
+fn a_connection_reset_by_a_stopping_host_reports_no_host() {
+    use crate::multiplexer::discovery::{Root, is_host_unavailable};
+    use fs4::fs_std::FileExt;
+    use std::net::TcpListener;
+    let temp = crate::multiplexer::discovery::private_tempdir();
+    let lock = Root::open(temp.path())
+        .unwrap()
+        .private_file("host.lock")
+        .unwrap();
+    assert!(lock.try_lock_exclusive().unwrap());
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::fs::write(
+        temp.path().join("endpoint.json"),
+        serde_json::json!({ "version": VERSION, "port": port, "token": "token" }).to_string(),
+    )
+    .unwrap();
+    let host = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let Request::Authenticate { client_nonce, .. } = read_message(&mut stream).unwrap() else {
+            panic!("expected authentication");
+        };
+        let server_nonce = [2; 32];
+        let server_proof = host_proof("token", &client_nonce, &server_nonce);
+        let challenge = Response::Challenge {
+            server_nonce,
+            server_proof,
+        };
+        write_message(&mut stream, &challenge).unwrap();
+        let _: Request = read_message(&mut stream).unwrap();
+        write_message(&mut stream, &Response::Ok).unwrap();
+        let _: Request = read_message(&mut stream).unwrap();
+        // Stop listening and drop the connection mid-request, then finish
+        // exiting a moment later while the client is already looking.
+        drop(listener);
+        drop(stream);
+        std::thread::sleep(Duration::from_millis(300));
+        FileExt::unlock(&lock).unwrap();
+    });
+
+    let connection = Connection::connect(temp.path()).unwrap();
+    let Err(error) = connection.request(Request::GetLayout) else {
+        panic!("the host dropped the request, so it cannot have succeeded");
+    };
+    assert!(is_host_unavailable(&error), "{error:#}");
+    host.join().unwrap();
+}
+
 struct FakeHost {
     root: tempfile::TempDir,
     connections: flume::Receiver<TcpStream>,

@@ -1020,10 +1020,13 @@ mod tests {
     /// real client out.
     #[test]
     fn reconnecting_flood_cannot_lock_out_real_clients() {
+        use std::sync::atomic::AtomicUsize;
         let (server, address, host) = start(HANDSHAKE_TIMEOUT, 0);
         let running = Arc::new(AtomicBool::new(true));
+        let reconnects = Arc::new(AtomicUsize::new(0));
         let attacker = {
             let running = Arc::clone(&running);
+            let reconnects = Arc::clone(&reconnects);
             std::thread::spawn(move || {
                 let open = || {
                     let stream = TcpStream::connect(address).unwrap();
@@ -1031,20 +1034,18 @@ mod tests {
                     stream
                 };
                 let mut sockets: Vec<_> = (0..MAX_UNAUTHENTICATED).map(|_| open()).collect();
-                let mut reconnects = 0;
                 while running.load(Ordering::Acquire) {
                     for socket in &mut sockets {
                         match socket.read(&mut [0; 1]) {
                             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
                             _ => {
                                 *socket = open();
-                                reconnects += 1;
+                                reconnects.fetch_add(1, Ordering::AcqRel);
                             }
                         }
                     }
                     std::thread::yield_now();
                 }
-                reconnects
             })
         };
         wait_for_unauthenticated(&server, MAX_UNAUTHENTICATED);
@@ -1053,8 +1054,16 @@ mod tests {
                 panic!("real client {attempt} was locked out: {error:#}");
             }
         }
+        // The real clients got in by evicting attacker connections. Wait for
+        // the attacker to see those closes: on a loaded machine its thread
+        // may not have run while the real clients connected.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while reconnects.load(Ordering::Acquire) < 5 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         running.store(false, Ordering::Release);
-        let reconnects = attacker.join().unwrap();
+        attacker.join().unwrap();
+        let reconnects = reconnects.load(Ordering::Acquire);
         assert!(
             reconnects >= 5,
             "the attacker reconnected {reconnects} times"
