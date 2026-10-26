@@ -45,6 +45,10 @@ struct Server {
     /// The session directory, exported to panes as `TERMY_MUX_DIR`.
     root: PathBuf,
     panes: Mutex<HashMap<String, Pane>>,
+    /// Panes closed after their program exited, newest last, so a client
+    /// learns that a pane another client closed had exited (a desktop view
+    /// closes a pane whose shell exits). See [`EXITED_PANES`].
+    exited: Mutex<VecDeque<(String, Instant)>>,
     layout: Arc<LayoutStore>,
     token: String,
     address: SocketAddr,
@@ -61,6 +65,7 @@ impl Server {
         Self {
             root,
             panes: Mutex::new(HashMap::new()),
+            exited: Mutex::new(VecDeque::new()),
             layout: Arc::default(),
             token,
             address,
@@ -461,12 +466,24 @@ impl Server {
     }
 
     fn pane(&self, id: &str) -> anyhow::Result<Pane> {
-        self.panes
-            .lock()
-            .unwrap()
-            .get(id)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("terminal session no longer exists: {id}"))
+        if let Some(pane) = self.panes.lock().unwrap().get(id) {
+            return Ok(pane.clone());
+        }
+        let mut exited = self.exited.lock().unwrap();
+        exited.retain(|(_, closed)| closed.elapsed() < EXITED_PANES_FOR);
+        if exited.iter().any(|(closed, _)| closed == id) {
+            anyhow::bail!("{EXITED_PANE}: {id}");
+        }
+        anyhow::bail!("{MISSING_PANE}: {id}")
+    }
+
+    /// Remembers that pane `id`, closed now, had exited.
+    fn remember_exited(&self, id: String) {
+        let mut exited = self.exited.lock().unwrap();
+        if exited.len() >= EXITED_PANES {
+            exited.pop_front();
+        }
+        exited.push_back((id, Instant::now()));
     }
 
     fn execute(&self, request: Request) -> anyhow::Result<Response> {
@@ -511,6 +528,9 @@ impl Server {
                 Response::Attached(pane.info(), pane.snapshot()?)
             }
             Request::Size(id) => Response::Size(self.pane(&id)?.size()?),
+            Request::LaunchConfig(id) => {
+                Response::LaunchConfig(Box::new(self.pane(&id)?.launch_config()))
+            }
             Request::List => Response::Panes(
                 self.panes
                     .lock()
@@ -524,6 +544,9 @@ impl Server {
                 // client's pane lookups meanwhile.
                 let pane = self.panes.lock().unwrap().remove(&id);
                 if let Some(pane) = pane {
+                    if pane.info().exited {
+                        self.remember_exited(id.clone());
+                    }
                     pane.close();
                 }
                 self.layout.remove_pane(&id);
@@ -558,6 +581,33 @@ impl Server {
             }
         })
     }
+}
+
+/// How the host's error for an unknown pane ID begins; see
+/// [`is_missing_pane`].
+const MISSING_PANE: &str = "terminal session no longer exists";
+/// How the host's error for a pane closed after its program exited begins;
+/// see [`is_exited_pane`].
+const EXITED_PANE: &str = "terminal session exited and was closed";
+/// The most closed panes the host remembers as exited, and for how long.
+const EXITED_PANES: usize = 256;
+const EXITED_PANES_FOR: Duration = Duration::from_secs(10 * 60);
+
+/// Whether `error`, from a request about one pane, means the host has no
+/// pane with that ID: it never existed, or it was closed.
+pub fn is_missing_pane(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().starts_with(MISSING_PANE))
+}
+
+/// Whether `error`, from a request about one pane, means the pane's program
+/// exited and the pane was closed since, within the last 10 minutes (and
+/// the last 256 such panes).
+pub fn is_exited_pane(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().starts_with(EXITED_PANE))
 }
 
 fn serve_client(

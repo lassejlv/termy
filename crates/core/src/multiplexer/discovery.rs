@@ -104,6 +104,16 @@ pub fn is_version_mismatch(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Whether `error` (from [`SessionClient::connect`] or a request) means that
+/// no host runs in the session directory, or that the one there cannot be
+/// reached. A host of another protocol version is [`is_version_mismatch`].
+pub fn is_host_unavailable(error: &anyhow::Error) -> bool {
+    !is_version_mismatch(error)
+        && error
+            .chain()
+            .any(|cause| cause.is::<NoHost>() || cause.is::<Unreachable>())
+}
+
 /// The session host directory for this user: `multiplexer` next to the config
 /// file. On Windows it is under `%LOCALAPPDATA%` instead, so the endpoint token
 /// stays on this machine rather than roaming with the `%APPDATA%` profile; a

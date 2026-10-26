@@ -888,6 +888,7 @@ mod tests {
                 title: None,
                 working_directory: None,
                 exited: false,
+                shell: None,
             })
             .collect()
     }

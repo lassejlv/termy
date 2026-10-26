@@ -180,6 +180,23 @@ impl Backend {
         }
     }
 
+    pub(super) fn try_write_owned(&self, input: Vec<u8>) -> std::io::Result<()> {
+        match self {
+            Self::Custom(backend) => backend.try_write_owned(input),
+            Self::Remote(backend) => {
+                backend.write_owned(input);
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn input_anchor(&self) -> u64 {
+        match self {
+            Self::Custom(backend) => backend.input_anchor(),
+            Self::Remote(backend) => backend.input_anchor(),
+        }
+    }
+
     pub(super) fn write_mouse_motion(&self, input: Vec<u8>) {
         match self {
             Self::Custom(backend) => backend.write_mouse_motion(input),

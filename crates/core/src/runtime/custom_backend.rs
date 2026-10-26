@@ -859,13 +859,24 @@ impl CustomBackend {
     }
     pub(super) fn write(&self, input: &[u8]) {
         if let Some(transport) = &self.transport {
-            self.input_result(transport.write(input));
+            self.input_result(&transport.write(input));
         }
     }
     pub(super) fn write_owned(&self, input: Vec<u8>) {
-        if let Some(transport) = &self.transport {
-            self.input_result(transport.write_owned(input));
-        }
+        let _ = self.try_write_owned(input);
+    }
+    pub(super) fn input_anchor(&self) -> u64 {
+        let state = self.shared.state();
+        state.engine.scrolled_into_history() + state.engine.cursor().row as u64
+    }
+    /// A display terminal, which has no program, accepts and drops input.
+    pub(super) fn try_write_owned(&self, input: Vec<u8>) -> std::io::Result<()> {
+        let Some(transport) = &self.transport else {
+            return Ok(());
+        };
+        let result = transport.write_owned(input);
+        self.input_result(&result);
+        result
     }
     /// Motion reports may use only half the input backlog; when it is fuller
     /// they are dropped, and the next report carries the newer position.
@@ -877,7 +888,7 @@ impl CustomBackend {
             log::warn!("terminal input failed: {error}");
         }
     }
-    fn input_result(&self, result: std::io::Result<()>) {
+    fn input_result(&self, result: &std::io::Result<()>) {
         let Err(error) = result else {
             return;
         };
@@ -1368,6 +1379,8 @@ impl CustomBackend {
             first: to_then(next + 1),
             lines_scrolled: anchor.unwrap_or(lines_scrolled),
             lines,
+            scrolled: lines_scrolled,
+            rows: state.size.rows,
         }
     }
 
@@ -1486,14 +1499,13 @@ fn line_text(cells: &engine::Line<'_>, wrapped: bool) -> crate::remote::LineText
     for col in 0..cells.len() {
         let cell = &cells[col];
         let start = text.len();
-        if cell.flags & engine::Cell::WIDE_SPACER != 0 {
+        if cell.flags & (engine::Cell::WIDE_SPACER | engine::Cell::LEADING_WIDE_SPACER) != 0 {
             columns.push(0);
             kept = (text.len(), columns.len());
             continue;
         }
         let character = cell.character;
         if cell.style.attributes & engine::Style::HIDDEN != 0
-            || cell.flags & engine::Cell::LEADING_WIDE_SPACER != 0
             || character == '\0'
             || character.is_control()
         {

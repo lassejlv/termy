@@ -43,6 +43,10 @@ enum Work {
 
 struct Shared {
     info: PaneInfo,
+    /// What the pane was started with, for a pane split from it.
+    launch: LaunchConfig,
+    /// Follows the command the latest input started.
+    input: InputTracker,
     state: Arc<RemoteState>,
     /// The latest event of each [`sticky_key`], and when it arrived. Wall
     /// clock time, so that system sleep counts towards staleness.
@@ -201,6 +205,23 @@ impl Pane {
 
     fn spawn(mut launch: PaneLaunch, root: &Path, host_timeout: Duration) -> anyhow::Result<Self> {
         let id = uuid::Uuid::new_v4().to_string();
+        // Its variables belong to the launched program (an SSH tab's
+        // askpass helper), not to a shell split from it.
+        let launch_config = LaunchConfig {
+            config: TerminalRuntimeConfig {
+                environment: Default::default(),
+                ..launch.config.clone()
+            },
+            shell_integration: launch.shell_integration.clone(),
+        };
+        // The directory the terminal starts in, resolved here so that the
+        // pane lists it rather than the one requested, which may not exist
+        // (audit B27).
+        launch.working_directory = crate::resolve_launch_working_directory(
+            launch.working_directory.as_deref(),
+            launch.config.working_dir_fallback,
+        )
+        .map(|directory| directory.to_string_lossy().into_owned());
         let environment = &mut launch.config.environment;
         environment.insert("TERMY_MUX_DIR".into(), root.to_string_lossy().into_owned());
         environment.insert("TERMY_MUX_PANE".into(), id.clone());
@@ -236,7 +257,10 @@ impl Pane {
                 title: None,
                 working_directory: launch.working_directory,
                 exited: false,
+                shell: None,
             },
+            launch: launch_config,
+            input: InputTracker::default(),
             state,
             sticky_events: Vec::new(),
             program_status: None,
@@ -273,6 +297,10 @@ impl Pane {
 
     pub(crate) fn info(&self) -> PaneInfo {
         self.shared.lock().unwrap().info.clone()
+    }
+
+    pub(crate) fn launch_config(&self) -> LaunchConfig {
+        self.shared.lock().unwrap().launch.clone()
     }
 
     /// Queues work and waits for its reply, both within one `REQUEST_TIMEOUT`
@@ -502,6 +530,7 @@ fn publish(shared: &mut Shared, state: Option<Arc<RemoteState>>, events: Vec<Ter
         .filter(|event| !matches!(event, TerminalEvent::Wakeup))
         .collect();
     for event in &mut events {
+        follow_shell(shared, event);
         match event {
             TerminalEvent::Title(title) => shared.info.title = Some(title.clone()),
             TerminalEvent::ResetTitle => shared.info.title = None,
@@ -568,6 +597,100 @@ fn publish(shared: &mut Shared, state: Option<Arc<RemoteState>>, events: Vec<Ter
         }
         !pending.closed
     });
+}
+
+/// Follows the command that the pane's latest input started; see
+/// [`InputCommand`] for the rules.
+#[derive(Default)]
+struct InputTracker {
+    command: Option<InputCommand>,
+    /// A prompt showed when the input arrived, or appeared since.
+    prompt: bool,
+    /// The last command lifecycle event was a prompt (`A` or `B`).
+    at_prompt: bool,
+}
+
+/// Notes input that reached the program. The worker publishes the events
+/// of everything the program printed before, first, so that no earlier
+/// event is taken for one that followed the input.
+fn note_input(shared: &mut Shared) {
+    let running = shared.info.shell.is_some_and(|shell| shell.running);
+    let input = &mut shared.input;
+    input.command = Some(InputCommand::Pending);
+    input.prompt = input.at_prompt && !running;
+    if let Some(shell) = &mut shared.info.shell {
+        shell.input_command = input.command;
+    }
+}
+
+/// Follows the shell's command lifecycle (audit I14).
+fn follow_shell(shared: &mut Shared, event: &TerminalEvent) {
+    if !matches!(
+        event,
+        TerminalEvent::ShellPromptStart
+            | TerminalEvent::ShellCommandStart
+            | TerminalEvent::ShellCommandExecuting
+            | TerminalEvent::ShellCommandFinished(_)
+    ) {
+        return;
+    }
+    let shell = shared.info.shell.get_or_insert_default();
+    let input = &mut shared.input;
+    let waiting = matches!(
+        input.command,
+        Some(InputCommand::Pending | InputCommand::Running)
+    );
+    match event {
+        TerminalEvent::ShellCommandExecuting => {
+            shell.running = true;
+            shell.commands_started += 1;
+            input.at_prompt = false;
+            if waiting {
+                input.command = Some(InputCommand::Running);
+            }
+        }
+        TerminalEvent::ShellCommandFinished(code) => {
+            shell.running = false;
+            shell.commands_finished += 1;
+            shell.exit_code = *code;
+            input.at_prompt = false;
+            // Only after the input's own start, or for a shell that reports
+            // no starts at all, after a prompt.
+            let started = input.command == Some(InputCommand::Running);
+            if waiting && (started || (input.prompt && shell.commands_started == 0)) {
+                input.command = Some(InputCommand::Finished(*code));
+            }
+        }
+        // A new prompt without a finish: the command line was abandoned.
+        _ => {
+            shell.running = false;
+            input.at_prompt = true;
+            if input.command == Some(InputCommand::Pending) {
+                input.prompt = true;
+            }
+        }
+    }
+    shell.input_command = input.command;
+}
+
+/// Drains the engine's events and publishes them, without a frame. Returns
+/// whether it found any, and whether more are pending.
+fn publish_events(
+    terminal: &mut Terminal,
+    host: &mut HostBridge,
+    shared: &Mutex<Shared>,
+    exit_hook: &Mutex<Option<ExitHook>>,
+) -> (bool, bool) {
+    let (events, more) = terminal.drain_events(host);
+    let found = !events.is_empty();
+    let exited = events
+        .iter()
+        .any(|event| matches!(event, TerminalEvent::Exit));
+    publish(&mut shared.lock().unwrap(), None, events);
+    if exited {
+        notify_exit(shared, exit_hook);
+    }
+    (found, more)
 }
 
 fn is_attached(shared: &Shared) -> bool {
@@ -659,7 +782,22 @@ fn run(
                         | RemoteCommand::RetiredLink
                         | RemoteCommand::Graphics
                 );
-                let result = crate::remote::execute(&mut terminal, command);
+                let input = matches!(command, RemoteCommand::Write(_));
+                if input {
+                    // What the program printed before the input comes first.
+                    let (found, more) =
+                        publish_events(&mut terminal, &mut host, &shared, &exit_hook);
+                    dirty |= found || more;
+                }
+                let result = if input && shared.lock().unwrap().info.exited {
+                    // The PTY may still accept bytes nobody reads (audit B24).
+                    RemoteReply::InputRejected(InputRejection::Exited)
+                } else {
+                    crate::remote::execute(&mut terminal, command)
+                };
+                if matches!(result, RemoteReply::Written { .. }) {
+                    note_input(&mut shared.lock().unwrap());
+                }
                 dirty |= changes_state && !matches!(result, RemoteReply::Changed(false));
                 let _ = reply.try_send(result);
             }
@@ -895,7 +1033,13 @@ mod tests {
                 title: None,
                 working_directory: None,
                 exited: false,
+                shell: None,
             },
+            launch: LaunchConfig {
+                config: TerminalRuntimeConfig::default(),
+                shell_integration: None,
+            },
+            input: InputTracker::default(),
             state: Arc::clone(&state),
             sticky_events: Vec::new(),
             program_status: None,
@@ -932,7 +1076,13 @@ mod tests {
                 title: None,
                 working_directory: None,
                 exited: false,
+                shell: None,
             },
+            launch: LaunchConfig {
+                config: TerminalRuntimeConfig::default(),
+                shell_integration: None,
+            },
+            input: InputTracker::default(),
             state: Arc::new(RemoteState::capture(&terminal)),
             sticky_events: Vec::new(),
             program_status: None,
@@ -985,7 +1135,13 @@ mod tests {
                 title: None,
                 working_directory: None,
                 exited: false,
+                shell: None,
             },
+            launch: LaunchConfig {
+                config: TerminalRuntimeConfig::default(),
+                shell_integration: None,
+            },
+            input: InputTracker::default(),
             state: Arc::clone(&state),
             sticky_events: Vec::new(),
             program_status: None,
@@ -1632,5 +1788,256 @@ mod tests {
             matches!(replay.as_slice(), [TerminalEvent::ProgramStatus(records)] if records.len() == 1),
             "{replay:?}"
         );
+    }
+
+    #[cfg(unix)]
+    fn launched_pane(script: &str, working_directory: Option<&str>) -> Pane {
+        Pane::spawn(
+            PaneLaunch {
+                size: TerminalSize::default(),
+                working_directory: working_directory.map(Into::into),
+                shell_integration: Some(TabTitleShellIntegration {
+                    enabled: true,
+                    explicit_prefix: String::new(),
+                }),
+                config: TerminalRuntimeConfig {
+                    scrollback_history: 1234,
+                    working_dir_fallback: WorkingDirFallback::Process,
+                    environment: [("SSH_ASKPASS".into(), "helper".into())].into(),
+                    ..TerminalRuntimeConfig::default()
+                },
+                launch: Some(TerminalLaunch::Program {
+                    program: "/bin/sh".into(),
+                    args: vec!["-c".into(), script.into()],
+                }),
+                environment: None,
+            },
+            &std::env::temp_dir(),
+            HOST_REQUEST_TIMEOUT,
+        )
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn until(pane: &Pane, what: &str, done: impl Fn(&PaneInfo) -> bool) -> PaneInfo {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let info = pane.info();
+            if done(&info) {
+                return info;
+            }
+            assert!(Instant::now() < deadline, "{what}: {info:?}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Audit B24: input for a program that exited, or one that stopped
+    /// reading until the backlog filled, is rejected instead of accepted.
+    #[cfg(unix)]
+    #[test]
+    fn input_that_cannot_reach_the_program_is_rejected() {
+        let exited = launched_pane("exit 0", None);
+        until(&exited, "the program never exited", |info| info.exited);
+        assert!(matches!(
+            exited.command(RemoteCommand::Write(b"x".to_vec())).unwrap(),
+            RemoteReply::InputRejected(InputRejection::Exited)
+        ));
+        exited.close();
+
+        // Raw mode: a full input queue blocks the writer instead of
+        // discarding characters, as for a stalled full-screen program;
+        // READY says it is set.
+        let stalled = launched_pane("stty raw -echo; printf READY; exec sleep 30", None);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !screen(&stalled.snapshot().unwrap()).contains("READY") {
+            assert!(Instant::now() < deadline, "the program never got ready");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let chunk = vec![b'x'; 64 * 1024];
+        let rejected = (0..400).find_map(|_| {
+            match stalled
+                .command(RemoteCommand::Write(chunk.clone()))
+                .unwrap()
+            {
+                RemoteReply::InputRejected(rejection) => Some(rejection),
+                _ => None,
+            }
+        });
+        assert_eq!(rejected, Some(InputRejection::BacklogFull));
+        stalled.close();
+    }
+
+    #[cfg(unix)]
+    fn write(pane: &Pane, input: &str) -> u64 {
+        match pane
+            .command(RemoteCommand::Write(input.as_bytes().to_vec()))
+            .unwrap()
+        {
+            RemoteReply::Written { anchor } => anchor,
+            reply => panic!("input was not written: {reply:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    fn command_done(pane: &Pane) -> Option<i32> {
+        let info = until(pane, "the input's command never finished", |info| {
+            matches!(
+                info.shell.and_then(|shell| shell.input_command),
+                Some(InputCommand::Finished(_))
+            )
+        });
+        let Some(InputCommand::Finished(code)) = info.shell.unwrap().input_command else {
+            unreachable!()
+        };
+        code
+    }
+
+    /// Audit I14: the pane follows the OSC 133 command lifecycle and the
+    /// command that input started.
+    #[cfg(unix)]
+    #[test]
+    fn shell_state_follows_commands_and_input() {
+        let pane = launched_pane(
+            "printf '\\033]133;A\\007'; read line; \
+             printf '\\033]133;C\\007'; sleep 0.2; \
+             printf '\\033]133;D;3\\007\\033]133;A\\007'; sleep 30",
+            None,
+        );
+        let info = until(&pane, "no prompt", |info| info.shell.is_some());
+        assert_eq!(info.shell, Some(ShellState::default()));
+        write(&pane, "go\r");
+        until(&pane, "the command never ran", |info| {
+            info.shell.is_some_and(|shell| shell.running)
+        });
+        assert_eq!(command_done(&pane), Some(3));
+        assert_eq!(
+            pane.info().shell,
+            Some(ShellState {
+                running: false,
+                commands_started: 1,
+                commands_finished: 1,
+                exit_code: Some(3),
+                input_command: Some(InputCommand::Finished(Some(3))),
+            })
+        );
+        // Later input waits for a later command.
+        write(&pane, "more");
+        assert_eq!(
+            pane.info().shell.unwrap().input_command,
+            Some(InputCommand::Pending)
+        );
+        pane.close();
+    }
+
+    /// Audit I14: fish reports a finish at its first prompt. Input typed
+    /// before that prompt finishes with the command it starts, not then.
+    #[cfg(unix)]
+    #[test]
+    fn a_first_prompt_finish_is_not_the_inputs_command() {
+        let pane = launched_pane(
+            "sleep 0.5; printf '\\033]133;D;0\\007\\033]133;A\\007\\033]133;B\\007'; \
+             read line; printf '\\033]133;C\\007'; sleep 0.2; \
+             printf '\\033]133;D;5\\007\\033]133;A\\007'; sleep 30",
+            None,
+        );
+        write(&pane, "go\r");
+        assert!(pane.info().shell.is_none(), "the prompt came too early");
+        assert_eq!(command_done(&pane), Some(5));
+        pane.close();
+    }
+
+    /// Audit I14: input typed while a command still runs (its prompt hook
+    /// reports the finish late) finishes with the next command.
+    #[cfg(unix)]
+    #[test]
+    fn a_late_finish_belongs_to_the_earlier_command() {
+        let pane = launched_pane(
+            "printf '\\033]133;A\\007'; read first; printf '\\033]133;C\\007'; \
+             read second; printf '\\033]133;D;1\\007\\033]133;A\\007'; \
+             printf '\\033]133;C\\007'; sleep 0.2; \
+             printf '\\033]133;D;7\\007\\033]133;A\\007'; sleep 30",
+            None,
+        );
+        until(&pane, "no prompt", |info| info.shell.is_some());
+        write(&pane, "first\r");
+        until(&pane, "the first command never ran", |info| {
+            info.shell.is_some_and(|shell| shell.running)
+        });
+        write(&pane, "second\r");
+        assert_eq!(command_done(&pane), Some(7));
+        pane.close();
+    }
+
+    /// Audit I14: a shell that reports no command starts (PowerShell)
+    /// finishes the input's command with the next finish after a prompt.
+    #[cfg(unix)]
+    #[test]
+    fn shells_without_command_starts_finish_after_a_prompt() {
+        let pane = launched_pane(
+            "printf '\\033]133;A\\007\\033]133;B\\007'; read line; sleep 0.2; \
+             printf '\\033]133;D;4\\007\\033]133;A\\007'; sleep 30",
+            None,
+        );
+        until(&pane, "no prompt", |info| info.shell.is_some());
+        write(&pane, "go\r");
+        assert_eq!(command_done(&pane), Some(4));
+        pane.close();
+    }
+
+    /// Audit I14: a write's anchor is the line the cursor was on, counted
+    /// from the first line that scrolled into history.
+    #[cfg(unix)]
+    #[test]
+    fn writes_report_the_cursor_line_as_their_anchor() {
+        let pane = launched_pane("stty -echo; seq 1 100; printf READY; exec sleep 30", None);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !screen(&pane.snapshot().unwrap()).contains("READY") {
+            assert!(Instant::now() < deadline, "the program never got ready");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let state = pane.snapshot().unwrap();
+        let anchor = write(&pane, "x");
+        assert_eq!(
+            anchor,
+            state.lines_scrolled + state.cursor_position.1 as u64
+        );
+        let RemoteReply::LineTexts(texts) = pane
+            .command(RemoteCommand::LineTexts {
+                first: 0,
+                last: 0,
+                anchor: Some(anchor),
+            })
+            .unwrap()
+        else {
+            panic!("expected lines");
+        };
+        assert_eq!(texts.lines[0].text, "READY");
+        assert_eq!(texts.rows, 24);
+        assert_eq!(texts.scrolled, state.lines_scrolled);
+        pane.close();
+    }
+
+    /// Audit B26/B27: a pane lists the directory it started in, not a
+    /// missing one it was asked for, and keeps its launch settings without
+    /// the variables of its launch or those the host adds.
+    #[cfg(unix)]
+    #[test]
+    fn panes_keep_their_launch_settings_and_actual_directory() {
+        let missing = std::env::temp_dir().join("termy-no-such-directory");
+        let pane = launched_pane("sleep 30", Some(&missing.to_string_lossy()));
+        let started = std::env::current_dir().unwrap();
+        assert_eq!(
+            pane.info().working_directory.as_deref(),
+            Some(&*started.to_string_lossy())
+        );
+        let settings = pane.launch_config();
+        assert_eq!(settings.config.scrollback_history, 1234);
+        assert!(settings.config.environment.is_empty());
+        assert!(
+            settings
+                .shell_integration
+                .is_some_and(|shell| shell.enabled)
+        );
+        pane.close();
     }
 }

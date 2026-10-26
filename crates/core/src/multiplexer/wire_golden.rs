@@ -174,6 +174,23 @@ fn pane_info() -> PaneInfo {
         title: Some("title".into()),
         working_directory: Some("/tmp".into()),
         exited: true,
+        shell: Some(ShellState {
+            running: true,
+            commands_started: 8,
+            commands_finished: 7,
+            exit_code: Some(-2),
+            input_command: Some(InputCommand::Finished(Some(3))),
+        }),
+    }
+}
+
+fn launch_config() -> LaunchConfig {
+    LaunchConfig {
+        config: runtime_config(),
+        shell_integration: Some(TabTitleShellIntegration {
+            enabled: false,
+            explicit_prefix: "prefix:".into(),
+        }),
     }
 }
 
@@ -533,6 +550,7 @@ fn add_requests(samples: &mut Samples) {
             R::Size("pane".into()),
             R::SetPaused(true),
             R::Resync,
+            R::LaunchConfig("pane".into()),
         ],
         |request| match request {
             R::RetiredHello => 0,
@@ -557,6 +575,7 @@ fn add_requests(samples: &mut Samples) {
             R::Size(_) => 19,
             R::SetPaused(_) => 20,
             R::Resync => 21,
+            R::LaunchConfig(_) => 22,
         },
     );
 }
@@ -589,6 +608,7 @@ fn add_responses(samples: &mut Samples) {
             },
             R::LayoutChanged { revision: 6 },
             R::Size(size()),
+            R::LaunchConfig(Box::new(launch_config())),
         ],
         |response| match response {
             R::Ok => 0,
@@ -602,6 +622,7 @@ fn add_responses(samples: &mut Samples) {
             R::Challenge { .. } => 8,
             R::LayoutChanged { .. } => 9,
             R::Size(_) => 10,
+            R::LaunchConfig(_) => 11,
         },
     );
     let (full, delta) = frame_updates();
@@ -757,7 +778,11 @@ fn add_remote(samples: &mut Samples) {
                     },
                     LineText::default(),
                 ],
+                scrolled: 17,
+                rows: 14,
             }),
+            R::InputRejected(InputRejection::BacklogFull),
+            R::Written { anchor: 21 },
         ],
         |reply| match reply {
             R::Ok => 0,
@@ -769,6 +794,34 @@ fn add_remote(samples: &mut Samples) {
             R::Link(_) => 6,
             R::Graphics(..) => 7,
             R::LineTexts(_) => 8,
+            R::InputRejected(_) => 9,
+            R::Written { .. } => 10,
+        },
+    );
+    samples.variants(
+        "InputCommand",
+        vec![
+            InputCommand::Pending,
+            InputCommand::Running,
+            InputCommand::Finished(Some(1)),
+        ],
+        |command| match command {
+            InputCommand::Pending => 0,
+            InputCommand::Running => 1,
+            InputCommand::Finished(_) => 2,
+        },
+    );
+    samples.variants(
+        "InputRejection",
+        vec![
+            InputRejection::Exited,
+            InputRejection::BacklogFull,
+            InputRejection::Failed("closed".into()),
+        ],
+        |rejection| match rejection {
+            InputRejection::Exited => 0,
+            InputRejection::BacklogFull => 1,
+            InputRejection::Failed(_) => 2,
         },
     );
     samples.variants(
@@ -799,6 +852,11 @@ fn add_remote(samples: &mut Samples) {
     );
     samples.add("PaneLaunch", &pane_launch());
     samples.add("PaneInfo", &pane_info());
+    samples.one_hot("ShellState", |[running]| ShellState {
+        running,
+        ..ShellState::default()
+    });
+    samples.add("LaunchConfig", &launch_config());
     samples.add("RemoteState", &remote_state());
 }
 
@@ -1102,5 +1160,5 @@ fn samples_encode_the_same_every_time() {
     // Guards the fingerprint against samples that depend on time or order.
     assert_eq!(encode(&remote_state()), encode(&remote_state()));
     assert_eq!(encode(&graphics_update()), encode(&graphics_update()));
-    assert_eq!(variant_count::<Request>(), 22);
+    assert_eq!(variant_count::<Request>(), 23);
 }

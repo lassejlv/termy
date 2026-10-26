@@ -621,7 +621,14 @@ fn apply_utf8_locale_overrides(
 }
 
 pub fn resolve_working_directory_path(configured: Option<&str>) -> Option<std::path::PathBuf> {
-    let configured = configured?.trim();
+    let configured = configured?;
+    // An absolute directory is taken as it is, so a name with surrounding
+    // spaces that a client already resolved survives (`termy mux create`).
+    let path = Path::new(configured);
+    if path.is_absolute() && path.is_dir() {
+        return Some(path.to_owned());
+    }
+    let configured = configured.trim();
     if configured.is_empty() {
         return None;
     }
@@ -1025,6 +1032,21 @@ impl Terminal {
 
     pub fn write_owned(&self, input: Vec<u8>) {
         self.backend.write_owned(input);
+    }
+
+    /// [`Self::write_owned`], returning whether the input was queued for the
+    /// program: `WouldBlock` when the input backlog is full, `BrokenPipe`
+    /// once the PTY is closed. Input that does not fit is reported to views
+    /// as [`TerminalEvent::InputDropped`] either way. A session-host client
+    /// only queues the input for the host and reports success.
+    pub(crate) fn try_write_owned(&self, input: Vec<u8>) -> std::io::Result<()> {
+        self.backend.try_write_owned(input)
+    }
+
+    /// The cursor's line, numbered from the first line output ever scrolled
+    /// into history; see [`crate::remote::RemoteReply::Written`].
+    pub(crate) fn input_anchor(&self) -> u64 {
+        self.backend.input_anchor()
     }
 
     /// Write a mouse-motion report. Motion may fill only half of the input

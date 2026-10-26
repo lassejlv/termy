@@ -33,7 +33,27 @@ overtake typed keys.
 `SessionClient::snapshot`, `create_detached` and the `Size` request read or
 create a pane without subscribing; the CLI uses only these.
 `SessionClient::line_texts` reads history as text (`RemoteCommand::LineTexts`)
-the same way.
+the same way; `line_texts_anchored` keeps the line numbers of an earlier
+reply while output scrolls, which `termy mux wait` uses to search output that
+scrolled into history between two polls.
+
+A `Write` the program cannot receive is answered with
+`RemoteReply::InputRejected` (the program exited, or the input backlog is
+full), and `SessionClient::write` fails with that `InputRejection`. One it
+queued is answered with `RemoteReply::Written`, whose anchor (the cursor's
+line counted from the first line that scrolled into history) numbers a later
+`LineTexts` read from the line the input was typed on. `LineTexts` replies
+also carry the current scroll count and screen height, so a reader knows
+where the screen is and sees resizes. A pane closed after its program exited
+answers requests with "exited and was closed" for 10 minutes (the last 256
+such panes; `is_exited_pane`). Each pane
+records the directory it actually started in (`PaneInfo::working_directory`),
+the runtime config and shell integration it was launched with
+(`Request::LaunchConfig`, which `termy mux split` reuses), and its OSC 133
+command lifecycle (`PaneInfo::shell`), including what became of the command
+the latest input started (`InputCommand`), for `termy mux wait
+--command-done`. The worker publishes the events of earlier output before it
+writes input, so no earlier event is taken for one that followed it.
 
 Frames are deltas (`remote::frame`). Each subscription keeps the frame it sent
 last (without its images) and sends the rows that differ from it, after

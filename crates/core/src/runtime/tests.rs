@@ -848,6 +848,19 @@ fn resolve_launch_working_directory_falls_back_when_configured_path_is_invalid()
     assert_eq!(resolved, fallback);
 }
 
+/// An absolute directory whose name ends in a space is used as given, not
+/// trimmed into another path.
+#[cfg(unix)]
+#[test]
+fn absolute_directories_are_not_trimmed() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let spaced = temp.path().join("project ");
+    std::fs::create_dir(&spaced).expect("directory");
+    let resolved =
+        resolve_launch_working_directory(Some(&spaced.to_string_lossy()), WorkingDirFallback::Home);
+    assert_eq!(resolved, Some(spaced));
+}
+
 #[test]
 fn normalize_working_directory_candidate_expands_home_directory() {
     let expected = user_home_dir()

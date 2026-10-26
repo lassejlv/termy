@@ -400,8 +400,19 @@ impl SessionClient {
     }
     /// Wait for the host to accept input before returning. Unlike a view's
     /// asynchronous input queue, this is safe for a short-lived CLI process.
-    pub fn write(&self, id: &str, bytes: Vec<u8>) -> anyhow::Result<()> {
-        self.send_command(id, RemoteCommand::Write(bytes))
+    /// Input that does not reach the program fails with an
+    /// [`InputRejection`] (audit B24). Returns the line the input was typed
+    /// on, as an anchor for [`Self::line_texts_anchored`] (see
+    /// [`RemoteReply::Written`]).
+    pub fn write(&self, id: &str, bytes: Vec<u8>) -> anyhow::Result<u64> {
+        match self.connection.request(Request::Command {
+            pane: id.to_owned(),
+            command: RemoteCommand::Write(bytes),
+        })? {
+            Response::Reply(RemoteReply::InputRejected(rejection)) => Err(rejection.into()),
+            Response::Reply(RemoteReply::Written { anchor }) => Ok(anchor),
+            _ => bail!("invalid terminal command response"),
+        }
     }
     /// The text of `id`'s buffer lines `first..=last`, without subscribing.
     /// Lines are numbered from the top of the screen: 0 is its first row and
@@ -410,8 +421,19 @@ impl SessionClient {
     /// outside the buffer are left out; `first` of the result is the first
     /// line returned.
     pub fn line_texts(&self, id: &str, first: i32, last: i32) -> anyhow::Result<LineTexts> {
+        self.line_texts_anchored(id, first, last, None)
+    }
+    /// [`Self::line_texts`] numbered as an earlier reply was: `anchor` is its
+    /// `lines_scrolled`, so line numbers stay put while output scrolls.
+    pub fn line_texts_anchored(
+        &self,
+        id: &str,
+        first: i32,
+        last: i32,
+        anchor: Option<u64>,
+    ) -> anyhow::Result<LineTexts> {
         let mut failure = None;
-        let texts = read_line_texts(first, last, None, |command| {
+        let texts = read_line_texts(first, last, anchor, |command| {
             match self.connection.request(Request::Command {
                 pane: id.to_owned(),
                 command,
@@ -435,10 +457,25 @@ impl SessionClient {
     }
     /// The cell metrics (pixels) the attached UI last applied to `id`.
     pub(crate) fn cell_size(&self, id: &str) -> anyhow::Result<(f32, f32)> {
+        let size = self.size(id)?;
+        Ok((size.cell_width, size.cell_height))
+    }
+    /// The size of `id`, with the cell metrics its UI last applied.
+    pub fn size(&self, id: &str) -> anyhow::Result<TerminalSize> {
         let Response::Size(size) = self.connection.request(Request::Size(id.to_owned()))? else {
             bail!("invalid size response");
         };
-        Ok((size.cell_width, size.cell_height))
+        Ok(size)
+    }
+    /// The settings `id` was started with, for a pane split from it.
+    pub fn launch_config(&self, id: &str) -> anyhow::Result<LaunchConfig> {
+        let Response::LaunchConfig(config) = self
+            .connection
+            .request(Request::LaunchConfig(id.to_owned()))?
+        else {
+            bail!("invalid launch config response");
+        };
+        Ok(*config)
     }
     pub fn resize(&self, id: &str, size: TerminalSize) -> anyhow::Result<()> {
         self.send_command(id, RemoteCommand::Resize(size))

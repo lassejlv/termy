@@ -261,6 +261,12 @@ pub struct LineTexts {
     /// anchor that keeps the next request's line numbers.
     pub lines_scrolled: u64,
     pub lines: Vec<LineText>,
+    /// [`RemoteState::lines_scrolled`] when the lines were read: the current
+    /// screen's top row is line `scrolled - lines_scrolled`. A resize that
+    /// reflows history does not count towards it.
+    pub scrolled: u64,
+    /// The screen's height when the lines were read.
+    pub rows: u16,
 }
 
 /// Reads lines `first..=last` with as many [`RemoteCommand::LineTexts`]
@@ -300,6 +306,8 @@ pub(crate) fn read_line_texts(
         bounds: (oldest.bounds.0, newest.bounds.1, newest.bounds.2),
         first: oldest.first,
         lines_scrolled: newest.lines_scrolled,
+        scrolled: newest.scrolled,
+        rows: newest.rows,
         lines: Vec::with_capacity(chunks.iter().map(|chunk| chunk.lines.len()).sum()),
     };
     for chunk in chunks.into_iter().rev() {
@@ -325,7 +333,54 @@ pub enum RemoteReply {
         #[serde(with = "serde_image::placements")] Vec<KittyGraphicsRenderPlacement>,
     ),
     LineTexts(LineTexts),
+    /// The answer to a [`RemoteCommand::Write`] whose input did not reach the
+    /// program.
+    InputRejected(InputRejection),
+    /// The answer to a [`RemoteCommand::Write`] whose input was queued for
+    /// the program. `anchor` is the cursor's line at that moment, counted
+    /// from the first line output ever scrolled into history: as the anchor
+    /// of a [`RemoteCommand::LineTexts`], it makes line 0 the line the input
+    /// was typed on, however far output scrolled since.
+    Written {
+        anchor: u64,
+    },
 }
+
+/// Why input written with [`RemoteCommand::Write`] did not reach the
+/// program (audit B24).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputRejection {
+    /// The program has exited; nothing reads the pane's input.
+    Exited,
+    /// The input backlog is full: the program has stopped reading.
+    BacklogFull,
+    /// Writing failed for another reason.
+    Failed(String),
+}
+
+impl InputRejection {
+    pub(crate) fn of(error: &std::io::Error) -> Self {
+        match error.kind() {
+            std::io::ErrorKind::WouldBlock => Self::BacklogFull,
+            std::io::ErrorKind::BrokenPipe => Self::Exited,
+            _ => Self::Failed(error.to_string()),
+        }
+    }
+}
+
+impl std::fmt::Display for InputRejection {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Exited => formatter.write_str("the pane's program has exited"),
+            Self::BacklogFull => formatter.write_str(
+                "input was dropped: the pane's input backlog is full because its program stopped reading",
+            ),
+            Self::Failed(error) => write!(formatter, "input could not be written: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for InputRejection {}
 
 /// A clipboard operation is executed by the attached UI using its existing
 /// permission policy. Detached sessions have no clipboard host.
@@ -377,7 +432,13 @@ pub trait RemoteTransport: Send + Sync {
 pub fn execute(terminal: &mut Terminal, command: RemoteCommand) -> RemoteReply {
     use RemoteCommand as C;
     match command {
-        C::Write(bytes) => terminal.write_owned(bytes),
+        C::Write(bytes) => {
+            let anchor = terminal.input_anchor();
+            return match terminal.try_write_owned(bytes) {
+                Ok(()) => RemoteReply::Written { anchor },
+                Err(error) => RemoteReply::InputRejected(InputRejection::of(&error)),
+            };
+        }
         C::FeedOutput(bytes) => terminal.feed_output(&bytes),
         C::HydrateOutput(bytes) => terminal.hydrate_output(&bytes),
         C::Resize(size) => terminal.resize(size),
@@ -479,6 +540,23 @@ mod tests {
             },
             None,
         )
+    }
+
+    /// A wide character that does not fit at the end of a row wraps and
+    /// leaves a spacer, which is no text: joined, the rows read "ab日本語".
+    #[test]
+    fn wide_characters_wrap_without_a_space_at_the_row_end() {
+        let terminal = display(5, 3);
+        terminal.feed_output("ab日本語".as_bytes());
+        let texts = terminal.line_texts(0, 1, None, usize::MAX);
+        let [first, second] = texts.lines.as_slice() else {
+            panic!("{texts:?}");
+        };
+        assert_eq!(first.text, "ab日");
+        assert_eq!(first.columns, [1, 1, 3, 0, 0]);
+        assert!(first.wrapped);
+        let joined: String = first.cells(5).chain([second.text.as_str()]).collect();
+        assert_eq!(joined, "ab日本語");
     }
 
     /// Audit B13: lines travel as text with wrap flags and cell widths.

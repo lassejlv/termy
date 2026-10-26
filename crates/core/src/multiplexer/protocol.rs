@@ -14,7 +14,9 @@ use std::sync::Arc;
 // requests only to host-capable subscriptions, with an expiry, and adds the
 // subscription-free `Snapshot` and `Size` requests, frame deltas, cached
 // images in messages of their own, paused subscriptions, text history
-// queries, motion reports and anchored link queries.
+// queries, motion reports and anchored link queries. It also reports
+// rejected input, each pane's shell-integration state and launch settings,
+// and the working directory a pane actually started in.
 pub(crate) const VERSION: u32 = 4;
 /// The largest message either side accepts. One streamed image (at most the
 /// engine's image quota) fits with room to spare; every other message stays
@@ -25,7 +27,7 @@ pub(crate) const MAX_MESSAGE_BYTES: u64 =
 /// Hash of the encoding of every wire type, checked by the `wire_golden`
 /// test. When it changes, the wire changed: bump [`VERSION`] (unless the
 /// unreleased change already did) and update this value.
-pub(crate) const WIRE_FINGERPRINT: u64 = 0xd2a3_de00_80d3_7489;
+pub(crate) const WIRE_FINGERPRINT: u64 = 0xc2ed_3f3a_6917_9273;
 
 /// Identifies the build that wrote `endpoint.json`. A client logs a warning
 /// when it differs from its own under the same [`VERSION`], which points at
@@ -93,8 +95,53 @@ pub struct PaneInfo {
     pub id: String,
     pub child_pid: Option<u32>,
     pub title: Option<String>,
+    /// The directory the pane started in, then the latest one its shell
+    /// reported (OSC 7).
     pub working_directory: Option<String>,
     pub exited: bool,
+    /// The shell's command lifecycle; `None` until the pane reported an
+    /// OSC 133 event, which needs shell integration.
+    pub shell: Option<ShellState>,
+}
+
+/// A pane's command lifecycle, from OSC 133 shell integration.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellState {
+    /// A command was submitted (`C`) and has not finished yet.
+    pub running: bool,
+    /// The number of commands that started (`C`).
+    pub commands_started: u64,
+    /// The number of commands that finished (`D`).
+    pub commands_finished: u64,
+    /// The exit code the last finished command reported.
+    pub exit_code: Option<i32>,
+    /// The command that the latest input started; `None` before any input.
+    pub input_command: Option<InputCommand>,
+}
+
+/// What became of the command that a pane's latest input started. A finish
+/// counts only after a start (`C`) that followed the input, so neither a
+/// command that ran when the input arrived nor a prompt's stray `D` (fish
+/// prints one at its first prompt) is taken for it. A shell that never
+/// reports `C` (PowerShell) finishes it with the first `D` after a prompt
+/// that showed when, or after, the input arrived.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InputCommand {
+    /// Input arrived; no command it started has been reported yet.
+    Pending,
+    Running,
+    /// The command finished with this exit code, if it reported one.
+    Finished(Option<i32>),
+}
+
+/// The settings a pane was started with that a pane split from it reuses:
+/// the shell, terminal identity, scrollback, cursor style and shell
+/// integration, without the program, directory or environment of its
+/// launch (see [`Request::LaunchConfig`]).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LaunchConfig {
+    pub config: TerminalRuntimeConfig,
+    pub shell_integration: Option<TabTitleShellIntegration>,
 }
 
 /// Wire rules for [`Request`], [`Response`], [`Update`] and the remote types
@@ -186,6 +233,8 @@ pub(crate) enum Request {
     /// sends the next frame in full, with its images, and the client ignores
     /// deltas until then instead of disconnecting.
     Resync,
+    /// The pane's [`LaunchConfig`], as [`Response::LaunchConfig`].
+    LaunchConfig(String),
 }
 
 /// See [`Request`] for the wire rules and the frozen variants.
@@ -223,6 +272,7 @@ pub(crate) enum Response {
         revision: u64,
     },
     Size(TerminalSize),
+    LaunchConfig(Box<LaunchConfig>),
 }
 
 /// See [`Request`] for the wire rules.

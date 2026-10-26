@@ -188,7 +188,16 @@ fn main() {
         }
         return;
     }
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        // Scripts read `termy mux` failures as JSON, argument errors too.
+        Err(error)
+            if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("mux")) =>
+        {
+            commands::mux::parse_error(error)
+        }
+        Err(error) => error.exit(),
+    };
 
     let path = cli.working_directory.or(cli.path);
     if path.is_some() || cli.new_window || cli.new_tab {

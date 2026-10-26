@@ -79,6 +79,10 @@ impl RemoteBackend {
     pub(crate) fn write_owned(&self, bytes: Vec<u8>) {
         self.transport.send(RemoteCommand::Write(bytes));
     }
+    pub(crate) fn input_anchor(&self) -> u64 {
+        let state = self.transport.state();
+        state.lines_scrolled + state.cursor_position.1 as u64
+    }
     pub(crate) fn write_mouse_motion(&self, bytes: Vec<u8>) {
         self.transport.send(RemoteCommand::WriteMotion(bytes));
     }
