@@ -432,6 +432,7 @@ fn sleeping_pane() -> Pane {
 }
 
 /// Updates until the subscription ends, without frames.
+#[cfg(unix)]
 fn remaining_events(subscription: &Subscription) -> Vec<TerminalEvent> {
     let mut events = Vec::new();
     while let Some(update) = subscription.next() {
@@ -570,6 +571,7 @@ fn script_pane(script: &str) -> Pane {
     .unwrap()
 }
 
+#[cfg(unix)]
 fn screen(state: &RemoteState) -> String {
     state
         .render
@@ -580,6 +582,7 @@ fn screen(state: &RemoteState) -> String {
 }
 
 /// The next frame, skipping events.
+#[cfg(unix)]
 fn next_frame(view: &Subscription) -> Arc<RemoteState> {
     loop {
         match view.next() {

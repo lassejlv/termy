@@ -12,9 +12,13 @@ use crate::protocol::{TerminalClipboardLocation, TerminalQueryColors, TerminalRe
 use crate::search::{TermySearchMatch, TermySearchOptions, TermySharedSearchMatch};
 use crate::shell_integration::ProgressState;
 use flume::Sender;
-#[cfg(not(target_os = "windows"))]
-use std::path::Path;
-use std::{collections::HashMap, env, ffi::OsString, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    env,
+    ffi::OsString,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct TabTitleShellIntegration {

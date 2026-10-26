@@ -40,7 +40,7 @@ enum Work {
     /// A view was shown again: capture a frame now and send it to that view.
     Resume(Weak<Subscription>),
     /// Makes the worker panic, to test that a panic still ends the pane.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     Panic,
 }
 
@@ -987,7 +987,7 @@ fn run(
                     view.resumed();
                 }
             }
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             Ok(Work::Panic) => panic!("injected terminal session panic"),
             Err(flume::RecvTimeoutError::Timeout) => {}
         }

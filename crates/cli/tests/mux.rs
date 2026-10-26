@@ -30,6 +30,7 @@ impl Host {
         self.0.path().join("config")
     }
 
+    #[cfg(unix)]
     fn write_config(&self, contents: &str) {
         let directory = self.config_home().join("termy");
         std::fs::create_dir_all(&directory).unwrap();

@@ -1083,6 +1083,7 @@ mod tests {
         root
     }
 
+    #[cfg(unix)]
     fn multiplexer_and_tmux_config() -> AppConfig {
         AppConfig {
             multiplexer_enabled: true,
