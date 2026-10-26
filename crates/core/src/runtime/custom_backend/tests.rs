@@ -386,6 +386,7 @@ fn native_exit_commits_synchronized_tail_before_exit_event() {
             ],
         }),
         None,
+        ChildEnvironment::Process,
     )
     .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -423,6 +424,7 @@ fn unqueueable_input_reports_one_dropped_input_event() {
             args: vec!["5".to_owned()],
         }),
         None,
+        ChildEnvironment::Process,
     )
     .unwrap();
     terminal.drain_events(&mut |_| None);
@@ -539,6 +541,7 @@ fn hidden_terminal_wakes_the_host_when_its_child_exits() {
             args: vec!["-c".to_owned(), "sleep 0.3; exit 3".to_owned()],
         }),
         None,
+        ChildEnvironment::Process,
     )
     .unwrap();
     terminal.set_wakeup_enabled(false);
@@ -573,6 +576,7 @@ fn pty_replies_reach_the_child_in_order() {
             ],
         }),
         None,
+        ChildEnvironment::Process,
     )
     .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -636,6 +640,7 @@ fn restored_output_precedes_the_new_sessions_first_output() {
             args: vec!["-c".to_owned(), "printf live; sleep 1".to_owned()],
         }),
         Some(b"saved\r\n".as_slice()),
+        ChildEnvironment::Process,
     )
     .unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);

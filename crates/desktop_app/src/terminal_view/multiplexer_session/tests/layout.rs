@@ -36,6 +36,7 @@ fn pane_launch(script: &str) -> PaneLaunch {
         shell_integration: None,
         config: TerminalRuntimeConfig::default(),
         launch: Some(shell(script)),
+        environment: None,
     }
 }
 

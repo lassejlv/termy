@@ -55,6 +55,7 @@ impl Backend {
         .map(Self::Custom)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new_with_launch_and_wakeup_notifier(
         size: TerminalSize,
         configured_working_dir: Option<&str>,
@@ -63,6 +64,7 @@ impl Backend {
         runtime_config: Option<&TerminalRuntimeConfig>,
         launch: Option<&TerminalLaunch>,
         restored_output: Option<&[u8]>,
+        environment: ChildEnvironment,
     ) -> anyhow::Result<Self> {
         super::custom_backend::CustomBackend::new_with_launch_and_wakeup_notifier(
             size,
@@ -72,6 +74,7 @@ impl Backend {
             runtime_config,
             launch,
             restored_output,
+            environment,
         )
         .map(Box::new)
         .map(Self::Custom)
@@ -147,6 +150,12 @@ impl Backend {
         match self {
             Self::Custom(backend) => backend.child_pid(),
             Self::Remote(backend) => backend.child_pid(),
+        }
+    }
+
+    pub(super) fn terminate_and_wait(&self) {
+        if let Self::Custom(backend) = self {
+            backend.terminate_and_wait();
         }
     }
 

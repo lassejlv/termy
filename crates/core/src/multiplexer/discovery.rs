@@ -4,8 +4,9 @@ use fs4::fs_std::FileExt;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Seek, SeekFrom},
+    ffi::OsString,
+    fs::{self, File},
+    io::{Read, Seek, SeekFrom, Write},
     net::TcpStream,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -125,59 +126,297 @@ pub fn default_root() -> Option<PathBuf> {
 }
 
 /// Whether a session host holds the host lock in `root`. Creates nothing, so
-/// probing a directory no host ever used leaves no files behind.
+/// probing a directory no host ever used leaves no files behind. A directory
+/// that is not private counts as having no host; [`running_host_endpoint`]
+/// tells the two apart.
 pub fn host_is_running(root: &Path) -> bool {
-    let Ok(lock) = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(root.join("host.lock"))
-    else {
-        return false;
-    };
-    matches!(lock.try_lock_exclusive(), Ok(false))
+    Root::open(root).is_ok_and(|root| lock_is_held(&root))
 }
 
-pub(crate) fn prepare_root(root: &Path) -> anyhow::Result<()> {
+fn lock_is_held(root: &Root) -> bool {
+    root.open_file("host.lock", Access::ReadWrite)
+        .is_ok_and(|lock| matches!(lock.try_lock_exclusive(), Ok(false)))
+}
+
+/// How a file in a [`Root`] is opened. Created files are private to this user.
+#[derive(Clone, Copy)]
+pub(crate) enum Access {
+    Read,
+    ReadWrite,
+    CreateReadWrite,
+    /// Fails if the file exists, so a file someone else placed there is
+    /// never written to.
+    CreateNew,
+    CreateAppend,
+}
+
+/// Whether `left` and `right` are open handles of the same file; `None`
+/// when that cannot be read.
+pub(crate) fn same_file(left: &File, right: &File) -> Option<bool> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true).mode(0o700);
-        builder.create(root)?;
-        let metadata = fs::symlink_metadata(root)?;
+        use std::os::unix::fs::MetadataExt;
+        let (left, right) = (left.metadata().ok()?, right.metadata().ok()?);
+        Some(left.dev() == right.dev() && left.ino() == right.ino())
+    }
+    #[cfg(windows)]
+    {
+        use crate::multiplexer::windows_acl::file_id;
+        Some(file_id(left)? == file_id(right)?)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (left, right);
+        None
+    }
+}
+
+/// A session directory that was checked to be private to this user. It
+/// holds the endpoint token, which lets anyone who reads it run commands as
+/// this user (audit L4).
+///
+/// On Unix the check is made on an open handle of the directory, and every
+/// file is opened relative to that handle: a user who can write a directory
+/// above it may rename or replace the path afterwards, but cannot redirect
+/// the token into a directory of theirs. That is why no ancestor needs
+/// checking, so `/tmp`, sticky or not, and group-writable homes are fine.
+/// Only the directory itself must be this user's, mode 0700, and not a
+/// symlink. ACLs are not checked: on macOS a directory created under a parent
+/// whose inheritable ACL grants another user access passes the mode check.
+///
+/// On Windows the directory is held open for the life of the `Root` without
+/// delete sharing, so it cannot be renamed or removed meanwhile, and it must
+/// not be a junction or other reparse point. Its owner must be this user,
+/// SYSTEM or the administrators, and its DACL must grant access to no one
+/// else; when it does, a directory this user may change is given a
+/// protected, owner-only DACL, and any other is refused. Files are opened by
+/// path, not relative to the handle, without following reparse points, and
+/// each must be owned by this user, SYSTEM or the administrators.
+pub(crate) struct Root {
+    path: PathBuf,
+    #[cfg(any(unix, windows))]
+    dir: File,
+}
+
+impl Root {
+    /// Opens an existing session directory and checks that it is private.
+    pub(crate) fn open(path: &Path) -> anyhow::Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::{ffi::OsStrExt, io::FromRawFd};
+            let name = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+            // SAFETY: `name` is NUL-terminated and outlives the call.
+            let fd = unsafe {
+                libc::open(
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                let error = std::io::Error::last_os_error();
+                if matches!(error.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) {
+                    bail!("invalid multiplexer directory: {}", path.display());
+                }
+                return Err(error).with_context(|| format!("open {}", path.display()));
+            }
+            let root = Self {
+                path: path.to_owned(),
+                // SAFETY: `fd` was just opened, and nothing else owns it.
+                dir: unsafe { File::from_raw_fd(fd) },
+            };
+            root.check_private()?;
+            Ok(root)
+        }
+        #[cfg(windows)]
+        {
+            use crate::multiplexer::windows_acl;
+            let dir = windows_acl::open_directory(path)?;
+            windows_acl::secure_directory(&dir, path)?;
+            Ok(Self {
+                path: path.to_owned(),
+                dir,
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            ensure!(
+                fs::symlink_metadata(path)
+                    .with_context(|| format!("open {}", path.display()))?
+                    .is_dir(),
+                "invalid multiplexer directory: {}",
+                path.display()
+            );
+            Ok(Self {
+                path: path.to_owned(),
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    fn check_private(&self) -> anyhow::Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = self.dir.metadata()?;
         // SAFETY: geteuid has no preconditions or side effects.
         ensure!(
             metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o077 == 0,
             "multiplexer directory must be private to the current user: {}",
-            root.display()
+            self.path.display()
         );
+        Ok(())
+    }
+
+    /// Creates the session directory (and its parents) if it is missing,
+    /// private to this user, then opens it like [`Self::open`].
+    pub(crate) fn prepare(path: &Path) -> anyhow::Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(path)?;
+        }
+        // `open` makes a new directory private on Windows.
+        #[cfg(not(unix))]
+        fs::create_dir_all(path)?;
+        Self::open(path)
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Whether the path still names this directory. False after the
+    /// directory was removed, renamed or replaced.
+    pub(crate) fn is_current(&self) -> bool {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let (Ok(current), Ok(own)) = (fs::symlink_metadata(&self.path), self.dir.metadata())
+            else {
+                return false;
+            };
+            current.dev() == own.dev() && current.ino() == own.ino()
+        }
+        #[cfg(windows)]
+        {
+            crate::multiplexer::windows_acl::open_directory(&self.path)
+                .is_ok_and(|current| same_file(&current, &self.dir) == Some(true))
+        }
+        #[cfg(not(any(unix, windows)))]
+        self.path.is_dir()
+    }
+
+    /// Checks again that the path names this directory and that it is still
+    /// private, before the token is written into it.
+    pub(crate) fn verify(&self) -> anyhow::Result<()> {
         ensure!(
-            metadata.is_dir() && !metadata.file_type().is_symlink(),
-            "invalid multiplexer directory"
+            self.is_current(),
+            "the session directory {} was replaced",
+            self.path.display()
         );
+        #[cfg(unix)]
+        self.check_private()?;
+        #[cfg(windows)]
+        crate::multiplexer::windows_acl::secure_directory(&self.dir, &self.path)?;
+        Ok(())
     }
-    #[cfg(not(unix))]
-    fs::create_dir_all(root)?;
-    Ok(())
-}
 
-fn private_options() -> OpenOptions {
-    let mut options = OpenOptions::new();
-    options.create(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    pub(crate) fn open_file(&self, name: &str, access: Access) -> std::io::Result<File> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::{AsRawFd, FromRawFd};
+            let flags = match access {
+                Access::Read => libc::O_RDONLY,
+                Access::ReadWrite => libc::O_RDWR,
+                Access::CreateReadWrite => libc::O_RDWR | libc::O_CREAT,
+                Access::CreateNew => libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+                Access::CreateAppend => libc::O_WRONLY | libc::O_APPEND | libc::O_CREAT,
+            };
+            let name = std::ffi::CString::new(name)?;
+            // SAFETY: the directory handle is open for the life of `self`,
+            // `name` is NUL-terminated, and the mode is passed as the
+            // variadic argument `O_CREAT` expects.
+            let fd = unsafe {
+                libc::openat(
+                    self.dir.as_raw_fd(),
+                    name.as_ptr(),
+                    flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    0o600 as libc::c_uint,
+                )
+            };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // SAFETY: `fd` was just opened, and nothing else owns it.
+            Ok(unsafe { File::from_raw_fd(fd) })
+        }
+        #[cfg(not(unix))]
+        {
+            let mut options = fs::OpenOptions::new();
+            match access {
+                Access::Read => options.read(true),
+                Access::ReadWrite => options.read(true).write(true),
+                Access::CreateReadWrite => options.read(true).write(true).create(true),
+                Access::CreateNew => options.read(true).write(true).create_new(true),
+                Access::CreateAppend => options.append(true).create(true),
+            };
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::OpenOptionsExt;
+                options.custom_flags(
+                    windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+                );
+            }
+            let file = options.open(self.path.join(name))?;
+            #[cfg(windows)]
+            crate::multiplexer::windows_acl::check_file(&file)
+                .map_err(|error| std::io::Error::other(format!("{name}: {error:#}")))?;
+            Ok(file)
+        }
     }
-    options
-}
 
-pub(crate) fn private_file(path: &Path) -> anyhow::Result<File> {
-    Ok(private_options()
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(path)?)
+    pub(crate) fn private_file(&self, name: &str) -> anyhow::Result<File> {
+        Ok(self.open_file(name, Access::CreateReadWrite)?)
+    }
+
+    pub(crate) fn read(&self, name: &str) -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        self.open_file(name, Access::Read)?
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    pub(crate) fn rename(&self, from: &str, to: &str) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let (from, to) = (std::ffi::CString::new(from)?, std::ffi::CString::new(to)?);
+            let dir = self.dir.as_raw_fd();
+            // SAFETY: both names are NUL-terminated and the handle is open.
+            if unsafe { libc::renameat(dir, from.as_ptr(), dir, to.as_ptr()) } < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        fs::rename(self.path.join(from), self.path.join(to))
+    }
+
+    pub(crate) fn remove(&self, name: &str) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let name = std::ffi::CString::new(name)?;
+            // SAFETY: `name` is NUL-terminated and the handle is open.
+            if unsafe { libc::unlinkat(self.dir.as_raw_fd(), name.as_ptr(), 0) } < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        fs::remove_file(self.path.join(name))
+    }
 }
 
 /// The size at which `host.log` is rotated to `host.log.1`: at start-up, and
@@ -186,15 +425,17 @@ pub(crate) const HOST_LOG_LIMIT: u64 = 1024 * 1024;
 
 /// Opens `host.log` for a new host and returns it with its current length,
 /// where the new host's output will start.
-fn open_host_log(root: &Path) -> anyhow::Result<(File, u64)> {
-    let path = root.join("host.log");
-    if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.len() > HOST_LOG_LIMIT) {
+fn open_host_log(root: &Root) -> anyhow::Result<(File, u64)> {
+    if root
+        .open_file("host.log", Access::Read)
+        .and_then(|log| log.metadata())
+        .is_ok_and(|metadata| metadata.len() > HOST_LOG_LIMIT)
+    {
         // Best effort: on Windows a file still open elsewhere cannot be renamed.
-        let _ = fs::rename(&path, root.join("host.log.1"));
+        let _ = root.rename("host.log", "host.log.1");
     }
-    let file = private_options()
-        .append(true)
-        .open(&path)
+    let file = root
+        .open_file("host.log", Access::CreateAppend)
         .context("open the session host log")?;
     let start = file.metadata()?.len();
     Ok((file, start))
@@ -202,12 +443,12 @@ fn open_host_log(root: &Path) -> anyhow::Result<(File, u64)> {
 
 /// The last lines a host wrote to `host.log` after `start`, formatted to
 /// follow a start-up error.
-fn host_log_tail(root: &Path, start: u64) -> String {
+fn host_log_tail(root: &Root, start: u64) -> String {
     const TAIL_BYTES: u64 = 4096;
     const TAIL_LINES: usize = 12;
-    let path = root.join("host.log");
+    let path = root.path().join("host.log");
     let mut output = String::new();
-    if let Ok(mut file) = File::open(&path) {
+    if let Ok(mut file) = root.open_file("host.log", Access::Read) {
         let length = file.metadata().map_or(0, |metadata| metadata.len());
         let offset = start.max(length.saturating_sub(TAIL_BYTES));
         let mut bytes = Vec::new();
@@ -228,10 +469,23 @@ fn host_log_tail(root: &Path, start: u64) -> String {
     format!("\nLast lines of {}:\n{}", path.display(), tail.join("\n"))
 }
 
-pub(crate) fn read_endpoint(root: &Path) -> anyhow::Result<Endpoint> {
-    Ok(serde_json::from_slice(&fs::read(
-        root.join("endpoint.json"),
-    )?)?)
+pub(crate) fn read_endpoint(root: &Root) -> anyhow::Result<Endpoint> {
+    Ok(serde_json::from_slice(&root.read("endpoint.json")?)?)
+}
+
+/// Replaces `endpoint.json` in one step, so a client never reads half of it.
+/// The token goes into a file created here, never into one that was left in
+/// the directory.
+pub(crate) fn write_endpoint(root: &Root, endpoint: &Endpoint) -> anyhow::Result<()> {
+    match root.remove("endpoint.tmp") {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
+    let mut file = root.open_file("endpoint.tmp", Access::CreateNew)?;
+    file.write_all(&serde_json::to_vec(endpoint)?)?;
+    file.sync_all()?;
+    root.rename("endpoint.tmp", "endpoint.json")?;
+    Ok(())
 }
 
 fn open_stream(port: u16) -> anyhow::Result<TcpStream> {
@@ -249,7 +503,10 @@ fn open_stream(port: u16) -> anyhow::Result<TcpStream> {
 /// failure: a probe holds it for a moment, and mutual authentication already
 /// keeps a stale port's new owner from learning anything.
 pub(crate) fn connect(root: &Path) -> anyhow::Result<TcpStream> {
-    let endpoint = match read_endpoint(root) {
+    if fs::symlink_metadata(root).is_err() {
+        return Err(no_host(root));
+    }
+    let endpoint = match read_endpoint(&Root::open(root)?) {
         Ok(endpoint) => endpoint,
         Err(_) if !host_is_running(root) => return Err(no_host(root)),
         Err(error) => return Err(error),
@@ -383,18 +640,27 @@ pub fn kill_host(root: &Path) -> anyhow::Result<()> {
         );
     }
     // A killed host cannot remove its own endpoint.
-    clear_stale_endpoint(root);
+    if let Ok(root) = Root::open(root) {
+        clear_stale_endpoint(&root);
+    }
     Ok(())
 }
 
 /// The endpoint of the host holding `host.lock`. Without one, removes a
 /// leftover `endpoint.json` and reports that no host is running.
 fn running_host_endpoint(root: &Path) -> anyhow::Result<Endpoint> {
-    if !host_is_running(root) {
-        clear_stale_endpoint(root);
+    // A directory that exists but is not private says so, rather than that
+    // no host is running.
+    let directory = match Root::open(root) {
+        Ok(directory) => directory,
+        Err(error) if fs::symlink_metadata(root).is_ok() => return Err(error),
+        Err(_) => return Err(no_host(root)),
+    };
+    if !lock_is_held(&directory) {
+        clear_stale_endpoint(&directory);
         return Err(no_host(root));
     }
-    read_endpoint(root).with_context(|| {
+    read_endpoint(&directory).with_context(|| {
         format!(
             "the session host in {} has not published its endpoint",
             root.display()
@@ -416,16 +682,15 @@ fn wait_for_exit(root: &Path, timeout: Duration) -> bool {
 
 /// Removes `endpoint.json` if no host holds `host.lock`. Holds the lock while
 /// it does, so a host starting meanwhile cannot lose its fresh endpoint.
-fn clear_stale_endpoint(root: &Path) {
-    let endpoint = root.join("endpoint.json");
-    if fs::symlink_metadata(&endpoint).is_err() {
+fn clear_stale_endpoint(root: &Root) {
+    if root.open_file("endpoint.json", Access::Read).is_err() {
         return;
     }
-    let Ok(lock) = private_file(&root.join("host.lock")) else {
+    let Ok(lock) = root.private_file("host.lock") else {
         return;
     };
     if matches!(lock.try_lock_exclusive(), Ok(true)) {
-        let _ = fs::remove_file(endpoint);
+        let _ = root.remove("endpoint.json");
         let _ = FileExt::unlock(&lock);
     }
 }
@@ -480,27 +745,133 @@ fn signal_host(_pid: u32, _kill: bool) -> anyhow::Result<()> {
     bail!("stopping a session host by process ID is not supported on this platform")
 }
 
+/// Whether the session host keeps the variable `name` from the process that
+/// starts it. The host outlives that process and serves every later client,
+/// so a virtualenv's PATH, a direnv token or an agent sandbox's variables
+/// must not reach the panes of other clients (audit B28): each client sends
+/// its own environment with every pane instead ([`PaneLaunch::environment`]).
+/// What stays describes the user, the login session, the locale and the
+/// machine, which the host needs for itself and for panes created without an
+/// environment (by clients that send none): identity and the default shell,
+/// temporary and XDG base directories, the display, SSH agent and session bus
+/// of the login session, the log level, `TERMY_*` overrides, and on Windows
+/// the system and profile folders that programs and the shell lookup expect.
+/// One-shot launch tokens are left out. PATH is replaced by the login
+/// default.
+fn host_keeps_variable(name: &str) -> bool {
+    #[cfg(windows)]
+    const NAMES: &[&str] = &[
+        "ALLUSERSPROFILE",
+        "APPDATA",
+        "COMMONPROGRAMFILES",
+        "COMMONPROGRAMFILES(X86)",
+        "COMMONPROGRAMW6432",
+        "COMPUTERNAME",
+        "COMSPEC",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LOCALAPPDATA",
+        "NUMBER_OF_PROCESSORS",
+        "OS",
+        "PATHEXT",
+        "PROCESSOR_ARCHITECTURE",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "PROGRAMW6432",
+        "PUBLIC",
+        "RUST_BACKTRACE",
+        "RUST_LOG",
+        "SYSTEMDRIVE",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "USERDOMAIN",
+        "USERNAME",
+        "USERPROFILE",
+        "WINDIR",
+    ];
+    #[cfg(not(windows))]
+    const NAMES: &[&str] = &[
+        "DBUS_SESSION_BUS_ADDRESS",
+        "DISPLAY",
+        "HOME",
+        "LANG",
+        "LANGUAGE",
+        "LOGNAME",
+        "RUST_BACKTRACE",
+        "RUST_LOG",
+        "SHELL",
+        "SSH_AUTH_SOCK",
+        "TMPDIR",
+        "TZ",
+        "USER",
+        "WAYLAND_DISPLAY",
+    ];
+    // Windows names are case-insensitive.
+    let kept = if cfg!(windows) {
+        NAMES.iter().any(|known| known.eq_ignore_ascii_case(name))
+    } else {
+        NAMES.contains(&name)
+            || name.starts_with("LC_")
+            || (name.starts_with("XDG_") && name != "XDG_ACTIVATION_TOKEN")
+    };
+    let termy = name
+        .get(.."TERMY_".len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("TERMY_"));
+    (kept || termy)
+        && !crate::terminal_engine::transport::belongs_to_parent_terminal(std::ffi::OsStr::new(
+            name,
+        ))
+}
+
+/// The environment a new session host starts with; see [`host_keeps_variable`].
+fn host_environment(
+    variables: impl IntoIterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    let mut environment: Vec<_> = variables
+        .into_iter()
+        .filter(|(name, _)| name.to_str().is_some_and(host_keeps_variable))
+        .collect();
+    if let Some(path) = crate::normalized_path_env(None) {
+        environment.push(("PATH".into(), path.into()));
+    }
+    environment
+}
+
+/// Starts the host, or connects to the one already running in `root`. A
+/// relative `root` is resolved against this process's directory.
 pub fn connect_or_start(root: &Path, executable: &Path) -> anyhow::Result<SessionClient> {
-    prepare_root(root)?;
-    let launch_lock = private_file(&root.join("launch.lock"))?;
+    // The host runs in the home directory, so it must get an absolute path.
+    let root = Root::prepare(&std::path::absolute(root)?)?;
+    let launch_lock = root.private_file("launch.lock")?;
     launch_lock.lock_exclusive()?;
-    let first_error = match SessionClient::connect(root) {
+    let first_error = match SessionClient::connect(root.path()) {
         Ok(client) => return Ok(client),
         Err(error) => error,
     };
     // A live host's lock is authoritative. Never replace an incompatible or
     // temporarily unresponsive host and abandon its running processes.
-    let host_lock = private_file(&root.join("host.lock"))?;
+    let host_lock = root.private_file("host.lock")?;
     if !host_lock.try_lock_exclusive()? {
         return Err(Unreachable(first_error).into());
     }
     FileExt::unlock(&host_lock)?;
 
-    let (log, log_start) = open_host_log(root)?;
+    let (log, log_start) = open_host_log(&root)?;
     let mut command = Command::new(executable);
     command
         .arg("--multiplexer-host")
-        .arg(root)
+        .arg(root.path())
+        .env_clear()
+        .envs(host_environment(std::env::vars_os()))
+        // Not this process's directory: the host would keep it busy (it
+        // could not be unmounted) and hand it to panes.
+        .current_dir(
+            dirs::home_dir()
+                .filter(|home| home.is_dir())
+                .unwrap_or_else(|| root.path().to_owned()),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);
@@ -520,18 +891,12 @@ pub fn connect_or_start(root: &Path, executable: &Path) -> anyhow::Result<Sessio
         }
     }
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        prevent_standard_handle_inheritance()?;
-        // Detaching already isolates the host from the caller's console.
-        // CREATE_NEW_PROCESS_GROUP would also disable Ctrl+C in the host
-        // and its descendants, including shells attached to ConPTY.
-        command.creation_flags(0x0000_0008); // DETACHED_PROCESS
-    }
+    let mut child = spawn_detached(&mut command)?;
+    #[cfg(not(windows))]
     let mut child = command.spawn().context("start background terminal host")?;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if let Ok(client) = SessionClient::connect(root) {
+        if let Ok(client) = SessionClient::connect(root.path()) {
             std::thread::spawn(move || {
                 let _ = child.wait();
             });
@@ -540,17 +905,48 @@ pub fn connect_or_start(root: &Path, executable: &Path) -> anyhow::Result<Sessio
         if let Some(status) = child.try_wait()? {
             bail!(
                 "background terminal host exited: {status}{}",
-                host_log_tail(root, log_start)
+                host_log_tail(&root, log_start)
             );
         }
         if Instant::now() >= deadline {
             bail!(
                 "background terminal host did not become ready; it was left running{}",
-                host_log_tail(root, log_start)
+                host_log_tail(&root, log_start)
             );
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Starts the host outside the caller's console and job (audit B8). A Termy
+/// tab puts its shell in a job that ends the tab's console programs when it
+/// closes; a host started from that shell (`termy mux create`) would end with
+/// it, taking every persistent session along. Tab jobs allow breakaway; a job
+/// that does not (some CI and service hosts) fails the spawn with
+/// `ERROR_ACCESS_DENIED`, and the host then starts inside it.
+#[cfg(windows)]
+fn spawn_detached(command: &mut Command) -> anyhow::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+    use windows_sys::Win32::{
+        Foundation::ERROR_ACCESS_DENIED,
+        System::Threading::{CREATE_BREAKAWAY_FROM_JOB, DETACHED_PROCESS},
+    };
+    prevent_standard_handle_inheritance()?;
+    // Detaching already isolates the host from the caller's console.
+    // CREATE_NEW_PROCESS_GROUP would also disable Ctrl+C in the host
+    // and its descendants, including shells attached to ConPTY.
+    command.creation_flags(DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB);
+    match command.spawn() {
+        Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+            log::warn!(
+                "the session host cannot leave the job this process runs in (a job, or one it is nested in, forbids breakaway), so it ends when that job does"
+            );
+            command.creation_flags(DETACHED_PROCESS);
+            command.spawn()
+        }
+        result => result,
+    }
+    .context("start background terminal host")
 }
 
 #[cfg(windows)]
@@ -581,19 +977,34 @@ fn prevent_standard_handle_inheritance() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A temporary directory that passes [`Root::open`]: `tempfile` creates
+/// directories with the umask's permissions, usually 0755.
+#[cfg(test)]
+pub(crate) fn private_tempdir() -> tempfile::TempDir {
+    let temp = tempfile::tempdir().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    temp
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use std::net::TcpListener;
 
     #[test]
     fn host_lock_probe_detects_a_running_host() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         assert!(!host_is_running(temp.path()));
         assert!(!temp.path().join("host.lock").exists());
 
-        let held = private_file(&temp.path().join("host.lock")).unwrap();
+        let held = Root::open(temp.path())
+            .unwrap()
+            .private_file("host.lock")
+            .unwrap();
         assert!(!host_is_running(temp.path()));
         assert!(held.try_lock_exclusive().unwrap());
         assert!(host_is_running(temp.path()));
@@ -606,14 +1017,14 @@ mod tests {
     }
 
     fn hold_host_lock(root: &Path) -> File {
-        let lock = private_file(&root.join("host.lock")).unwrap();
+        let lock = Root::open(root).unwrap().private_file("host.lock").unwrap();
         assert!(lock.try_lock_exclusive().unwrap());
         lock
     }
 
     #[test]
     fn client_rejects_a_host_of_another_protocol_version() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         write_endpoint(
             temp.path(),
             serde_json::json!({ "version": 3, "port": 0, "token": "older", "mutual_auth": true }),
@@ -641,7 +1052,7 @@ mod tests {
     #[test]
     fn shutdown_host_reports_a_stale_endpoint_without_connecting() {
         for (version, mutual_auth) in [(2, false), (3, true), (VERSION, true)] {
-            let temp = tempfile::tempdir().unwrap();
+            let temp = private_tempdir();
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             listener.set_nonblocking(true).unwrap();
             write_endpoint(
@@ -669,9 +1080,9 @@ mod tests {
     /// error must say why it cannot be used and how to stop it.
     #[test]
     fn connect_or_start_keeps_the_cause_when_a_live_host_is_unreachable() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         let root = temp.path().join("host");
-        prepare_root(&root).unwrap();
+        Root::prepare(&root).unwrap();
         write_endpoint(
             &root,
             serde_json::json!({ "version": 3, "port": 1, "token": "older", "mutual_auth": true }),
@@ -763,7 +1174,7 @@ mod tests {
 
     #[test]
     fn shutdown_host_stops_a_version_three_host() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         let host = fake_host(temp.path(), 3, true, "rc8-token");
         shutdown_host(temp.path()).unwrap();
         assert_eq!(host.join().unwrap(), [14, 15, 10]);
@@ -772,7 +1183,7 @@ mod tests {
 
     #[test]
     fn shutdown_host_stops_a_host_without_mutual_authentication() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         let host = fake_host(temp.path(), 2, false, "rc4-token");
         shutdown_host(temp.path()).unwrap();
         assert_eq!(host.join().unwrap(), [0, 10]);
@@ -782,7 +1193,7 @@ mod tests {
     /// the host that wrote it still holds its lock.
     #[test]
     fn shutdown_host_does_not_send_the_token_to_a_stale_endpoint() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         write_endpoint(
@@ -802,7 +1213,7 @@ mod tests {
     /// endpoint, a mutually authenticating client still refuses to proceed.
     #[test]
     fn shutdown_host_rejects_an_older_impostor() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         let _lock = hold_host_lock(temp.path());
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         write_endpoint(
@@ -864,7 +1275,7 @@ mod tests {
     /// stopped with a request; `kill_host` stops its process instead.
     #[test]
     fn kill_host_stops_a_hung_host() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         let mut host = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -878,7 +1289,7 @@ mod tests {
             .spawn()
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(20);
-        while read_endpoint(temp.path()).is_err() {
+        while read_endpoint(&Root::open(temp.path()).unwrap()).is_err() {
             assert!(Instant::now() < deadline, "the hung host did not start");
             assert!(host.try_wait().unwrap().is_none(), "the hung host exited");
             std::thread::sleep(Duration::from_millis(20));
@@ -902,7 +1313,7 @@ mod tests {
 
     #[test]
     fn kill_host_requires_a_recorded_process_id() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         let _lock = hold_host_lock(temp.path());
         write_endpoint(
             temp.path(),
@@ -917,7 +1328,7 @@ mod tests {
     /// client must not hand that listener the token or accept it as the host.
     #[test]
     fn client_rejects_listener_that_does_not_know_the_token() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let token = "f".repeat(64);
@@ -955,22 +1366,23 @@ mod tests {
 
     #[test]
     fn start_up_errors_include_the_new_host_output() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         fs::write(temp.path().join("host.log"), "an earlier host\n").unwrap();
-        let (mut log, start) = open_host_log(temp.path()).unwrap();
+        let root = Root::open(temp.path()).unwrap();
+        let (mut log, start) = open_host_log(&root).unwrap();
         writeln!(log, "session host panicked: boom").unwrap();
-        let tail = host_log_tail(temp.path(), start);
+        let tail = host_log_tail(&root, start);
         assert!(tail.contains("session host panicked: boom"), "{tail}");
         assert!(!tail.contains("an earlier host"), "{tail}");
-        assert!(host_log_tail(temp.path(), start + 100).contains("no output"));
+        assert!(host_log_tail(&root, start + 100).contains("no output"));
     }
 
     #[test]
     fn host_log_is_private_and_rotated_past_its_limit() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = private_tempdir();
         let path = temp.path().join("host.log");
         fs::write(&path, vec![b'x'; HOST_LOG_LIMIT as usize + 1]).unwrap();
-        let (_, start) = open_host_log(temp.path()).unwrap();
+        let (_, start) = open_host_log(&Root::open(temp.path()).unwrap()).unwrap();
         assert_eq!(start, 0);
         assert_eq!(
             fs::metadata(temp.path().join("host.log.1")).unwrap().len(),
@@ -984,5 +1396,135 @@ mod tests {
                 0o600
             );
         }
+    }
+
+    /// Audit L4: another user who can write a directory above the session
+    /// directory may swap it after the privacy check. The token must still
+    /// land in the directory that was checked.
+    #[cfg(unix)]
+    #[test]
+    fn session_files_stay_in_the_checked_directory_when_its_path_is_swapped() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let temp = private_tempdir();
+        let shared = temp.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
+        let path = shared.join("mux");
+        let root = Root::prepare(&path).unwrap();
+        // The swap: the checked directory moves away, and a directory the
+        // other user controls takes its place.
+        fs::rename(&path, shared.join("moved")).unwrap();
+        fs::create_dir(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!root.is_current());
+        super::write_endpoint(
+            &root,
+            &Endpoint {
+                version: VERSION,
+                port: 1,
+                token: "secret".into(),
+                mutual_auth: true,
+                build: String::new(),
+                pid: 0,
+            },
+        )
+        .unwrap();
+        assert!(shared.join("moved/endpoint.json").exists());
+        assert!(!path.join("endpoint.json").exists());
+        // Clients and hosts refuse the replacement, and a symlinked one.
+        let error = Root::open(&path).err().unwrap().to_string();
+        assert!(error.contains("must be private"), "{error}");
+        fs::remove_dir(&path).unwrap();
+        symlink(shared.join("moved"), &path).unwrap();
+        let error = Root::prepare(&path).err().unwrap().to_string();
+        assert!(error.contains("invalid multiplexer directory"), "{error}");
+    }
+
+    /// Audit L4 on Windows: a session directory of this user that grants
+    /// others access (one an older Termy created under `C:\`) is made
+    /// private, a file someone left in it is not reused for the token, and a
+    /// junction is refused.
+    #[cfg(windows)]
+    #[test]
+    fn windows_session_directory_is_made_private() {
+        use crate::multiplexer::windows_acl;
+        let temp = private_tempdir();
+        let shared = temp.path().join("shared");
+        fs::create_dir(&shared).unwrap();
+        windows_acl::set_dacl(&shared, "D:P(A;OICI;FA;;;WD)").unwrap();
+        assert!(!windows_acl::is_private(&shared));
+        let root = Root::prepare(&shared).unwrap();
+        assert!(windows_acl::is_private(&shared));
+        fs::write(shared.join("endpoint.tmp"), "planted").unwrap();
+        super::write_endpoint(
+            &root,
+            &Endpoint {
+                version: VERSION,
+                port: 1,
+                token: "secret".into(),
+                mutual_auth: true,
+                build: String::new(),
+                pid: 0,
+            },
+        )
+        .unwrap();
+        assert!(read_endpoint(&root).unwrap().token == "secret");
+        drop(root);
+
+        let junction = temp.path().join("junction");
+        let status = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&shared)
+            .stdout(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let error = Root::open(&junction).err().unwrap().to_string();
+        assert!(error.contains("invalid multiplexer directory"), "{error}");
+    }
+
+    /// Audit B28: the host keeps only what describes the user and machine,
+    /// not the launching shell's virtualenv, tokens or terminal identity.
+    #[test]
+    fn host_starts_with_only_login_variables() {
+        let variables = [
+            ("HOME", "/home/user"),
+            ("LC_ALL", "C.UTF-8"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+            ("XDG_ACTIVATION_TOKEN", "one-shot"),
+            ("DISPLAY", ":0"),
+            ("TERMY_INSTANCE_HOME", "/tmp/instance"),
+            ("TERMY_MUX_PANE", "outer-pane"),
+            ("PATH", "/home/user/venv/bin"),
+            ("VIRTUAL_ENV", "/home/user/venv"),
+            ("GITHUB_TOKEN", "secret"),
+            ("TMUX", "/tmp/tmux-1000/default"),
+        ]
+        .map(|(name, value)| (OsString::from(name), OsString::from(value)));
+        let environment = host_environment(variables);
+        let names: Vec<_> = environment
+            .iter()
+            .map(|(name, _)| name.to_str().unwrap())
+            .collect();
+        #[cfg(unix)]
+        assert_eq!(
+            names,
+            [
+                "HOME",
+                "LC_ALL",
+                "XDG_RUNTIME_DIR",
+                "DISPLAY",
+                "TERMY_INSTANCE_HOME",
+                "PATH"
+            ]
+        );
+        #[cfg(windows)]
+        assert_eq!(names, ["TERMY_INSTANCE_HOME", "PATH"]);
+        let path = &environment.last().unwrap().1;
+        assert!(
+            !path.to_string_lossy().contains("venv"),
+            "PATH must be the login default: {path:?}"
+        );
     }
 }

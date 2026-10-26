@@ -23,6 +23,8 @@ Closing a **tab**, **pane**, or **workspace** ends the sessions it contains. Exi
 
 Changes made with `termy mux` (new tabs, splits, closed panes, renames, and new workspaces) appear in open windows right away.
 
+Each new terminal starts with the environment variables of the Termy window (or `termy mux` command) that opened it, and in the directory a regular terminal opened there would use, not in the environment or directory of whatever started the background host. Programs inside can find their session through `TERMY_MUX_DIR` (the background host's directory) and `TERMY_MUX_PANE` (the terminal's ID); `termy mux` run inside a terminal uses them to reach the same host.
+
 Sessions last while the background host and your operating-system session are running. They do not survive logging out, rebooting, or terminating the host. After that, Termy starts with a fresh window instead of restoring an old regular session. Your regular saved tabs are imported once each time you switch from regular terminals to the multiplexer. This is live process persistence; named layouts remain reusable layouts that start new terminals. Saved scrollback is not carried into multiplexer terminals, whether they come from imported tabs or from a named layout.
 
 ## After upgrading Termy

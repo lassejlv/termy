@@ -1,5 +1,5 @@
 use crate::multiplexer::{
-    discovery::{self, Endpoint},
+    discovery::{self, Access, Endpoint, Root},
     layout_store::LayoutStore,
     pane::Pane,
     protocol::*,
@@ -9,9 +9,10 @@ use fs4::fs_std::FileExt;
 use rand_core::{OsRng, RngCore};
 use std::{
     collections::{HashMap, VecDeque},
+    fs::File,
     io::{Read, Write},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -37,8 +38,12 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(10);
 const MAX_ACCEPT_BACKOFF: Duration = Duration::from_secs(1);
+/// How long shutdown waits for the pane workers to drop their terminals.
+const PANE_CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct Server {
+    /// The session directory, exported to panes as `TERMY_MUX_DIR`.
+    root: PathBuf,
     panes: Mutex<HashMap<String, Pane>>,
     layout: Arc<LayoutStore>,
     token: String,
@@ -52,8 +57,9 @@ struct Server {
 }
 
 impl Server {
-    fn new(token: String, address: SocketAddr, handshake_timeout: Duration) -> Self {
+    fn new(root: PathBuf, token: String, address: SocketAddr, handshake_timeout: Duration) -> Self {
         Self {
+            root,
             panes: Mutex::new(HashMap::new()),
             layout: Arc::default(),
             token,
@@ -154,8 +160,10 @@ pub fn serve(root: &Path) -> anyhow::Result<()> {
             return Err(std::io::Error::last_os_error().into());
         }
     }
-    discovery::prepare_root(root)?;
-    let lock = discovery::private_file(&root.join("host.lock"))?;
+    // Panes run in the host's directory, the home directory, and see this
+    // path as `TERMY_MUX_DIR`.
+    let root = Root::prepare(&std::path::absolute(root)?)?;
+    let lock = root.private_file("host.lock")?;
     // Clients probe the lock by taking it for a moment; retry briefly so a
     // probe is not mistaken for a running host.
     let mut attempts = 0;
@@ -177,15 +185,22 @@ pub fn serve(root: &Path) -> anyhow::Result<()> {
         build: build_id(),
         pid: std::process::id(),
     };
-    let path = root.join("endpoint.json");
-    let temp = root.join("endpoint.tmp");
-    let mut file = discovery::private_file(&temp)?;
-    file.set_len(0)?;
-    file.write_all(&serde_json::to_vec(&endpoint)?)?;
-    file.sync_all()?;
-    std::fs::rename(temp, &path)?;
-    let server = Arc::new(Server::new(token, address, HANDSHAKE_TIMEOUT));
+    discovery::write_endpoint(&root, &endpoint)?;
+    let server = Arc::new(Server::new(
+        root.path().to_owned(),
+        token,
+        address,
+        HANDSHAKE_TIMEOUT,
+    ));
+    let watchdog = Watchdog {
+        root,
+        endpoint,
+        lock,
+        superseded: false,
+    }
+    .start(&server)?;
     accept_connections(&server, listener.incoming());
+    let watchdog = watchdog.stop();
     let panes: Vec<Pane> = server
         .panes
         .lock()
@@ -193,11 +208,188 @@ pub fn serve(root: &Path) -> anyhow::Result<()> {
         .drain()
         .map(|(_, pane)| pane)
         .collect();
-    for pane in panes {
-        pane.close();
+    close_panes(panes);
+    // The lock is released last, when `watchdog` drops.
+    watchdog.remove_endpoint()
+}
+
+/// Ends every pane before the host exits (audit L1). Dropping a terminal
+/// hangs up its process group and schedules a SIGKILL for a shell that
+/// ignores the hang-up, as when a tab closes, but that timer would die with
+/// this process. Each worker therefore ends its program and waits for it.
+fn close_panes(panes: Vec<Pane>) {
+    for pane in &panes {
+        pane.shutdown();
     }
-    std::fs::remove_file(path)?;
-    Ok(())
+    let deadline = Instant::now() + PANE_CLOSE_TIMEOUT;
+    for pane in &panes {
+        if !pane.wait_closed(deadline) {
+            log::warn!("terminal session {} did not close in time", pane.info().id);
+        }
+    }
+}
+
+/// Puts `endpoint.json` and `host.lock` back while the host runs when
+/// something removes or replaces them, or the whole session directory
+/// (audit I17). Without them no client could reach this host's sessions,
+/// and the next client would start a second host beside it.
+struct Watchdog {
+    root: Root,
+    endpoint: Endpoint,
+    /// This host's lock on `host.lock`.
+    lock: File,
+    /// Another host took over the directory. This host leaves it alone, takes
+    /// it back once that host has released its lock, and stops when its own
+    /// terminals have all ended.
+    superseded: bool,
+}
+
+/// A [`Watchdog`] checking in the background.
+struct RunningWatchdog {
+    stop: flume::Sender<()>,
+    thread: std::thread::JoinHandle<Watchdog>,
+}
+
+impl Watchdog {
+    /// How long the watchdog waits between checks: often at first, when a
+    /// script that cleans up the directory is most likely to run, then
+    /// rarely, since each check opens and reads files.
+    fn interval(&self, running: Duration) -> Duration {
+        if self.superseded || running >= Duration::from_secs(60) {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_secs(1)
+        }
+    }
+
+    fn start(mut self, server: &Arc<Server>) -> anyhow::Result<RunningWatchdog> {
+        let (stop, stopped) = flume::bounded(0);
+        let server = Arc::downgrade(server);
+        let started = Instant::now();
+        let thread = std::thread::Builder::new()
+            .name("termy-session-watchdog".into())
+            .spawn(move || {
+                while let Err(flume::RecvTimeoutError::Timeout) =
+                    stopped.recv_timeout(self.interval(started.elapsed()))
+                {
+                    self.check();
+                    let Some(server) = server.upgrade() else {
+                        break;
+                    };
+                    if self.superseded && server.panes_have_ended() {
+                        log::warn!(
+                            "this session host stops: another host uses its directory and its own terminals have ended"
+                        );
+                        server.stop();
+                        break;
+                    }
+                }
+                self
+            })?;
+        Ok(RunningWatchdog { stop, thread })
+    }
+
+    fn check(&mut self) {
+        if let Err(error) = self.repair() {
+            log::warn!(
+                "session host could not restore its files in {}: {error:#}",
+                self.root.path().display()
+            );
+        }
+    }
+
+    fn repair(&mut self) -> anyhow::Result<()> {
+        if !self.root.is_current() {
+            let path = self.root.path().to_owned();
+            // Recreate only what a cleanup removed: the directory itself, or
+            // the whole default location, never a custom one's parents.
+            if !path.parent().is_some_and(Path::is_dir)
+                && discovery::default_root().as_deref() != Some(path.as_path())
+            {
+                log::warn!(
+                    "the session directory {} and its parent were removed; this host's terminals cannot be reached until it is recreated",
+                    path.display()
+                );
+                return Ok(());
+            }
+            log::warn!(
+                "the session directory {} was removed or replaced; recreating it",
+                path.display()
+            );
+            self.root = Root::prepare(&path)?;
+            crate::multiplexer::host::reopen_log();
+        }
+        match self.root.open_file("host.lock", Access::ReadWrite) {
+            Ok(file)
+                if !self.superseded && discovery::same_file(&file, &self.lock).unwrap_or(false) => {
+            }
+            Ok(file) => {
+                if file.try_lock_exclusive()? {
+                    // Nobody held it, so it is not the file this host locked,
+                    // or the host that superseded this one has exited.
+                    log::warn!("host.lock was replaced or released; this session host locked it");
+                    self.lock = file;
+                    self.superseded = false;
+                } else {
+                    if !self.superseded
+                        && discovery::read_endpoint(&self.root)
+                            .is_ok_and(|endpoint| endpoint.token != self.endpoint.token)
+                    {
+                        log::warn!(
+                            "another session host now uses {}; this host's terminals can no longer be reached, and it stops once they have ended",
+                            self.root.path().display()
+                        );
+                        self.superseded = true;
+                    }
+                    // Someone else holds the lock: another host, one still
+                    // starting, or a client probing it for a moment. Never
+                    // write the endpoint then.
+                    return Ok(());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let file = self.root.private_file("host.lock")?;
+                if !file.try_lock_exclusive()? {
+                    // A new host locked it first; the next check sees it.
+                    return Ok(());
+                }
+                log::warn!("host.lock was removed; this session host created it again");
+                self.lock = file;
+                self.superseded = false;
+            }
+            Err(error) => return Err(error.into()),
+        }
+        if !discovery::read_endpoint(&self.root)
+            .is_ok_and(|endpoint| endpoint.token == self.endpoint.token)
+        {
+            // The token goes only into the directory that was checked, and
+            // only while it is still private.
+            self.root.verify()?;
+            log::warn!("endpoint.json was removed or replaced; this session host wrote it again");
+            discovery::write_endpoint(&self.root, &self.endpoint)?;
+        }
+        Ok(())
+    }
+
+    /// Removes `endpoint.json` at shutdown, unless another host wrote it.
+    fn remove_endpoint(&self) -> anyhow::Result<()> {
+        if discovery::read_endpoint(&self.root)
+            .is_ok_and(|endpoint| endpoint.token == self.endpoint.token)
+        {
+            self.root.remove("endpoint.json")?;
+        }
+        Ok(())
+    }
+}
+
+impl RunningWatchdog {
+    fn stop(self) -> Watchdog {
+        drop(self.stop);
+        match self.thread.join() {
+            Ok(watchdog) => watchdog,
+            Err(panic) => std::panic::resume_unwind(panic),
+        }
+    }
 }
 
 /// Serves connections until shutdown. Accept and thread-spawn failures (for
@@ -253,6 +445,21 @@ fn accept_connections(
 }
 
 impl Server {
+    /// Ends the accept loop, as a `Shutdown` request does.
+    fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        let _ = TcpStream::connect(self.address);
+    }
+
+    /// Whether every pane's program has exited.
+    fn panes_have_ended(&self) -> bool {
+        self.panes
+            .lock()
+            .unwrap()
+            .values()
+            .all(|pane| pane.info().exited)
+    }
+
     fn pane(&self, id: &str) -> anyhow::Result<Pane> {
         self.panes
             .lock()
@@ -265,7 +472,7 @@ impl Server {
     fn execute(&self, request: Request) -> anyhow::Result<Response> {
         Ok(match request {
             Request::Create(launch) => {
-                let pane = Pane::create(*launch)?;
+                let pane = Pane::create(*launch, &self.root)?;
                 let info = pane.info();
                 let state = pane.refresh()?;
                 // A pane that exits while no client shows it leaves the
@@ -480,7 +687,12 @@ mod tests {
     ) -> (Arc<Server>, SocketAddr, std::thread::JoinHandle<()>) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
-        let server = Arc::new(Server::new("token".into(), address, handshake_timeout));
+        let server = Arc::new(Server::new(
+            PathBuf::new(),
+            "token".into(),
+            address,
+            handshake_timeout,
+        ));
         let accept_server = Arc::clone(&server);
         let host = std::thread::spawn(move || {
             let failures =
@@ -691,5 +903,98 @@ mod tests {
             panic!("plaintext greeting was answered: {result}");
         }
         stop(&server, host);
+    }
+
+    fn endpoint(token: &str) -> Endpoint {
+        Endpoint {
+            version: VERSION,
+            port: 1,
+            token: token.into(),
+            mutual_auth: true,
+            build: String::new(),
+            pid: 0,
+        }
+    }
+
+    /// A watchdog for a host that has published `own` in a new directory.
+    fn watchdog(parent: &Path) -> Watchdog {
+        let root = Root::prepare(&parent.join("host")).unwrap();
+        let lock = root.private_file("host.lock").unwrap();
+        assert!(lock.try_lock_exclusive().unwrap());
+        discovery::write_endpoint(&root, &endpoint("own")).unwrap();
+        Watchdog {
+            root,
+            endpoint: endpoint("own"),
+            lock,
+            superseded: false,
+        }
+    }
+
+    fn published(root: &Root) -> Option<String> {
+        discovery::read_endpoint(root)
+            .ok()
+            .map(|endpoint| endpoint.token)
+    }
+
+    fn lock_is_held(root: &Root) -> bool {
+        let lock = root.open_file("host.lock", Access::ReadWrite).unwrap();
+        if lock.try_lock_exclusive().unwrap() {
+            FileExt::unlock(&lock).unwrap();
+            return false;
+        }
+        true
+    }
+
+    /// Audit I17: a `host.lock` replaced by a new file is locked again, so a
+    /// second host cannot start beside this one.
+    #[test]
+    fn watchdog_locks_a_replaced_lock_file() {
+        let temp = discovery::private_tempdir();
+        let mut watchdog = watchdog(temp.path());
+        let root = Root::open(watchdog.root.path()).unwrap();
+        root.remove("host.lock").unwrap();
+        drop(root.private_file("host.lock").unwrap());
+        root.remove("endpoint.json").unwrap();
+        assert!(!lock_is_held(&root));
+        watchdog.check();
+        assert!(lock_is_held(&root));
+        assert_eq!(published(&root).as_deref(), Some("own"));
+        assert!(!watchdog.superseded);
+    }
+
+    /// Audit I17: once another host holds the lock and has published its
+    /// endpoint, this one leaves the directory alone, and takes it back when
+    /// that host has exited.
+    #[test]
+    fn watchdog_yields_to_another_host_and_reclaims_the_directory_afterwards() {
+        let temp = discovery::private_tempdir();
+        let mut watchdog = watchdog(temp.path());
+        let root = Root::open(watchdog.root.path()).unwrap();
+        root.remove("host.lock").unwrap();
+        let other = root.private_file("host.lock").unwrap();
+        assert!(other.try_lock_exclusive().unwrap());
+        // Still starting: the other host holds the lock but has no endpoint.
+        root.remove("endpoint.json").unwrap();
+        watchdog.check();
+        assert_eq!(
+            published(&root),
+            None,
+            "written while another host held the lock"
+        );
+        assert!(!watchdog.superseded);
+
+        discovery::write_endpoint(&root, &endpoint("other")).unwrap();
+        watchdog.check();
+        assert!(watchdog.superseded);
+        watchdog.check();
+        assert_eq!(published(&root).as_deref(), Some("other"));
+
+        // The other host exits.
+        root.remove("endpoint.json").unwrap();
+        drop(other);
+        watchdog.check();
+        assert!(!watchdog.superseded);
+        assert_eq!(published(&root).as_deref(), Some("own"));
+        assert!(lock_is_held(&root));
     }
 }

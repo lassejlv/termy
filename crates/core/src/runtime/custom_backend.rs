@@ -2,10 +2,11 @@
 //! terminal API. Renderer callbacks borrow one coherent engine state.
 
 use super::{
-    MAX_TERMINAL_SCROLLBACK_HISTORY, TabTitleShellIntegration, TerminalCursorState,
-    TerminalCursorStyle, TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent, TerminalLaunch,
-    TerminalOptions, TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier,
-    resolve_launch_working_directory, resolve_terminal_launch, terminal_environment_overrides,
+    ChildEnvironment, MAX_TERMINAL_SCROLLBACK_HISTORY, TabTitleShellIntegration,
+    TerminalCursorState, TerminalCursorStyle, TerminalDamageSnapshot, TerminalDirtySpan,
+    TerminalEvent, TerminalLaunch, TerminalOptions, TerminalRuntimeConfig, TerminalSize,
+    TerminalWakeupNotifier, explicit_child_environment, resolve_launch_working_directory,
+    resolve_terminal_launch_in, terminal_environment_overrides_in,
 };
 use crate::{
     DetectedLink, DetectedViewportLink, KittyClipboardControl, KittyClipboardHostState,
@@ -707,11 +708,14 @@ impl CustomBackend {
             config,
             launch.as_ref(),
             None,
+            ChildEnvironment::Process,
         )
     }
 
     /// `restored_output` (a saved buffer) is replayed before the child starts,
-    /// so it can't interleave with the new session's first output.
+    /// so it can't interleave with the new session's first output. The child
+    /// inherits `source`, see [`ChildEnvironment`].
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new_with_launch_and_wakeup_notifier(
         size: TerminalSize,
         working_dir: Option<&str>,
@@ -720,6 +724,7 @@ impl CustomBackend {
         config: Option<&TerminalRuntimeConfig>,
         launch: Option<&TerminalLaunch>,
         restored_output: Option<&[u8]>,
+        source: ChildEnvironment,
     ) -> anyhow::Result<Self> {
         if !engine::transport::available() {
             anyhow::bail!("the native terminal transport is unavailable on this host");
@@ -734,24 +739,32 @@ impl CustomBackend {
             matches!(launch, TerminalLaunch::ShellCommand(command) if command.trim().is_empty())
         });
         #[cfg_attr(not(windows), allow(unused_mut))]
-        let mut launch = resolve_terminal_launch(&config, launch)?;
+        let mut launch = resolve_terminal_launch_in(&config, launch, source)?;
         #[cfg_attr(not(windows), allow(unused_mut))]
-        let mut environment = terminal_environment_overrides(shell_integration, &config);
+        let mut environment = terminal_environment_overrides_in(shell_integration, &config, source);
         #[cfg(windows)]
         if interactive_shell {
             super::apply_windows_shell_integration(
                 &mut launch,
                 &mut environment,
                 shell_integration,
+                source.var_os("PROMPT").as_deref(),
             );
         }
         let working_directory =
             resolve_launch_working_directory(working_dir, config.working_dir_fallback);
         #[cfg(windows)]
         super::warn_cmd_unc_working_directory(&launch, working_directory.as_deref());
-        let mut environment = environment.into_iter().collect::<Vec<_>>();
-        // A stable order keeps the child environment block reproducible.
-        environment.sort_unstable();
+        let inherit_environment = matches!(source, ChildEnvironment::Process);
+        let environment = match source {
+            ChildEnvironment::Process => {
+                let mut environment = environment.into_iter().collect::<Vec<_>>();
+                // A stable order keeps the child environment block reproducible.
+                environment.sort_unstable();
+                environment
+            }
+            ChildEnvironment::Explicit(base) => explicit_child_environment(base, environment),
+        };
         let spawn = SpawnConfig {
             program: launch.program,
             args: launch.args,
@@ -765,6 +778,7 @@ impl CustomBackend {
         terminal.transport = Some(Arc::new(Transport::spawn_answering_queries(
             spawn,
             pty_size(terminal.size()),
+            inherit_environment,
             move |bytes| shared.feed(bytes, false, false),
             move || {
                 let mut state = exit.state();
@@ -830,6 +844,11 @@ impl CustomBackend {
         self.transport
             .as_ref()
             .map(|transport| transport.child_pid())
+    }
+    pub(super) fn terminate_and_wait(&self) {
+        if let Some(transport) = &self.transport {
+            transport.terminate_and_wait();
+        }
     }
     pub(super) fn set_wakeup_enabled(&self, enabled: bool) {
         let old = self.shared.wakeup_enabled.swap(enabled, Ordering::AcqRel);

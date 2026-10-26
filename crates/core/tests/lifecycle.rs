@@ -46,6 +46,7 @@ fn launch(script: &str, root: &Path) -> PaneLaunch {
                 root.to_string_lossy().into_owned(),
             ],
         }),
+        environment: None,
     }
 }
 

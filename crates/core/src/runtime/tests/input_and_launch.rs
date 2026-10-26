@@ -387,6 +387,59 @@ fn env_overrides_merge_host_environment_last() {
     assert_eq!(env.get("TERM_PROGRAM").map(String::as_str), Some("cmux"));
 }
 
+/// Audit B28: a multiplexer pane starts from its client's environment, so
+/// the variables of whoever started the host do not decide it.
+#[test]
+fn explicit_child_environment_replaces_the_process_environment() {
+    let variable = |name: &str, value: &str| (name.to_string(), value.to_string());
+    let base = [
+        variable("LANG", "C.UTF-8"),
+        variable("TMUX", "/tmp/tmux-1000/default"),
+        variable("KEPT", "old"),
+        variable("KEPT", "new"),
+        variable("=C:", r"C:\"),
+        variable("TERM", "dumb"),
+        variable("PATH", "/client/bin"),
+    ];
+    let source = ChildEnvironment::Explicit(&base);
+    assert_eq!(source.var_os("KEPT"), Some("new".into()));
+    assert_eq!(source.var_os("TERMY_UNSET_VARIABLE"), None);
+    let overrides =
+        terminal_environment_overrides_in(None, &TerminalRuntimeConfig::default(), source);
+    #[cfg(unix)]
+    assert!(
+        overrides["PATH"].starts_with("/client/bin"),
+        "{overrides:?}"
+    );
+    let environment = explicit_child_environment(&base, overrides);
+    let values = |name: &str| {
+        environment
+            .iter()
+            .filter(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(values("KEPT"), ["new"]);
+    assert_eq!(values("LANG"), ["C.UTF-8"]);
+    assert_eq!(values("TERM"), [DEFAULT_TERM]);
+    assert!(values("TMUX").is_empty());
+    assert!(values("=C:").is_empty());
+    assert!(environment.is_sorted());
+}
+
+#[cfg(unix)]
+#[test]
+fn explicit_child_environment_selects_the_default_shell() {
+    let base = [("SHELL".to_string(), "/bin/client-shell".to_string())];
+    let launch = resolve_terminal_launch_in(
+        &TerminalRuntimeConfig::default(),
+        None,
+        ChildEnvironment::Explicit(&base),
+    )
+    .unwrap();
+    assert_eq!(launch.program, "/bin/client-shell");
+}
+
 #[test]
 fn explicit_shell_path_wins() {
     assert_eq!(resolve_shell_path(Some("/bin/custom")), "/bin/custom");
@@ -716,7 +769,7 @@ fn windows_shell_integration_wraps_interactive_powershell_and_cmd() {
         args: vec!["-NoLogo".to_string()],
     };
     let mut environment = HashMap::new();
-    apply_windows_shell_integration(&mut pwsh, &mut environment, Some(&enabled));
+    apply_windows_shell_integration(&mut pwsh, &mut environment, Some(&enabled), None);
     assert_eq!(pwsh.args[..3], ["-NoLogo", "-NoExit", "-Command"]);
     assert!(pwsh.args[3].contains("133;A"));
     assert!(!pwsh.args[3].contains('"'));
@@ -725,7 +778,7 @@ fn windows_shell_integration_wraps_interactive_powershell_and_cmd() {
         program: "pwsh.exe".to_string(),
         args: vec!["-NoLogo".to_string()],
     };
-    apply_windows_shell_integration(&mut disabled_pwsh, &mut environment, None);
+    apply_windows_shell_integration(&mut disabled_pwsh, &mut environment, None, None);
     assert_eq!(disabled_pwsh.args, ["-NoLogo"]);
 
     let mut cmd = ResolvedTerminalLaunch {
@@ -733,12 +786,18 @@ fn windows_shell_integration_wraps_interactive_powershell_and_cmd() {
         args: Vec::new(),
     };
     let mut cmd_environment = HashMap::new();
-    apply_windows_shell_integration(&mut cmd, &mut cmd_environment, Some(&enabled));
-    if !inherited_prompt_is_custom(std::env::var_os("PROMPT").as_deref()) {
-        assert!(cmd_environment["PROMPT"].contains("$e]133;A"));
-    }
+    apply_windows_shell_integration(&mut cmd, &mut cmd_environment, Some(&enabled), None);
+    assert!(cmd_environment["PROMPT"].contains("$e]133;A"));
+    let mut inherited_environment = HashMap::new();
+    apply_windows_shell_integration(
+        &mut cmd,
+        &mut inherited_environment,
+        Some(&enabled),
+        Some(std::ffi::OsStr::new("$T $P$G")),
+    );
+    assert!(!inherited_environment.contains_key("PROMPT"));
     let mut user_environment = HashMap::from([("prompt".to_string(), "$G".to_string())]);
-    apply_windows_shell_integration(&mut cmd, &mut user_environment, Some(&enabled));
+    apply_windows_shell_integration(&mut cmd, &mut user_environment, Some(&enabled), None);
     assert!(!user_environment.contains_key("PROMPT"));
     assert!(cmd.args.is_empty());
 
@@ -754,7 +813,11 @@ fn windows_shell_integration_wraps_interactive_powershell_and_cmd() {
 #[cfg(target_os = "windows")]
 #[test]
 fn windows_startup_commands_use_selected_shell() {
-    let launch = super::windows_startup_command_shell(WindowsShell::GitBash, "echo hi");
+    let launch = super::windows_startup_command_shell(
+        WindowsShell::GitBash,
+        "echo hi",
+        ChildEnvironment::Process,
+    );
 
     assert_eq!(launch.args, vec!["-lc".to_string(), "echo hi".to_string()]);
 }

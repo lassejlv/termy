@@ -357,6 +357,12 @@ fn shutdown_stops_a_host_of_an_older_protocol() {
     use std::io::Write;
     let host = Host(tempfile::tempdir().unwrap());
     let root = host.0.path().join("sessions");
+    // Private, as every host since VERSION 1 created it.
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700)
+        .create(&root)
+        .unwrap();
+    #[cfg(not(unix))]
     std::fs::create_dir(&root).unwrap();
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let token = "rc8-token";
@@ -454,4 +460,41 @@ fn forced_shutdown_stops_the_host_process() {
             "{args:?}: {error}"
         );
     }
+}
+
+/// Audit I16: a pane learns its host and ID, and `termy mux` run inside it
+/// finds that host through `TERMY_MUX_DIR`, whatever config directory it
+/// would resolve.
+#[cfg(unix)]
+#[test]
+fn commands_in_a_pane_reach_the_panes_host() {
+    let host = Host(tempfile::tempdir().unwrap());
+    let id = host.ok(&["create", "--shell", "/bin/sh"])["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The echoed command shows `<%s>`; only the output shows the ID.
+    host.ok(&[
+        "send",
+        &id,
+        "printf '<%s>\\n' \"$TERMY_MUX_PANE\"",
+        "--enter",
+    ]);
+    host.ok(&["wait", &id, &format!("<{id}>")]);
+    let other_home = host.0.path().join("other-home");
+    let output = Command::new(env!("CARGO_BIN_EXE_termy-cli"))
+        .args(["mux", "list"])
+        .env("TERMY_MUX_DIR", host.0.path().join("sessions"))
+        .env("HOME", &other_home)
+        .env("XDG_CONFIG_HOME", other_home.join(".config"))
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["result"][0]["id"], id.as_str());
 }

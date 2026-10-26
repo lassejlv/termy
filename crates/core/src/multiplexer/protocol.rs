@@ -19,7 +19,7 @@ const MAX_MESSAGE_BYTES: u64 = 128 * 1024 * 1024;
 /// Hash of the encoding of every wire type, checked by the `wire_golden`
 /// test. When it changes, the wire changed: bump [`VERSION`] (unless the
 /// unreleased change already did) and update this value.
-pub(crate) const WIRE_FINGERPRINT: u64 = 0x3b20_0d69_bd4b_db6c;
+pub(crate) const WIRE_FINGERPRINT: u64 = 0x0bf1_85e9_16e5_bef5;
 
 /// Identifies the build that wrote `endpoint.json`. A client logs a warning
 /// when it differs from its own under the same [`VERSION`], which points at
@@ -34,10 +34,52 @@ pub(crate) fn build_id() -> String {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PaneLaunch {
     pub size: TerminalSize,
+    /// Should be absolute: the host resolves a relative path against its own
+    /// directory, the user's home directory, not against the client's.
     pub working_directory: Option<String>,
     pub shell_integration: Option<TabTitleShellIntegration>,
     pub config: TerminalRuntimeConfig,
     pub launch: Option<TerminalLaunch>,
+    /// The environment the pane's program starts from, like a local tab
+    /// started by this client: normally [`PaneLaunch::client_environment`].
+    /// Termy's terminal variables, `config.environment` and `TERMY_MUX_DIR`
+    /// and `TERMY_MUX_PANE` apply on top. `None`, for clients that do not
+    /// send one, starts from the host's own environment, which holds only the
+    /// login session's variables.
+    pub environment: Option<Vec<(String, String)>>,
+}
+
+impl PaneLaunch {
+    /// A value for [`PaneLaunch::working_directory`]: `configured`, or the
+    /// `fallback`, resolved in this process as for a local tab (`~` with this
+    /// process's home directory, a relative path against its directory) and
+    /// made absolute, since the host runs elsewhere. `None` only when no
+    /// directory can be found at all.
+    pub fn client_working_directory(
+        configured: Option<&str>,
+        fallback: WorkingDirFallback,
+    ) -> Option<String> {
+        let directory = crate::resolve_launch_working_directory(configured, fallback)?;
+        let directory = std::path::absolute(&directory).unwrap_or(directory);
+        Some(directory.to_string_lossy().into_owned())
+    }
+
+    /// This process's environment, for [`PaneLaunch::environment`]. Variables
+    /// whose name or value is not UTF-8 are left out.
+    pub fn client_environment() -> Vec<(String, String)> {
+        let mut dropped = 0;
+        let environment = std::env::vars_os()
+            .filter_map(|(name, value)| {
+                let variable = name.into_string().ok().zip(value.into_string().ok());
+                dropped += usize::from(variable.is_none());
+                variable
+            })
+            .collect();
+        if dropped > 0 {
+            log::debug!("{dropped} environment variables are not UTF-8 and do not reach new panes");
+        }
+        environment
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -76,6 +76,7 @@ fn scrolling_reply_updates_viewport_before_selection_reads() {
                 program: "/bin/sh".into(),
                 args: vec!["-c".into(), "stty -echo; i=0; while [ $i -lt 50 ]; do printf 'line-%s\\r\\n' \"$i\"; i=$((i+1)); done; printf READY; read done".into()],
             }),
+            environment: None,
         },
         None,
     ).unwrap();
@@ -138,6 +139,7 @@ dd bs=1 count=1 >/dev/null 2>/dev/null
                     program: "/bin/sh".into(),
                     args: vec!["-c".into(), script.into()],
                 }),
+                environment: None,
             },
             None,
         )
@@ -291,6 +293,7 @@ fn shell(script: &str) -> PaneLaunch {
             program: "/bin/sh".into(),
             args: vec!["-c".into(), script.into()],
         }),
+        environment: None,
     }
 }
 
@@ -678,6 +681,7 @@ sleep 30
                         expected.len().to_string(),
                     ],
                 }),
+                environment: None,
             },
             None,
         )
@@ -725,6 +729,7 @@ read finish
                         .into(),
                     ],
                 }),
+                environment: None,
             },
             None,
         )
@@ -782,6 +787,7 @@ fn shell_pane(host: &Host, script: &str) -> (String, Terminal) {
                     program: "/bin/sh".into(),
                     args: vec!["-c".into(), script.into()],
                 }),
+                environment: None,
             },
             None,
         )
@@ -905,6 +911,7 @@ fn layout_resizes_keep_the_live_cell_metrics() {
             program: "/bin/sh".into(),
             args: vec!["-c".into(), "read done".into()],
         }),
+        environment: None,
     };
     // The desktop created this pane with its real font metrics.
     let live = TerminalSize {
@@ -996,6 +1003,7 @@ fn another_clients_resize_overrides_the_size_this_client_claimed() {
                     program: "/bin/sh".into(),
                     args: vec!["-c".into(), "read done".into()],
                 }),
+                environment: None,
             },
             None,
         )
@@ -1049,6 +1057,7 @@ fn script_pane(host: &Host, script: &str, args: &[&str]) -> (String, Terminal) {
                     program: "/bin/sh".into(),
                     args: argv,
                 }),
+                environment: None,
             },
             None,
         )
@@ -1268,6 +1277,7 @@ sleep 30
             program: "/bin/sh".into(),
             args: vec!["-c".into(), script.into()],
         }),
+        environment: None,
     };
     let (id, terminal) = host.client.create(launch, Some(notifier)).unwrap();
     wait_for_text(&terminal, "READY");
@@ -1345,6 +1355,7 @@ fn detached_panes_are_read_without_subscribing() {
             program: "/bin/sh".into(),
             args: vec!["-c".into(), "printf SNAPSHOT; sleep 30".into()],
         }),
+        environment: None,
     };
     let id = host.client.create_detached(launch).unwrap();
     let view = host.client.observe(&id, None).unwrap();
@@ -1369,4 +1380,178 @@ fn detached_panes_are_read_without_subscribing() {
     );
     drop(view);
     host.client.close(&id).unwrap();
+}
+
+fn host_executable() -> std::path::PathBuf {
+    std::env::var_os("TERMY_MUX_TEST_HOST_BINARY").map_or_else(
+        || Path::new(env!("CARGO_BIN_EXE_termy-session-host")).to_owned(),
+        std::path::PathBuf::from,
+    )
+}
+
+/// A pane that runs `script` with its output file as `$1`.
+fn script_launch(
+    script: &str,
+    output: &Path,
+    environment: Option<Vec<(String, String)>>,
+) -> PaneLaunch {
+    PaneLaunch {
+        size: TerminalSize::default(),
+        working_directory: None,
+        shell_integration: None,
+        config: TerminalRuntimeConfig {
+            // The pane starts in the host's own directory.
+            working_dir_fallback: WorkingDirFallback::Process,
+            ..TerminalRuntimeConfig::default()
+        },
+        launch: Some(TerminalLaunch::Program {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                script.into(),
+                "pane-test".into(),
+                output.to_string_lossy().into_owned(),
+            ],
+        }),
+        environment,
+    }
+}
+
+/// Reads a file that a pane script writes with `mv`, once it is complete.
+#[track_caller]
+fn read_when_written(path: &Path) -> String {
+    wait_until(|| path.exists());
+    fs::read_to_string(path).unwrap()
+}
+
+/// Whether `pid` runs; a zombie that nobody reaps (as in some containers)
+/// counts as ended.
+fn process_running(pid: u32) -> bool {
+    if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
+        return stat
+            .rsplit_once(')')
+            .is_some_and(|(_, rest)| !rest.trim_start().starts_with('Z'));
+    }
+    // SAFETY: signal 0 only probes the process; it takes no pointers.
+    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+}
+
+// Started as a separate process by `panes_start_from_their_clients_environment`,
+// like `termy mux create` run from a shell with variables of its own.
+#[test]
+fn launcher_process() {
+    let Ok(root) = std::env::var("TERMY_MUX_TEST_LAUNCH_ROOT") else {
+        return;
+    };
+    connect_or_start(Path::new(&root), &host_executable()).unwrap();
+}
+
+/// Audit B28 and I16: a pane gets the environment of the client that
+/// creates it, not that of whoever started the host, and learns its host and
+/// its pane ID.
+#[test]
+fn panes_start_from_their_clients_environment() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("host");
+    let launcher_directory = temp.path().join("launcher");
+    fs::create_dir(&launcher_directory).unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "launcher_process", "--nocapture"])
+        .env("TERMY_MUX_TEST_LAUNCH_ROOT", &root)
+        .env("MUX_LAUNCHER_SECRET", "launcher-token")
+        .current_dir(&launcher_directory)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let client = SessionClient::connect(&root).unwrap();
+    struct Shutdown<'a>(&'a SessionClient);
+    impl Drop for Shutdown<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.shutdown();
+        }
+    }
+    let _shutdown = Shutdown(&client);
+    let script = r#"printf '%s|%s|%s|%s|%s' "${MUX_LAUNCHER_SECRET-unset}" "${MUX_CLIENT_ONLY-unset}" "$TERMY_MUX_DIR" "$TERMY_MUX_PANE" "$PWD" > "$1.tmp"; mv "$1.tmp" "$1"; exec sleep 30"#;
+    let fields = |output: &Path| -> Vec<String> {
+        read_when_written(output)
+            .split('|')
+            .map(str::to_owned)
+            .collect()
+    };
+
+    // Without an environment of its own, a pane gets the host's.
+    let output = temp.path().join("host-environment");
+    let (id, _host_pane) = client
+        .create(script_launch(script, &output, None), None)
+        .unwrap();
+    let host_fields = fields(&output);
+    assert_eq!(
+        host_fields[..4],
+        ["unset", "unset", root.to_str().unwrap(), id.as_str()]
+    );
+    assert_ne!(
+        Path::new(&host_fields[4]),
+        launcher_directory,
+        "the pane runs in the launcher's directory"
+    );
+
+    let output = temp.path().join("client-environment");
+    let environment = vec![
+        ("MUX_CLIENT_ONLY".to_string(), "client-value".to_string()),
+        ("TERMY_MUX_PANE".to_string(), "stale-outer-pane".to_string()),
+    ];
+    let (id, _client_pane) = client
+        .create(script_launch(script, &output, Some(environment)), None)
+        .unwrap();
+    assert_eq!(
+        fields(&output)[..4],
+        ["unset", "client-value", root.to_str().unwrap(), id.as_str()]
+    );
+}
+
+/// Audit L1: shutdown must not leave behind a program that ignores SIGHUP,
+/// which closing its pane would have killed.
+#[test]
+fn shutdown_ends_pane_programs_that_ignore_hangup() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("host");
+    let client = connect_or_start(&root, &host_executable()).unwrap();
+    let output = temp.path().join("sleeper");
+    let script = r#"trap '' HUP; sleep 1000 & printf '%s' "$!" > "$1.tmp"; mv "$1.tmp" "$1"; wait"#;
+    let (_, terminal) = client
+        .create(script_launch(script, &output, None), None)
+        .unwrap();
+    let sleeper: u32 = read_when_written(&output).parse().unwrap();
+    let shell = terminal.child_pid().unwrap();
+    assert!(process_running(sleeper) && process_running(shell));
+    drop(terminal);
+    termy_core::multiplexer::shutdown_host(&root).unwrap();
+    for pid in [shell, sleeper] {
+        wait_until(|| !process_running(pid));
+    }
+}
+
+/// Audit I17: removing the session directory under a running host must not
+/// orphan its sessions or let a second host start beside it.
+#[test]
+fn host_restores_its_files_after_its_directory_is_removed() {
+    use std::os::unix::io::AsRawFd;
+    let host = Host::new();
+    let output = host._temp.path().join("ready");
+    let (id, _terminal) = host
+        .client
+        .create(
+            script_launch(r#": > "$1"; exec sleep 30"#, &output, None),
+            None,
+        )
+        .unwrap();
+    read_when_written(&output);
+    fs::remove_dir_all(&host.root).unwrap();
+    wait_until(|| SessionClient::connect(&host.root).is_ok());
+    let client = SessionClient::connect(&host.root).unwrap();
+    assert!(client.list().unwrap().iter().any(|pane| pane.id == id));
+    let lock = fs::File::open(host.root.join("host.lock")).unwrap();
+    // SAFETY: the descriptor is open; LOCK_NB returns at once.
+    let locked = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(locked, -1, "the host must hold the restored host.lock");
 }

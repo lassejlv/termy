@@ -8,6 +8,8 @@ mod layout_store;
 mod pane;
 mod protocol;
 mod server;
+#[cfg(windows)]
+mod windows_acl;
 #[cfg(test)]
 mod wire_golden;
 

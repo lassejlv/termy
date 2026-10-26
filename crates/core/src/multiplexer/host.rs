@@ -70,6 +70,22 @@ fn install_logger(root: &Path) {
     }
 }
 
+/// Opens `host.log` again after the session directory was recreated: the
+/// file the logger has open went away with the old directory.
+pub(crate) fn reopen_log() {
+    let Some(logger) = LOGGER.get() else {
+        return;
+    };
+    let mut sink = logger
+        .sink
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(file) = sink.path.as_deref().and_then(open_log) {
+        sink.file = Some(file);
+        sink.written = 0;
+    }
+}
+
 fn timestamp() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)

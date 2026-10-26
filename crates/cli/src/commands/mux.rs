@@ -11,7 +11,8 @@ use termy_core::{TerminalRuntimeConfig, TerminalSize, remote::RemoteState};
 
 #[derive(ClapArgs)]
 pub struct Args {
-    /// Multiplexer directory; defaults to the desktop config's multiplexer directory
+    /// Multiplexer directory; defaults to $TERMY_MUX_DIR inside a multiplexer
+    /// pane, otherwise to the desktop config's multiplexer directory
     #[arg(long, global = true)]
     session_dir: Option<PathBuf>,
     #[command(subcommand)]
@@ -210,8 +211,15 @@ fn with_warnings(mut result: Value, warnings: Vec<String>) -> Value {
 }
 
 fn execute(args: Args) -> anyhow::Result<Value> {
+    // Inside a pane, the host that runs it, even when this process resolves
+    // another config directory.
     let root = args
         .session_dir
+        .or_else(|| {
+            std::env::var_os("TERMY_MUX_DIR")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+        })
         .or_else(termy_core::multiplexer::default_root)
         .context("cannot determine session directory; pass --session-dir")?;
     // Validate before starting a background process.
@@ -250,15 +258,21 @@ fn execute(args: Args) -> anyhow::Result<Value> {
             window,
             workspace,
         } => {
+            let config = TerminalRuntimeConfig {
+                shell,
+                ..Default::default()
+            };
             let launch = PaneLaunch {
                 size: dimensions(cols, rows)?,
-                working_directory,
-                config: TerminalRuntimeConfig {
-                    shell,
-                    ..Default::default()
-                },
+                // As a local tab would; the host runs in another directory.
+                working_directory: PaneLaunch::client_working_directory(
+                    working_directory.as_deref(),
+                    config.working_dir_fallback,
+                ),
+                config,
                 launch: None,
                 shell_integration: None,
+                environment: Some(PaneLaunch::client_environment()),
             };
             // The CLI has no snapshot of its own to protect: the workspace
             // only has to exist (audit B17).
@@ -424,10 +438,14 @@ fn execute(args: Args) -> anyhow::Result<Value> {
                 tab,
                 PaneLaunch {
                     size: dimensions(80, 24)?,
-                    working_directory,
+                    working_directory: PaneLaunch::client_working_directory(
+                        working_directory.as_deref(),
+                        TerminalRuntimeConfig::default().working_dir_fallback,
+                    ),
                     config: TerminalRuntimeConfig::default(),
                     launch: None,
                     shell_integration: None,
+                    environment: Some(PaneLaunch::client_environment()),
                 },
             )?;
             Ok(with_warnings(

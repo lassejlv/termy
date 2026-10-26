@@ -983,6 +983,7 @@ fn child_environment_drops_the_parent_terminals_identity() {
         "TERM_PROGRAM_VERSION",
         "LC_TERMINAL",
         "WEZTERM_EXECUTABLE",
+        "TERMY_MUX_PANE",
     ] {
         assert!(
             crate::terminal_engine::transport::belongs_to_parent_terminal(OsStr::new(name)),

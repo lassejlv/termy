@@ -895,7 +895,7 @@ mod tests {
     #[test]
     fn late_reply_after_timeout_is_not_returned_for_the_next_request() {
         use std::net::TcpListener;
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::multiplexer::discovery::private_tempdir();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         std::fs::write(

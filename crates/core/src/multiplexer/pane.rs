@@ -4,7 +4,9 @@ use anyhow::Context;
 use flume::{Receiver, Sender};
 use std::{
     collections::VecDeque,
+    path::Path,
     sync::{Arc, Condvar, Mutex, Weak},
+    thread::JoinHandle,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -33,6 +35,8 @@ enum Work {
     Size(Sender<TerminalSize>),
     HostReply(u64, RemoteHostReply),
     Close,
+    /// Close, and wait until the program has ended: the host is exiting.
+    Shutdown,
 }
 
 struct Shared {
@@ -117,30 +121,51 @@ pub(crate) struct Pane {
     tx: Sender<Work>,
     shared: Arc<Mutex<Shared>>,
     exit_hook: Arc<Mutex<Option<ExitHook>>>,
+    /// The worker, which owns the terminal; `None` once joined.
+    worker: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl Pane {
-    pub(crate) fn create(launch: PaneLaunch) -> anyhow::Result<Self> {
-        Self::spawn(launch, HOST_REQUEST_TIMEOUT)
+    /// Starts the pane's program. `root` is the host's session directory,
+    /// exported to the program as `TERMY_MUX_DIR` with the pane's ID as
+    /// `TERMY_MUX_PANE`, so `termy mux` inside the pane finds this host.
+    pub(crate) fn create(launch: PaneLaunch, root: &Path) -> anyhow::Result<Self> {
+        Self::spawn(launch, root, HOST_REQUEST_TIMEOUT)
     }
 
-    fn spawn(launch: PaneLaunch, host_timeout: Duration) -> anyhow::Result<Self> {
+    fn spawn(mut launch: PaneLaunch, root: &Path, host_timeout: Duration) -> anyhow::Result<Self> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let environment = &mut launch.config.environment;
+        environment.insert("TERMY_MUX_DIR".into(), root.to_string_lossy().into_owned());
+        environment.insert("TERMY_MUX_PANE".into(), id.clone());
         let (tx, rx) = flume::bounded(256);
         let wake_tx = tx.clone();
-        let terminal = Terminal::new_with_launch_and_wakeup_notifier(
-            launch.size,
-            launch.working_directory.as_deref(),
-            Some(TerminalWakeupNotifier::new(move || {
-                let _ = wake_tx.try_send(Work::Wake);
-            })),
-            launch.shell_integration.as_ref(),
-            Some(&launch.config),
-            launch.launch.as_ref(),
-        )?;
+        let notifier = Some(TerminalWakeupNotifier::new(move || {
+            let _ = wake_tx.try_send(Work::Wake);
+        }));
+        let terminal = match &launch.environment {
+            Some(environment) => Terminal::new_with_launch_in_environment(
+                launch.size,
+                launch.working_directory.as_deref(),
+                notifier,
+                launch.shell_integration.as_ref(),
+                Some(&launch.config),
+                launch.launch.as_ref(),
+                environment,
+            ),
+            None => Terminal::new_with_launch_and_wakeup_notifier(
+                launch.size,
+                launch.working_directory.as_deref(),
+                notifier,
+                launch.shell_integration.as_ref(),
+                Some(&launch.config),
+                launch.launch.as_ref(),
+            ),
+        }?;
         let state = Arc::new(RemoteState::capture(&terminal));
         let shared = Arc::new(Mutex::new(Shared {
             info: PaneInfo {
-                id: uuid::Uuid::new_v4().to_string(),
+                id,
                 child_pid: terminal.child_pid(),
                 title: None,
                 working_directory: launch.working_directory,
@@ -154,13 +179,14 @@ impl Pane {
         let worker_shared = Arc::clone(&shared);
         let exit_hook = Arc::new(Mutex::new(None));
         let worker_exit_hook = Arc::clone(&exit_hook);
-        std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("termy-session".into())
             .spawn(move || run(terminal, rx, worker_shared, worker_exit_hook, host_timeout))?;
         Ok(Self {
             tx,
             shared,
             exit_hook,
+            worker: Arc::new(Mutex::new(Some(worker))),
         })
     }
 
@@ -228,6 +254,30 @@ impl Pane {
 
     pub(crate) fn close(&self) {
         let _ = self.tx.send_timeout(Work::Close, REQUEST_TIMEOUT);
+    }
+
+    /// Closes the pane for a host that is about to exit: the worker ends
+    /// the program itself and waits for it (audit L1), since a hang-up
+    /// escalation timer would die with the host. See [`Self::wait_closed`].
+    pub(crate) fn shutdown(&self) {
+        let _ = self.tx.send_timeout(Work::Shutdown, REQUEST_TIMEOUT);
+    }
+
+    /// Waits until the worker has dropped the terminal after [`Self::close`]
+    /// or [`Self::shutdown`]. False if `deadline` passed first.
+    pub(crate) fn wait_closed(&self, deadline: Instant) -> bool {
+        let mut worker = self.worker.lock().unwrap();
+        let Some(handle) = worker.as_ref() else {
+            return true;
+        };
+        while !handle.is_finished() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let _ = worker.take().map(JoinHandle::join);
+        true
     }
 
     pub(crate) fn subscribe(&self, host_capable: bool) -> anyhow::Result<Arc<Subscription>> {
@@ -475,6 +525,10 @@ fn run(
         .min(host.next_check());
         match rx.recv_timeout(timeout) {
             Ok(Work::Close) | Err(flume::RecvTimeoutError::Disconnected) => break,
+            Ok(Work::Shutdown) => {
+                terminal.terminate_and_wait();
+                break;
+            }
             Ok(Work::Command(command, reply)) => {
                 let changes_state = !matches!(
                     command,
@@ -723,6 +777,7 @@ mod tests {
             tx,
             shared,
             exit_hook: Arc::default(),
+            worker: Arc::new(Mutex::new(None)),
         };
         let worker = std::thread::spawn(move || {
             let Work::Refresh(reply) = rx.recv_timeout(REQUEST_TIMEOUT).unwrap() else {
@@ -818,6 +873,7 @@ mod tests {
             tx,
             shared,
             exit_hook: Arc::default(),
+            worker: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1048,7 +1104,9 @@ mod tests {
                     program: "/bin/sh".into(),
                     args: vec!["-c".into(), script],
                 }),
+                environment: None,
             },
+            &std::env::temp_dir(),
             timeout,
         )
         .unwrap();

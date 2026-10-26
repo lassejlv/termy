@@ -94,6 +94,43 @@ handshake; another one closes the oldest, so a client that reconnects as soon
 as it is dropped cannot lock out real clients, whose handshake takes
 milliseconds.
 
+The host is isolated from whatever process starts it. It runs in the home
+directory with a reduced environment (identity, locale, temporary and XDG
+directories, the login session's display, SSH agent and bus, `TERMY_*`, the
+Windows system folders, and the login default PATH; see
+`host_keeps_variable`). On Windows it leaves the caller's job, so closing the
+Termy tab that ran `termy mux create` does not end it, unless a job it runs in
+forbids breakaway. Each pane starts from the environment its client sends in
+`PaneLaunch::environment` (the desktop and CLI send their own), in an
+absolute working directory the client resolved as for a local tab
+(`PaneLaunch::client_working_directory`), so a pane behaves like a local tab
+of that client. Every pane also gets `TERMY_MUX_DIR` (the session directory)
+and `TERMY_MUX_PANE` (its ID); `termy mux` prefers `TERMY_MUX_DIR` when no
+`--session-dir` is given.
+
+The session directory must be private (`discovery::Root`). On Unix it must be
+the user's, mode 0700 and not a symlink, and the endpoint, lock and log files
+are opened relative to a handle of the checked directory, so a user who can
+write a parent directory cannot redirect the token by swapping the path. ACLs
+are not checked: on macOS a custom directory under a parent whose inheritable
+ACL grants another user access is not protected by the mode. On Windows the
+directory is held open without delete sharing and must not be a junction; it
+must be owned by the user, SYSTEM or the administrators, a DACL that grants
+anyone else access is replaced with a protected owner-only one (or the
+directory is refused if that is not allowed), and every file in it must be
+owned by the same accounts; the token goes into a newly created file. A
+watchdog in the host recreates the directory, `host.lock` and `endpoint.json`
+when they are removed or replaced. It writes the token only while it holds the
+lock and the directory is still the private one it checked. When another host
+takes the directory over, it waits: it takes the directory back once that host
+exits, and stops once its own terminals have ended.
+
+Shutdown waits for every pane: each worker hangs up its shell's process group,
+kills that group if the shell still runs 250 ms later, and waits until the
+shell is reaped, so programs in the group that ignore SIGHUP do not outlive the
+host. Jobs an interactive shell put in process groups of their own get only
+the hang-up, as when a tab closes.
+
 ## Validation
 
 ```sh

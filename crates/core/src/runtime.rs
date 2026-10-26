@@ -14,7 +14,7 @@ use crate::shell_integration::ProgressState;
 use flume::Sender;
 #[cfg(not(target_os = "windows"))]
 use std::path::Path;
-use std::{collections::HashMap, env, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, env, ffi::OsString, path::PathBuf, sync::Arc};
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct TabTitleShellIntegration {
@@ -246,8 +246,82 @@ use windows_shell::{
     windows_shell_launch, windows_startup_command_launch, windows_startup_command_shell,
 };
 
-#[cfg(any(not(target_os = "windows"), test))]
+/// Where a terminal child's inherited variables come from. Launch decisions
+/// that read the environment (the default shell, PATH, the locale) read the
+/// same source, so a child never mixes two environments.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ChildEnvironment<'a> {
+    /// This process's own environment.
+    Process,
+    /// Given variables instead, for example a multiplexer client's.
+    Explicit(&'a [(String, String)]),
+}
+
+impl ChildEnvironment<'_> {
+    pub(crate) fn var_os(self, name: &str) -> Option<OsString> {
+        match self {
+            Self::Process => env::var_os(name),
+            // The last entry wins, as when the variables are applied.
+            Self::Explicit(variables) => variables
+                .iter()
+                .rev()
+                .find(|(key, _)| environment_names_match(key, name))
+                .map(|(_, value)| OsString::from(value)),
+        }
+    }
+
+    #[cfg(unix)]
+    fn var(self, name: &str) -> Option<String> {
+        self.var_os(name)?.into_string().ok()
+    }
+}
+
+/// Windows environment names are case-insensitive.
+fn environment_names_match(left: &str, right: &str) -> bool {
+    if cfg!(windows) {
+        left.eq_ignore_ascii_case(right)
+    } else {
+        left == right
+    }
+}
+
+/// The whole environment of a child that starts from `base` instead of this
+/// process's environment: `base` without the variables of the terminal that
+/// launched it, then `overrides`. Entries no child environment can hold
+/// (Windows' per-drive `=C:` entries) are left out.
+pub(crate) fn explicit_child_environment(
+    base: &[(String, String)],
+    overrides: HashMap<String, String>,
+) -> Vec<(String, String)> {
+    let mut environment: Vec<(String, String)> = Vec::with_capacity(base.len() + overrides.len());
+    // Walk backwards so a repeated name keeps its last value, as
+    // `ChildEnvironment::var_os` reads it.
+    for (name, value) in base.iter().rev() {
+        let usable = !name.is_empty()
+            && !name.contains(['=', '\0'])
+            && !value.contains('\0')
+            && !crate::terminal_engine::transport::belongs_to_parent_terminal(name.as_ref());
+        let replaced = overrides
+            .keys()
+            .chain(environment.iter().map(|(known, _)| known))
+            .any(|known| environment_names_match(known, name));
+        if usable && !replaced {
+            environment.push((name.clone(), value.clone()));
+        }
+    }
+    environment.extend(overrides);
+    // A stable order keeps the child environment block reproducible.
+    environment.sort_unstable();
+    environment
+}
+
+#[cfg(test)]
 fn resolve_shell_path(configured_shell: Option<&str>) -> String {
+    resolve_shell_path_in(configured_shell, ChildEnvironment::Process)
+}
+
+#[cfg(any(not(target_os = "windows"), test))]
+fn resolve_shell_path_in(configured_shell: Option<&str>, source: ChildEnvironment) -> String {
     if let Some(shell) = configured_shell
         .map(str::trim)
         .filter(|shell| !shell.is_empty())
@@ -255,7 +329,9 @@ fn resolve_shell_path(configured_shell: Option<&str>) -> String {
         return shell.to_string();
     }
 
-    if let Ok(shell) = env::var("SHELL")
+    if let Some(shell) = source
+        .var_os("SHELL")
+        .and_then(|shell| shell.into_string().ok())
         && !shell.trim().is_empty()
     {
         return shell;
@@ -288,18 +364,25 @@ fn configured_shell_launch(configured_shell: Option<&str>) -> Option<ResolvedTer
 }
 
 fn default_shell_launch(runtime_config: &TerminalRuntimeConfig) -> ResolvedTerminalLaunch {
+    default_shell_launch_in(runtime_config, ChildEnvironment::Process)
+}
+
+fn default_shell_launch_in(
+    runtime_config: &TerminalRuntimeConfig,
+    source: ChildEnvironment,
+) -> ResolvedTerminalLaunch {
     if let Some(launch) = configured_shell_launch(runtime_config.shell.as_deref()) {
         return launch;
     }
 
     #[cfg(target_os = "windows")]
     {
-        windows_shell_launch(runtime_config.windows_shell)
+        windows_shell_launch(runtime_config.windows_shell, source)
     }
 
     #[cfg(not(target_os = "windows"))]
     {
-        let shell_path = resolve_shell_path(None);
+        let shell_path = resolve_shell_path_in(None, source);
         ResolvedTerminalLaunch {
             program: shell_path.clone(),
             args: login_shell_args(&shell_path),
@@ -310,6 +393,15 @@ fn default_shell_launch(runtime_config: &TerminalRuntimeConfig) -> ResolvedTermi
 pub fn resolve_terminal_launch(
     runtime_config: &TerminalRuntimeConfig,
     launch: Option<&TerminalLaunch>,
+) -> anyhow::Result<ResolvedTerminalLaunch> {
+    resolve_terminal_launch_in(runtime_config, launch, ChildEnvironment::Process)
+}
+
+/// [`resolve_terminal_launch`] for a child whose environment is `source`.
+pub(crate) fn resolve_terminal_launch_in(
+    runtime_config: &TerminalRuntimeConfig,
+    launch: Option<&TerminalLaunch>,
+    source: ChildEnvironment,
 ) -> anyhow::Result<ResolvedTerminalLaunch> {
     if let Some(TerminalLaunch::Program { program, args }) = launch {
         anyhow::ensure!(
@@ -354,17 +446,19 @@ pub fn resolve_terminal_launch(
                     windows_shell_family(shell),
                     shell.to_string(),
                     command,
+                    source,
                 ));
             }
 
             return Ok(windows_startup_command_shell(
                 runtime_config.windows_shell,
                 command,
+                source,
             ));
         }
     }
 
-    Ok(default_shell_launch(runtime_config))
+    Ok(default_shell_launch_in(runtime_config, source))
 }
 
 fn user_home_dir() -> Option<PathBuf> {
@@ -402,11 +496,21 @@ pub fn terminal_environment_overrides(
     shell_integration: Option<&TabTitleShellIntegration>,
     runtime_config: &TerminalRuntimeConfig,
 ) -> HashMap<String, String> {
+    terminal_environment_overrides_in(shell_integration, runtime_config, ChildEnvironment::Process)
+}
+
+/// [`terminal_environment_overrides`] for a child whose environment is `source`.
+pub(crate) fn terminal_environment_overrides_in(
+    shell_integration: Option<&TabTitleShellIntegration>,
+    runtime_config: &TerminalRuntimeConfig,
+    source: ChildEnvironment,
+) -> HashMap<String, String> {
     let mut env_overrides = HashMap::new();
 
     if let Some(path) = normalized_path_env(
-        env::var_os("PATH")
-            .or_else(|| env::var_os("Path"))
+        source
+            .var_os("PATH")
+            .or_else(|| source.var_os("Path"))
             .as_deref(),
     ) {
         env_overrides.insert("PATH".to_string(), path);
@@ -468,7 +572,7 @@ pub fn terminal_environment_overrides(
     // (`cmd.exe`/PowerShell) do not use this locale contract.
     #[cfg(unix)]
     {
-        apply_utf8_locale_overrides(&mut env_overrides);
+        apply_utf8_locale_overrides(&mut env_overrides, source);
     }
 
     let shell_integration_enabled = shell_integration.is_some_and(|cfg| cfg.enabled);
@@ -491,10 +595,13 @@ pub fn terminal_environment_overrides(
 }
 
 #[cfg(unix)]
-fn apply_utf8_locale_overrides(env_overrides: &mut HashMap<String, String>) {
-    let lc_all = env::var("LC_ALL").ok();
-    let lc_ctype = env::var("LC_CTYPE").ok();
-    let lang = env::var("LANG").ok();
+fn apply_utf8_locale_overrides(
+    env_overrides: &mut HashMap<String, String>,
+    source: ChildEnvironment,
+) {
+    let lc_all = source.var("LC_ALL");
+    let lc_ctype = source.var("LC_CTYPE");
+    let lang = source.var("LANG");
     let target_utf8_locale =
         preferred_utf8_locale(lc_all.as_deref(), lc_ctype.as_deref(), lang.as_deref());
 
@@ -783,6 +890,33 @@ impl Terminal {
             runtime_config,
             launch,
             None,
+            ChildEnvironment::Process,
+        )
+        .map(|backend| Self { backend })
+    }
+
+    /// Like [`Self::new_with_launch_and_wakeup_notifier`], but the child starts
+    /// from `environment` instead of this process's environment. Termy's own
+    /// terminal variables and the configured ones still apply on top, and the
+    /// default shell, PATH and locale are read from `environment`.
+    pub fn new_with_launch_in_environment(
+        size: TerminalSize,
+        configured_working_dir: Option<&str>,
+        wakeup_notifier: Option<TerminalWakeupNotifier>,
+        tab_title_shell_integration: Option<&TabTitleShellIntegration>,
+        runtime_config: Option<&TerminalRuntimeConfig>,
+        launch: Option<&TerminalLaunch>,
+        environment: &[(String, String)],
+    ) -> anyhow::Result<Self> {
+        engine_backend::Backend::new_with_launch_and_wakeup_notifier(
+            size,
+            configured_working_dir,
+            wakeup_notifier,
+            tab_title_shell_integration,
+            runtime_config,
+            launch,
+            None,
+            ChildEnvironment::Explicit(environment),
         )
         .map(|backend| Self { backend })
     }
@@ -808,6 +942,7 @@ impl Terminal {
             runtime_config,
             launch,
             Some(restored_output),
+            ChildEnvironment::Process,
         )
         .map(|backend| Self { backend })
     }
@@ -869,6 +1004,13 @@ impl Terminal {
 
     pub fn child_pid(&self) -> Option<u32> {
         self.backend.child_pid()
+    }
+
+    /// Ends the child and waits for it, where dropping the terminal would
+    /// leave a program that ignores SIGHUP to a timer: for a process about to
+    /// exit. Remote and display terminals have no child here.
+    pub(crate) fn terminate_and_wait(&self) {
+        self.backend.terminate_and_wait();
     }
 
     /// Suspends render wakeups for a hidden terminal. Title changes and OSC 7501

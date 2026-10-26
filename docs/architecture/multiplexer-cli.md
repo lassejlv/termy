@@ -62,9 +62,23 @@ Reordering preserves the active item. Workspace deletion requires an empty
 workspace and preserves at least one workspace in the window.
 
 Pass `--session-dir PATH` anywhere after `mux` to select an isolated host.
-The default uses the desktop config directory's `multiplexer` subdirectory
-(`%LOCALAPPDATA%\termy\multiplexer` on Windows, falling back to the old location
-while an older host still runs there).
+Inside a multiplexer pane the default is the pane's own host, from
+`TERMY_MUX_DIR`; elsewhere it is the desktop config directory's `multiplexer`
+subdirectory (`%LOCALAPPDATA%\termy\multiplexer` on Windows, falling back to
+the old location while an older host still runs there). The directory holds
+the host's access token, so it must be private: on Unix yours and mode 0700;
+on Windows owned by you (or SYSTEM or the administrators), and Termy replaces
+its permissions with ones granting access only to you and SYSTEM. Use a
+dedicated directory; one owned by another account is refused.
+
+Each pane starts from the environment of the command that created it, not
+that of the process that started the host. It starts in `--working-directory`,
+resolved by the command (relative paths against its directory, `~` with its
+home), or else where a regular terminal would start: the command's directory
+on Linux, the home directory on macOS and Windows (the default of
+`working_dir_fallback`).
+`split` starts the new pane in the source pane's directory. Panes see
+`TERMY_MUX_DIR` and their own ID in `TERMY_MUX_PANE`.
 Input is bounded to 1 MiB; terminal sizes to 1–400 columns and 1–200 rows.
 A desktop window that shows the pane normally wins a size conflict: after
 `resize`, it sets the pane back to the size it draws on its next layout pass.

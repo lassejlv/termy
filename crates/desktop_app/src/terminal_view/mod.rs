@@ -517,16 +517,28 @@ impl Terminal {
     ) -> anyhow::Result<Self> {
         Self::build_native(wakeup_router, |notifier| {
             if let Some(client) = multiplexer {
-                let (id, terminal) = client.create(
-                    termy_core::multiplexer::PaneLaunch {
-                        size,
-                        working_directory: configured_working_dir.map(str::to_owned),
-                        shell_integration: tab_title_shell_integration.cloned(),
-                        config: runtime_config.cloned().unwrap_or_default(),
-                        launch: launch.cloned(),
-                    },
-                    Some(notifier),
-                )?;
+                let config = runtime_config.cloned().unwrap_or_default();
+                // Resolved here, as a local tab would: the host runs in the
+                // home directory with an environment of its own.
+                let working_directory =
+                    termy_core::multiplexer::PaneLaunch::client_working_directory(
+                        configured_working_dir,
+                        config.working_dir_fallback,
+                    );
+                let (id, terminal) =
+                    client.create(
+                        termy_core::multiplexer::PaneLaunch {
+                            size,
+                            working_directory,
+                            shell_integration: tab_title_shell_integration.cloned(),
+                            config,
+                            launch: launch.cloned(),
+                            environment: Some(
+                                termy_core::multiplexer::PaneLaunch::client_environment(),
+                            ),
+                        },
+                        Some(notifier),
+                    )?;
                 Ok((
                     terminal,
                     Some(crate::multiplexer::PaneSession::new(id, client.clone())),

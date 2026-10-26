@@ -159,6 +159,7 @@ fn pane_launch() -> PaneLaunch {
             program: "ssh".into(),
             args: vec!["host".into()],
         }),
+        environment: Some(vec![("LANG".into(), "C.UTF-8".into())]),
     }
 }
 
