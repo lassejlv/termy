@@ -249,6 +249,7 @@ Related UI option:
 
 - `new_tab`
 - `new_window`
+- `reopen_detached_window`
 - `close_tab`
 - `close_pane_or_tab`
 - `move_tab_left`

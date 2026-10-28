@@ -317,7 +317,10 @@ impl TerminalView {
             if owns {
                 view.owns_persisted_session = false;
             }
-            view.sync_persisted_native_workspace();
+            // An emptied multiplexer window closes for good.
+            if !(empty && view.discard_multiplexer_window()) {
+                view.sync_persisted_native_workspace();
+            }
             if !empty && view.runtime_uses_tmux() {
                 view.refresh_tmux_snapshot();
             }

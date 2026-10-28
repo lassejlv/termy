@@ -459,7 +459,7 @@ impl TerminalView {
         }
     }
 
-    fn stash_active_workspace_tabs(&mut self) {
+    pub(super) fn stash_active_workspace_tabs(&mut self) {
         let active_tab = self.session.active_tab;
         if let Some(entry) = self
             .session
@@ -471,7 +471,7 @@ impl TerminalView {
         }
     }
 
-    fn restore_workspace_tabs(&mut self, index: usize) {
+    pub(super) fn restore_workspace_tabs(&mut self, index: usize) {
         if let Some(entry) = self.session.workspaces.get_mut(index) {
             self.session.tabs = std::mem::take(&mut entry.tabs);
             self.session.active_tab = entry
@@ -512,7 +512,8 @@ impl TerminalView {
         self.set_tab_scrollback_options(self.session.active_tab, false);
         self.stash_active_workspace_tabs();
         self.restore_workspace_tabs(index);
-        self.set_tab_scrollback_options(self.session.active_tab, true);
+        // A workspace started just now has every tab at the full limit.
+        self.sync_all_tab_scrollback();
         self.reset_view_state_after_workspace_change(cx);
     }
 
@@ -612,7 +613,7 @@ impl TerminalView {
             .expect("workspace deletion must retain the selected replacement");
         if deleting_active {
             self.restore_workspace_tabs(replacement_index);
-            self.set_tab_scrollback_options(self.session.active_tab, true);
+            self.sync_all_tab_scrollback();
         } else {
             self.session.active_workspace = replacement_index;
         }
@@ -732,6 +733,7 @@ impl TerminalView {
             // Tab creation failed; roll back so no empty workspace survives.
             self.session.workspaces.pop();
             self.restore_workspace_tabs(previous_workspace);
+            self.sync_all_tab_scrollback();
             return;
         }
         self.session.next_workspace_id += 1;
@@ -860,6 +862,9 @@ impl TerminalView {
                     if has_more {
                         wakeup_router.mark_ready(wakeup_id);
                     }
+                    if !events.is_empty() && terminal.session_host_lost() {
+                        crate::multiplexer::report_host_lost();
+                    }
                     for event in events {
                         match event {
                             TerminalEvent::Exit => {
@@ -870,6 +875,9 @@ impl TerminalView {
                             }
                             TerminalEvent::Progress(state) => {
                                 pane.progress_state = state;
+                            }
+                            TerminalEvent::ShellPromptStart => {
+                                pane.clear_progress_at_prompt();
                             }
                             TerminalEvent::WorkingDirectory(path) => {
                                 tab.last_prompt_cwd = Some(path);
@@ -1036,6 +1044,72 @@ impl TerminalView {
 mod tests {
     use super::*;
 
+    #[gpui_kit::test]
+    fn prompt_start_clears_progress_in_visible_and_stashed_tabs(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            let window = cx
+                .open_window(gpui_kit::WindowOptions::default(), |window, cx| {
+                    cx.new(|cx| {
+                        let config = crate::config::AppConfig {
+                            tmux_enabled: false,
+                            native_tab_persistence: false,
+                            ..Default::default()
+                        };
+                        let mut view = TerminalView::new_for_window(window, cx, config, true);
+                        view.owns_persisted_session = false;
+                        view
+                    })
+                })
+                .unwrap();
+            window
+                .update(cx, |view, _, cx| {
+                    let size = TerminalSize::default();
+                    let tab = |view: &mut TerminalView| {
+                        let id = view.allocate_tab_id();
+                        let terminal = Terminal::new_test_display(size);
+                        TerminalView::create_native_tab(id, terminal, size.cols, size.rows, None)
+                    };
+                    // Test displays share one wakeup id: drain each tab on its own.
+                    let ready = || HashSet::from([0]);
+                    let progress = |tab: &TerminalTab| tab.panes[0].progress_state;
+
+                    let visible = tab(view);
+                    view.session.tabs = vec![visible];
+                    view.session.active_tab = 0;
+                    let terminal = view.session.tabs[0].panes[0].terminal();
+                    terminal.feed_test_output(b"\x1b]9;4;3;0\x07");
+                    view.process_native_terminal_events(cx, &mut ready());
+                    assert_eq!(
+                        progress(&view.session.tabs[0]),
+                        ProgressState::Indeterminate
+                    );
+                    let terminal = view.session.tabs[0].panes[0].terminal();
+                    terminal.feed_test_output(b"\x1b]133;A\x07");
+                    assert!(view.process_native_terminal_events(cx, &mut ready()));
+                    assert_eq!(progress(&view.session.tabs[0]), ProgressState::Clear);
+
+                    let stashed = tab(view);
+                    view.session.tabs.clear();
+                    let mut entry = WorkspaceEntry::new(99);
+                    entry.tabs.push(stashed);
+                    view.session.workspaces.push(entry);
+                    let mut clipboard = ClipboardTextCache::new(view.clipboard_read);
+                    let workspace = view.session.workspaces.len() - 1;
+                    let terminal = view.session.workspaces[workspace].tabs[0].panes[0].terminal();
+                    terminal.feed_test_output(b"\x1b]9;4;3;0\x07");
+                    view.drain_stashed_workspace_terminal_events(cx, &mut clipboard, &mut ready());
+                    let stashed =
+                        |view: &TerminalView| progress(&view.session.workspaces[workspace].tabs[0]);
+                    assert_eq!(stashed(view), ProgressState::Indeterminate);
+                    let terminal = view.session.workspaces[workspace].tabs[0].panes[0].terminal();
+                    terminal.feed_test_output(b"\x1b]133;A\x07");
+                    view.drain_stashed_workspace_terminal_events(cx, &mut clipboard, &mut ready());
+                    assert_eq!(stashed(view), ProgressState::Clear);
+                })
+                .unwrap();
+        });
+    }
+
     #[test]
     fn workspace_sidebar_width_clamps_to_configured_bounds() {
         assert_eq!(
@@ -1134,5 +1208,139 @@ mod tests {
             TerminalView::replacement_workspace_index_before_deletion(3, 3),
             None
         );
+    }
+
+    fn test_window(cx: &mut App) -> gpui_kit::WindowHandle<TerminalView> {
+        use gpui_kit::{AppContext, WindowOptions};
+        cx.open_window(WindowOptions::default(), |window, cx| {
+            cx.new(|cx| {
+                let config = AppConfig {
+                    tmux_enabled: false,
+                    native_tab_persistence: false,
+                    ..AppConfig::default()
+                };
+                TerminalView::new_for_window(window, cx, config, true)
+            })
+        })
+        .unwrap()
+    }
+
+    fn display_tab(view: &mut TerminalView) -> TerminalTab {
+        let id = view.allocate_tab_id();
+        TerminalView::create_native_tab(
+            id,
+            Terminal::new_test_display(TerminalSize::default()),
+            80,
+            24,
+            None,
+        )
+    }
+
+    /// Writes more lines than every limit in these tests, then reports how
+    /// much history the pane kept.
+    fn kept_history(pane: &TerminalPane) -> usize {
+        let terminal = pane.terminal();
+        for _ in 0..40 {
+            terminal.hydrate_output(b"line\r\n");
+        }
+        terminal.scroll_state().1
+    }
+
+    /// With reverse video (DECSCNM) on, a pane draws its query foreground as
+    /// the default background, so its palette shows which query colors (the
+    /// OSC 10/11 answers) the pane was given.
+    fn query_foreground(pane: &TerminalPane) -> Option<termy_core::TerminalColor> {
+        let Terminal::Native(native) = pane.terminal() else {
+            panic!("native test terminal required");
+        };
+        native.lock().unwrap().palette().background
+    }
+
+    /// Audit B21: theme and runtime-option changes reach panes that are not
+    /// in the visible strip, through both call sites.
+    #[gpui_kit::test]
+    fn theme_and_runtime_config_changes_reach_hidden_panes(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            test_window(cx)
+                .update(cx, |view, _, cx| {
+                    hide_panes_in_a_workspace_and_a_zoom(view);
+                    view.for_each_live_pane(|_, pane| {
+                        pane.terminal().hydrate_output(b"\x1b[?5h");
+                    });
+                    let assert_every_pane_answers = |view: &TerminalView| {
+                        let expected = view.terminal_runtime.query_colors.foreground;
+                        view.for_each_live_pane(|_, pane| {
+                            assert_eq!(query_foreground(pane), Some(expected));
+                        });
+                    };
+
+                    view.apply_resolved_theme("dracula".into(), cx);
+                    assert_every_pane_answers(view);
+                    let dracula = view.terminal_runtime.query_colors.foreground;
+
+                    let config = AppConfig {
+                        tmux_enabled: false,
+                        native_tab_persistence: false,
+                        theme_mode: config::AppearanceMode::Manual,
+                        theme: "nord".into(),
+                        scrollback_history: 5,
+                        inactive_tab_scrollback: None,
+                        ..AppConfig::default()
+                    };
+                    view.apply_runtime_config(config, cx);
+                    assert_ne!(view.terminal_runtime.query_colors.foreground, dracula);
+                    assert_every_pane_answers(view);
+                    view.for_each_live_pane(|_, pane| assert!(kept_history(pane) <= 5));
+                })
+                .unwrap();
+        });
+    }
+
+    /// One pane in the strip, one parked by a zoom, one in a stashed workspace.
+    fn hide_panes_in_a_workspace_and_a_zoom(view: &mut TerminalView) {
+        let visible = display_tab(view);
+        let parked = display_tab(view).panes.pop().unwrap();
+        view.session.native_pane_zoom_snapshots.insert(
+            visible.id,
+            NativePaneZoomSnapshot {
+                other_panes: vec![parked],
+                active_pane_geometry: (0, 0, 80, 24),
+                active_pane_id: visible.active_pane_id.clone(),
+                active_original_index: 0,
+                layout_tree: None,
+            },
+        );
+        view.session.tabs = vec![visible];
+        view.session.active_tab = 0;
+        let mut stashed = WorkspaceEntry::new(2);
+        stashed.tabs = vec![display_tab(view)];
+        view.session.workspaces.push(stashed);
+
+        let mut live = 0;
+        view.for_each_live_pane(|_, _| live += 1);
+        assert_eq!(live, 3, "strip, stashed workspace and zoom-parked pane");
+    }
+
+    #[gpui_kit::test]
+    fn switching_to_a_workspace_caps_its_inactive_tabs(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            test_window(cx)
+                .update(cx, |view, _, cx| {
+                    view.session.tabs = vec![display_tab(view)];
+                    view.session.active_tab = 0;
+                    // Tabs started by a lazy workspace restore come up with
+                    // the full scrollback limit.
+                    let mut restored = WorkspaceEntry::new(2);
+                    restored.tabs = vec![display_tab(view), display_tab(view)];
+                    view.session.workspaces.push(restored);
+                    view.inactive_tab_scrollback = Some(2);
+
+                    view.switch_workspace(1, cx);
+                    assert_eq!(view.session.active_tab, 0);
+                    assert!(kept_history(&view.session.tabs[0].panes[0]) > 2);
+                    assert!(kept_history(&view.session.tabs[1].panes[0]) <= 2);
+                })
+                .unwrap();
+        });
     }
 }

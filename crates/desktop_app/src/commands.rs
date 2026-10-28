@@ -427,6 +427,21 @@ define_commands!(
             MenuActionRole::Normal
         ))
     ),
+    // Listed in the palette only while the built-in multiplexer runs (see
+    // `command_palette_multiplexer_items`), so it has no static palette entry.
+    // Menus are static: without the multiplexer the menu item explains that.
+    (
+        ReopenDetachedWindow,
+        TERMINAL_CONTEXT,
+        None,
+        Some(menu(
+            MenuRoot::Window,
+            0,
+            "Reopen Detached Window",
+            MenuVisibility::Always,
+            MenuActionRole::Normal
+        ))
+    ),
     (CloseTab, TERMINAL_CONTEXT, None, None),
     (
         ClosePaneOrTab,

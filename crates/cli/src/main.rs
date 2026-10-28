@@ -181,14 +181,23 @@ fn main() {
         let result = std::env::args_os()
             .nth(2)
             .ok_or_else(|| anyhow::anyhow!("session directory required"))
-            .and_then(|root| termy_core::multiplexer::serve(std::path::Path::new(&root)));
+            .and_then(|root| termy_core::multiplexer::run_host(std::path::Path::new(&root)));
         if let Err(error) = result {
-            eprintln!("{error}");
+            eprintln!("session host failed: {error:#}");
             std::process::exit(1);
         }
         return;
     }
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        // Scripts read `termy mux` failures as JSON, argument errors too.
+        Err(error)
+            if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("mux")) =>
+        {
+            commands::mux::parse_error(error)
+        }
+        Err(error) => error.exit(),
+    };
 
     let path = cli.working_directory.or(cli.path);
     if path.is_some() || cli.new_window || cli.new_tab {

@@ -1,6 +1,6 @@
 //! Windows shell selection, startup-command wrapping and prompt integration.
 
-use super::{ResolvedTerminalLaunch, TabTitleShellIntegration, WindowsShell};
+use super::{ChildEnvironment, ResolvedTerminalLaunch, TabTitleShellIntegration, WindowsShell};
 use crate::path_env::normalized_path_env;
 use std::{
     collections::HashMap,
@@ -42,8 +42,18 @@ pub(super) fn windows_shell_family(program: &str) -> WindowsShellFamily {
     }
 }
 
+#[cfg(test)]
 pub(super) fn windows_cmd_path() -> String {
-    if let Ok(comspec) = env::var("COMSPEC")
+    windows_cmd_path_in(ChildEnvironment::Process)
+}
+
+/// The command processor named by `COMSPEC` in the child's environment.
+/// That and PATH come from the child's environment; the system folders are
+/// the same for every process on the machine.
+fn windows_cmd_path_in(source: ChildEnvironment) -> String {
+    if let Some(comspec) = source
+        .var_os("COMSPEC")
+        .and_then(|comspec| comspec.into_string().ok())
         && !comspec.trim().is_empty()
     {
         return comspec;
@@ -70,10 +80,11 @@ fn is_launchable_file(path: &Path) -> bool {
 
 /// Every `file_name` on the PATH a child would see (the process PATH plus
 /// the registry's, which picks up installs made after Termy started).
-fn find_all_on_path(file_name: &str) -> Vec<PathBuf> {
+fn find_all_on_path(source: ChildEnvironment, file_name: &str) -> Vec<PathBuf> {
     let Some(path) = normalized_path_env(
-        env::var_os("PATH")
-            .or_else(|| env::var_os("Path"))
+        source
+            .var_os("PATH")
+            .or_else(|| source.var_os("Path"))
             .as_deref(),
     ) else {
         return Vec::new();
@@ -85,16 +96,16 @@ fn find_all_on_path(file_name: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-fn find_on_path(file_name: &str) -> Option<PathBuf> {
-    find_all_on_path(file_name).into_iter().next()
+fn find_on_path(source: ChildEnvironment, file_name: &str) -> Option<PathBuf> {
+    find_all_on_path(source, file_name).into_iter().next()
 }
 
 fn path_text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-fn windows_pwsh_path() -> Option<PathBuf> {
-    find_on_path("pwsh.exe").or_else(|| {
+fn windows_pwsh_path(source: ChildEnvironment) -> Option<PathBuf> {
+    find_on_path(source, "pwsh.exe").or_else(|| {
         ["ProgramFiles", "ProgramW6432"]
             .into_iter()
             .filter_map(env::var_os)
@@ -104,22 +115,22 @@ fn windows_pwsh_path() -> Option<PathBuf> {
     })
 }
 
-fn windows_powershell_path() -> Option<PathBuf> {
-    find_on_path("powershell.exe").or_else(|| {
+fn windows_powershell_path(source: ChildEnvironment) -> Option<PathBuf> {
+    find_on_path(source, "powershell.exe").or_else(|| {
         Some(system_root().join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
             .filter(|candidate| candidate.is_file())
     })
 }
 
 /// The shell [`WindowsShell::Auto`] stands for on this machine.
-fn windows_auto_shell() -> (WindowsShellFamily, String) {
-    if let Some(pwsh) = windows_pwsh_path() {
+fn windows_auto_shell(source: ChildEnvironment) -> (WindowsShellFamily, String) {
+    if let Some(pwsh) = windows_pwsh_path(source) {
         return (WindowsShellFamily::PowerShell, path_text(&pwsh));
     }
-    if let Some(powershell) = windows_powershell_path() {
+    if let Some(powershell) = windows_powershell_path(source) {
         return (WindowsShellFamily::PowerShell, path_text(&powershell));
     }
-    (WindowsShellFamily::Cmd, windows_cmd_path())
+    (WindowsShellFamily::Cmd, windows_cmd_path_in(source))
 }
 
 /// Paths under `%SystemRoot%` or the Store alias directory, where `bash.exe`
@@ -165,7 +176,7 @@ fn git_for_windows_install_paths() -> Vec<PathBuf> {
     .collect()
 }
 
-fn git_bash_candidates() -> Vec<PathBuf> {
+fn git_bash_candidates(source: ChildEnvironment) -> Vec<PathBuf> {
     let mut candidates = git_for_windows_install_paths()
         .into_iter()
         .map(|install| install.join(r"bin\bash.exe"))
@@ -173,7 +184,7 @@ fn git_bash_candidates() -> Vec<PathBuf> {
 
     // `git.exe` on PATH lives in `<Git>\cmd`, `<Git>\bin` or
     // `<Git>\mingw64\bin`; Git Bash is `<Git>\bin\bash.exe` in every layout.
-    for git in find_all_on_path("git.exe") {
+    for git in find_all_on_path(source, "git.exe") {
         let Some(directory) = git.parent() else {
             continue;
         };
@@ -199,12 +210,17 @@ fn git_bash_candidates() -> Vec<PathBuf> {
         }
     }
 
-    candidates.extend(find_all_on_path("bash.exe"));
+    candidates.extend(find_all_on_path(source, "bash.exe"));
     candidates
 }
 
+#[cfg(test)]
 pub(super) fn windows_git_bash_path() -> String {
-    git_bash_candidates()
+    windows_git_bash_path_in(ChildEnvironment::Process)
+}
+
+fn windows_git_bash_path_in(source: ChildEnvironment) -> String {
+    git_bash_candidates(source)
         .into_iter()
         .find(|candidate| candidate.is_file() && !is_system_owned_path(candidate))
         .map_or_else(
@@ -222,18 +238,24 @@ pub(super) fn windows_git_bash_path() -> String {
 }
 
 /// The shell family and executable a preset launches.
-fn windows_shell_program(windows_shell: WindowsShell) -> (WindowsShellFamily, String) {
+fn windows_shell_program(
+    windows_shell: WindowsShell,
+    source: ChildEnvironment,
+) -> (WindowsShellFamily, String) {
     match windows_shell {
-        WindowsShell::Cmd => (WindowsShellFamily::Cmd, windows_cmd_path()),
+        WindowsShell::Cmd => (WindowsShellFamily::Cmd, windows_cmd_path_in(source)),
         WindowsShell::PowerShell => (WindowsShellFamily::PowerShell, "powershell.exe".to_string()),
         WindowsShell::PowerShellCore => (WindowsShellFamily::PowerShell, "pwsh.exe".to_string()),
-        WindowsShell::GitBash => (WindowsShellFamily::Posix, windows_git_bash_path()),
-        WindowsShell::Auto => windows_auto_shell(),
+        WindowsShell::GitBash => (WindowsShellFamily::Posix, windows_git_bash_path_in(source)),
+        WindowsShell::Auto => windows_auto_shell(source),
     }
 }
 
-pub(super) fn windows_shell_launch(windows_shell: WindowsShell) -> ResolvedTerminalLaunch {
-    let (family, program) = windows_shell_program(windows_shell);
+pub(super) fn windows_shell_launch(
+    windows_shell: WindowsShell,
+    source: ChildEnvironment,
+) -> ResolvedTerminalLaunch {
+    let (family, program) = windows_shell_program(windows_shell, source);
     let args = match family {
         WindowsShellFamily::PowerShell => vec!["-NoLogo".to_string()],
         WindowsShellFamily::Posix => vec!["--login".to_string(), "-i".to_string()],
@@ -245,9 +267,10 @@ pub(super) fn windows_shell_launch(windows_shell: WindowsShell) -> ResolvedTermi
 pub(super) fn windows_startup_command_shell(
     windows_shell: WindowsShell,
     command: &str,
+    source: ChildEnvironment,
 ) -> ResolvedTerminalLaunch {
-    let (family, program) = windows_shell_program(windows_shell);
-    windows_startup_command_launch(family, program, command)
+    let (family, program) = windows_shell_program(windows_shell, source);
+    windows_startup_command_launch(family, program, command, source)
 }
 
 /// Run `command` through `program`, a shell of `family`. Shells that take no
@@ -256,6 +279,7 @@ pub(super) fn windows_startup_command_launch(
     family: WindowsShellFamily,
     program: String,
     command: &str,
+    source: ChildEnvironment,
 ) -> ResolvedTerminalLaunch {
     match family {
         // cmd.exe parses the text after `/C` itself. `/S` strips exactly the
@@ -276,7 +300,7 @@ pub(super) fn windows_startup_command_launch(
             program,
             args: vec!["-lc".to_string(), command.to_string()],
         },
-        WindowsShellFamily::Other => cmd_startup_command(windows_cmd_path(), command),
+        WindowsShellFamily::Other => cmd_startup_command(windows_cmd_path_in(source), command),
     }
 }
 
@@ -295,11 +319,13 @@ fn cmd_startup_command(program: String, command: &str) -> ResolvedTerminalLaunch
 /// Add Termy's prompt markers to an interactive PowerShell or cmd.exe
 /// session, which have no sourced integration script like bash and zsh.
 /// PowerShell gets an inline wrapper around its `prompt` function; cmd.exe a
-/// default `PROMPT`, unless the user already set one.
+/// default `PROMPT`, unless the user already set one, in `environment` or
+/// in the `inherited_prompt` the shell would otherwise start with.
 pub(super) fn apply_windows_shell_integration(
     launch: &mut ResolvedTerminalLaunch,
     environment: &mut HashMap<String, String>,
     shell_integration: Option<&TabTitleShellIntegration>,
+    inherited_prompt: Option<&std::ffi::OsStr>,
 ) {
     if !shell_integration.is_some_and(|integration| integration.enabled) {
         return;
@@ -321,7 +347,7 @@ pub(super) fn apply_windows_shell_integration(
             ];
         }
         WindowsShellFamily::Cmd if launch.args.is_empty() => {
-            let user_prompt = inherited_prompt_is_custom(env::var_os("PROMPT").as_deref())
+            let user_prompt = inherited_prompt_is_custom(inherited_prompt)
                 || environment
                     .keys()
                     .any(|name| name.eq_ignore_ascii_case("PROMPT"));

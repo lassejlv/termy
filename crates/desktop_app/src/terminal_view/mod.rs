@@ -114,8 +114,8 @@ use appearance::{
     scaled_background_alpha_for_opacity, scaled_chrome_alpha_for_opacity,
 };
 use backend::{
-    ClipboardTextCache, GpuiClipboardReplyHost, NativeTerminalInstance, Terminal, TerminalCellRef,
-    TerminalLineRange, TerminalRenderDamageSnapshot, TerminalViewportScroll,
+    ClipboardTextCache, GpuiClipboardReplyHost, HostSizeClaim, NativeTerminalInstance, Terminal,
+    TerminalCellRef, TerminalLineRange, TerminalRenderDamageSnapshot, TerminalViewportScroll,
     TerminalViewportScrollDirection, terminal_engine_label,
 };
 use command_palette::{
@@ -476,10 +476,11 @@ impl Terminal {
     #[cfg(test)]
     fn new_test_display(size: TerminalSize) -> Self {
         Self::Native(NativeTerminalInstance {
+            terminal: Mutex::new(NativeTerminal::new_display(size, None)),
             session: None,
             wakeup_id: 0,
             wakeup_route: Arc::new(Mutex::new(None)),
-            terminal: Mutex::new(NativeTerminal::new_display(size, None)),
+            host_size: None,
         })
     }
 
@@ -516,38 +517,65 @@ impl Terminal {
     ) -> anyhow::Result<Self> {
         Self::build_native(wakeup_router, |notifier| {
             if let Some(client) = multiplexer {
-                let (id, terminal) = client.create(
+                let config = runtime_config.cloned().unwrap_or_default();
+                // Resolved here, as a local tab would: the host runs in the
+                // home directory with an environment of its own.
+                let working_directory =
+                    termy_core::multiplexer::PaneLaunch::client_working_directory(
+                        configured_working_dir,
+                        config.working_dir_fallback,
+                    );
+                let created = crate::multiplexer::create_pane(
+                    client,
                     termy_core::multiplexer::PaneLaunch {
                         size,
-                        working_directory: configured_working_dir.map(str::to_owned),
+                        working_directory,
                         shell_integration: tab_title_shell_integration.cloned(),
-                        config: runtime_config.cloned().unwrap_or_default(),
+                        config,
                         launch: launch.cloned(),
+                        environment: Some(termy_core::multiplexer::PaneLaunch::client_environment()),
                     },
-                    Some(notifier),
-                )?;
-                Ok((
-                    terminal,
-                    Some(crate::multiplexer::PaneSession::new(id, client.clone())),
-                ))
-            } else {
-                let terminal = NativeTerminal::new_with_launch_and_wakeup_notifier(
-                    size,
-                    configured_working_dir,
-                    Some(notifier),
-                    tab_title_shell_integration,
-                    runtime_config,
-                    launch,
-                )?;
-                Ok((terminal, None))
+                    Some(notifier.clone()),
+                );
+                match created {
+                    Ok((id, terminal)) => {
+                        return Ok((
+                            terminal,
+                            Some(crate::multiplexer::PaneSession::new(id, client.clone())),
+                        ));
+                    }
+                    // No host could be reached or started: open a regular
+                    // terminal rather than fail the tab or window (audit B12).
+                    Err(error) if termy_core::multiplexer::is_connection_error(&error) => {
+                        log::error!("Cannot start a multiplexer terminal: {error:#}");
+                        crate::ui::toast::error(format!(
+                            "The built-in multiplexer is unavailable, so this terminal ends when Termy quits: {}",
+                            format!("{error:#}").lines().next().unwrap_or_default()
+                        ));
+                    }
+                    Err(error) => return Err(error),
+                }
             }
+            let terminal = NativeTerminal::new_with_launch_and_wakeup_notifier(
+                size,
+                configured_working_dir,
+                Some(notifier),
+                tab_title_shell_integration,
+                runtime_config,
+                launch,
+            )?;
+            Ok((terminal, None))
         })
     }
 
     /// A new session that starts with a saved buffer. Locally the buffer is
     /// replayed before the shell starts, so it can't interleave with the new
-    /// prompt; the session host has no such path in its protocol, so there it
-    /// is still replayed right after spawning.
+    /// prompt. The session host has no such path in its protocol: replaying
+    /// after the spawn would print the new prompt above the old text, so a
+    /// new host pane starts without the buffer. Saved scrollback is therefore
+    /// never carried into multiplexer panes, whether they come from the
+    /// import of a regular session or from loading a named layout that saved
+    /// buffers (`load_named_layout` → `restore_workspace`).
     fn new_native_restoring(
         size: TerminalSize,
         configured_working_dir: Option<&str>,
@@ -558,7 +586,7 @@ impl Terminal {
         restored_output: &[u8],
     ) -> anyhow::Result<Self> {
         if multiplexer.is_some() {
-            let terminal = Self::new_native_with_launch(
+            return Self::new_native_with_launch(
                 size,
                 configured_working_dir,
                 wakeup_router,
@@ -566,9 +594,7 @@ impl Terminal {
                 runtime_config,
                 None,
                 multiplexer,
-            )?;
-            terminal.hydrate_output(restored_output);
-            return Ok(terminal);
+            );
         }
         Self::build_native(wakeup_router, |notifier| {
             let terminal = NativeTerminal::new_with_launch_restoring_output(
@@ -627,11 +653,17 @@ impl Terminal {
             }
         });
         let (terminal, session) = create(notifier)?;
+        // A new pane has the size this view created it at; a reattached one
+        // keeps the host's size until this view's layout asks for another.
+        let host_size = session
+            .is_some()
+            .then(|| Mutex::new(HostSizeClaim::new(terminal.size())));
         Ok(Self::Native(NativeTerminalInstance {
+            terminal: Mutex::new(terminal),
+            session,
             wakeup_id,
             wakeup_route,
-            session,
-            terminal: Mutex::new(terminal),
+            host_size,
         }))
     }
 
@@ -640,6 +672,23 @@ impl Terminal {
             Self::Native(native) => native.session.as_ref().map(|session| session.id.as_str()),
             Self::Tmux(_) => None,
         }
+    }
+
+    /// `true` once the session host that ran this pane is gone. The tab
+    /// stays, marked as ended (see [`crate::multiplexer::report_host_lost`]).
+    fn session_host_lost(&self) -> bool {
+        match self {
+            Self::Native(native) => {
+                native.session.is_some() && native.terminal.lock().unwrap().session_host_lost()
+            }
+            Self::Tmux(_) => false,
+        }
+    }
+
+    /// `true` when the terminal runs in the shared session host, so state it
+    /// is given (options, size) also applies to every other client.
+    fn is_session_host_pane(&self) -> bool {
+        self.session_id().is_some()
     }
 
     fn detach_session(&self) {
@@ -663,6 +712,17 @@ impl Terminal {
         }
     }
 
+    /// Feed a test display terminal as if its program printed `bytes`.
+    #[cfg(test)]
+    fn feed_test_output(&self, bytes: &[u8]) {
+        if let Self::Native(terminal) = self
+            && let Ok(terminal) = terminal.lock()
+        {
+            terminal.feed_output(bytes);
+        }
+    }
+
+    #[cfg(test)]
     fn hydrate_output(&self, bytes: &[u8]) {
         match self {
             Self::Tmux(terminal) => terminal.feed_output(bytes),
@@ -739,11 +799,63 @@ impl Terminal {
     fn resize(&self, new_size: TerminalSize) {
         match self {
             Self::Tmux(terminal) => terminal.resize(new_size),
-            Self::Native(terminal) => {
-                if let Ok(mut terminal) = terminal.lock() {
+            Self::Native(native) => {
+                let mut overridden = false;
+                if let Ok(mut terminal) = native.lock() {
+                    overridden = terminal.host_size_overridden();
                     terminal.resize(new_size);
                 }
+                if let Some(claim) = &native.host_size {
+                    claim
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .applied(new_size, overridden, Instant::now());
+                }
             }
+        }
+    }
+
+    fn host_size_claim(&self) -> Option<std::sync::MutexGuard<'_, HostSizeClaim>> {
+        let Self::Native(native) = self else {
+            return None;
+        };
+        let claim = native.host_size.as_ref()?;
+        Some(
+            claim
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn host_size_overridden(&self) -> bool {
+        match self {
+            Self::Native(native) if native.host_size.is_some() => native
+                .lock()
+                .is_ok_and(|terminal| terminal.host_size_overridden()),
+            _ => false,
+        }
+    }
+
+    /// `true` while another client's resize of this session-host pane waits
+    /// for this view to re-assert its own size. Always `false` for local
+    /// terminals, whose size only this view changes.
+    fn host_size_reassert_pending(&self) -> bool {
+        let overridden = self.host_size_overridden();
+        self.host_size_claim()
+            .is_some_and(|claim| claim.wants_reassert(overridden))
+    }
+
+    /// Whether the layout pass must resize this terminal to `next`. `current`
+    /// is the size it has or was last asked for.
+    fn needs_resize(&self, current: TerminalSize, next: TerminalSize, now: Instant) -> bool {
+        let stale = current.cols != next.cols
+            || current.rows != next.rows
+            || current.cell_width != next.cell_width
+            || current.cell_height != next.cell_height;
+        let overridden = self.host_size_overridden();
+        match self.host_size_claim() {
+            Some(mut claim) => claim.needs_resize(next, stale, overridden, now),
+            None => stale,
         }
     }
 
@@ -1167,6 +1279,13 @@ impl TerminalPane {
 
     fn terminal(&self) -> &Terminal {
         &self.terminal
+    }
+
+    /// A prompt (OSC 133;A) ends the program that reported progress, so its
+    /// bar must not stay up, like OSC 7501 working records. Returns whether
+    /// the bar was showing.
+    fn clear_progress_at_prompt(&mut self) -> bool {
+        std::mem::take(&mut self.progress_state).is_active()
     }
 }
 
@@ -3030,11 +3149,11 @@ impl TerminalView {
         // windows start fresh and must not mirror its tmux session or overwrite
         // its native workspace snapshot when they close.
         let owns_persisted_session = !crate::app_actions::has_window::<Self>(cx);
-        if let Err(error) = crate::multiplexer::initialize(&config, cx) {
-            crate::StartupBlocker::MainWindowOpen(error).present_alert_and_exit();
-        }
+        // Falls back to regular terminals, with a toast, if the host fails.
+        crate::multiplexer::initialize(&config, cx);
         let multiplexer_enabled_config = config.multiplexer_enabled;
-        config.multiplexer_enabled = crate::multiplexer::enabled(cx);
+        // After a fallback this window uses plain local terminals, not tmux.
+        crate::multiplexer::effective_config(&mut config, cx);
         let (multiplexer, live_session) =
             crate::multiplexer::claim_window(cx, owns_persisted_session)
                 .map_or((None, None), |(window, session)| (Some(window), session));
@@ -3265,6 +3384,9 @@ impl TerminalView {
             && configured_runtime_kind == RuntimeKind::Native
         {
             match Self::load_startup_native_session(&config) {
+                Ok(session) if multiplexer.is_some() => {
+                    session.map(Self::startup_session_for_multiplexer_import)
+                }
                 Ok(session) => session,
                 Err(error) => {
                     log::error!("Failed to preload native tab workspace: {error}");
@@ -3501,8 +3623,14 @@ impl TerminalView {
             crate::ui::toast::warning(TMUX_NEEDS_PREFIX_WINDOWS_TOAST);
         }
         let restored_native_workspace = if let Some(session) = live_session {
+            // The host already has a layout, so the store's session counts as
+            // imported, also for users who enabled the multiplexer before the
+            // import marker existed.
+            view.record_multiplexer_import();
             match view.restore_stored_session(session, cx) {
-                Ok(()) => true,
+                // A window whose active workspace is empty still gets a
+                // terminal to type in.
+                Ok(()) => !view.session.tabs.is_empty(),
                 Err(error) => {
                     log::error!("Failed to restore multiplexer tabs: {error}");
                     crate::ui::toast::error(format!("Could not restore multiplexer tabs: {error}"));
@@ -3515,7 +3643,10 @@ impl TerminalView {
                     let _ = view.workspace_store.set(Some(startup.store));
                     match startup.session {
                         Some(session) => match view.restore_stored_session(session, cx) {
-                            Ok(()) => true,
+                            Ok(()) => {
+                                view.record_multiplexer_import();
+                                true
+                            }
                             Err(error) => {
                                 log::error!("Failed to restore native tab workspace: {error}");
                                 crate::ui::toast::error("Failed to restore saved native tabs");
@@ -3612,6 +3743,7 @@ impl TerminalView {
             })
             .detach();
         }
+        view.start_multiplexer_layout_sync(cx);
         cx.on_release(|view, _cx| view.prepare_multiplexer_detach())
             .detach();
         cx.on_app_quit(|view, _cx| {
@@ -3774,11 +3906,9 @@ impl TerminalView {
         // Cell colors are resolved before entering the pane cache. A repaint by
         // itself would otherwise reuse rows from the previous appearance.
         self.clear_pane_render_caches();
-        for tab in &self.session.tabs {
-            for pane in &tab.panes {
-                pane.terminal().set_query_colors(query_colors);
-            }
-        }
+        // Hidden panes answer OSC 10/11 too (nvim in a stashed workspace or a
+        // zoom-parked split), so every live pane gets the new colors.
+        self.for_each_live_pane(|_, pane| pane.terminal().set_query_colors(query_colors));
         cx.notify();
     }
 
@@ -3882,9 +4012,12 @@ impl TerminalView {
         }
         if self.multiplexer_enabled_config != config.multiplexer_enabled {
             self.multiplexer_enabled_config = config.multiplexer_enabled;
-            crate::ui::toast::info(
-                "Built-in multiplexer setting saved. Restart Termy to apply it.",
-            );
+            // Probing the host lock only matters when the setting turns off.
+            let host_running = !config.multiplexer_enabled && Self::multiplexer_host_is_running();
+            crate::ui::toast::info(Self::multiplexer_setting_toast(
+                config.multiplexer_enabled,
+                host_running,
+            ));
         }
         self.tmux_enabled_config = config.tmux_enabled;
         let native_tab_persistence_changed =
@@ -3985,24 +4118,7 @@ impl TerminalView {
             cx.notify();
         }
         self.clear_pane_render_caches();
-        let inactive_history = self
-            .inactive_tab_scrollback
-            .unwrap_or(self.terminal_runtime.scrollback_history);
-        let active_options = self.terminal_runtime.term_options();
-        let inactive_options = (inactive_history != active_options.scrollback_history)
-            .then(|| active_options.with_scrollback_history(inactive_history));
-        for (tab_index, tab) in self.session.tabs.iter().enumerate() {
-            let options = if tab_index == self.session.active_tab {
-                active_options
-            } else {
-                inactive_options.unwrap_or(active_options)
-            };
-            for pane in &tab.panes {
-                pane.terminal().set_term_options(options);
-                pane.terminal()
-                    .set_query_colors(self.terminal_runtime.query_colors);
-            }
-        }
+        self.push_runtime_options_to_live_panes();
 
         for index in 0..self.session.tabs.len() {
             self.refresh_tab_title(index);
@@ -4236,6 +4352,9 @@ impl TerminalView {
                 if events.is_empty() && !has_more {
                     continue;
                 }
+                if terminal.session_host_lost() {
+                    crate::multiplexer::report_host_lost();
+                }
 
                 let active_pane_id = active_pane_id
                     .get_or_insert_with(|| self.session.tabs[tab_index].active_pane_id.clone());
@@ -4267,10 +4386,19 @@ impl TerminalView {
                         TerminalEvent::Exit => {
                             let simulated_pane_counts =
                                 simulated_pane_counts.get_or_insert_with(|| {
+                                    // A zoomed tab parks its other panes in
+                                    // the zoom snapshot; they still run.
                                     self.session
                                         .tabs
                                         .iter()
-                                        .map(|tab| (tab.id, tab.panes.len()))
+                                        .map(|tab| {
+                                            let parked = self
+                                                .session
+                                                .native_pane_zoom_snapshots
+                                                .get(&tab.id)
+                                                .map_or(0, |zoom| zoom.other_panes.len());
+                                            (tab.id, tab.panes.len() + parked)
+                                        })
                                         .collect()
                                 });
                             let exit_should_quit = Self::schedule_native_exit(
@@ -4318,6 +4446,8 @@ impl TerminalView {
                                     .command_lifecycle
                                     .prompt_start();
                             }
+                            should_redraw |= self.session.tabs[tab_index].panes[pane_index]
+                                .clear_progress_at_prompt();
                         }
                         TerminalEvent::ShellCommandStart => {
                             if self.shell_integration_enabled {
@@ -4410,7 +4540,9 @@ impl TerminalView {
 
         if should_quit {
             // Shell `exit` in the last native pane closes only its own window.
-            self.sync_persisted_native_workspace();
+            if !self.discard_multiplexer_window() {
+                self.sync_persisted_native_workspace();
+            }
             if self.benchmark_exit_on_complete() {
                 self.schedule_benchmark_exit(cx);
                 should_redraw = true;

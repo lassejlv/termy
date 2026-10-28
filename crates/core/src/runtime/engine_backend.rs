@@ -55,6 +55,7 @@ impl Backend {
         .map(Self::Custom)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn new_with_launch_and_wakeup_notifier(
         size: TerminalSize,
         configured_working_dir: Option<&str>,
@@ -63,6 +64,7 @@ impl Backend {
         runtime_config: Option<&TerminalRuntimeConfig>,
         launch: Option<&TerminalLaunch>,
         restored_output: Option<&[u8]>,
+        environment: ChildEnvironment,
     ) -> anyhow::Result<Self> {
         super::custom_backend::CustomBackend::new_with_launch_and_wakeup_notifier(
             size,
@@ -72,6 +74,7 @@ impl Backend {
             runtime_config,
             launch,
             restored_output,
+            environment,
         )
         .map(Box::new)
         .map(Self::Custom)
@@ -150,6 +153,12 @@ impl Backend {
         }
     }
 
+    pub(super) fn terminate_and_wait(&self) {
+        if let Self::Custom(backend) = self {
+            backend.terminate_and_wait();
+        }
+    }
+
     pub(super) fn set_wakeup_enabled(&self, enabled: bool) {
         match self {
             Self::Custom(backend) => backend.set_wakeup_enabled(enabled),
@@ -171,10 +180,27 @@ impl Backend {
         }
     }
 
+    pub(super) fn try_write_owned(&self, input: Vec<u8>) -> std::io::Result<()> {
+        match self {
+            Self::Custom(backend) => backend.try_write_owned(input),
+            Self::Remote(backend) => {
+                backend.write_owned(input);
+                Ok(())
+            }
+        }
+    }
+
+    pub(super) fn input_anchor(&self) -> u64 {
+        match self {
+            Self::Custom(backend) => backend.input_anchor(),
+            Self::Remote(backend) => backend.input_anchor(),
+        }
+    }
+
     pub(super) fn write_mouse_motion(&self, input: Vec<u8>) {
         match self {
             Self::Custom(backend) => backend.write_mouse_motion(input),
-            Self::Remote(backend) => backend.write_owned(input),
+            Self::Remote(backend) => backend.write_mouse_motion(input),
         }
     }
 
@@ -203,6 +229,27 @@ impl Backend {
         match self {
             Self::Custom(backend) => backend.size(),
             Self::Remote(backend) => backend.size(),
+        }
+    }
+
+    pub(super) fn frames_paused(&self) -> bool {
+        match self {
+            Self::Custom(_) => false,
+            Self::Remote(backend) => backend.frames_paused(),
+        }
+    }
+
+    pub(super) fn host_size_overridden(&self) -> bool {
+        match self {
+            Self::Custom(_) => false,
+            Self::Remote(backend) => backend.host_size_overridden(),
+        }
+    }
+
+    pub(super) fn session_host_lost(&self) -> bool {
+        match self {
+            Self::Custom(_) => false,
+            Self::Remote(backend) => backend.host_lost(),
         }
     }
 
@@ -280,6 +327,18 @@ impl Backend {
         }
     }
 
+    pub(super) fn complete_clipboard_request(
+        &self,
+        id: u64,
+        reply: Option<crate::TerminalClipboardReply>,
+    ) {
+        match self {
+            Self::Custom(backend) => backend.complete_clipboard_request(id, reply),
+            // Remote terminals never defer: their host engine does.
+            Self::Remote(_) => {}
+        }
+    }
+
     pub(super) fn set_query_colors(&mut self, query_colors: TerminalQueryColors) {
         match self {
             Self::Custom(backend) => backend.set_query_colors(query_colors),
@@ -329,13 +388,6 @@ impl Backend {
         match self {
             Self::Custom(backend) => backend.render_read(force_full),
             Self::Remote(backend) => backend.render_read(force_full),
-        }
-    }
-
-    pub(super) fn render_read_with_screen(&self, force_full: bool) -> (TerminalRenderRead, bool) {
-        match self {
-            Self::Custom(backend) => backend.render_read_with_screen(force_full),
-            Self::Remote(backend) => backend.render_read_with_screen(force_full),
         }
     }
 
@@ -472,6 +524,43 @@ impl Backend {
         }
     }
 
+    pub(super) fn hyperlink_at_view(
+        &self,
+        row: usize,
+        col: usize,
+        view: crate::remote::ViewportAnchor,
+    ) -> Option<crate::links::DetectedLink> {
+        match self {
+            Self::Custom(backend) => backend.hyperlink_at_view(row, col, view),
+            Self::Remote(backend) => backend.hyperlink_at_view(row, col, view),
+        }
+    }
+
+    pub(super) fn link_at_view(
+        &self,
+        row: usize,
+        col: usize,
+        view: crate::remote::ViewportAnchor,
+    ) -> Option<crate::links::DetectedViewportLink> {
+        match self {
+            Self::Custom(backend) => backend.link_at_view(row, col, view),
+            Self::Remote(backend) => backend.link_at_view(row, col, view),
+        }
+    }
+
+    pub(super) fn line_texts(
+        &self,
+        first: i32,
+        last: i32,
+        anchor: Option<u64>,
+        max_bytes: usize,
+    ) -> crate::remote::LineTexts {
+        match self {
+            Self::Custom(backend) => backend.line_texts(first, last, anchor, max_bytes),
+            Self::Remote(backend) => backend.line_texts(first, last, anchor),
+        }
+    }
+
     pub(super) fn take_damage_snapshot(&self) -> TerminalDamageSnapshot {
         match self {
             Self::Custom(backend) => backend.take_damage_snapshot(),
@@ -560,6 +649,13 @@ impl Backend {
         match self {
             Self::Custom(backend) => backend.keyboard_mode(),
             Self::Remote(backend) => backend.keyboard_mode(),
+        }
+    }
+
+    pub(super) fn remote_state(&self) -> crate::remote::RemoteState {
+        match self {
+            Self::Custom(backend) => backend.remote_state(),
+            Self::Remote(backend) => backend.remote_state(),
         }
     }
 

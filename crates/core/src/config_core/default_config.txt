@@ -13,7 +13,7 @@ app_icon = default
 chrome_contrast = false
 # Enable automatic update checks
 auto_update = true
-# Keep programs running after quitting and restore tabs, panes, and terminal state when reopening. Applies after restarting Termy.
+# Keep programs running after quitting and restore tabs, panes, and terminal state when reopening. Applies after restarting Termy. Turning it off leaves running sessions in the background; run `termy mux shutdown` to end them.
 multiplexer_enabled = false
 # Enable tmux runtime integration
 tmux_enabled = false

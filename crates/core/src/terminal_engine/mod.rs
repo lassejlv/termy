@@ -160,6 +160,10 @@ impl Engine {
     /// caller decodes [`Self::take_deferred_upload`] (e.g. without holding a
     /// lock), passes the result to [`Self::commit_upload`], then feeds the
     /// rest. Uploads inside a synchronized update are still applied inline.
+    ///
+    /// It also stops right after a clipboard request (OSC 52 query or kitty
+    /// OSC 5522 packet): replies drained then answer output before the
+    /// request, whose own reply the host may give later.
     pub(crate) fn feed_deferring_uploads(&mut self, bytes: &[u8]) -> usize {
         self.feed_impl(bytes, None, true)
     }
@@ -221,6 +225,7 @@ impl Engine {
             if consumed == bytes.len()
                 || self.state.has_deferred_upload()
                 || (defer_uploads && self.state.animation_budget_spent())
+                || self.state.clipboard_pause
             {
                 return consumed;
             }
@@ -265,6 +270,7 @@ impl Engine {
         now: &mut impl FnMut() -> Instant,
     ) -> usize {
         self.state.set_defer_uploads(defer_uploads);
+        self.state.clipboard_pause = false;
         let consumed = self.parser.advance(&mut self.state, bytes);
         // Nothing outside parsing may see a partly blanked row.
         self.state.grid.flush_pending_clear();
@@ -314,6 +320,7 @@ impl Engine {
                 offset += self.parse_pass(&bytes[offset..end], defer_uploads, &mut now);
                 if self.state.has_deferred_upload()
                     || (defer_uploads && self.state.animation_budget_spent())
+                    || self.state.clipboard_pause
                 {
                     break;
                 }

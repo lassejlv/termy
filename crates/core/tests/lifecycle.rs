@@ -46,6 +46,7 @@ fn launch(script: &str, root: &Path) -> PaneLaunch {
                 root.to_string_lossy().into_owned(),
             ],
         }),
+        environment: None,
     }
 }
 
@@ -93,10 +94,19 @@ fn child_client() {
         wait_until(|| root.join("partial").exists());
         let (history_id, history) = client.create(launch("stty -echo; seq 1 300; printf 'HISTORY-READY'; while IFS= read -r line; do printf '%s' \"$line\"; done", root), None).unwrap();
         wait_until(|| text(&history).contains("HISTORY-READY"));
+        // The host only stores layouts it can read back.
+        let tab = |id: &str| {
+            serde_json::json!({"pinned":false,"manual_title":null,"active_pane":0,
+                "layout_tree_json":null,"panes":[{"session_id":id,"left":0,"top":0,
+                "width":80,"height":24,"buffer":null}]})
+        };
         client
-            .set_layout(format!(
-                "{{\"tabs\":[\"{id}\",\"{history_id}\"],\"active\":1}}"
-            ))
+            .set_layout(
+                serde_json::json!({"version":1,"windows":[{"id":"window","session":{
+                    "active_workspace":0,"workspaces":[{"name":"","pinned":false,
+                    "active_tab":1,"tabs":[tab(&id),tab(&history_id)]}]}}]})
+                .to_string(),
+            )
             .unwrap();
         fs::write(
             root.join("ids"),

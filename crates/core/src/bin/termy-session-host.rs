@@ -9,5 +9,5 @@ fn main() -> anyhow::Result<()> {
     } else {
         first
     };
-    termy_core::multiplexer::serve(std::path::Path::new(&root))
+    termy_core::multiplexer::run_host(std::path::Path::new(&root))
 }

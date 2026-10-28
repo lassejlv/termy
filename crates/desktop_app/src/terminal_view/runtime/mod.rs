@@ -161,15 +161,30 @@ impl TerminalView {
         size: TerminalSize,
         multiplexer: Option<&termy_core::multiplexer::SessionClient>,
     ) -> Terminal {
-        match Terminal::new_native(
-            size,
-            configured_working_dir,
-            Some(native_terminal_wakeup_router),
-            Some(tab_shell_integration),
-            Some(terminal_runtime),
-            startup_command,
-            multiplexer,
-        ) {
+        let start = |multiplexer| {
+            Terminal::new_native(
+                size,
+                configured_working_dir,
+                Some(native_terminal_wakeup_router),
+                Some(tab_shell_integration),
+                Some(terminal_runtime),
+                startup_command,
+                multiplexer,
+            )
+        };
+        // A new window (Cmd+N, a dock reopen) must open even when the host
+        // refuses the pane: it gets a regular terminal (audit B12).
+        let started = start(multiplexer).or_else(|error| {
+            if multiplexer.is_none() {
+                return Err(error);
+            }
+            log::error!("Cannot start a multiplexer terminal: {error:#}");
+            crate::ui::toast::error(format!(
+                "Could not start a multiplexer terminal, so this one ends when Termy quits: {error}"
+            ));
+            start(None)
+        });
+        match started {
             Ok(terminal) => terminal,
             Err(error) => {
                 eprintln!("Termy startup blocked: failed to start native runtime: {error}");

@@ -27,10 +27,13 @@ status done "Checks passed"
 status clear ""
 ```
 
-A new shell prompt clears working and blocked statuses. Completed and failed
+A new shell prompt clears working and blocked statuses, and any OSC 9;4
+progress bar. Completed and failed
 statuses remain until replaced or cleared. Programs can use slash-separated
 `id` values for multiple tasks, such as `build/tests`; clearing a parent also
 clears its children. Full terminal reset clears every status.
 
-Status is retained when reattaching to Termy's native multiplexer. External
+Status is retained when reattaching to Termy's native multiplexer. A working
+status that has not changed for 30 minutes while no command runs is dropped
+there. External
 multiplexers must forward OSC 7501 for reports and support detection to work.

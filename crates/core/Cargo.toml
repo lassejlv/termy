@@ -77,11 +77,14 @@ rustix = { version = "1", features = ["std"] }
 
 [target."cfg(windows)".dependencies]
 winreg = "0.55"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 unicode-width = { workspace = true }
+
+[target."cfg(windows)".dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_JobObjects"] }
 
 [lib]
 # `staticlib` links the native C ABI into hosts without a dylib. Hosts that
@@ -138,6 +141,10 @@ required-features = ["native"]
 
 [[test]]
 name = "tmux_control_ffi"
+required-features = ["native"]
+
+[[test]]
+name = "windows_host"
 required-features = ["native"]
 
 [[example]]

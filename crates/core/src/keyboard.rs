@@ -117,12 +117,51 @@ pub fn keystroke_to_input_with_options(
     prompt_shortcuts_enabled: bool,
     macos_option_as_alt: bool,
 ) -> Option<Vec<u8>> {
+    encode_keystroke(
+        keystroke,
+        event_kind,
+        keyboard_mode,
+        Some(NativeOptions {
+            prompt_shortcuts_enabled,
+            macos_option_as_alt,
+        }),
+    )
+}
+
+/// Encodes `keystroke` as xterm on Linux does, whatever platform this runs
+/// on, for keys sent without a keyboard (`termy mux key`): Alt sends ESC
+/// before the key's text (Option is Alt on macOS), no prompt shortcut
+/// rewrites a modified key, and neither macOS Option composition nor Windows
+/// AltGr apply. Text a key types, like Shift's capitals, must be in
+/// `key_char`. The same keystroke always yields the same bytes (audit B25).
+pub fn portable_keystroke_to_input(
+    keystroke: &Keystroke,
+    event_kind: TerminalKeyEventKind,
+    keyboard_mode: TerminalKeyboardMode,
+) -> Option<Vec<u8>> {
+    encode_keystroke(keystroke, event_kind, keyboard_mode, None)
+}
+
+/// The platform conventions of a keyboard typing into this terminal.
+#[derive(Clone, Copy)]
+struct NativeOptions {
+    prompt_shortcuts_enabled: bool,
+    macos_option_as_alt: bool,
+}
+
+/// `native` is `None` for [`portable_keystroke_to_input`].
+fn encode_keystroke(
+    keystroke: &Keystroke,
+    event_kind: TerminalKeyEventKind,
+    keyboard_mode: TerminalKeyboardMode,
+    native: Option<NativeOptions>,
+) -> Option<Vec<u8>> {
     // Option-as-Alt only overrides legacy composed-character input. When the
     // kitty keyboard protocol is active the enhanced encoder already reports
     // the base key with the Alt modifier (and paired press/release events), so
     // short-circuiting here would send legacy ESC-prefixed bytes that break
     // the disambiguation TUIs negotiated.
-    if macos_option_as_alt
+    if native.is_some_and(|native| native.macos_option_as_alt)
         && !keyboard_mode.enhanced_reporting_active()
         && let Some(input) = macos_option_as_alt_input(keystroke, event_kind)
     {
@@ -132,28 +171,34 @@ pub fn keystroke_to_input_with_options(
     // "Natural text editing" shortcuts (cmd/alt+arrows, cmd+backspace, etc.) send
     // legacy bytes (Ctrl-U, ESC b, ...) even when the kitty keyboard protocol is
     // active, so they keep working in TUIs that opted into enhanced reporting.
-    if matches!(
-        event_kind,
-        TerminalKeyEventKind::Press | TerminalKeyEventKind::Repeat
-    ) && let Some(input) = modified_special_keystroke_input(keystroke, prompt_shortcuts_enabled)
+    if let Some(native) = native
+        && matches!(
+            event_kind,
+            TerminalKeyEventKind::Press | TerminalKeyEventKind::Repeat
+        )
+        && let Some(input) =
+            modified_special_keystroke_input(keystroke, native.prompt_shortcuts_enabled)
     {
         return Some(input.to_vec());
     }
 
+    let native = native.is_some();
     if !keyboard_mode.enhanced_reporting_active() {
         return match event_kind {
             TerminalKeyEventKind::Press | TerminalKeyEventKind::Repeat => {
-                basic_keystroke_to_input(keystroke, keyboard_mode)
+                basic_keystroke_to_input(keystroke, keyboard_mode, native)
             }
             TerminalKeyEventKind::Release => None,
         };
     }
 
-    enhanced_keystroke_to_input(keystroke, event_kind, keyboard_mode).or_else(|| match event_kind {
-        TerminalKeyEventKind::Press | TerminalKeyEventKind::Repeat => {
-            basic_keystroke_to_input(keystroke, keyboard_mode)
+    enhanced_keystroke_to_input(keystroke, event_kind, keyboard_mode, native).or_else(|| {
+        match event_kind {
+            TerminalKeyEventKind::Press | TerminalKeyEventKind::Repeat => {
+                basic_keystroke_to_input(keystroke, keyboard_mode, native)
+            }
+            TerminalKeyEventKind::Release => None,
         }
-        TerminalKeyEventKind::Release => None,
     })
 }
 
@@ -196,8 +241,9 @@ fn enhanced_keystroke_to_input(
     keystroke: &Keystroke,
     event_kind: TerminalKeyEventKind,
     keyboard_mode: TerminalKeyboardMode,
+    native: bool,
 ) -> Option<Vec<u8>> {
-    SequenceBuilder::new(keystroke, event_kind, keyboard_mode).build()
+    SequenceBuilder::new(keystroke, event_kind, keyboard_mode, native).build()
 }
 
 fn should_disambiguate_escape_code(key: &str, modifiers: Modifiers) -> bool {
@@ -540,8 +586,10 @@ impl<'a> SequenceBuilder<'a> {
         keystroke: &'a Keystroke,
         event_kind: TerminalKeyEventKind,
         keyboard_mode: TerminalKeyboardMode,
+        native: bool,
     ) -> Self {
-        let pure_text_event = pure_text_event_text(keystroke).is_some();
+        // Option and AltGr text only comes from a real keyboard.
+        let pure_text_event = native && pure_text_event_text(keystroke).is_some();
         let include_event_type = keyboard_mode.report_event_types()
             && matches!(
                 event_kind,
@@ -1564,6 +1612,65 @@ mod tests {
                 true,
             ),
             Some(b"\x1b[98;3:3u".to_vec())
+        );
+    }
+
+    /// Audit B25: portable encoding is the same on every platform. Alt
+    /// prefixes ESC (also on macOS, and for named keys), no prompt shortcut
+    /// rewrites a modified arrow, and AltGr or Option text is not inferred.
+    #[test]
+    fn portable_encoding_ignores_platform_conventions() {
+        use super::portable_keystroke_to_input;
+        let encode = |key: &str, key_char: Option<&str>, modifiers: Modifiers| {
+            portable_keystroke_to_input(
+                &keystroke(key, key_char, modifiers),
+                TerminalKeyEventKind::Press,
+                TerminalKeyboardMode::default(),
+            )
+        };
+        let control = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        let alt = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        assert_eq!(encode("left", None, control), Some(b"\x1b[1;5D".to_vec()));
+        assert_eq!(encode("left", None, alt), Some(b"\x1b[1;3D".to_vec()));
+        assert_eq!(encode("backspace", None, control), Some(b"\x7f".to_vec()));
+        assert_eq!(encode("backspace", None, alt), Some(b"\x1b\x7f".to_vec()));
+        assert_eq!(encode("b", Some("b"), alt), Some(b"\x1bb".to_vec()));
+        assert_eq!(encode("enter", None, alt), Some(b"\x1b\r".to_vec()));
+        assert_eq!(encode("a", Some("A"), shift), Some(b"A".to_vec()));
+        assert_eq!(
+            encode("a", Some("A"), Modifiers { alt: true, ..shift }),
+            Some(b"\x1bA".to_vec())
+        );
+        // A Ctrl+Alt key with text is a chord, not Windows AltGr text.
+        assert_eq!(
+            encode(
+                "q",
+                Some("@"),
+                Modifiers {
+                    alt: true,
+                    ..control
+                }
+            ),
+            Some(b"\x1b\x11".to_vec())
+        );
+        // Under the kitty protocol, Alt is a modifier, not Option text.
+        assert_eq!(
+            portable_keystroke_to_input(
+                &keystroke("b", Some("b"), alt),
+                TerminalKeyEventKind::Press,
+                disambiguate_mode(),
+            ),
+            Some(b"\x1b[98;3u".to_vec())
         );
     }
 }

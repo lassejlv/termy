@@ -56,8 +56,9 @@ fn validate_dimensions<E: Error>(width: u32, height: u32) -> Result<(), E> {
     Ok(())
 }
 
-/// The negotiated graphics stream transfers decoded pixels once. Preserve the
-/// legacy PNG representation above for clients and hosts using protocol v1.
+/// The graphics stream (`Update::GraphicsState`) transfers decoded pixels
+/// once. The PNG representation above remains for `RemoteReply::Graphics`,
+/// the snapshot a `RemoteBackend` requests when its state carries no graphics.
 pub(crate) mod raw {
     use super::*;
 

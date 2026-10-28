@@ -166,11 +166,14 @@ mod tests {
 /// example from an IDE or tmux). A shell inside Termy is in neither, and tools
 /// such as tmux and editors misbehave when they believe otherwise. `COLORTERM`
 /// and `TERM_PROGRAM_VERSION` are Termy's own to set (or omit when configured
-/// off), so an inherited value must not leak through either.
+/// off), so an inherited value must not leak through either. The same holds
+/// for the variables of Termy's own session host, which sets them per pane.
 pub(crate) fn belongs_to_parent_terminal(name: &std::ffi::OsStr) -> bool {
     const NAMES: &[&str] = &[
         "TMUX",
         "TMUX_PANE",
+        "TERMY_MUX_DIR",
+        "TERMY_MUX_PANE",
         "STY",
         "WINDOW",
         "ZELLIJ",

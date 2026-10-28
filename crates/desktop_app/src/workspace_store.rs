@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS tabs (
     pinned INTEGER NOT NULL DEFAULT 0,
     manual_title TEXT,
     active_pane INTEGER NOT NULL DEFAULT 0,
-    layout_tree TEXT
+    layout_tree TEXT,
+    zoomed INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS panes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,6 +65,10 @@ CREATE TABLE IF NOT EXISTS named_layouts (
 
 const STORE_VERSION: &str = "1";
 
+/// Set once the built-in multiplexer has imported the saved session. Any later
+/// local-mode save clears it, so that newer session can be imported again.
+const IMPORTED_INTO_MULTIPLEXER_KEY: &str = "imported_into_multiplexer";
+
 fn store_error(context: &str, error: sqlx::Error) -> String {
     format!("{context}: {error}")
 }
@@ -84,6 +89,12 @@ async fn ensure_workspace_columns(pool: &SqlitePool) -> Result<(), String> {
             .execute(pool)
             .await
             .map_err(|error| store_error("Failed to migrate workspace pinned state", error))?;
+    }
+    if !table_has_column(pool, "tabs", "zoomed").await? {
+        sqlx::query("ALTER TABLE tabs ADD COLUMN zoomed INTEGER NOT NULL DEFAULT 0")
+            .execute(pool)
+            .await
+            .map_err(|error| store_error("Failed to migrate tab zoom state", error))?;
     }
     Ok(())
 }
@@ -168,7 +179,7 @@ impl WorkspaceStore {
                 for (tab_position, tab) in workspace.tabs.iter().enumerate() {
                     let tab_id = sqlx::query(
                         "INSERT INTO tabs(workspace_id, position, pinned, manual_title, \
-                         active_pane, layout_tree) VALUES(?1, ?2, ?3, ?4, ?5, ?6)",
+                         active_pane, layout_tree, zoomed) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     )
                     .bind(workspace_id)
                     .bind(tab_position as i64)
@@ -176,6 +187,7 @@ impl WorkspaceStore {
                     .bind(tab.manual_title.as_deref())
                     .bind(tab.active_pane as i64)
                     .bind(tab.layout_tree_json.as_deref())
+                    .bind(tab.zoomed)
                     .execute(&mut *tx)
                     .await
                     .map_err(|error| store_error("Failed to write tab", error))?
@@ -211,6 +223,11 @@ impl WorkspaceStore {
                 .execute(&mut *tx)
                 .await
                 .map_err(|error| store_error("Failed to write store version", error))?;
+            sqlx::query("DELETE FROM meta WHERE key = ?1")
+                .bind(IMPORTED_INTO_MULTIPLEXER_KEY)
+                .execute(&mut *tx)
+                .await
+                .map_err(|error| store_error("Failed to reset multiplexer import", error))?;
 
             tx.commit()
                 .await
@@ -231,7 +248,7 @@ impl WorkspaceStore {
             }
 
             let tab_rows = sqlx::query(
-                "SELECT id, workspace_id, pinned, manual_title, active_pane, layout_tree \
+                "SELECT id, workspace_id, pinned, manual_title, active_pane, layout_tree, zoomed \
                  FROM tabs ORDER BY workspace_id, position",
             )
             .fetch_all(&self.pool)
@@ -271,7 +288,7 @@ impl WorkspaceStore {
                     .entry(workspace_id)
                     .or_default()
                     .push(StoredTab {
-                        zoomed: false,
+                        zoomed: row.get("zoomed"),
                         presentation: None,
                         pinned: row.get("pinned"),
                         manual_title: row.get("manual_title"),
@@ -316,6 +333,30 @@ impl WorkspaceStore {
                 active_workspace,
                 zoom_steps: 0,
             }))
+        })
+    }
+
+    /// `true` once the built-in multiplexer imported the saved session and
+    /// local mode has not saved a newer one since.
+    pub(crate) fn imported_into_multiplexer(&self) -> Result<bool, String> {
+        self.runtime.block_on(async {
+            let row = sqlx::query("SELECT value FROM meta WHERE key = ?1")
+                .bind(IMPORTED_INTO_MULTIPLEXER_KEY)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|error| store_error("Failed to read multiplexer import", error))?;
+            Ok(row.is_some())
+        })
+    }
+
+    pub(crate) fn mark_imported_into_multiplexer(&self) -> Result<(), String> {
+        self.runtime.block_on(async {
+            sqlx::query("INSERT OR REPLACE INTO meta(key, value) VALUES(?1, '1')")
+                .bind(IMPORTED_INTO_MULTIPLEXER_KEY)
+                .execute(&self.pool)
+                .await
+                .map_err(|error| store_error("Failed to record multiplexer import", error))?;
+            Ok(())
         })
     }
 
@@ -502,7 +543,7 @@ mod tests {
                             }],
                         },
                         StoredTab {
-                            zoomed: false,
+                            zoomed: true,
                             presentation: None,
                             pinned: false,
                             manual_title: None,
@@ -570,6 +611,63 @@ mod tests {
         assert!(!store.is_fresh().expect("fresh check"));
         let loaded = store.load_session().expect("load").expect("session");
         assert_eq!(loaded, session);
+    }
+
+    #[test]
+    fn session_round_trips_tab_zoom() {
+        let (_dir, store) = test_store();
+        let session = sample_session();
+        store.save_session(&session).expect("save");
+        let loaded = store.load_session().expect("load").expect("session");
+        let zoomed = loaded
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.tabs)
+            .map(|tab| tab.zoomed)
+            .collect::<Vec<_>>();
+        assert_eq!(zoomed, vec![false, true, false]);
+    }
+
+    #[test]
+    fn opening_a_store_without_the_zoom_column_migrates_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(WORKSPACE_STORE_FILE);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            let options = SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true);
+            let pool = SqlitePool::connect_with(options).await.expect("connect");
+            sqlx::raw_sql(&SCHEMA.replace(",\n    zoomed INTEGER NOT NULL DEFAULT 0", ""))
+                .execute(&pool)
+                .await
+                .expect("old schema");
+            assert!(!table_has_column(&pool, "tabs", "zoomed").await.unwrap());
+            pool.close().await;
+        });
+
+        let store = WorkspaceStore::open(&path).expect("open");
+        let session = sample_session();
+        store.save_session(&session).expect("save");
+        assert_eq!(store.load_session().expect("load"), Some(session));
+    }
+
+    #[test]
+    fn multiplexer_import_marker_resets_on_local_save() {
+        let (_dir, store) = test_store();
+        store.save_session(&sample_session()).expect("save");
+        assert!(!store.imported_into_multiplexer().expect("read marker"));
+        store.mark_imported_into_multiplexer().expect("mark");
+        assert!(store.imported_into_multiplexer().expect("read marker"));
+        // Reading the session back does not make it importable again.
+        store.load_session().expect("load");
+        assert!(store.imported_into_multiplexer().expect("read marker"));
+        // A newer local session can be imported once more.
+        store.save_session(&sample_session()).expect("save");
+        assert!(!store.imported_into_multiplexer().expect("read marker"));
     }
 
     #[test]

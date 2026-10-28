@@ -26,6 +26,7 @@ impl Transport {
     pub(crate) fn spawn_answering_queries(
         _config: SpawnConfig,
         _size: PtySize,
+        _inherit_environment: bool,
         _on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
         _on_exit: impl FnOnce() + Send + 'static,
     ) -> io::Result<Self> {
@@ -60,6 +61,7 @@ impl Transport {
     pub(crate) fn child_pid(&self) -> u32 {
         0
     }
+    pub(crate) fn terminate_and_wait(&self) {}
     pub(crate) fn signal(&self, _signal: i32) -> io::Result<()> {
         Err(unsupported())
     }
