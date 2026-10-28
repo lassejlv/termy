@@ -14,9 +14,12 @@ enum SpecialKey {
     Tilde(u8),
 }
 
+/// `native` is false for [`super::portable_keystroke_to_input`], which
+/// encodes as Linux does on every platform.
 pub(super) fn basic_keystroke_to_input(
     keystroke: &Keystroke,
     keyboard_mode: TerminalKeyboardMode,
+    native: bool,
 ) -> Option<Vec<u8>> {
     let modifiers = keystroke.modifiers;
 
@@ -35,20 +38,20 @@ pub(super) fn basic_keystroke_to_input(
             key: numeric_key.to_string(),
             key_char: keystroke.key_char.clone(),
         };
-        return text_keystroke_input(&numeric);
+        return text_keystroke_input(&numeric, native);
     }
 
-    text_keystroke_input(keystroke)
+    text_keystroke_input(keystroke, native)
 }
 
-fn text_keystroke_input(keystroke: &Keystroke) -> Option<Vec<u8>> {
+fn text_keystroke_input(keystroke: &Keystroke, native: bool) -> Option<Vec<u8>> {
     #[cfg(target_os = "windows")]
-    if let Some(text) = super::windows_altgr_text(keystroke) {
+    if native && let Some(text) = super::windows_altgr_text(keystroke) {
         return Some(text.as_bytes().to_vec());
     }
 
     let input = unprefixed_text_input(keystroke)?;
-    Some(with_alt_escape_prefix(input, keystroke.modifiers))
+    Some(with_alt_escape_prefix(input, keystroke.modifiers, native))
 }
 
 fn unprefixed_text_input(keystroke: &Keystroke) -> Option<Vec<u8>> {
@@ -140,9 +143,10 @@ fn is_control_chord(modifiers: Modifiers) -> bool {
 /// Alt sends ESC before the key's bytes (xterm `metaSendsEscape`). macOS
 /// leaves Option to compose text unless Option-as-Alt is enabled, which is
 /// handled before this encoder runs. Browser builds can't tell whether the
-/// host is a Mac, so they keep Alt text unprefixed too.
-fn with_alt_escape_prefix(input: Vec<u8>, modifiers: Modifiers) -> Vec<u8> {
-    if cfg!(any(target_os = "macos", target_family = "wasm"))
+/// host is a Mac, so they keep Alt text unprefixed too. Portable encoding
+/// (`native` false) always prefixes.
+fn with_alt_escape_prefix(input: Vec<u8>, modifiers: Modifiers, native: bool) -> Vec<u8> {
+    if (native && cfg!(any(target_os = "macos", target_family = "wasm")))
         || !modifiers.alt
         || modifiers.platform
     {

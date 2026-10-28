@@ -28,29 +28,6 @@ impl GraphicsCacheKey {
     }
 }
 
-#[derive(Default)]
-pub(crate) struct LegacyGraphicsCache {
-    key: Option<GraphicsCacheKey>,
-    placements: Vec<KittyGraphicsRenderPlacement>,
-}
-
-impl LegacyGraphicsCache {
-    pub(crate) fn update(
-        &mut self,
-        state: &mut RemoteState,
-        fetch: impl FnOnce() -> anyhow::Result<(u64, Vec<KittyGraphicsRenderPlacement>)>,
-    ) -> anyhow::Result<()> {
-        let key = GraphicsCacheKey::of(state);
-        if self.key != Some(key) {
-            let (_, placements) = fetch()?;
-            self.placements = placements;
-            self.key = Some(key);
-        }
-        state.graphics = Some(self.placements.clone());
-        Ok(())
-    }
-}
-
 struct GraphicsCache {
     key: Option<GraphicsCacheKey>,
     snapshot: (u64, Vec<KittyGraphicsRenderPlacement>),
@@ -102,6 +79,16 @@ impl RemoteBackend {
     pub(crate) fn write_owned(&self, bytes: Vec<u8>) {
         self.transport.send(RemoteCommand::Write(bytes));
     }
+    pub(crate) fn input_anchor(&self) -> u64 {
+        let state = self.transport.state();
+        state.lines_scrolled + state.cursor_position.1 as u64
+    }
+    pub(crate) fn write_mouse_motion(&self, bytes: Vec<u8>) {
+        self.transport.send(RemoteCommand::WriteMotion(bytes));
+    }
+    pub(crate) fn remote_state(&self) -> RemoteState {
+        (*self.transport.state()).clone()
+    }
     pub(crate) fn child_pid(&self) -> Option<u32> {
         self.transport.state().child_pid
     }
@@ -112,14 +99,25 @@ impl RemoteBackend {
         let current = self.size();
         let mut requested = self.requested_size.lock().unwrap();
         match *requested {
-            Some(size) if size != current => size,
+            Some(size) if size != current && !self.transport.host_size_overridden() => size,
             _ => {
                 // Once a frame catches up, follow the host again so a resize
                 // from another client is not hidden by this stale request.
+                // The transport notices the catch-up as frames arrive, also
+                // when nobody read this size while that frame was current.
                 *requested = None;
                 current
             }
         }
+    }
+    pub(crate) fn host_size_overridden(&self) -> bool {
+        self.transport.host_size_overridden()
+    }
+    pub(crate) fn frames_paused(&self) -> bool {
+        self.transport.frames_paused()
+    }
+    pub(crate) fn host_lost(&self) -> bool {
+        self.transport.host_lost()
     }
     pub(crate) fn resize(&mut self, size: TerminalSize) {
         *self.requested_size.get_mut().unwrap() = Some(size.clamped());
@@ -186,13 +184,22 @@ impl RemoteBackend {
         location: TerminalClipboardLocation,
         formats: &[String],
     ) -> bool {
-        matches!(
-            self.request(RemoteCommand::ClipboardPaste {
-                location,
-                formats: formats.to_vec()
-            }),
-            Some(RemoteReply::Changed(true))
-        )
+        // The notification writes to the PTY, so it goes behind the keys
+        // still queued for the host (audit L18).
+        let reply = self.transport.send_and_wait(RemoteCommand::ClipboardPaste {
+            location,
+            formats: formats.to_vec(),
+        });
+        match reply {
+            Ok(Some(reply)) => matches!(reply, RemoteReply::Changed(true)),
+            // It may still reach the program; pasting the text as well
+            // could paste twice.
+            Ok(None) => true,
+            Err(error) => {
+                log::error!("multiplexer request failed: {error}");
+                false
+            }
+        }
     }
 
     pub(crate) fn kitty_graphics_revision(&self) -> u64 {
@@ -233,6 +240,12 @@ impl RemoteBackend {
         )
     }
     pub(crate) fn scroll_to_bottom(&self) -> bool {
+        // Every keystroke scrolls to the bottom first. The cached frame
+        // already shows whether that changes anything, so typing at the
+        // bottom costs no round trip (audit L17).
+        if self.transport.state().render.metadata.display_offset == 0 {
+            return false;
+        }
         matches!(
             self.request(RemoteCommand::ScrollToBottom),
             Some(RemoteReply::Changed(true))
@@ -245,20 +258,42 @@ impl RemoteBackend {
         )
     }
 
-    fn damage(&self, state: &Arc<RemoteState>, force_full: bool) -> TerminalRenderDamageSnapshot {
+    /// The current state and its damage since the state read before. Frame
+    /// deltas tell what moved and changed (audit I1); without them, or when
+    /// they do not start at the frame read before, the cells are compared.
+    fn damage(&self, force_full: bool) -> (Arc<RemoteState>, TerminalRenderDamageSnapshot) {
+        let (state, known) = self.transport.state_with_damage();
         let mut previous = self.last_render.lock().unwrap();
         let metadata = state.render.metadata;
-        let damage = match previous.as_ref().filter(|old| {
+        let comparable = previous.as_ref().filter(|old| {
             !force_full
                 && old.render.metadata.cols == metadata.cols
                 && old.render.metadata.rows == metadata.rows
                 && old.render.metadata.display_offset == metadata.display_offset
-                && old.render.metadata.history_size == metadata.history_size
                 && old.render.palette == state.render.palette
-        }) {
-            None => TerminalDamageSnapshot::Full,
-            Some(old) if Arc::ptr_eq(old, state) => TerminalDamageSnapshot::Partial(Vec::new()),
-            Some(old) => {
+        });
+        let known = known.filter(|known| {
+            comparable.is_some_and(|old| {
+                known.base == old.render.metadata.generation
+                    // History changes only as output scrolls.
+                    && (old.render.metadata.history_size == metadata.history_size
+                        || !known.scrolls.is_empty())
+            })
+        });
+        let mut scrolls = Vec::new();
+        let comparable = comparable.filter(|old| {
+            known.is_some() || old.render.metadata.history_size == metadata.history_size
+        });
+        let damage = match (comparable, known) {
+            (None, _) => TerminalDamageSnapshot::Full,
+            (Some(old), _) if Arc::ptr_eq(old, &state) => {
+                TerminalDamageSnapshot::Partial(Vec::new())
+            }
+            (Some(_), Some(known)) => {
+                scrolls = known.scrolls;
+                TerminalDamageSnapshot::Partial(known.spans)
+            }
+            (Some(old), None) => {
                 let cols = usize::from(metadata.cols);
                 let mut spans = Vec::new();
                 for (row, cells) in state.render.cells.chunks(cols).enumerate() {
@@ -286,29 +321,34 @@ impl RemoteBackend {
                 TerminalDamageSnapshot::Partial(spans)
             }
         };
-        *previous = Some(Arc::clone(state));
-        TerminalRenderDamageSnapshot {
+        *previous = Some(Arc::clone(&state));
+        drop(previous);
+        let snapshot = TerminalRenderDamageSnapshot {
             damage,
-            scrolls: Vec::new(),
+            scrolls,
             generation: metadata.generation,
             palette_revision: metadata.palette_revision,
-        }
+        };
+        (state, snapshot)
     }
 
     pub(crate) fn take_render_damage_snapshot(&self) -> TerminalRenderDamageSnapshot {
-        self.damage(&self.transport.state(), false)
+        self.damage(false).1
     }
     pub(crate) fn take_damage_snapshot(&self) -> TerminalDamageSnapshot {
-        self.take_render_damage_snapshot().damage
+        // Readers of plain damage cannot replay scrolls.
+        let update = self.take_render_damage_snapshot();
+        if update.scrolls.is_empty() {
+            update.damage
+        } else {
+            TerminalDamageSnapshot::Full
+        }
     }
     pub(crate) fn render_read(&self, force_full: bool) -> TerminalRenderRead {
-        self.render_read_with_screen(force_full).0
-    }
-    pub(crate) fn render_read_with_screen(&self, force_full: bool) -> (TerminalRenderRead, bool) {
-        let state = self.transport.state();
+        let (state, update) = self.damage(force_full);
         let mut read = state.render.clone();
-        read.update = self.damage(&state, force_full);
-        (read, state.alternate_screen)
+        read.update = update;
+        read
     }
 
     pub(crate) fn visit_viewport_cells(
@@ -343,8 +383,7 @@ impl RemoteBackend {
         &self,
         read: impl FnOnce(TerminalRenderDamageSnapshot, TerminalDamageCells<'_>) -> R,
     ) -> R {
-        let state = self.transport.state();
-        let damage = self.damage(&state, false);
+        let (state, damage) = self.damage(false);
         let line_bounds = (
             -(state.render.metadata.history_size as i32),
             i32::from(state.size.rows) - 1,
@@ -400,22 +439,37 @@ impl RemoteBackend {
             }
             return bounds;
         }
-        if let Some(RemoteReply::Lines { bounds, cells }) =
-            self.request(RemoteCommand::Lines { first, last })
-        {
-            let start = first.max(bounds.0).min(bounds.1);
-            for (index, cell) in cells.iter().enumerate() {
-                visitor(
-                    bounds,
-                    start + (index / bounds.2) as i32,
-                    index % bounds.2,
-                    cell,
-                );
-            }
-            bounds
-        } else {
+        // History is read as text, in chunks: search and copying need no
+        // styles, and styled cells of a long scrollback would cost about
+        // 32 bytes each and could exceed the message limit (audit B13).
+        // Numbered like the frame on screen, whatever output arrived since.
+        let anchor = Some(state.lines_scrolled);
+        let Some(texts) = read_line_texts(first, last, anchor, |command| self.request(command))
+        else {
             let (first, last) = self.line_bounds();
-            (first, last, usize::from(self.size().cols))
+            return (first, last, usize::from(self.size().cols));
+        };
+        let cols = texts.bounds.2;
+        let mut cell = TerminalRenderCell::default();
+        for (line, text) in (texts.first..).zip(&texts.lines) {
+            for (col, chunk) in text.cells(cols).enumerate() {
+                cell.text = TerminalRenderText::new(chunk);
+                cell.wide_character_spacer = chunk.is_empty();
+                cell.line_wrapped = text.wrapped && col + 1 == cols;
+                visitor(texts.bounds, line, col, &cell);
+            }
+        }
+        texts.bounds
+    }
+
+    pub(crate) fn line_texts(&self, first: i32, last: i32, anchor: Option<u64>) -> LineTexts {
+        match self.request(RemoteCommand::LineTexts {
+            first,
+            last,
+            anchor,
+        }) {
+            Some(RemoteReply::LineTexts(texts)) => texts,
+            _ => LineTexts::default(),
         }
     }
 
@@ -467,7 +521,18 @@ impl RemoteBackend {
         {
             return None;
         }
-        match self.request(RemoteCommand::Hyperlink { row, col }) {
+        // The host finds the clicked row of this frame after output moved
+        // it (audit L19).
+        let view = ViewportAnchor::at(&state, row);
+        self.hyperlink_at_view(row, col, view)
+    }
+    pub(crate) fn hyperlink_at_view(
+        &self,
+        row: usize,
+        col: usize,
+        view: ViewportAnchor,
+    ) -> Option<DetectedLink> {
+        match self.request(RemoteCommand::HyperlinkAt { row, col, view }) {
             Some(RemoteReply::Hyperlink(link)) => link,
             _ => None,
         }
@@ -487,7 +552,16 @@ impl RemoteBackend {
         {
             return None;
         }
-        match self.request(RemoteCommand::Link { row, col }) {
+        let view = ViewportAnchor::at(&state, row);
+        self.link_at_view(row, col, view)
+    }
+    pub(crate) fn link_at_view(
+        &self,
+        row: usize,
+        col: usize,
+        view: ViewportAnchor,
+    ) -> Option<DetectedViewportLink> {
+        match self.request(RemoteCommand::LinkAt { row, col, view }) {
             Some(RemoteReply::Link(link)) => link,
             _ => None,
         }

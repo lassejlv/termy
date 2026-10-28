@@ -69,6 +69,7 @@ pub use glyph_geometry::{
 pub use keyboard::{
     Keystroke, Modifiers, TerminalKeyEventKind, TerminalKeyboardMode, TermyKeystroke,
     TermyModifiers, keystroke_to_input, keystroke_to_input_with_options,
+    portable_keystroke_to_input,
 };
 pub use kitty_graphics::{
     KittyGraphicsApplyResult, KittyGraphicsCommand, KittyGraphicsPlaceholder,
@@ -94,8 +95,9 @@ pub use protocol::{
     KittyClipboardControl, KittyClipboardHostState, KittyClipboardInput, KittyClipboardInterceptor,
     KittyClipboardOsc, KittyClipboardOscTerminator, TerminalClipboardContent,
     TerminalClipboardLocation, TerminalClipboardReadRequest, TerminalClipboardReadResult,
-    TerminalClipboardTarget, TerminalClipboardWriteRequest, TerminalClipboardWriteResult,
-    TerminalQueryColors, TerminalReplyHost,
+    TerminalClipboardReply, TerminalClipboardRequest, TerminalClipboardTarget,
+    TerminalClipboardWriteRequest, TerminalClipboardWriteResult, TerminalQueryColors,
+    TerminalReplyHost,
 };
 #[cfg(feature = "native")]
 pub use render_metrics::{

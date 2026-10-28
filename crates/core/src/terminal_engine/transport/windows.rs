@@ -836,17 +836,19 @@ impl Transport {
     /// terminal queries. The pseudoconsole then inherits the host's cursor
     /// position instead of assuming the top-left cell, so restored output is
     /// not overdrawn. ConPTY blocks until its startup DSR 6n is answered,
-    /// which is why hosts that do not reply must use [`Self::spawn`].
+    /// which is why hosts that do not reply must use [`Self::spawn`]. Without
+    /// `inherit_environment`, the child sees only `config.environment`.
     pub(crate) fn spawn_answering_queries(
         config: SpawnConfig,
         size: PtySize,
+        inherit_environment: bool,
         on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
         on_exit: impl FnOnce() + Send + 'static,
     ) -> io::Result<Self> {
         Self::spawn_inner(
             config,
             size,
-            true,
+            inherit_environment,
             PSEUDOCONSOLE_RESIZE_QUIRK | PSEUDOCONSOLE_INHERIT_CURSOR,
             on_output,
             move |_| on_exit(),
@@ -1142,6 +1144,11 @@ impl Transport {
     pub(crate) fn child_pid(&self) -> u32 {
         self.child_pid
     }
+
+    /// The Unix transport waits here for its child to end. Closing a
+    /// pseudoconsole ends the shell and the job's console programs without a
+    /// timer, so dropping the transport is enough.
+    pub(crate) fn terminate_and_wait(&self) {}
 
     /// Name of the newest process the shell has started, following
     /// descendants down, such as `vim.exe`; the shell's own name when it runs

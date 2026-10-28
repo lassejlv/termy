@@ -89,7 +89,7 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 
 `multiplexer_enabled`
 - Default: `false`
-- Keep programs running after quitting and restore tabs, panes, and terminal state when reopening. Applies after restarting Termy.
+- Keep programs running after quitting and restore tabs, panes, and terminal state when reopening. Applies after restarting Termy. Turning it off leaves running sessions in the background; run `termy mux shutdown` to end them.
 - Group: `SESSIONS`
 
 `tmux_enabled`

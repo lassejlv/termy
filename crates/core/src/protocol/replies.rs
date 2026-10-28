@@ -28,6 +28,48 @@ pub trait TerminalReplyHost {
     ) -> TerminalClipboardWriteResult {
         TerminalClipboardWriteResult::Unsupported
     }
+
+    /// Offers a clipboard request to answer later instead of now. Returning
+    /// `Ok` takes it: the terminal then waits for
+    /// `Terminal::complete_clipboard_request` (or `deny_clipboard_request`)
+    /// with this `id`, and writes the replies of deferred requests in the
+    /// order the program made them. Returning the request answers it now
+    /// through the methods above, which is the default.
+    fn defer_clipboard_request(
+        &mut self,
+        _id: u64,
+        request: TerminalClipboardRequest,
+    ) -> Result<(), TerminalClipboardRequest> {
+        Err(request)
+    }
+}
+
+/// A clipboard operation a program asked for, for a [`TerminalReplyHost`]
+/// that answers it later (see [`TerminalReplyHost::defer_clipboard_request`]).
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub enum TerminalClipboardRequest {
+    Load(TerminalClipboardTarget),
+    Read(TerminalClipboardReadRequest),
+    Write(TerminalClipboardWriteRequest),
+}
+
+/// The answer to a [`TerminalClipboardRequest`] of the same kind.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum TerminalClipboardReply {
+    Load(Option<String>),
+    Read(TerminalClipboardReadResult),
+    Write(TerminalClipboardWriteResult),
+}
+
+impl TerminalClipboardRequest {
+    /// Answers the request now through `host`.
+    pub fn execute(self, host: &mut impl TerminalReplyHost) -> TerminalClipboardReply {
+        match self {
+            Self::Load(target) => TerminalClipboardReply::Load(host.load_clipboard(target)),
+            Self::Read(request) => TerminalClipboardReply::Read(host.read_clipboard(request)),
+            Self::Write(request) => TerminalClipboardReply::Write(host.write_clipboard(request)),
+        }
+    }
 }
 
 impl<F> TerminalReplyHost for F

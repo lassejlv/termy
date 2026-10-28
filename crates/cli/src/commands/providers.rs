@@ -13,7 +13,11 @@ pub fn config_file_path() -> Result<PathBuf, String> {
 
 pub fn list_action_lines() -> Vec<String> {
     let config = load_config_for_providers();
-    action_lines_for_capabilities(config.tmux_enabled, detect_install_cli_available())
+    action_lines_for_capabilities(
+        config.tmux_enabled,
+        detect_install_cli_available(),
+        config.multiplexer_enabled,
+    )
 }
 
 pub fn list_keybind_lines() -> Vec<String> {
@@ -141,16 +145,26 @@ pub fn load_config_for_providers() -> AppConfig {
 
 #[cfg(test)]
 fn action_lines_for_tmux_enabled(tmux_enabled: bool) -> Vec<String> {
-    action_lines_for_capabilities(tmux_enabled, detect_install_cli_available())
+    action_lines_for_capabilities(tmux_enabled, detect_install_cli_available(), false)
 }
 
-fn action_lines_for_capabilities(tmux_enabled: bool, install_cli_available: bool) -> Vec<String> {
+fn action_lines_for_capabilities(
+    tmux_enabled: bool,
+    install_cli_available: bool,
+    multiplexer_enabled: bool,
+) -> Vec<String> {
     let capabilities = command_capabilities(tmux_enabled, install_cli_available);
 
     CommandId::all()
         .map(|id| {
-            let (available, tmux_required, restart_required) =
+            let (mut available, tmux_required, mut restart_required) =
                 command_metadata_for_id(id, capabilities);
+            // Detached windows exist only with the built-in multiplexer, which
+            // applies after a restart.
+            if id == CommandId::ReopenDetachedWindow && !multiplexer_enabled {
+                available = false;
+                restart_required = true;
+            }
             format!(
                 "{}\tavailable={}\ttmux_required={}\trestart_required={}",
                 id.config_name(),
@@ -415,7 +429,7 @@ mod tests {
 
     #[test]
     fn list_actions_reports_install_cli_unavailable_when_probe_is_false() {
-        let actions = action_lines_for_capabilities(true, false);
+        let actions = action_lines_for_capabilities(true, false, false);
         let install_cli_line = actions
             .iter()
             .find(|line| line.starts_with(CommandId::InstallCli.config_name()))
@@ -426,8 +440,29 @@ mod tests {
     }
 
     #[test]
+    fn reopen_detached_window_is_available_only_with_the_multiplexer() {
+        let line = |multiplexer_enabled| {
+            action_lines_for_capabilities(false, true, multiplexer_enabled)
+                .into_iter()
+                .find(|line| {
+                    line.starts_with(&format!(
+                        "{}\t",
+                        CommandId::ReopenDetachedWindow.config_name()
+                    ))
+                })
+                .expect("missing reopen_detached_window action metadata")
+        };
+        let off = line(false);
+        assert!(off.contains("available=false"), "{off}");
+        assert!(off.contains("restart_required=true"), "{off}");
+        let on = line(true);
+        assert!(on.contains("available=true"), "{on}");
+        assert!(on.contains("restart_required=false"), "{on}");
+    }
+
+    #[test]
     fn list_actions_reports_restart_not_required_when_tmux_runtime_is_active() {
-        let actions = action_lines_for_capabilities(true, true);
+        let actions = action_lines_for_capabilities(true, true, true);
         let resize_pane_line = actions
             .iter()
             .find(|line| line.starts_with(CommandId::ResizePaneLeft.config_name()))

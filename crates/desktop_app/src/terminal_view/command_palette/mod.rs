@@ -238,6 +238,19 @@ impl TerminalView {
         Self::command_palette_core_command_items_for_state(capabilities)
     }
 
+    /// Commands that only make sense while the built-in multiplexer runs.
+    fn command_palette_multiplexer_items(&self, cx: &App) -> Option<CommandPaletteItem> {
+        self.multiplexer.as_ref()?;
+        let detached = crate::multiplexer::detached_windows(cx);
+        Some(CommandPaletteItem::command_with_state(
+            "Reopen Detached Window",
+            "restore closed window multiplexer background sessions running",
+            CommandAction::ReopenDetachedWindow,
+            detached > 0,
+            (detached == 0).then_some("None detached"),
+        ))
+    }
+
     fn command_palette_items_for_mode(
         &mut self,
         mode: CommandPaletteMode,
@@ -247,6 +260,7 @@ impl TerminalView {
             CommandPaletteMode::Commands => {
                 let mut items =
                     Self::command_palette_command_items_for_state(self.command_capabilities());
+                items.extend(self.command_palette_multiplexer_items(cx));
                 items.push(CommandPaletteItem::manage_ssh_hosts());
                 let ssh_enabled = self.runtime_kind() == RuntimeKind::Native;
                 items.extend(

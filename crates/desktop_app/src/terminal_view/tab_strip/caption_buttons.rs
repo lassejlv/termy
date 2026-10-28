@@ -42,7 +42,7 @@ impl TerminalView {
         if !input.tabs_row_rendered {
             return true;
         }
-        if y < TOP_STRIP_CONTENT_OFFSET_Y || y >= TOP_STRIP_CONTENT_OFFSET_Y + TABBAR_HEIGHT {
+        if !(TOP_STRIP_CONTENT_OFFSET_Y..TOP_STRIP_CONTENT_OFFSET_Y + TABBAR_HEIGHT).contains(&y) {
             return false;
         }
         x >= geometry.row_end_x || (input.left_inset_draggable && x < geometry.row_start_x)

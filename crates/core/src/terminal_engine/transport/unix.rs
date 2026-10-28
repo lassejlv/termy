@@ -639,6 +639,8 @@ fn writer_closed_error() -> io::Error {
 }
 
 impl Transport {
+    // Hosts that answer terminal queries use `spawn_answering_queries`.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn spawn(
         config: SpawnConfig,
         size: PtySize,
@@ -649,14 +651,18 @@ impl Transport {
     }
 
     /// Spawn like [`Self::spawn`] for a host whose `on_output` answers
-    /// terminal queries. A Unix PTY needs nothing extra for that.
+    /// terminal queries. A Unix PTY needs nothing extra for that. Without
+    /// `inherit_environment`, the child sees only `config.environment`.
     pub(crate) fn spawn_answering_queries(
         config: SpawnConfig,
         size: PtySize,
+        inherit_environment: bool,
         on_output: impl FnMut(&[u8]) -> Vec<u8> + Send + 'static,
         on_exit: impl FnOnce() + Send + 'static,
     ) -> io::Result<Self> {
-        Self::spawn(config, size, on_output, on_exit)
+        Self::spawn_with_exit(config, size, inherit_environment, on_output, move |_| {
+            on_exit();
+        })
     }
 
     /// Spawn like [`Self::spawn`], reporting how the child ended. Without
@@ -995,6 +1001,31 @@ impl Transport {
 
     pub(crate) fn child_pid(&self) -> u32 {
         self.child_pid as u32
+    }
+
+    /// Ends the child like dropping the transport does, but waits for it:
+    /// hangs up its process group, kills the group if the child still runs
+    /// after [`DROP_SHUTDOWN_GRACE`], and returns once the watcher has reaped
+    /// it (or after a further second). For a process about to exit, whose
+    /// escalation timer would die with it.
+    pub(crate) fn terminate_and_wait(&self) {
+        let pid = self.child_pid;
+        if self
+            .alive
+            .signal_if_alive(|| signal_child_shutdown(pid))
+            .is_none()
+        {
+            return;
+        }
+        let wait = |timeout: Duration| {
+            let deadline = Instant::now() + timeout;
+            while self.alive.is_alive() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        wait(DROP_SHUTDOWN_GRACE);
+        self.alive.signal_if_alive(|| force_child_shutdown(pid));
+        wait(Duration::from_secs(1));
     }
 
     /// Send `signal` to the child process while it is running.

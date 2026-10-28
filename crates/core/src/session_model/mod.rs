@@ -1,10 +1,13 @@
 //! Persistent workspace, tab, and pane structures shared by desktop and CLI.
 use serde::{Deserialize, Serialize};
 mod merge;
+mod prune;
+mod rebase;
 mod tab_edit;
 mod tab_layout;
 mod window_edit;
 pub use merge::merge_session;
+pub use rebase::{match_workspaces, rebase_session};
 pub use tab_edit::TabEdit;
 pub use window_edit::WindowEdit;
 
@@ -125,6 +128,27 @@ pub struct StoredWindow {
 pub struct StoredMultiplexer {
     pub version: u32,
     pub windows: Vec<StoredWindow>,
+}
+
+/// The only [`StoredMultiplexer::version`] this build reads and writes.
+pub const STORED_MULTIPLEXER_VERSION: u32 = 1;
+
+impl StoredMultiplexer {
+    /// Decodes a layout as the host stores it: no layout is an empty one.
+    pub fn parse(json: Option<&str>) -> Result<Self, String> {
+        let Some(json) = json else {
+            return Ok(Self::empty());
+        };
+        let layout: Self = serde_json::from_str(json)
+            .map_err(|error| format!("Invalid session layout: {error}"))?;
+        if layout.version != STORED_MULTIPLEXER_VERSION {
+            return Err(format!(
+                "Unsupported session layout version {}",
+                layout.version
+            ));
+        }
+        Ok(layout)
+    }
 }
 
 mod layout;

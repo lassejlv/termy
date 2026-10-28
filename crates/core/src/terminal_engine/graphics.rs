@@ -361,6 +361,11 @@ impl State {
         self.graphics.defer_uploads = defer;
     }
 
+    /// Whether this is a deferring feed, which may pause the parser.
+    pub(super) fn defers_uploads(&self) -> bool {
+        self.graphics.defer_uploads
+    }
+
     pub(super) fn has_deferred_upload(&self) -> bool {
         self.graphics.deferred.is_some()
     }

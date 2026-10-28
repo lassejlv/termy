@@ -7,7 +7,7 @@ use base64::{
 };
 use rand_core::{OsRng, RngCore};
 
-use super::TerminalReplyHost;
+use super::{TerminalClipboardReply, TerminalClipboardRequest, TerminalReplyHost};
 
 const MAX_ID_BYTES: usize = 512;
 const MAX_MIME_BYTES: usize = 256;
@@ -442,6 +442,39 @@ pub struct KittyClipboardHostState {
     session_grants: VecDeque<Grant>,
     paste_grants: VecDeque<PasteGrant>,
     paste_events_enabled: bool,
+    /// Counts resets, so a request answered after one does not restore a
+    /// grant the reset revoked.
+    epoch: u64,
+}
+
+/// A kitty clipboard read or write waiting for the host's answer, with what
+/// its reply needs.
+#[derive(Debug)]
+pub(crate) struct KittyClipboardPending {
+    /// `Some` for a read, holding whether it asked for the format list.
+    list_available: Option<bool>,
+    id: String,
+    location: TerminalClipboardLocation,
+    password: Option<String>,
+    terminator: KittyClipboardOscTerminator,
+    epoch: u64,
+}
+
+impl KittyClipboardPending {
+    /// The answer of a host that refused or never answered.
+    pub(crate) fn denial(&self) -> TerminalClipboardReply {
+        if self.list_available.is_some() {
+            TerminalClipboardReply::Read(TerminalClipboardReadResult::Denied)
+        } else {
+            TerminalClipboardReply::Write(TerminalClipboardWriteResult::Denied)
+        }
+    }
+}
+
+/// What a received packet needs: replies now, or the host's answer first.
+pub(crate) enum KittyClipboardStep {
+    Replies(Vec<Vec<u8>>),
+    Ask(TerminalClipboardRequest, KittyClipboardPending),
 }
 
 impl KittyClipboardHostState {
@@ -461,7 +494,9 @@ impl KittyClipboardHostState {
     }
 
     pub fn reset(&mut self) {
+        let epoch = self.epoch.wrapping_add(1);
         *self = Self::default();
+        self.epoch = epoch;
     }
 
     pub(crate) fn reset_preserving_paste_mode(&mut self) {
@@ -475,13 +510,32 @@ impl KittyClipboardHostState {
         osc: KittyClipboardOsc,
         host: &mut impl TerminalReplyHost,
     ) -> Vec<Vec<u8>> {
+        match self.receive(osc) {
+            KittyClipboardStep::Replies(replies) => replies,
+            KittyClipboardStep::Ask(request, pending) => {
+                let reply = request.execute(host);
+                self.finish(pending, reply)
+            }
+        }
+    }
+
+    /// Handles a packet up to the point where the host must answer, so the
+    /// answer can come later (see [`Self::finish`]).
+    pub(crate) fn receive(&mut self, osc: KittyClipboardOsc) -> KittyClipboardStep {
         let terminator = osc.terminator;
         let packet = match ClipboardPacket::parse(osc) {
             Ok(packet) => packet,
             Err(MetadataError::InvalidValue(Operation::Write)) => {
                 self.write = None;
                 self.ignore_write_packets = true;
-                return vec![response("write", "EINVAL", "", &[], None, terminator)];
+                return KittyClipboardStep::Replies(vec![response(
+                    "write",
+                    "EINVAL",
+                    "",
+                    &[],
+                    None,
+                    terminator,
+                )]);
             }
             Err(MetadataError::InvalidValue(operation))
                 if matches!(operation, Operation::WriteData | Operation::WriteAlias)
@@ -489,20 +543,91 @@ impl KittyClipboardHostState {
             {
                 let id = self.write.take().map(|write| write.id).unwrap_or_default();
                 self.ignore_write_packets = true;
-                return vec![response("write", "EINVAL", &id, &[], None, terminator)];
+                return KittyClipboardStep::Replies(vec![response(
+                    "write",
+                    "EINVAL",
+                    &id,
+                    &[],
+                    None,
+                    terminator,
+                )]);
             }
-            Err(_) => return Vec::new(),
+            Err(_) => return KittyClipboardStep::Replies(Vec::new()),
         };
 
         match packet.metadata.operation {
-            Operation::Read => self.handle_read(packet, host),
+            Operation::Read => self.handle_read(packet),
             Operation::Write => {
                 self.write = Some(WriteTransaction::new(packet.metadata));
                 self.ignore_write_packets = false;
-                Vec::new()
+                KittyClipboardStep::Replies(Vec::new())
             }
-            Operation::WriteData => self.handle_write_data(packet, host),
-            Operation::WriteAlias => self.handle_write_alias(packet),
+            Operation::WriteData => self.handle_write_data(packet),
+            Operation::WriteAlias => KittyClipboardStep::Replies(self.handle_write_alias(packet)),
+        }
+    }
+
+    /// The replies to a request [`Self::receive`] asked the host about. A
+    /// reply of the wrong kind denies the request.
+    pub(crate) fn finish(
+        &mut self,
+        pending: KittyClipboardPending,
+        reply: TerminalClipboardReply,
+    ) -> Vec<Vec<u8>> {
+        let KittyClipboardPending {
+            list_available,
+            id,
+            location,
+            password,
+            terminator,
+            epoch,
+        } = pending;
+        // A reset since the request revoked every grant, this one included.
+        let password = password.filter(|_| epoch == self.epoch);
+        let Some(list_available) = list_available else {
+            let result = match reply {
+                TerminalClipboardReply::Write(result) => result,
+                _ => TerminalClipboardWriteResult::Denied,
+            };
+            let (status, remember) = match result {
+                TerminalClipboardWriteResult::Success {
+                    remember_permission,
+                } => ("DONE", remember_permission),
+                TerminalClipboardWriteResult::Denied => ("EPERM", false),
+                TerminalClipboardWriteResult::Unsupported => ("ENOSYS", false),
+                TerminalClipboardWriteResult::Busy => ("EBUSY", false),
+                TerminalClipboardWriteResult::InvalidData => ("EINVAL", false),
+                TerminalClipboardWriteResult::IoError => ("EIO", false),
+            };
+            if remember && let Some(password) = password {
+                self.remember_grant(location, password, GrantKind::Write);
+            }
+            return vec![response("write", status, &id, &[], None, terminator)];
+        };
+        let result = match reply {
+            TerminalClipboardReply::Read(result) => result,
+            _ => TerminalClipboardReadResult::Denied,
+        };
+        match result {
+            TerminalClipboardReadResult::Success {
+                available_formats,
+                contents,
+                remember_permission,
+            } => {
+                if remember_permission && let Some(password) = password {
+                    self.remember_grant(location, password, GrantKind::Read);
+                }
+                read_success_responses(&id, list_available, available_formats, contents, terminator)
+            }
+            TerminalClipboardReadResult::Denied => {
+                vec![response("read", "EPERM", &id, &[], None, terminator)]
+            }
+            TerminalClipboardReadResult::Unsupported => {
+                vec![response("read", "ENOSYS", &id, &[], None, terminator)]
+            }
+            TerminalClipboardReadResult::Busy | TerminalClipboardReadResult::IoError => {
+                vec![response("read", "EBUSY", &id, &[], None, terminator)]
+            }
         }
     }
 
@@ -576,19 +701,16 @@ impl KittyClipboardHostState {
         Some(output)
     }
 
-    fn handle_read(
-        &mut self,
-        packet: ClipboardPacket,
-        host: &mut impl TerminalReplyHost,
-    ) -> Vec<Vec<u8>> {
+    fn handle_read(&mut self, packet: ClipboardPacket) -> KittyClipboardStep {
+        let ignore = || KittyClipboardStep::Replies(Vec::new());
         let Some(payload) = packet.payload.as_deref() else {
-            return Vec::new();
+            return ignore();
         };
         let Ok(decoded) = decode_payload(payload) else {
-            return Vec::new();
+            return ignore();
         };
         let Ok(decoded) = std::str::from_utf8(&decoded) else {
-            return Vec::new();
+            return ignore();
         };
         let mut list_available = false;
         let mut mime_types = Vec::new();
@@ -596,16 +718,16 @@ impl KittyClipboardHostState {
             if mime_type == "." {
                 list_available = true;
             } else if mime_type.len() > MAX_MIME_BYTES || !valid_mime_type(mime_type) {
-                return Vec::new();
+                return ignore();
             } else if !mime_types.iter().any(|existing| existing == mime_type) {
                 if mime_types.len() >= MAX_MIME_TYPES {
-                    return Vec::new();
+                    return ignore();
                 }
                 mime_types.push(mime_type.to_string());
             }
         }
         if !list_available && mime_types.is_empty() {
-            return Vec::new();
+            return ignore();
         }
 
         let password = usable_password(&packet.metadata);
@@ -625,57 +747,23 @@ impl KittyClipboardHostState {
             permission_granted,
             can_remember_permission: password.is_some(),
         };
-        let result = host.read_clipboard(request);
-        let id = packet.metadata.id;
-        match result {
-            TerminalClipboardReadResult::Success {
-                available_formats,
-                contents,
-                remember_permission,
-            } => {
-                if remember_permission && let Some(password) = password {
-                    self.remember_grant(packet.metadata.location, password, GrantKind::Read);
-                }
-                read_success_responses(
-                    &id,
-                    list_available,
-                    available_formats,
-                    contents,
-                    packet.terminator,
-                )
-            }
-            TerminalClipboardReadResult::Denied => {
-                vec![response("read", "EPERM", &id, &[], None, packet.terminator)]
-            }
-            TerminalClipboardReadResult::Unsupported => {
-                vec![response(
-                    "read",
-                    "ENOSYS",
-                    &id,
-                    &[],
-                    None,
-                    packet.terminator,
-                )]
-            }
-            TerminalClipboardReadResult::Busy => {
-                vec![response("read", "EBUSY", &id, &[], None, packet.terminator)]
-            }
-            TerminalClipboardReadResult::IoError => {
-                vec![response("read", "EBUSY", &id, &[], None, packet.terminator)]
-            }
-        }
+        let pending = KittyClipboardPending {
+            list_available: Some(list_available),
+            id: packet.metadata.id,
+            location: packet.metadata.location,
+            password,
+            terminator: packet.terminator,
+            epoch: self.epoch,
+        };
+        KittyClipboardStep::Ask(TerminalClipboardRequest::Read(request), pending)
     }
 
-    fn handle_write_data(
-        &mut self,
-        packet: ClipboardPacket,
-        host: &mut impl TerminalReplyHost,
-    ) -> Vec<Vec<u8>> {
+    fn handle_write_data(&mut self, packet: ClipboardPacket) -> KittyClipboardStep {
         if self.ignore_write_packets {
-            return Vec::new();
+            return KittyClipboardStep::Replies(Vec::new());
         }
         let Some(write) = self.write.as_mut() else {
-            return Vec::new();
+            return KittyClipboardStep::Replies(Vec::new());
         };
         if packet.metadata.mime_type.is_none() {
             if packet
@@ -683,21 +771,21 @@ impl KittyClipboardHostState {
                 .as_deref()
                 .is_some_and(|payload| !payload.is_empty())
             {
-                return self.abort_write("EINVAL", packet.terminator);
+                return KittyClipboardStep::Replies(self.abort_write("EINVAL", packet.terminator));
             }
             let write = self.write.take().expect("write transaction checked above");
-            return self.commit_write(write, host, packet.terminator);
+            return self.commit_write(write, packet.terminator);
         }
         let (Some(mime_type), Some(payload)) =
             (packet.metadata.mime_type, packet.payload.as_deref())
         else {
-            return self.abort_write("EINVAL", packet.terminator);
+            return KittyClipboardStep::Replies(self.abort_write("EINVAL", packet.terminator));
         };
-        match write.push_data(mime_type, payload) {
+        KittyClipboardStep::Replies(match write.push_data(mime_type, payload) {
             Ok(()) => Vec::new(),
             Err(WriteError::Invalid) => self.abort_write("EINVAL", packet.terminator),
             Err(WriteError::TooLarge) => self.abort_write("EIO", packet.terminator),
-        }
+        })
     }
 
     fn handle_write_alias(&mut self, packet: ClipboardPacket) -> Vec<Vec<u8>> {
@@ -722,9 +810,8 @@ impl KittyClipboardHostState {
     fn commit_write(
         &mut self,
         write: WriteTransaction,
-        host: &mut impl TerminalReplyHost,
         terminator: KittyClipboardOscTerminator,
-    ) -> Vec<Vec<u8>> {
+    ) -> KittyClipboardStep {
         let WriteTransaction {
             location,
             id,
@@ -751,11 +838,25 @@ impl KittyClipboardHostState {
             Ok(contents) => contents,
             Err(WriteError::Invalid) => {
                 self.ignore_write_packets = true;
-                return vec![response("write", "EINVAL", &id, &[], None, terminator)];
+                return KittyClipboardStep::Replies(vec![response(
+                    "write",
+                    "EINVAL",
+                    &id,
+                    &[],
+                    None,
+                    terminator,
+                )]);
             }
             Err(WriteError::TooLarge) => {
                 self.ignore_write_packets = true;
-                return vec![response("write", "EIO", &id, &[], None, terminator)];
+                return KittyClipboardStep::Replies(vec![response(
+                    "write",
+                    "EIO",
+                    &id,
+                    &[],
+                    None,
+                    terminator,
+                )]);
             }
         };
         let request = TerminalClipboardWriteRequest {
@@ -765,20 +866,15 @@ impl KittyClipboardHostState {
             permission_granted,
             can_remember_permission: password.is_some(),
         };
-        let (status, remember) = match host.write_clipboard(request) {
-            TerminalClipboardWriteResult::Success {
-                remember_permission,
-            } => ("DONE", remember_permission),
-            TerminalClipboardWriteResult::Denied => ("EPERM", false),
-            TerminalClipboardWriteResult::Unsupported => ("ENOSYS", false),
-            TerminalClipboardWriteResult::Busy => ("EBUSY", false),
-            TerminalClipboardWriteResult::InvalidData => ("EINVAL", false),
-            TerminalClipboardWriteResult::IoError => ("EIO", false),
+        let pending = KittyClipboardPending {
+            list_available: None,
+            id,
+            location,
+            password,
+            terminator,
+            epoch: self.epoch,
         };
-        if remember && let Some(password) = password {
-            self.remember_grant(location, password, GrantKind::Write);
-        }
-        vec![response("write", status, &id, &[], None, terminator)]
+        KittyClipboardStep::Ask(TerminalClipboardRequest::Write(request), pending)
     }
 
     fn abort_write(

@@ -200,6 +200,7 @@ impl TerminalView {
             | CommandAction::AppInfo
             | CommandAction::OpenSettings
             | CommandAction::NewWindow
+            | CommandAction::ReopenDetachedWindow
             | CommandAction::CheckForUpdates
             | CommandAction::ViewReleaseNotes => {
                 self.execute_app_system_command_action(action, cx);
@@ -350,6 +351,15 @@ impl TerminalView {
         cx: &mut Context<Self>,
     ) {
         self.execute_command_action(CommandAction::CheckForUpdates, true, window, cx);
+    }
+
+    pub(in super::super) fn handle_reopen_detached_window_action(
+        &mut self,
+        _: &commands::ReopenDetachedWindow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.execute_command_action(CommandAction::ReopenDetachedWindow, true, window, cx);
     }
 
     pub(in super::super) fn handle_view_release_notes_action(

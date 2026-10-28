@@ -720,32 +720,114 @@ impl TerminalView {
             && self.session.tabs.is_empty()
             && !self.has_other_workspaces()
         {
-            self.sync_persisted_native_workspace();
+            if !self.discard_multiplexer_window() {
+                self.sync_persisted_native_workspace();
+            }
             crate::app_actions::close_terminal_window::<Self>(self.window_handle, cx);
         }
     }
 
+    /// Visit every pane with a live terminal: the visible strip, tabs stashed
+    /// on inactive workspaces, and split panes parked by a zoom. Settings that
+    /// every terminal must follow (theme colors, runtime options) go through
+    /// here so hidden panes do not keep stale values until they reattach.
+    /// The callback gets the id of the tab that owns the pane.
+    pub(in crate::terminal_view) fn for_each_live_pane(
+        &self,
+        mut f: impl FnMut(TabId, &TerminalPane),
+    ) {
+        let tabs = self.session.tabs.iter().chain(
+            self.session
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.tabs),
+        );
+        for tab in tabs {
+            for pane in &tab.panes {
+                f(tab.id, pane);
+            }
+        }
+        for (tab_id, zoom) in &self.session.native_pane_zoom_snapshots {
+            for pane in &zoom.other_panes {
+                f(*tab_id, pane);
+            }
+        }
+    }
+
+    /// The single policy for `inactive_tab_scrollback`. A local pane in an
+    /// inactive tab drops to the cap to save memory. A session-host pane keeps
+    /// the full limit: its history lives in the shared host, where a cap
+    /// would trim it permanently for every client, also after Termy quits.
+    pub(in crate::terminal_view) fn scrollback_options_for_pane(
+        &self,
+        terminal: &Terminal,
+        active_tab: bool,
+    ) -> TerminalOptions {
+        let active_options = self.terminal_runtime.term_options();
+        match self.inactive_tab_scrollback {
+            Some(cap) if !active_tab && !terminal.is_session_host_pane() => {
+                active_options.with_scrollback_history(cap)
+            }
+            _ => active_options,
+        }
+    }
+
+    fn for_each_pane_in_tab(&self, tab_id: TabId, mut f: impl FnMut(&TerminalPane)) {
+        if let Some(tab) = self.session.tabs.iter().find(|tab| tab.id == tab_id) {
+            tab.panes.iter().for_each(&mut f);
+        }
+        if let Some(zoom) = self.session.native_pane_zoom_snapshots.get(&tab_id) {
+            zoom.other_panes.iter().for_each(f);
+        }
+    }
+
     /// Apply `inactive_tab_scrollback`: the tab at `tab_index` gets the full
-    /// scrollback when `active`, else the inactive cap.
+    /// scrollback when `active`, else the inactive cap. Session-host panes are
+    /// left alone (see `scrollback_options_for_pane`).
     pub(in crate::terminal_view) fn set_tab_scrollback_options(
         &self,
         tab_index: usize,
         active: bool,
     ) {
-        let Some(inactive_scrollback) = self.inactive_tab_scrollback else {
+        if self.inactive_tab_scrollback.is_none() {
+            return;
+        }
+        let Some(tab_id) = self.session.tabs.get(tab_index).map(|tab| tab.id) else {
             return;
         };
-        let active_options = self.terminal_runtime.term_options();
-        let options = if active {
-            active_options
-        } else {
-            active_options.with_scrollback_history(inactive_scrollback)
-        };
-        if let Some(tab) = self.session.tabs.get(tab_index) {
-            for pane in &tab.panes {
-                pane.terminal().set_term_options(options);
+        self.for_each_pane_in_tab(tab_id, |pane| {
+            let terminal = pane.terminal();
+            if terminal.is_session_host_pane() {
+                return;
             }
+            terminal.set_term_options(self.scrollback_options_for_pane(terminal, active));
+        });
+    }
+
+    /// Re-apply `inactive_tab_scrollback` to the whole visible strip, after a
+    /// workspace was restored or switched in with freshly started tabs.
+    pub(in crate::terminal_view) fn sync_all_tab_scrollback(&self) {
+        for index in 0..self.session.tabs.len() {
+            self.set_tab_scrollback_options(index, index == self.session.active_tab);
         }
+    }
+
+    /// Push the current query colors and terminal options to every live pane,
+    /// including stashed workspaces and zoom-parked splits.
+    pub(in crate::terminal_view) fn push_runtime_options_to_live_panes(&self) {
+        let active_tab_id = self
+            .session
+            .tabs
+            .get(self.session.active_tab)
+            .map(|tab| tab.id);
+        let query_colors = self.terminal_runtime.query_colors;
+        self.for_each_live_pane(|tab_id, pane| {
+            let terminal = pane.terminal();
+            terminal.set_term_options(
+                self.scrollback_options_for_pane(terminal, Some(tab_id) == active_tab_id),
+            );
+            terminal.set_query_colors(query_colors);
+        });
     }
 
     /// Every path that changes `session.active_tab` calls this afterwards:
@@ -1007,6 +1089,16 @@ impl TerminalView {
         let Some(tab_index) = self.tab_index_by_id(tab_id) else {
             return false;
         };
+        // A zoomed tab holds only its zoomed pane; put the parked ones back
+        // first, so closing (say, an exited zoomed pane) keeps them running.
+        if let Some(mut zoom) = self.session.native_pane_zoom_snapshots.remove(&tab_id) {
+            if let Some(layout_tree) = zoom.layout_tree.take() {
+                self.session
+                    .native_pane_layout_trees
+                    .insert(tab_id, layout_tree);
+            }
+            Self::unzoom_panes(&mut self.session.tabs[tab_index], zoom);
+        }
         let Some(tab) = self.session.tabs.get(tab_index) else {
             return false;
         };
@@ -1436,7 +1528,10 @@ impl TerminalView {
         .map_err(|error| format!("Failed to split pane: {error}"))
     }
 
-    fn dispose_native_terminals(terminals: Vec<Terminal>, cx: &mut Context<Self>) {
+    pub(in crate::terminal_view) fn dispose_native_terminals(
+        terminals: Vec<Terminal>,
+        cx: &mut Context<Self>,
+    ) {
         if terminals.is_empty() {
             return;
         }
@@ -1462,7 +1557,7 @@ impl TerminalView {
         terminals
     }
 
-    fn invalidate_native_split_generation(&mut self) {
+    pub(in crate::terminal_view) fn invalidate_native_split_generation(&mut self) {
         self.native_split_generation = self.native_split_generation.saturating_add(1);
     }
 
