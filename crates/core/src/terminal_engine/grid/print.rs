@@ -275,7 +275,7 @@ impl Grid {
         if !extra.combining().is_empty() {
             // Only the marks appended since the prefix was last found to be
             // one grapheme need segmenting.
-            let verified = match &self.grapheme_verified {
+            let verified = match &self.combining_cache.verified {
                 Some((base, known))
                     if *base == previous.character
                         && extra.combining().starts_with(known.combining.as_str()) =>
@@ -304,7 +304,7 @@ impl Grid {
         let cell = previous;
         self.combining_cache.append(&mut extra, character);
         if let Some(joined) = &extra {
-            self.grapheme_verified = Some((cell.character, Arc::clone(joined)));
+            self.combining_cache.verified = Some((cell.character, Arc::clone(joined)));
         }
         if width == old_width {
             let active = &mut self.screen_mut().rows[row];

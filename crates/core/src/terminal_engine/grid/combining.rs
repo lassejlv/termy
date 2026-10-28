@@ -58,6 +58,10 @@ pub(super) struct CombiningCache {
     // The metadata of a cell that had none and gains one mark, by that
     // mark: the usual case, found without hashing.
     marks: [Option<(char, Arc<CellExtra>)>; MARKS],
+    // The base and marks of the last cluster `extend_grapheme` found to be
+    // one grapheme. Marks are immutable, so a later cluster that starts with
+    // the same text segments only what follows it.
+    pub(super) verified: Option<(char, Arc<CellExtra>)>,
 }
 
 impl Default for CombiningCache {
@@ -66,6 +70,7 @@ impl Default for CombiningCache {
             slots: std::array::from_fn(|_| std::array::from_fn(|_| None)),
             next: [0; BUCKETS],
             marks: std::array::from_fn(|_| None),
+            verified: None,
         }
     }
 }
@@ -77,6 +82,7 @@ impl CombiningCache {
         }
         self.next.fill(0);
         self.marks.fill(None);
+        self.verified = None;
     }
 
     /// Append `character` to the combining text of a cell's metadata.
