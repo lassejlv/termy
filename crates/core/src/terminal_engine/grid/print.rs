@@ -3,7 +3,7 @@ use super::super::parser::complete_utf8;
 use super::super::types::{CellExtra, ExtraSlot, MAX_COMBINING_BYTES, PlainCell};
 use super::{Cell, Grid};
 use std::sync::Arc;
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::{GraphemeCursor, UnicodeSegmentation};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The display width of `cell` with its `combining` text.
@@ -116,6 +116,17 @@ fn always_extends(c: char) -> bool {
         .graphemes(true)
         .nth(1)
         .is_none()
+}
+
+/// Whether `text` is one grapheme cluster, given that its first `verified`
+/// bytes (at least one scalar) are.
+fn one_grapheme_after(text: &str, verified: usize) -> bool {
+    if verified == text.len() {
+        return true;
+    }
+    GraphemeCursor::new(verified, text.len(), true).is_boundary(text, 0) == Ok(false)
+        && GraphemeCursor::new(verified, text.len(), true).next_boundary(text, 0)
+            == Ok(Some(text.len()))
 }
 
 /// A three-byte UTF-8 scalar in the wide ordinary blocks `scalar_properties`
@@ -247,10 +258,35 @@ impl Grid {
         let mut len = previous.character.encode_utf8(&mut bytes).len();
         bytes[len..len + extra.combining().len()].copy_from_slice(extra.combining().as_bytes());
         len += extra.combining().len();
+        let joint = len;
         len += character.encode_utf8(&mut bytes[len..]).len();
-        let text = std::str::from_utf8(&bytes[..len]).expect("grapheme UTF-8");
-        if text.graphemes(true).nth(1).is_some() {
+        // SAFETY: the bytes are a scalar's UTF-8, a `str`, and a scalar's UTF-8.
+        let text = unsafe { std::str::from_utf8_unchecked(&bytes[..len]) };
+        // A boundary depends only on the text before it and the scalar after
+        // it, so appending cannot add one inside the prefix: the text is one
+        // grapheme when the joint is not a boundary and the prefix is one.
+        // The whole text is one chunk, so the cursor never asks for context.
+        if GraphemeCursor::new(joint, len, true)
+            .is_boundary(text, 0)
+            .unwrap_or(true)
+        {
             return false;
+        }
+        if !extra.combining().is_empty() {
+            // Only the marks appended since the prefix was last found to be
+            // one grapheme need segmenting.
+            let verified = match &self.grapheme_verified {
+                Some((base, known))
+                    if *base == previous.character
+                        && extra.combining().starts_with(known.combining.as_str()) =>
+                {
+                    base.len_utf8() + known.combining.len()
+                }
+                _ => previous.character.len_utf8(),
+            };
+            if !one_grapheme_after(&text[..joint], verified) {
+                return false;
+            }
         }
         if over_limit {
             return true;
@@ -267,6 +303,9 @@ impl Grid {
         }
         let cell = previous;
         self.combining_cache.append(&mut extra, character);
+        if let Some(joined) = &extra {
+            self.grapheme_verified = Some((cell.character, Arc::clone(joined)));
+        }
         if width == old_width {
             let active = &mut self.screen_mut().rows[row];
             active.put(col, cell, extra);

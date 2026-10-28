@@ -195,6 +195,10 @@ pub(super) struct Grid {
     defer_scroll_clear: bool,
     grapheme_open: bool,
     grapheme_ordinary: bool,
+    // The base and marks of the last cluster `extend_grapheme` found to be
+    // one grapheme. Marks are immutable, so a later cluster that starts with
+    // the same text segments only what follows it.
+    grapheme_verified: Option<(char, Arc<CellExtra>)>,
     // Only meaningful while a grapheme is open. A closed grapheme at the
     // margin marks a wide base dropped there with autowrap disabled.
     grapheme_at_margin: bool,
@@ -310,6 +314,7 @@ impl Grid {
             defer_scroll_clear: false,
             grapheme_open: false,
             grapheme_ordinary: true,
+            grapheme_verified: None,
             grapheme_at_margin: false,
             history_activity: false,
             scrolled_into_history: 0,
