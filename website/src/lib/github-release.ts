@@ -70,8 +70,11 @@ function parseGitHubResponse<T>(
 function githubHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     Accept: 'application/vnd.github+json',
-    'User-Agent': `${gitConfig.repo}-website`,
   };
+  // Browsers set their own User-Agent and have no server environment.
+  if (typeof window !== 'undefined') return headers;
+
+  headers['User-Agent'] = `${gitConfig.repo}-website`;
   if (process.env.GITHUB_TOKEN) {
     headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
   }

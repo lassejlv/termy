@@ -1,7 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { createServerFn } from '@tanstack/react-start';
 import { TriangleAlert } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   MarketingPageShell,
   marketingFontLinks,
@@ -41,31 +40,24 @@ function withLinuxGroup(groups: PlatformAssetGroup[]): PlatformAssetGroup[] {
   return next;
 }
 
-const loadDownloadReleases = createServerFn({ method: 'GET' }).handler(
-  async () => {
-    try {
-      return {
-        release: await fetchLatestGitHubRelease(),
-        error: null as string | null,
-      };
-    } catch (error) {
-      return {
-        release: null as GitHubRelease | null,
-        error:
-          error instanceof Error ? error.message : 'Failed to load latest release',
-      };
-    }
-  },
-);
-
 export const Route = createFileRoute('/download')({
   head: () => ({ links: marketingFontLinks }),
   component: DownloadPage,
-  loader: () => loadDownloadReleases(),
 });
 
+type ReleaseState =
+  | { status: 'loading' }
+  | { status: 'loaded'; release: GitHubRelease }
+  | { status: 'error' };
+
 function DownloadPage() {
-  const { release, error } = Route.useLoaderData();
+  // The repo is public, so the browser asks GitHub directly instead of going
+  // through a server function that needs a token.
+  const [releaseState, setReleaseState] = useState<ReleaseState>({
+    status: 'loading',
+  });
+  const release =
+    releaseState.status === 'loaded' ? releaseState.release : null;
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [pendingDownload, setPendingDownload] = useState<{
     name: string;
@@ -82,6 +74,22 @@ function DownloadPage() {
     setPendingDownload({ name, url });
     dialogRef.current?.showModal();
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchLatestGitHubRelease().then(
+      (release) => {
+        if (!cancelled) setReleaseState({ status: 'loaded', release });
+      },
+      (error: unknown) => {
+        console.error('Failed to load latest release', error);
+        if (!cancelled) setReleaseState({ status: 'error' });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const continueMacDownload = () => {
     const url = pendingDownload?.url;
@@ -116,7 +124,7 @@ function DownloadPage() {
 
         <div className="mt-12">
           <AssetPanel
-            error={error}
+            status={releaseState.status}
             release={release}
             groups={groups}
             githubUrl={githubUrl}
@@ -226,13 +234,13 @@ function DownloadPage() {
 }
 
 function AssetPanel({
-  error,
+  status,
   release,
   groups,
   githubUrl,
   onMacDownload,
 }: {
-  error: string | null;
+  status: ReleaseState['status'];
   release: GitHubRelease | null;
   groups: PlatformAssetGroup[];
   githubUrl: string;
@@ -240,7 +248,11 @@ function AssetPanel({
 }) {
   // The sections still render underneath a notice, because the Arch Linux
   // install command does not depend on the release having loaded.
-  const notice = error ? (
+  const notice = status === 'loading' ? (
+    <p className="pb-8 font-mono text-sm text-fd-muted-foreground">
+      Loading the latest release…
+    </p>
+  ) : status === 'error' ? (
     <p className="pb-8 font-mono text-sm text-fd-muted-foreground">
       <span className="text-fd-error">error:</span> could not reach GitHub.{' '}
       <a
