@@ -1,46 +1,52 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fetchGitHubReleases } from '../src/lib/github-release';
+import {
+  fetchGitHubReleaseByTag,
+  fetchGitHubReleases,
+} from '../src/lib/github-release';
 
-test('release listings refresh at runtime and share requests while prerendering', async () => {
+function release(tag: string) {
+  return {
+    id: 1, name: tag, tag_name: tag,
+    published_at: '2026-10-02T00:00:00Z', prerelease: false,
+    html_url: 'https://example.test/release', body: '',
+    tarball_url: '', zipball_url: '', assets: [],
+  };
+}
+
+test('release requests are fresh, unauthenticated, and desktop-only', async () => {
   const originalFetch = globalThis.fetch;
-  const originalPrerender = process.env.TSS_PRERENDERING;
-  let calls = 0;
+  const requests: { url: string; headers: Record<string, string> }[] = [];
   let version = 'v1.0.0';
-  let fail = false;
-  globalThis.fetch = Object.assign(async () => {
-    calls++;
-    if (fail) return new Response('unavailable', { status: 503 });
-    return Response.json([{
-      id: 1, name: version, tag_name: version,
-      published_at: '2026-10-02T00:00:00Z', prerelease: false,
-      html_url: 'https://example.test/release', body: '',
-      tarball_url: '', zipball_url: '', assets: [],
-    }]);
-  }, { preconnect: originalFetch.preconnect });
+  globalThis.fetch = Object.assign(
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, headers: init?.headers as Record<string, string> });
+      if (url.endsWith('/releases/tags/v9.9.9')) {
+        return new Response('not found', { status: 404 });
+      }
+      if (url.includes('/releases/tags/')) return Response.json(release(version));
+      return Response.json([release(version), release('sdk-v0.1.0')]);
+    },
+    { preconnect: originalFetch.preconnect },
+  );
   try {
-    delete process.env.TSS_PRERENDERING;
-    assert.equal((await fetchGitHubReleases())[0].tagName, 'v1.0.0');
+    assert.deepEqual(
+      (await fetchGitHubReleases()).map((r) => r.tagName),
+      ['v1.0.0'],
+    );
     version = 'v1.0.1';
     assert.equal((await fetchGitHubReleases())[0].tagName, 'v1.0.1');
-    assert.equal(calls, 2);
 
-    process.env.TSS_PRERENDERING = 'true';
-    fail = true;
-    await assert.rejects(fetchGitHubReleases(), /503/);
-    fail = false;
-    const [first, second] = await Promise.all([fetchGitHubReleases(), fetchGitHubReleases()]);
-    assert.equal(calls, 4);
-    assert.strictEqual(first, second);
-    await fetchGitHubReleases();
-    assert.equal(calls, 4);
+    assert.equal((await fetchGitHubReleaseByTag('v1.0.1'))?.tagName, 'v1.0.1');
+    assert.equal(await fetchGitHubReleaseByTag('v9.9.9'), null);
+    assert.equal(await fetchGitHubReleaseByTag('sdk-v0.1.0'), null);
 
-    delete process.env.TSS_PRERENDERING;
-    version = 'v1.0.2';
-    assert.equal((await fetchGitHubReleases())[0].tagName, 'v1.0.2');
+    assert.equal(requests.length, 4);
+    for (const { headers } of requests) {
+      assert.equal(headers.Authorization, undefined);
+    }
   } finally {
     globalThis.fetch = originalFetch;
-    if (originalPrerender === undefined) delete process.env.TSS_PRERENDERING;
-    else process.env.TSS_PRERENDERING = originalPrerender;
   }
 });

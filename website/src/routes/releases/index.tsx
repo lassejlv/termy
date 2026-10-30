@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { createServerFn } from '@tanstack/react-start';
+import { useEffect, useState } from 'react';
 import {
   MarketingPageShell,
   marketingFontLinks,
@@ -12,30 +12,37 @@ import {
   type GitHubRelease,
 } from '@/lib/github-release';
 
-const loadReleases = createServerFn({ method: 'GET' }).handler(async () => {
-  try {
-    return {
-      releases: await fetchGitHubReleases(),
-      error: null as string | null,
-    };
-  } catch (err) {
-    return {
-      releases: [] as GitHubRelease[],
-      error: err instanceof Error ? err.message : 'Failed to load releases',
-    };
-  }
-});
-
 export const Route = createFileRoute('/releases/')({
   head: () => ({ links: marketingFontLinks }),
   component: ReleasesPage,
-  loader: () => loadReleases(),
 });
 
+type ReleasesState =
+  | { status: 'loading' }
+  | { status: 'loaded'; releases: GitHubRelease[] }
+  | { status: 'error' };
+
 function ReleasesPage() {
-  const { releases, error } = Route.useLoaderData();
+  const [state, setState] = useState<ReleasesState>({ status: 'loading' });
+  const releases = state.status === 'loaded' ? state.releases : [];
   const groups = groupGitHubReleasesByYear(releases);
   const latestStableId = releases.find((release) => !release.prerelease)?.id;
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchGitHubReleases().then(
+      (releases) => {
+        if (!cancelled) setState({ status: 'loaded', releases });
+      },
+      (error: unknown) => {
+        console.error('Failed to load releases', error);
+        if (!cancelled) setState({ status: 'error' });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <MarketingPageShell>
@@ -54,14 +61,20 @@ function ReleasesPage() {
         </p>
 
         <div className="mt-12">
-          {error && (
+          {state.status === 'loading' && (
+            <p className="py-8 font-mono text-sm text-fd-muted-foreground">
+              Loading releases…
+            </p>
+          )}
+
+          {state.status === 'error' && (
             <p className="py-8 font-mono text-sm text-fd-muted-foreground">
               <span className="text-fd-error">error:</span> could not load
               releases.
             </p>
           )}
 
-          {!error && releases.length === 0 && (
+          {state.status === 'loaded' && releases.length === 0 && (
             <p className="py-8 font-mono text-sm text-fd-muted-foreground">
               No releases yet.
             </p>
