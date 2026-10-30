@@ -1,6 +1,7 @@
 import { createFileRoute, notFound } from '@tanstack/react-router';
 import { DocsLayout } from 'fumadocs-ui/layouts/docs';
 import { createServerFn } from '@tanstack/react-start';
+import { staticFunctionMiddleware } from '@tanstack/start-static-server-functions';
 import { slugsToMarkdownPath, source } from '@/lib/source';
 import browserCollections from 'collections/browser';
 import {
@@ -32,9 +33,12 @@ export const Route = createFileRoute('/docs/$')({
   },
 });
 
+// Runs only while prerendering; the build stores each page's result as a JSON
+// file that client-side navigation fetches instead of calling a server.
 const serverLoader = createServerFn({
   method: 'GET',
 })
+  .middleware([staticFunctionMiddleware])
   .inputValidator((slugs: string[]) => slugs)
   .handler(async ({ data: slugs }) => {
     const page = source.getPage(slugs);
