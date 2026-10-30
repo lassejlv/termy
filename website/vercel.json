@@ -3,9 +3,6 @@
   "framework": null,
   "installCommand": "bun install --frozen-lockfile",
   "buildCommand": "bun run build",
-  "build": {
-    "env": {
-      "NITRO_PRESET": "vercel"
-    }
-  }
+  "outputDirectory": "dist/client",
+  "rewrites": [{ "source": "/(.*)", "destination": "/_shell.html" }]
 }

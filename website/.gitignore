@@ -5,8 +5,7 @@ node_modules
 .env.*.local
 .cache
 .vercel
-.output
-.nitro
+dist
 /build/
 /api/
 /server/build

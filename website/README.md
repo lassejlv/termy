@@ -12,21 +12,16 @@ Build:
 bun run build
 ```
 
-The build uses the Nitro `bun` preset by default (see `vite.config.ts`), which
-the `Dockerfile` serves via `bun run start`.
+The site is fully static. The build prerenders every page into `dist/client`
+and writes `_shell.html`, a client-rendered fallback for paths that have no
+prerendered file (release details and unknown paths). GitHub release data is
+fetched in the browser. Serve `dist/client` from any static host that falls
+back to `_shell.html` when no file matches.
 
 ## Deploying to Vercel
 
-Deployment is configured in `vercel.json`. It sets `NITRO_PRESET=vercel` at
-build time, so the build emits Vercel's Build Output API artifacts to
-`.vercel/output`, which Vercel detects automatically.
+Deployment is configured in `vercel.json`: it builds the site, serves
+`dist/client`, and rewrites paths without a file to `_shell.html`.
 
 When importing the repo into Vercel, set the project **Root Directory** to
-`website`. No other configuration is required — `vercel.json` provides the
-install and build commands.
-
-To reproduce the Vercel build locally:
-
-```bash
-NITRO_PRESET=vercel bun run build
-```
+`website`. No other configuration is required.
