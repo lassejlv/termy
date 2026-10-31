@@ -265,13 +265,7 @@ impl SettingsWindow {
 
         let section = section.child(self.render_terminal_shell_group(cx));
 
-        let row = self.render_root_bool_setting_row(
-            "multiplexer_enabled",
-            "multiplexer-enabled-toggle",
-            RootSettingId::MultiplexerEnabled,
-            self.config.multiplexer_enabled,
-            cx,
-        );
+        let row = self.render_multiplexer_setting_row(cx);
         let section = section.child(self.render_settings_group("Sessions", vec![row]));
         let section = section.child(self.render_terminal_tmux_group(cx));
 
@@ -279,6 +273,50 @@ impl SettingsWindow {
             .child(self.render_terminal_scrolling_group(cx))
             .child(self.render_terminal_clipboard_group(cx))
             .child(self.render_terminal_ui_group(cx))
+    }
+
+    /// The built-in multiplexer is an early preview: its row says so, and
+    /// turning it on asks for confirmation first. Turning it off does not.
+    fn render_multiplexer_setting_row(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let metadata = Self::setting_metadata_or_fallback("multiplexer_enabled");
+        let enabled = self.config.multiplexer_enabled;
+        self.render_badged_setting_row(
+            "multiplexer_enabled",
+            "multiplexer-enabled-toggle",
+            metadata.title,
+            Some(
+                crate::design_system::Badge::new("Early Preview")
+                    .tone(crate::design_system::Tone::Warning),
+            ),
+            metadata.description,
+            enabled,
+            cx,
+            move |view, _, cx| {
+                if enabled {
+                    view.apply_root_bool_setting(RootSettingId::MultiplexerEnabled, false, cx);
+                } else {
+                    view.confirm_enable_multiplexer(cx);
+                }
+            },
+        )
+    }
+
+    fn confirm_enable_multiplexer(&mut self, cx: &mut Context<Self>) {
+        let title = "Enable Built-in Multiplexer?";
+        let message = "The built-in multiplexer is an early preview. It may have bugs, lose \
+                       sessions, or change between releases. It applies after restarting Termy.";
+
+        cx.spawn(async move |this, cx: &mut AsyncApp| {
+            if !crate::native_sdk::confirm(title, message) {
+                // The switch already flipped on; redraw it off.
+                let _ = this.update(cx, |_, cx| cx.notify());
+                return;
+            }
+            let _ = this.update(cx, |view, cx| {
+                view.apply_root_bool_setting(RootSettingId::MultiplexerEnabled, true, cx);
+            });
+        })
+        .detach();
     }
 
     pub(super) fn render_terminal_cursor_group(&mut self, cx: &mut Context<Self>) -> AnyElement {

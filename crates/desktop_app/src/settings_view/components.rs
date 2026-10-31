@@ -211,6 +211,32 @@ impl SettingsWindow {
         cx: &mut Context<Self>,
         on_toggle: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) -> AnyElement {
+        self.render_badged_setting_row(
+            search_key,
+            id,
+            title,
+            None,
+            description,
+            checked,
+            cx,
+            on_toggle,
+        )
+    }
+
+    /// A switch row with an optional badge after the title, such as the
+    /// "Early Preview" mark on unfinished features.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_badged_setting_row(
+        &mut self,
+        search_key: &'static str,
+        id: &'static str,
+        title: &'static str,
+        badge: Option<crate::design_system::Badge>,
+        description: &'static str,
+        checked: bool,
+        cx: &mut Context<Self>,
+        on_toggle: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) -> AnyElement {
         let is_search_match = self.setting_matches_sidebar_query(search_key);
         let match_stripe = self.accent_with_alpha(0.85);
         let match_bg = self.accent_with_alpha(0.06);
@@ -242,7 +268,14 @@ impl SettingsWindow {
                     .min_w(px(0.0))
                     .flex_col()
                     .gap(px(1.0))
-                    .child(div().text_sm().text_color(self.text_primary()).child(title))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_sm().text_color(self.text_primary()).child(title))
+                            .children(badge),
+                    )
                     .child(
                         div()
                             .text_xs()
@@ -283,18 +316,35 @@ impl SettingsWindow {
             cx,
             move |view, window, cx| {
                 let next = !checked;
-                match config::set_root_setting(setting, &next.to_string()) {
-                    Ok(()) => {
-                        let _ = view.reload_config_if_changed(cx);
-                        if setting == RootSettingId::SimpleMode && next {
-                            window.remove_window();
-                        }
-                        cx.notify();
-                    }
-                    Err(error) => crate::ui::toast::error(error),
+                if view.apply_root_bool_setting(setting, next, cx)
+                    && setting == RootSettingId::SimpleMode
+                    && next
+                {
+                    window.remove_window();
                 }
             },
         )
+    }
+
+    /// Write a boolean root setting and reload the config. Returns false
+    /// (after showing the error) when the write fails.
+    pub(super) fn apply_root_bool_setting(
+        &mut self,
+        setting: RootSettingId,
+        value: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match config::set_root_setting(setting, &value.to_string()) {
+            Ok(()) => {
+                let _ = self.reload_config_if_changed(cx);
+                cx.notify();
+                true
+            }
+            Err(error) => {
+                crate::ui::toast::error(error);
+                false
+            }
+        }
     }
 
     /// An `NSSwitch`, flipped on press. The thumb slides on the shared
