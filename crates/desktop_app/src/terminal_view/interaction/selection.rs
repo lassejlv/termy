@@ -956,8 +956,11 @@ impl TerminalView {
         }
         #[cfg(target_os = "macos")]
         {
+            let Some(target) = unix_link_open_target(url) else {
+                return false;
+            };
             Command::new("open")
-                .arg(url)
+                .arg(&target)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -966,8 +969,11 @@ impl TerminalView {
         }
         #[cfg(target_os = "linux")]
         {
+            let Some(target) = unix_link_open_target(url) else {
+                return false;
+            };
             Command::new("xdg-open")
-                .arg(url)
+                .arg(&target)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -992,6 +998,70 @@ impl TerminalView {
 
 fn is_safe_url_for_system_opener(url: &str) -> bool {
     !url.bytes().any(|byte| byte.is_ascii_control())
+}
+
+/// What the macOS/Linux system opener (`open` / `xdg-open`) should receive for a
+/// link: web and mail URLs as they are, and `file:` URLs only when they resolve
+/// to a path that already exists on disk. Every other scheme is refused.
+///
+/// OSC 8 hyperlink targets are attacker-controlled (any program writing to the
+/// terminal picks the URI, and its displayed text can be spoofed), and they
+/// otherwise bypass the scheme validation that the heuristic link detector
+/// applies. Handing an unvalidated URI to `open`/`xdg-open` would let a single
+/// click launch arbitrary registered scheme handlers (`smb:` auto-mounting and
+/// leaking credentials, `vscode:`/custom app schemes, …). This mirrors the
+/// `windows_link_open_target` allowlist so every platform vets the scheme.
+///
+/// Every accepted target begins with an alphabetic scheme (`http`/`https`/
+/// `mailto`/`file`), so a validated URL can never start with `-` and be misread
+/// as an `open`/`xdg-open` option.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn unix_link_open_target(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:")
+    {
+        return Some(url.to_string());
+    }
+
+    if lower.starts_with("file:") {
+        let path = unix_file_url_to_path(&url["file:".len()..])?;
+        // Only forward `file:` links that point at an existing local file, the
+        // same bar the heuristic detector applies; the original URL is handed to
+        // the opener once the path is confirmed.
+        if std::path::Path::new(&path).exists() {
+            return Some(url.to_string());
+        }
+        return None;
+    }
+
+    None
+}
+
+/// The local filesystem path a `file:` URL refers to, given the text after the
+/// `file:` scheme. Accepts `file:///path`, `file://localhost/path`, and
+/// `file:/path`; refuses a remote authority (`file://host/path`), which is a
+/// network location rather than a local file. Returns an absolute path.
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn unix_file_url_to_path(rest: &str) -> Option<String> {
+    let after_authority = if let Some(rest) = rest.strip_prefix("//") {
+        // `//authority/path` — the path starts at the first slash.
+        let slash = rest.find('/')?;
+        let authority = &rest[..slash];
+        if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+            return None;
+        }
+        &rest[slash..]
+    } else {
+        // `file:/path` with no authority component.
+        rest
+    };
+
+    let path_part = after_authority
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(after_authority);
+    let decoded = percent_decode(path_part)?;
+    decoded.starts_with('/').then_some(decoded)
 }
 
 /// What the Windows shell should open for a link: web and mail URLs as they
@@ -1061,7 +1131,7 @@ fn is_windows_absolute_drive_path(path: &str) -> bool {
     bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'\\'
 }
 
-#[cfg(any(target_os = "windows", test))]
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux", test))]
 fn percent_decode(value: &str) -> Option<String> {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
@@ -1627,6 +1697,68 @@ mod tests {
         ] {
             assert_eq!(windows_link_open_target(target), None, "{target}");
         }
+    }
+
+    #[test]
+    fn unix_link_targets_keep_web_and_mail_urls() {
+        for target in [
+            "http://example.com/a?b=1&c=2",
+            "https://example.com/path#frag",
+            "mailto:someone@example.com",
+        ] {
+            assert_eq!(
+                unix_link_open_target(target).as_deref(),
+                Some(target),
+                "{target}"
+            );
+        }
+    }
+
+    #[test]
+    fn unix_link_targets_refuse_dangerous_schemes() {
+        // The OSC 8 escape-attack vector: spoofed link text, hostile target.
+        for target in [
+            "smb://attacker.example/share",
+            "file://attacker.example/share/x.txt",
+            "vscode://ms-vscode.remote/x",
+            "javascript:alert(1)",
+            "x-apple.systempreferences:com.apple.preference",
+            "shortcuts://run-shortcut?name=x",
+            "ftp://host/x",
+            "relative/path.txt",
+            "-R",
+            "file:///no/such/termy/file/should/exist",
+        ] {
+            assert_eq!(unix_link_open_target(target), None, "{target}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_link_targets_allow_file_urls_only_for_existing_paths() {
+        let file = tempfile::NamedTempFile::new().expect("temp file");
+        let path = file.path().to_str().expect("utf-8 path");
+        let url = format!("file://{path}");
+
+        assert_eq!(
+            unix_link_open_target(&url).as_deref(),
+            Some(url.as_str()),
+            "existing file should be opened"
+        );
+
+        let localhost_url = format!("file://localhost{path}");
+        assert_eq!(
+            unix_link_open_target(&localhost_url).as_deref(),
+            Some(localhost_url.as_str()),
+            "file://localhost should map to the same local path"
+        );
+
+        drop(file);
+        assert_eq!(
+            unix_link_open_target(&url),
+            None,
+            "a file that no longer exists must not be opened"
+        );
     }
 
     #[test]
