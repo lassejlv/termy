@@ -95,6 +95,7 @@ impl TerminalView {
             return;
         };
         let background = self.colors.background;
+        let foreground = self.colors.foreground;
         let chrome = NativeWindowChrome {
             title: tab.title.clone(),
             background: [
@@ -102,6 +103,12 @@ impl TerminalView {
                 f64::from(background.g),
                 f64::from(background.b),
                 f64::from(self.effective_background_opacity()),
+            ],
+            foreground: [
+                f64::from(foreground.r),
+                f64::from(foreground.g),
+                f64::from(foreground.b),
+                f64::from(foreground.a),
             ],
         };
         if self.native_window_chrome.as_ref() == Some(&chrome) {
@@ -112,10 +119,13 @@ impl TerminalView {
             let [red, green, blue, _] = chrome.background;
             let dark = 0.2126 * red + 0.7152 * green + 0.0722 * blue < 0.5;
             let (title, background) = (chrome.title.clone(), chrome.background);
+            let tab_bar = native_tab_bar_colors(chrome.background, chrome.foreground);
             let window = self.window_handle;
             App::defer(cx, move |cx| {
                 let _ = window.update(cx, |_, window, _| {
-                    crate::macos_native_tabs::set_window_chrome(window, title, background, dark);
+                    crate::macos_native_tabs::set_window_chrome(
+                        window, title, background, dark, tab_bar,
+                    );
                 });
             });
         }
@@ -146,4 +156,33 @@ impl TerminalView {
 pub(in super::super) struct NativeWindowChrome {
     title: String,
     background: [f64; 4],
+    foreground: [f64; 4],
+}
+
+/// How far the tab bar's glass moves from the terminal background toward
+/// the foreground: a faint track, and a clearly lifted selected tab.
+#[cfg(target_os = "macos")]
+const NATIVE_TAB_TRACK_FOREGROUND_MIX: f64 = 0.06;
+#[cfg(target_os = "macos")]
+const NATIVE_TAB_SELECTED_FOREGROUND_MIX: f64 = 0.16;
+
+/// AppKit tab bar colors from the theme, as the custom strip does it: tints
+/// of the terminal background toward the foreground, titles in the foreground.
+/// The track keeps the background opacity so translucent windows stay so.
+#[cfg(target_os = "macos")]
+fn native_tab_bar_colors(
+    background: [f64; 4],
+    foreground: [f64; 4],
+) -> crate::macos_native_tabs::TabBarColors {
+    let mix = |amount: f64| {
+        let channel =
+            |index: usize| background[index] + (foreground[index] - background[index]) * amount;
+        [channel(0), channel(1), channel(2), 1.0]
+    };
+    let [red, green, blue, _] = mix(NATIVE_TAB_TRACK_FOREGROUND_MIX);
+    crate::macos_native_tabs::TabBarColors {
+        track: [red, green, blue, background[3]],
+        selected: mix(NATIVE_TAB_SELECTED_FOREGROUND_MIX),
+        text: foreground,
+    }
 }

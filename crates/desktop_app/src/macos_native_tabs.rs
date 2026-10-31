@@ -24,7 +24,7 @@ use objc::{
     sel, sel_impl,
 };
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// Shared by every Termy terminal window so AppKit offers to group them.
 pub(crate) const TABBING_IDENTIFIER: &str = "dev.termy.terminal";
@@ -40,6 +40,20 @@ const TITLEBAR_TABS_LEADING_INSET: f64 = 78.0;
 
 /// Receives the `NSWindow` (as an address) whose tab bar "+" was clicked.
 static NEW_TAB_REQUESTS: OnceLock<flume::Sender<usize>> = OnceLock::new();
+
+/// Theme colors for AppKit's tab bar, as sRGB components. Every native tab
+/// window shares one theme, so the latest colors apply to all tab bars.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TabBarColors {
+    /// Tint of the glass track behind the tabs.
+    pub(crate) track: [f64; 4],
+    /// Tint of the selected tab's glass.
+    pub(crate) selected: [f64; 4],
+    /// Tab titles.
+    pub(crate) text: [f64; 4],
+}
+
+static TAB_BAR_COLORS: Mutex<Option<TabBarColors>> = Mutex::new(None);
 
 /// Restore AppKit's tab behavior on GPUI windows. Later calls are no-ops.
 /// Returns the receiver for tab bar "+" clicks on the first call only.
@@ -130,7 +144,7 @@ extern "C" fn add_titlebar_accessory_view_controller(this: &Object, _: Sel, cont
                     view_ancestry(controller.id())
                 );
             }
-            refresh_title_visibility(window.id());
+            refresh_tab_bar(window.id());
         }
     });
 }
@@ -315,6 +329,115 @@ unsafe fn refresh_title_visibility(window: id) {
     }
 }
 
+/// Re-sync the parts of AppKit's tab bar Termy controls after tabs were
+/// added, closed, selected or shown.
+unsafe fn refresh_tab_bar(window: id) {
+    // SAFETY: Upheld by the callers.
+    unsafe {
+        refresh_title_visibility(window);
+        tint_tab_bar(window);
+    }
+}
+
+unsafe fn ns_color([red, green, blue, alpha]: [f64; 4]) -> id {
+    // SAFETY: Plain NSColor constructor.
+    unsafe {
+        msg_send![class!(NSColor), colorWithSRGBRed: red green: green blue: blue alpha: alpha]
+    }
+}
+
+/// Paint AppKit's tab bar in the theme colors. The tab bar has no public
+/// styling API, but on macOS 26 and later its track and selected tab are
+/// `NSGlassEffectView`s, whose tint is public. AppKit moves the one tab bar
+/// to whichever window of the group is selected, so look in all of them.
+unsafe fn tint_tab_bar(window: id) {
+    let Some(colors) = *TAB_BAR_COLORS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+    else {
+        return;
+    };
+    // SAFETY: Upheld by the callers.
+    unsafe {
+        for tab in tabbed_windows(window) {
+            let close_button: id = msg_send![tab, standardWindowButton: 0isize];
+            if close_button == nil {
+                continue;
+            }
+            let titlebar: id = msg_send![close_button, superview];
+            if titlebar == nil {
+                continue;
+            }
+            if let Some(tab_bar) = descendant_named(titlebar, "NSTabBar") {
+                tint_tab_bar_views(tab_bar, &colors, false);
+            }
+        }
+    }
+}
+
+/// The track behind the tabs is a private "subdued" glass with no tint, so
+/// hide its material (the first subview) and fill the capsule instead.
+unsafe fn fill_tab_track(track: id, color: [f64; 4]) {
+    #[repr(C)]
+    struct Rect {
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    }
+    // SAFETY: Upheld by the callers.
+    unsafe {
+        let subviews: id = msg_send![track, subviews];
+        let count: usize = msg_send![subviews, count];
+        if count > 0 {
+            let material: id = msg_send![subviews, objectAtIndex: 0usize];
+            let _: () = msg_send![material, setHidden: YES];
+        }
+        let _: () = msg_send![track, setWantsLayer: YES];
+        let layer: id = msg_send![track, layer];
+        if layer == nil {
+            return;
+        }
+        let bounds: Rect = msg_send![track, bounds];
+        let fill: id = ns_color(color);
+        let fill: *const std::ffi::c_void = msg_send![fill, CGColor];
+        let _: () = msg_send![layer, setBackgroundColor: fill];
+        let _: () = msg_send![layer, setCornerRadius: bounds.height / 2.0];
+    }
+}
+
+unsafe fn tint_tab_bar_views(view: id, colors: &TabBarColors, in_tab: bool) {
+    // SAFETY: Upheld by the callers.
+    unsafe {
+        let glass = Class::get("NSGlassEffectView");
+        let subviews: id = msg_send![view, subviews];
+        let count: usize = msg_send![subviews, count];
+        for index in 0..count {
+            let subview: id = msg_send![subviews, objectAtIndex: index];
+            let in_tab = in_tab || class_name_is(subview, "NSTabButton");
+            if !in_tab && class_name(subview).ends_with("NSSubduedGlassEffectView") {
+                fill_tab_track(subview, colors.track);
+            }
+            if let Some(glass) = glass {
+                let is_glass: BOOL = msg_send![subview, isKindOfClass: glass];
+                if is_glass == YES {
+                    let tint = if in_tab {
+                        colors.selected
+                    } else {
+                        colors.track
+                    };
+                    let _: () = msg_send![subview, setTintColor: ns_color(tint)];
+                }
+            }
+            let is_label: BOOL = msg_send![subview, isKindOfClass: class!(NSTextField)];
+            if in_tab && is_label == YES {
+                let _: () = msg_send![subview, setTextColor: ns_color(colors.text)];
+            }
+            tint_tab_bar_views(subview, colors, in_tab);
+        }
+    }
+}
+
 extern "C" fn select_next_tab(this: &Object, _: Sel, sender: id) {
     // SAFETY: Forwards an AppKit call to NSWindow's own implementation.
     unsafe {
@@ -410,7 +533,7 @@ pub(crate) fn add_tab(host: Retained, tab: Retained, after: bool) {
                 NS_WINDOW_BELOW
             };
             let _: () = msg_send![host.id(), addTabbedWindow: tab.id() ordered: ordered];
-            refresh_title_visibility(host.id());
+            refresh_tab_bar(host.id());
         }
     });
 }
@@ -536,31 +659,36 @@ pub(crate) fn toggle_tab_bar(window: &Window) {
         // SAFETY: The window is retained and messaged on the main thread.
         unsafe {
             let _: () = msg_send![window.id(), toggleTabBar: nil];
-            refresh_title_visibility(window.id());
+            refresh_tab_bar(window.id());
         }
     });
 }
 
-/// Title (the tab label) and titlebar color of a native tab window. The
-/// titlebar turns transparent over the window background, which takes the
-/// terminal background; the appearance keeps the title and tab bar legible.
-pub(crate) fn set_window_chrome(window: &Window, title: String, background: [f64; 4], dark: bool) {
+/// Title (the tab label), titlebar and tab bar colors of a native tab
+/// window. The titlebar turns transparent over the window background, which
+/// takes the terminal background; the appearance keeps the title and tab bar
+/// legible, and the tab bar takes the theme colors.
+pub(crate) fn set_window_chrome(
+    window: &Window,
+    title: String,
+    background: [f64; 4],
+    dark: bool,
+    tab_bar: TabBarColors,
+) {
     let Some(window) = Retained::of(window) else {
         return;
     };
     on_main_queue(move || {
-        let [red, green, blue, alpha] = background;
+        *TAB_BAR_COLORS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(tab_bar);
         // SAFETY: The window is retained and messaged on the main thread.
         unsafe {
             let ns_window = window.id();
             let title = NSString::alloc(nil).init_str(&title).autorelease();
             let _: () = msg_send![ns_window, setTitle: title];
             let _: () = msg_send![ns_window, setTitlebarAppearsTransparent: YES];
-            let color: id = msg_send![
-                class!(NSColor),
-                colorWithSRGBRed: red green: green blue: blue alpha: alpha
-            ];
-            let _: () = msg_send![ns_window, setBackgroundColor: color];
+            let _: () = msg_send![ns_window, setBackgroundColor: ns_color(background)];
             let name = NSString::alloc(nil)
                 .init_str(if dark {
                     "NSAppearanceNameDarkAqua"
@@ -570,6 +698,7 @@ pub(crate) fn set_window_chrome(window: &Window, title: String, background: [f64
                 .autorelease();
             let appearance: id = msg_send![class!(NSAppearance), appearanceNamed: name];
             let _: () = msg_send![ns_window, setAppearance: appearance];
+            tint_tab_bar(ns_window);
         }
     });
 }
@@ -593,7 +722,7 @@ pub(crate) fn prepare_titlebar_tabs(window: &Window) {
             let _: () = msg_send![toolbar, release];
             let _: () =
                 msg_send![window.id(), setToolbarStyle: NS_WINDOW_TOOLBAR_STYLE_UNIFIED_COMPACT];
-            refresh_title_visibility(window.id());
+            refresh_tab_bar(window.id());
         }
     });
 }
@@ -609,7 +738,7 @@ pub(crate) fn refresh_titlebar_tabs(window: &Window) {
     };
     on_main_queue(move || {
         // SAFETY: The window is retained and messaged on the main thread.
-        unsafe { refresh_title_visibility(window.id()) }
+        unsafe { refresh_tab_bar(window.id()) }
     });
 }
 
