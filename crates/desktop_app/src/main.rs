@@ -465,8 +465,11 @@ pub(crate) fn open_terminal_window_with_placement(
             window_min_size: Some(size(px(MIN_WINDOW_WIDTH), px(MIN_WINDOW_HEIGHT))),
             show: tab_host.is_none(),
             focus: tab_host.is_none(),
+            // A standalone window joins the tab group only once it is shown
+            // (see `join_tabbing_group_after_open`), so that "Prefer tabs:
+            // Always" doesn't turn New Window into a tab.
             #[cfg(target_os = "macos")]
-            tabbing_identifier: native_tabs
+            tabbing_identifier: (native_tabs && tab_host.is_some())
                 .then(|| macos_native_tabs::TABBING_IDENTIFIER.to_string()),
             ..Default::default()
         },
@@ -523,6 +526,9 @@ pub(crate) fn open_terminal_window_with_placement(
             #[cfg(target_os = "macos")]
             {
                 if native_tabs {
+                    if tab_host.is_none() {
+                        macos_native_tabs::join_tabbing_group_after_open(window);
+                    }
                     macos_native_tabs::prepare_titlebar_tabs(window);
                 }
                 if let Err(error) =
