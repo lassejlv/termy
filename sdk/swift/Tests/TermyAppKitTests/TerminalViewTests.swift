@@ -135,6 +135,54 @@ struct TerminalViewTests {
         #expect(view.selection?.text(in: view.session.frame) == "second")
     }
 
+    @Test func copyReportsTextAndSelectionRects() throws {
+        final class Recorder: TerminalViewDelegate {
+            var copied: [String] = []
+            func terminalView(_ view: TerminalView, didCopy text: String) { copied.append(text) }
+        }
+        let view = try makeView(feeding: "hello world\r\nsecond")
+        let pasteboard = privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        view.pasteboard = pasteboard
+        let recorder = Recorder()
+        view.delegate = recorder
+
+        #expect(view.selectionRects.isEmpty)
+        view.copy(nil)
+        #expect(recorder.copied.isEmpty)
+
+        view.selection = TerminalSelection(
+            anchor: GridPosition(row: 0, col: 6), head: GridPosition(row: 1, col: 2))
+        view.copy(nil)
+        #expect(recorder.copied == ["world\nsec"])
+        #expect(pasteboard.string(forType: .string) == "world\nsec")
+
+        let rects = view.selectionRects
+        let cell = CGSize(width: CGFloat(view.renderConfig.cellWidth), height: CGFloat(view.renderConfig.cellHeight))
+        #expect(rects.count == 2)
+        #expect(rects[0].width == cell.width * CGFloat(view.session.frame.cols - 6))
+        #expect(rects[1].minX == CGFloat(view.renderConfig.paddingX))
+        #expect(rects[1].width == cell.width * 3)
+        #expect(rects[1].minY == rects[0].maxY)
+    }
+
+    @Test func searchMatchesMapToRectsAndScrollIntoView() throws {
+        let lines = (0..<60).map { "line \($0)" }.joined(separator: "\r\n") + "\r\nneedle here"
+        let view = try makeView(feeding: lines)
+        let matches = try view.session.terminal.search("needle")
+        let needle = try #require(matches.first)
+        let rect = try #require(view.rect(for: needle))
+        let cellWidth = CGFloat(view.renderConfig.cellWidth)
+        #expect(rect.width == cellWidth * 6)
+        #expect(rect.minX == CGFloat(view.renderConfig.paddingX))
+
+        let old = try #require(try view.session.terminal.search("line 3").first)
+        #expect(view.rect(for: old) == nil)
+        view.reveal(old)
+        #expect(view.session.frame.displayOffset > 0)
+        #expect(view.rect(for: old) != nil)
+    }
+
     @Test func boxDrawingUsesGlyphGeometry() throws {
         let view = try makeView(feeding: "┌─┐")
         #expect(Set(view.glyphPlan.keys) == [0, 1, 2])

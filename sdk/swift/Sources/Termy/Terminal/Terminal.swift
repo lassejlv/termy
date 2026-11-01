@@ -12,13 +12,17 @@ internal import CTermy
 /// only concurrent piece and is managed for you.
 public final class Terminal {
     public enum Mode: Hashable, Sendable {
-        /// Owns a child process through a PTY.
+        /// Drives a program through a PTY: its own, or one a multiplexer host
+        /// runs (see `paneID`).
         case pty
         /// No PTY; output is fed by the host.
         case display
     }
 
     public let mode: Mode
+    /// The multiplexer pane this terminal views, when a session host runs its
+    /// program. Keep it to attach again after a relaunch.
+    public let paneID: String?
     let handle: OpaquePointer
     private var wakeupMonitor: WakeupMonitor?
 
@@ -39,6 +43,30 @@ public final class Terminal {
 
     /// Starts a shell, or `options.startupCommand`, in a new PTY.
     public init(size: TerminalSize, options: TerminalOptions = TerminalOptions()) throws(TermyError) {
+        var handle: OpaquePointer?
+        let status = Self.withFFIOptions(options) { termy_terminal_new_with_options(size.ffi, $0, &handle) }
+        try check(status, "termy_terminal_new_with_options")
+        guard let handle else { throw TermyError(code: .nullPointer, operation: "termy_terminal_new_with_options") }
+        self.handle = handle
+        self.mode = .pty
+        self.paneID = nil
+    }
+
+    private init(displayHandle: OpaquePointer) {
+        handle = displayHandle
+        mode = .display
+        paneID = nil
+    }
+
+    /// Wraps a terminal attached to a multiplexer pane.
+    init(multiplexerHandle: OpaquePointer, paneID: String) {
+        handle = multiplexerHandle
+        mode = .pty
+        self.paneID = paneID
+    }
+
+    /// Passes `options` as C options valid for `body`.
+    static func withFFIOptions<R>(_ options: TerminalOptions, _ body: (UnsafePointer<TermyFfiTerminalOptions>) -> R) -> R {
         let arena = ByteArena()
         let environment = options.environment.sorted { $0.key < $1.key }.map { key, value in
             let key = arena.slice(key)
@@ -56,19 +84,7 @@ public final class Terminal {
             env_vars_ptr: arena.array(environment),
             env_vars_len: environment.count
         )
-        var handle: OpaquePointer?
-        let status = withExtendedLifetime((arena, options.config)) {
-            termy_terminal_new_with_options(size.ffi, &ffiOptions, &handle)
-        }
-        try check(status, "termy_terminal_new_with_options")
-        guard let handle else { throw TermyError(code: .nullPointer, operation: "termy_terminal_new_with_options") }
-        self.handle = handle
-        self.mode = .pty
-    }
-
-    private init(displayHandle: OpaquePointer) {
-        handle = displayHandle
-        mode = .display
+        return withExtendedLifetime((arena, options.config)) { body(&ffiOptions) }
     }
 
     /// A parser/screen without a PTY. Drain events and take frames after each

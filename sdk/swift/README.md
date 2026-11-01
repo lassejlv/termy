@@ -99,6 +99,43 @@ session.onProtocolReply = { bytes in channel.write(bytes) }    // cursor reports
 channel.onOutput = { bytes in try? session.feed(bytes) }
 ```
 
+### Programs that outlive the app
+
+`Multiplexer` connects to a Termy session host, the one behind `termy mux`,
+which runs programs outside your process: they keep running when the app
+quits, and the next launch attaches to them again. Its terminals are ordinary
+`Terminal`s with a `paneID`; releasing one detaches.
+
+```swift
+let host = try Multiplexer.connect(root: myAppSupportDir, hostExecutable: Multiplexer.bundledHostExecutable!)
+let terminal = try host.createTerminal(size: size, options: TerminalOptions(config: config))
+save(terminal.paneID!)
+let view = TerminalView(session: TerminalSession(terminal: terminal, size: size), renderConfig: renderConfig)
+
+// After a relaunch:
+let again = try host.attachTerminal(paneID: savedID)   // throws .notFound when it ended
+```
+
+`scripts/build-libtermy.sh` stages `termy-session-host` next to the library;
+bundle it in `Contents/Helpers`. Calls block on the host (starting one takes
+seconds), so connect off the main thread. Pass your own `root` to keep your
+panes apart from Termy's; it must not be readable by other users.
+
+### A config of your own
+
+`TermySettings.set(_:to:)` edits the Termy app's own config. An app that
+keeps a separate config passes its path instead, and lists the theme library
+from that config, which includes local themes in the `themes` folder beside it:
+
+```swift
+let path = "/Users/me/.config/my-app/config.txt"
+try TermySettings.set("theme", to: "catppuccin-mocha", inConfigAt: path)
+let config = try TermyConfig(path: path)
+for theme in try config.themes() {
+    print(theme.name, theme.swatches)   // background, foreground, then accents
+}
+```
+
 ## Untrusted output
 
 Anything a program prints can reach `TerminalView`, including `cat` of a

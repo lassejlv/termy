@@ -16,6 +16,9 @@ public protocol TerminalViewDelegate: AnyObject {
     /// require `view.hasKeyboardFocus`.
     func terminalView(_ view: TerminalView, shouldWriteClipboard text: String) -> Bool
     func terminalViewDidExit(_ view: TerminalView)
+    /// The user copied the selection, with ⌘C or the Copy menu item. Hosts can
+    /// acknowledge it, for example by animating `view.selectionRects`.
+    func terminalView(_ view: TerminalView, didCopy text: String)
 }
 
 extension TerminalViewDelegate {
@@ -24,6 +27,7 @@ extension TerminalViewDelegate {
     public func terminalView(_ view: TerminalView, shouldOpen url: URL) -> Bool { true }
     public func terminalView(_ view: TerminalView, shouldWriteClipboard text: String) -> Bool { false }
     public func terminalViewDidExit(_ view: TerminalView) {}
+    public func terminalView(_ view: TerminalView, didCopy text: String) {}
 }
 
 /// How a `TerminalView` draws.
@@ -268,6 +272,41 @@ public final class TerminalView: NSView {
 
     func invalidateCursor(_ cursor: TerminalCursor) {
         setNeedsDisplay(renderer.cellRect(row: cursor.row, col: cursor.col, width: 2).insetBy(dx: -1, dy: -1))
+    }
+
+    /// Where the selection highlight is drawn, one rectangle per row, in this
+    /// view's (flipped) coordinates. Empty without a selection.
+    public var selectionRects: [CGRect] {
+        let frame = session.frame
+        guard let selection = selection?.expanded(in: frame), !frame.isEmpty else { return [] }
+        let rows = max(0, selection.start.row)...min(frame.rows - 1, selection.end.row)
+        guard !rows.isEmpty else { return [] }
+        return rows.map { row in
+            let from = row == selection.start.row ? selection.start.col : 0
+            let to = row == selection.end.row ? selection.end.col : frame.cols - 1
+            return renderer.cellRect(row: row, col: from, width: max(1, to - from + 1))
+        }
+    }
+
+    /// Where a search match is drawn in this view, or nil while it is
+    /// scrolled out of the viewport.
+    public func rect(for match: SearchMatch) -> CGRect? {
+        let frame = session.frame
+        guard !frame.isEmpty,
+              let row = match.viewportRow(historySize: frame.historySize, displayOffset: frame.displayOffset, rows: frame.rows)
+        else { return nil }
+        let start = max(0, min(match.startCol, frame.cols - 1))
+        let end = max(start, min(match.endCol, frame.cols - 1))
+        return renderer.cellRect(row: row, col: start, width: end - start + 1)
+    }
+
+    /// Scrolls history so `match` is in view, near the middle when it was
+    /// off screen. Does nothing when it is already visible.
+    public func reveal(_ match: SearchMatch) {
+        let frame = session.frame
+        guard !frame.isEmpty, rect(for: match) == nil else { return }
+        let target = max(0, min(frame.historySize, frame.rows / 2 - match.row + frame.historySize))
+        session.scroll(lines: Int32(target - frame.displayOffset))
     }
 
     private func invalidateSelection(_ previous: TerminalSelection?) {

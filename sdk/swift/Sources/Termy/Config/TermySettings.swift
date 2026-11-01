@@ -19,6 +19,26 @@ public enum TermySettings {
         try check(withUTF8(key) { termy_settings_reset_root($0, $1) }, "termy_settings_reset_root")
     }
 
+    /// Sets a root setting in the config file at `path` instead of the
+    /// user's Termy config, for apps that keep a config of their own.
+    /// Creates the file from Termy's default template when it is missing.
+    public static func set(_ key: String, to value: String, inConfigAt path: String) throws(TermyError) {
+        let status = withUTF8(path) { pathPtr, pathLen in
+            withUTF8(key) { keyPtr, keyLen in
+                withUTF8(value) { termy_settings_set_root_at(pathPtr, pathLen, keyPtr, keyLen, $0, $1) }
+            }
+        }
+        try check(status, "termy_settings_set_root_at")
+    }
+
+    /// Removes a root setting from the config file at `path`.
+    public static func reset(_ key: String, inConfigAt path: String) throws(TermyError) {
+        let status = withUTF8(path) { pathPtr, pathLen in
+            withUTF8(key) { termy_settings_reset_root_at(pathPtr, pathLen, $0, $1) }
+        }
+        try check(status, "termy_settings_reset_root_at")
+    }
+
     /// Sets a color key, such as `foreground`, to a `#rrggbb` value.
     public static func setColor(_ key: String, hex: String) throws(TermyError) {
         let status = withUTF8(key) { keyPtr, keyLen in

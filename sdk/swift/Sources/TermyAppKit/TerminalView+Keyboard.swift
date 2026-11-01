@@ -44,8 +44,10 @@ extension TerminalView: @preconcurrency NSTextInputClient {
 
     @objc public func copy(_ sender: Any?) {
         guard let selection else { return }
+        let text = selection.text(in: session.frame)
         pasteboard.clearContents()
-        pasteboard.setString(selection.text(in: session.frame), forType: .string)
+        pasteboard.setString(text, forType: .string)
+        delegate?.terminalView(self, didCopy: text)
     }
 
     @objc public func paste(_ sender: Any?) {

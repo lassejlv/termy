@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build libtermy (the termy_core cdylib) and stage it in sdk/swift/lib so the
-# Swift package can link and load it.
+# Build libtermy (the termy_core cdylib) and the termy-session-host binary that
+# runs multiplexer panes, and stage both in sdk/swift/lib so the Swift package
+# can link and load them.
 #
 # Usage: scripts/build-libtermy.sh [debug|release]   (default: release)
 set -euo pipefail
@@ -17,7 +18,7 @@ repo_root="$(cd "$package_dir/../.." && pwd)"
 target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
 lib_dir="$package_dir/lib"
 
-cargo build ${cargo_flags[@]+"${cargo_flags[@]}"} -p termy_core --lib \
+cargo build ${cargo_flags[@]+"${cargo_flags[@]}"} -p termy_core --lib --bin termy-session-host \
   --manifest-path "$repo_root/Cargo.toml"
 
 case "$(uname -s)" in
@@ -36,4 +37,6 @@ if [[ "$library" == *.dylib ]]; then
   codesign --force --sign - "$lib_dir/$library" >/dev/null 2>&1 || true
 fi
 
-echo "staged $lib_dir/$library ($profile)"
+cp "$target_dir/$profile/termy-session-host" "$lib_dir/termy-session-host"
+
+echo "staged $lib_dir/$library and termy-session-host ($profile)"
