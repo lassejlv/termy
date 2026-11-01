@@ -1508,7 +1508,7 @@ impl InputHandler for TerminalInputHandler {
         cx: &mut App,
     ) {
         self.0
-            .replace_text_in_range(replacement_range, text, window, cx)
+            .replace_text_in_range(replacement_range, text, window, cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -1519,16 +1519,21 @@ impl InputHandler for TerminalInputHandler {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.0
-            .replace_and_mark_text_in_range(range_utf16, new_text, new_selected_range, window, cx)
+        self.0.replace_and_mark_text_in_range(
+            range_utf16,
+            new_text,
+            new_selected_range,
+            window,
+            cx,
+        );
     }
 
     fn unmark_text(&mut self, window: &mut Window, cx: &mut App) {
-        self.0.unmark_text(window, cx)
+        self.0.unmark_text(window, cx);
     }
 
     fn paste(&mut self, item: ClipboardItem, window: &mut Window, cx: &mut App) {
-        self.0.paste(item, window, cx)
+        self.0.paste(item, window, cx);
     }
 
     fn bounds_for_range(
@@ -1555,7 +1560,7 @@ impl InputHandler for TerminalInputHandler {
         window: &mut Window,
         cx: &mut App,
     ) {
-        self.0.set_selected_text_range(range_utf16, window, cx)
+        self.0.set_selected_text_range(range_utf16, window, cx);
     }
 
     fn element_bounds(&mut self, window: &mut Window, cx: &mut App) -> Option<Bounds<Pixels>> {
