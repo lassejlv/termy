@@ -3,7 +3,7 @@ use super::surface::{terminal_edge_backgrounds, tui_paints_grid_border, tui_surf
 use super::*;
 use crate::ui::scrollbar::{self as ui_scrollbar, ScrollbarPaintStyle};
 use gpui_kit::prelude::FluentBuilder;
-use gpui_kit::{ElementInputHandler, ObjectFit, StyledImage, canvas};
+use gpui_kit::{ObjectFit, StyledImage, canvas};
 use std::sync::Arc;
 use std::time::Instant;
 #[cfg(debug_assertions)]
@@ -3769,7 +3769,7 @@ impl Render for TerminalView {
                 if !has_active_inline {
                     window.handle_input(
                         &ime_focus_handle,
-                        ElementInputHandler::new(bounds, ime_view.clone()),
+                        super::inline_input::TerminalInputHandler::new(bounds, ime_view.clone()),
                         cx,
                     );
                 }
