@@ -742,6 +742,25 @@ pub(crate) fn refresh_titlebar_tabs(window: &Window) {
     });
 }
 
+/// Give a standalone window, already on screen, the terminal tabbing
+/// identifier. It opens without one so that GPUI and AppKit don't tab it onto
+/// the main window when the user prefers tabs (New Window must stay a
+/// window); with the identifier it can still host tabs and merge later.
+pub(crate) fn join_tabbing_group_after_open(window: &Window) {
+    allow_automatic_window_tabbing();
+    let Some(ns_window) = ns_window_address(window) else {
+        return;
+    };
+    // SAFETY: `ns_window` belongs to the live window borrowed above, and
+    // GPUI calls window builders on the main thread.
+    unsafe {
+        let identifier = NSString::alloc(nil)
+            .init_str(TABBING_IDENTIFIER)
+            .autorelease();
+        let _: () = msg_send![ns_window as id, setTabbingIdentifier: identifier];
+    }
+}
+
 /// Let AppKit offer its tab menu items and automatic tabbing again. GPUI
 /// turns this off whenever it opens a window without a tabbing identifier,
 /// such as Settings.

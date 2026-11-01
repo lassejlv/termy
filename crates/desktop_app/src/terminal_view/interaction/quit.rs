@@ -514,7 +514,38 @@ impl TerminalView {
             return true;
         }
 
+        // Closing a native tab (its tab bar ✕) closes its window. With the
+        // multiplexer that would detach its terminals and bring the tab back
+        // on the next launch, so close it as a tab instead; `close_tab`
+        // removes the window. A window with no sibling tabs still detaches.
+        if let Some(tab_id) = self.native_tab_window_closing_as_tab(window) {
+            let target = CloseRequestTarget::TabClose { tab_id };
+            let _ = self.request_close(target, window, cx);
+            return false;
+        }
+
         self.request_close(CloseRequestTarget::WindowClose, window, cx)
+    }
+
+    /// The tab to close when this window closes as one native tab among
+    /// others, with the multiplexer keeping its terminals.
+    fn native_tab_window_closing_as_tab(&self, window: &Window) -> Option<TabId> {
+        if !self.native_window_tabs
+            || self.multiplexer.is_none()
+            || self.has_other_workspaces()
+            || self.session.tabs.len() != 1
+        {
+            return None;
+        }
+        #[cfg(target_os = "macos")]
+        let has_sibling_tabs =
+            crate::macos_native_tabs::tab_position(window).is_some_and(|(_, count)| count > 1);
+        #[cfg(not(target_os = "macos"))]
+        let has_sibling_tabs = {
+            let _ = window;
+            false
+        };
+        has_sibling_tabs.then(|| self.session.tabs[0].id)
     }
 
     pub(in super::super) fn request_application_quit(
