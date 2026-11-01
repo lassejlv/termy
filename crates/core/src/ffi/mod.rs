@@ -43,7 +43,16 @@ pub enum TermyFfiStatus {
     InvalidArgument = 9,
     UnsupportedSnapshotVersion = 10,
     InvalidSnapshot = 11,
+    /// No session host runs there, or it cannot be reached or started.
+    HostUnavailable = 12,
+    /// A host of another Termy version runs there.
+    VersionMismatch = 13,
+    /// The pane is gone or its program exited.
+    NotFound = 14,
 }
+
+mod multiplexer;
+pub use multiplexer::*;
 
 #[cfg(test)]
 static PANIC_NEXT_FEED_OUTPUT: AtomicBool = AtomicBool::new(false);
@@ -2167,13 +2176,26 @@ pub unsafe extern "C" fn termy_render_config_free(
 use crate::config_core as cfg;
 
 fn settings_read_contents() -> String {
-    match cfg::config_path().and_then(|path| std::fs::read_to_string(path).ok()) {
+    settings_read_contents_from(None)
+}
+
+/// The config at `path`, or the default config file when `path` is `None`.
+fn settings_read_contents_from(path: Option<&Path>) -> String {
+    let path = path.map(Path::to_path_buf).or_else(cfg::config_path);
+    match path.and_then(|path| std::fs::read_to_string(path).ok()) {
         Some(contents) if !contents.trim().is_empty() => contents,
         _ => cfg::DEFAULT_CONFIG_TEMPLATE.to_string(),
     }
 }
 
 fn settings_write_contents(contents: &str) -> Result<(), TermyFfiStatus> {
+    settings_write_contents_into(None, contents)
+}
+
+fn settings_write_contents_into(path: Option<&Path>, contents: &str) -> Result<(), TermyFfiStatus> {
+    if let Some(path) = path {
+        return settings_write_contents_to(path, contents);
+    }
     let path = cfg::config_path().ok_or(TermyFfiStatus::WriteFailed)?;
     settings_write_contents_to(&path, contents)
 }
@@ -2517,6 +2539,7 @@ pub unsafe extern "C" fn termy_settings_schema_json(
 }
 
 unsafe fn settings_set_root_inner(
+    path: Option<&Path>,
     key_ptr: *const u8,
     key_len: usize,
     value_ptr: *const u8,
@@ -2525,8 +2548,60 @@ unsafe fn settings_set_root_inner(
     let key = unsafe { required_utf8(key_ptr, key_len) }?;
     let value = unsafe { optional_utf8(value_ptr, value_len) }?.unwrap_or("");
     let id = cfg::root_setting_from_key(key).ok_or(TermyFfiStatus::UnknownKey)?;
-    let updated = cfg::upsert_root_setting(&settings_read_contents(), id, value.trim());
-    settings_write_contents(&updated)
+    let updated = cfg::upsert_root_setting(&settings_read_contents_from(path), id, value.trim());
+    settings_write_contents_into(path, &updated)
+}
+
+/// The config file path a caller passed, for the `_at` settings calls.
+unsafe fn settings_path_arg(
+    path_ptr: *const u8,
+    path_len: usize,
+) -> Result<PathBuf, TermyFfiStatus> {
+    let path = unsafe { required_utf8(path_ptr, path_len) }?;
+    if path.trim().is_empty() {
+        return Err(TermyFfiStatus::InvalidArgument);
+    }
+    Ok(PathBuf::from(path))
+}
+
+/// Like `termy_settings_set_root`, for the config file at `path` instead of
+/// the default one, so an app can keep a config of its own.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_settings_set_root_at(
+    path_ptr: *const u8,
+    path_len: usize,
+    key_ptr: *const u8,
+    key_len: usize,
+    value_ptr: *const u8,
+    value_len: usize,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        let result = unsafe { settings_path_arg(path_ptr, path_len) }.and_then(|path| unsafe {
+            settings_set_root_inner(Some(&path), key_ptr, key_len, value_ptr, value_len)
+        });
+        match result {
+            Ok(()) => TermyFfiStatus::Ok,
+            Err(status) => status,
+        }
+    })
+}
+
+/// Like `termy_settings_reset_root`, for the config file at `path`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_settings_reset_root_at(
+    path_ptr: *const u8,
+    path_len: usize,
+    key_ptr: *const u8,
+    key_len: usize,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        let result = unsafe { settings_path_arg(path_ptr, path_len) }
+            .and_then(|path| unsafe { settings_reset_root_inner(Some(&path), key_ptr, key_len) });
+        match result {
+            Ok(()) => TermyFfiStatus::Ok,
+            Err(status) => status,
+        }
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -2537,7 +2612,7 @@ pub unsafe extern "C" fn termy_settings_set_root(
     value_len: usize,
 ) -> TermyFfiStatus {
     ffi_status_guard(|| {
-        match unsafe { settings_set_root_inner(key_ptr, key_len, value_ptr, value_len) } {
+        match unsafe { settings_set_root_inner(None, key_ptr, key_len, value_ptr, value_len) } {
             Ok(()) => TermyFfiStatus::Ok,
             Err(status) => status,
         }
@@ -2545,13 +2620,14 @@ pub unsafe extern "C" fn termy_settings_set_root(
 }
 
 unsafe fn settings_reset_root_inner(
+    path: Option<&Path>,
     key_ptr: *const u8,
     key_len: usize,
 ) -> Result<(), TermyFfiStatus> {
     let key = unsafe { required_utf8(key_ptr, key_len) }?;
     let id = cfg::root_setting_from_key(key).ok_or(TermyFfiStatus::UnknownKey)?;
-    let updated = cfg::remove_root_setting(&settings_read_contents(), id);
-    settings_write_contents(&updated)
+    let updated = cfg::remove_root_setting(&settings_read_contents_from(path), id);
+    settings_write_contents_into(path, &updated)
 }
 
 #[unsafe(no_mangle)]
@@ -2560,7 +2636,7 @@ pub unsafe extern "C" fn termy_settings_reset_root(
     key_len: usize,
 ) -> TermyFfiStatus {
     ffi_status_guard(
-        || match unsafe { settings_reset_root_inner(key_ptr, key_len) } {
+        || match unsafe { settings_reset_root_inner(None, key_ptr, key_len) } {
             Ok(()) => TermyFfiStatus::Ok,
             Err(status) => status,
         },
@@ -5540,4 +5616,43 @@ fn program_status_ffi_event_has_json_snapshot_and_empty_clear() {
         b"[]"
     );
     free_bytes(event.payload);
+}
+
+#[cfg(test)]
+#[test]
+fn settings_at_path_edits_only_that_file() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("own").join("config.txt");
+    let path_str = path.to_str().unwrap();
+    let set = |key: &str, value: &str| unsafe {
+        termy_settings_set_root_at(
+            path_str.as_ptr(),
+            path_str.len(),
+            key.as_ptr(),
+            key.len(),
+            value.as_ptr(),
+            value.len(),
+        )
+    };
+    assert_eq!(set("font_size", "17"), TermyFfiStatus::Ok);
+    assert_eq!(set("theme", "dracula"), TermyFfiStatus::Ok);
+    let contents = std::fs::read_to_string(&path).expect("written");
+    assert!(contents.contains("font_size = 17"), "{contents}");
+    assert!(contents.contains("theme = dracula"), "{contents}");
+
+    let key = "font_size";
+    let status = unsafe {
+        termy_settings_reset_root_at(path_str.as_ptr(), path_str.len(), key.as_ptr(), key.len())
+    };
+    assert_eq!(status, TermyFfiStatus::Ok);
+    let contents = std::fs::read_to_string(&path).expect("written");
+    assert!(!contents.contains("font_size = 17"), "{contents}");
+    assert!(contents.contains("theme = dracula"), "{contents}");
+
+    assert_eq!(set("no_such_key", "1"), TermyFfiStatus::UnknownKey);
+    let empty = "";
+    let status = unsafe {
+        termy_settings_set_root_at(empty.as_ptr(), 0, key.as_ptr(), key.len(), b"1".as_ptr(), 1)
+    };
+    assert_ne!(status, TermyFfiStatus::Ok);
 }

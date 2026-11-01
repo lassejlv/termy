@@ -437,9 +437,18 @@ fn header_enum_shapes(header: &str) -> BTreeMap<String, EnumShape> {
     enums
 }
 
+/// Every Rust file of the C ABI, so exports in submodules get the same checks.
+fn ffi_source() -> String {
+    [
+        include_str!("../src/ffi/mod.rs"),
+        include_str!("../src/ffi/multiplexer.rs"),
+    ]
+    .join("\n")
+}
+
 #[test]
 fn status_returning_exports_use_panic_guard() {
-    let exports = exported_fns(include_str!("../src/ffi/mod.rs"));
+    let exports = exported_fns(&ffi_source());
     let mut missing = Vec::new();
     let mut checked = 0usize;
 
@@ -461,7 +470,7 @@ fn status_returning_exports_use_panic_guard() {
 
 #[test]
 fn extern_c_exports_use_panic_guard() {
-    let exports = exported_fns(include_str!("../src/ffi/mod.rs"));
+    let exports = exported_fns(&ffi_source());
     let mut missing = Vec::new();
 
     for export in &exports {
@@ -479,7 +488,7 @@ fn extern_c_exports_use_panic_guard() {
 
 #[test]
 fn c_header_declares_all_rust_exports() {
-    let rust_exports = exported_fns(include_str!("../src/ffi/mod.rs"))
+    let rust_exports = exported_fns(&ffi_source())
         .into_iter()
         .map(|export| export.name)
         .collect::<BTreeSet<_>>();
@@ -507,7 +516,7 @@ fn c_header_declares_all_rust_exports() {
 
 #[test]
 fn c_header_signatures_match_rust_exports() {
-    let rust_signatures = exported_fns(include_str!("../src/ffi/mod.rs"))
+    let rust_signatures = exported_fns(&ffi_source())
         .into_iter()
         .map(|export| (export.name.clone(), rust_export_signature(&export)))
         .collect::<BTreeMap<_, _>>();
@@ -536,7 +545,7 @@ fn c_header_signatures_match_rust_exports() {
 
 #[test]
 fn c_header_struct_layouts_match_rust_repr_c_types() {
-    let rust_structs = rust_repr_c_struct_shapes(include_str!("../src/ffi/mod.rs"));
+    let rust_structs = rust_repr_c_struct_shapes(&ffi_source());
     let header_structs = header_struct_shapes(include_str!("../include/termy.h"));
 
     let missing_from_header = rust_structs
@@ -576,7 +585,7 @@ fn c_header_struct_layouts_match_rust_repr_c_types() {
 
 #[test]
 fn c_header_enums_match_rust_repr_c_enums() {
-    let rust_enums = rust_repr_c_enum_shapes(include_str!("../src/ffi/mod.rs"));
+    let rust_enums = rust_repr_c_enum_shapes(&ffi_source());
     let header_enums = header_enum_shapes(include_str!("../include/termy.h"));
 
     let missing_from_header = rust_enums

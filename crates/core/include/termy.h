@@ -25,6 +25,12 @@ typedef enum {
   TERMY_FFI_UNSUPPORTED_SNAPSHOT_VERSION = 10,
   /* The bytes are not a snapshot, or it is truncated or corrupt. */
   TERMY_FFI_INVALID_SNAPSHOT = 11,
+  /* No session host runs there, or it cannot be reached or started. */
+  TERMY_FFI_HOST_UNAVAILABLE = 12,
+  /* A session host of another Termy version runs there. */
+  TERMY_FFI_VERSION_MISMATCH = 13,
+  /* The multiplexer pane is gone or its program exited. */
+  TERMY_FFI_NOT_FOUND = 14,
 } TermyFfiStatus;
 
 typedef enum {
@@ -115,6 +121,7 @@ typedef enum {
  */
 typedef struct TermyFfiTerminal TermyFfiTerminal;
 typedef struct TermyFfiConfig TermyFfiConfig;
+typedef struct TermyFfiMultiplexer TermyFfiMultiplexer;
 
 typedef struct {
   uint16_t cols;
@@ -598,6 +605,20 @@ TermyFfiStatus termy_settings_set_root(
 TermyFfiStatus termy_settings_reset_root(
     const uint8_t *key_ptr,
     size_t key_len);
+/* The same edits for the config file at a given path instead of the
+ * default one, so an app can keep a config of its own. */
+TermyFfiStatus termy_settings_set_root_at(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    const uint8_t *key_ptr,
+    size_t key_len,
+    const uint8_t *value_ptr,
+    size_t value_len);
+TermyFfiStatus termy_settings_reset_root_at(
+    const uint8_t *path_ptr,
+    size_t path_len,
+    const uint8_t *key_ptr,
+    size_t key_len);
 TermyFfiStatus termy_settings_set_color(
     const uint8_t *key_ptr,
     size_t key_len,
@@ -851,6 +872,47 @@ TermyFfiStatus termy_terminal_search_with_options(
     TermyFfiSearchBatch *out_batch);
 TermyFfiStatus termy_search_batch_free(TermyFfiSearchBatch *batch);
 TermyFfiStatus termy_buffer_free(TermyFfiBytes bytes);
+
+/* Multiplexer: terminals whose programs live in a session host, so they
+ * outlive the app and can be attached again after a relaunch. Calls block on
+ * the host; make them off the UI thread. A created or attached terminal is an
+ * ordinary TermyFfiTerminal: freeing it detaches, and the program keeps
+ * running until the pane is closed. */
+
+/* Connect to the host in root (empty: the directory Termy and `termy mux`
+ * share), starting host_executable (termy-session-host) when none runs. */
+TermyFfiStatus termy_multiplexer_connect(
+    const uint8_t *root_ptr,
+    size_t root_len,
+    const uint8_t *host_executable_ptr,
+    size_t host_executable_len,
+    TermyFfiMultiplexer **out_multiplexer);
+TermyFfiStatus termy_multiplexer_free(TermyFfiMultiplexer *multiplexer);
+/* Start a pane and attach to it. out_pane_id is an owned buffer. */
+TermyFfiStatus termy_multiplexer_create_terminal(
+    const TermyFfiMultiplexer *multiplexer,
+    TermyFfiSize size,
+    const TermyFfiTerminalOptions *options,
+    TermyFfiBytes *out_pane_id,
+    TermyFfiTerminal **out_terminal);
+/* Attach to a running pane; TERMY_FFI_NOT_FOUND when it is gone. */
+TermyFfiStatus termy_multiplexer_attach_terminal(
+    const TermyFfiMultiplexer *multiplexer,
+    const uint8_t *pane_id_ptr,
+    size_t pane_id_len,
+    TermyFfiTerminal **out_terminal);
+/* The host's panes as a JSON array of objects with id, child_pid, title,
+ * working_directory, exited and shell, in an owned buffer. */
+TermyFfiStatus termy_multiplexer_list_json(
+    const TermyFfiMultiplexer *multiplexer,
+    TermyFfiBytes *out_json);
+/* End a pane's program and remove the pane. */
+TermyFfiStatus termy_multiplexer_close(
+    const TermyFfiMultiplexer *multiplexer,
+    const uint8_t *pane_id_ptr,
+    size_t pane_id_len);
+/* End every pane and stop the host. */
+TermyFfiStatus termy_multiplexer_shutdown(const TermyFfiMultiplexer *multiplexer);
 TermyFfiBytes termy_null_buffer(void);
 size_t termy_runtime_config_default_scrollback(void);
 size_t termy_terminal_options_default_scrollback(void);

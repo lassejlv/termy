@@ -31,6 +31,22 @@ and `termy_terminal_feed_output_with_replies` returns replies synchronously, in
 the order the engine produced them. A NULL `protocol_reply_callback` drops
 queued replies without changing other state.
 
+`ffi/multiplexer.rs` exposes the session host behind `termy mux`.
+`termy_multiplexer_connect` starts or reaches a host in a session directory
+(the host refuses one other users can read), and
+`termy_multiplexer_create_terminal` / `_attach_terminal` return ordinary
+`TermyFfiTerminal` handles viewing a host pane. Freeing such a handle only
+detaches; `termy_multiplexer_close` ends the program. Statuses
+`TERMY_FFI_HOST_UNAVAILABLE`, `_VERSION_MISMATCH` and `_NOT_FOUND` report host
+problems. The host binary is `termy-session-host`; hosts ship it beside the
+library.
+
+The `termy_settings_*` calls edit the Termy app's config file. The `_at`
+variants (`termy_settings_set_root_at`, `termy_settings_reset_root_at`) take a
+config path, so a host app can keep a config of its own. A config loaded from
+that path lists its themes, including local ones beside it, in
+`termy_settings_schema_json`.
+
 The library is also built as a `staticlib`. Hosts that need only the engine,
 without the `native` feature's PTY, config, keyring, font and network code,
 link `libtermy_engine` from `crates/engine_ffi` instead.
