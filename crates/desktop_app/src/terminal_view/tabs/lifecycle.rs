@@ -723,7 +723,13 @@ impl TerminalView {
             if !self.discard_multiplexer_window() {
                 self.sync_persisted_native_workspace();
             }
-            crate::app_actions::close_terminal_window::<Self>(self.window_handle, cx);
+            // This runs inside an update of this window, which GPUI cannot
+            // update again (removing it would silently fail and leave an
+            // empty window), so close it once the update finishes.
+            let window_handle = self.window_handle;
+            App::defer(cx, move |cx| {
+                crate::app_actions::close_terminal_window::<Self>(window_handle, cx);
+            });
         }
     }
 
