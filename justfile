@@ -133,6 +133,19 @@ test-swift-sdk profile="release":
     ./sdk/swift/scripts/build-libtermy.sh {{ profile }}
     swift test --package-path sdk/swift
 
+# Run Termy Next, the Swift terminal built on the Swift SDK (macOS)
+next profile="debug":
+    ./sdk/swift/scripts/build-libtermy.sh {{ profile }}
+    swift run -c {{ profile }} --package-path next TermyNext
+
+# Build Termy Next.app into next/build (macOS)
+bundle-next profile="release":
+    ./next/scripts/bundle.sh {{ profile }}
+
+# Run the Termy Next tests (macOS)
+test-next:
+    swift test --package-path next
+
 test-tmux-integration:
     #!/usr/bin/env bash
     set -euo pipefail
