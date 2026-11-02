@@ -17,6 +17,8 @@ final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     private var shown: [TermyTheme] = []
     private var current: String?
     private var updatingSelection = false
+    /// Colors from the terminal theme; nil keeps the system's.
+    private var colors: ThemeRowColors?
 
     init(width: CGFloat, height: CGFloat) {
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: height))
@@ -44,6 +46,7 @@ final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
         scroll.autohidesScrollers = true
+        scroll.wantsLayer = true
 
         countLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         countLabel.textColor = .tertiaryLabelColor
@@ -71,6 +74,23 @@ final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     required init?(coder: NSCoder) { fatalError() }
 
     override var firstBaselineOffsetFromTop: CGFloat { search.firstBaselineOffsetFromTop }
+
+    /// Draws the list on the terminal's own background, with the theme's text
+    /// colors and its accent behind the selected theme.
+    func applyTheme(_ theme: Theme) {
+        colors = ThemeRowColors(text: theme.textPrimary, missing: theme.textTertiary,
+                                selection: theme.selectionFill, selectedText: theme.selectionText)
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = true
+        scroll.backgroundColor = theme.paneFill
+        scroll.layer?.cornerRadius = 8
+        scroll.layer?.borderWidth = 1
+        scroll.layer?.borderColor = theme.paneStroke.cgColor
+        table.backgroundColor = theme.paneFill
+        countLabel.textColor = theme.textTertiary
+        table.reloadData()
+        selectCurrent(scroll: false)
+    }
 
     /// Shows `themes` with `current` selected, keeping the search.
     func update(themes: [TermyTheme], current: String?) {
@@ -110,8 +130,14 @@ final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         let cell = tableView.makeView(withIdentifier: id, owner: self) as? ThemeRowView ?? ThemeRowView()
         cell.identifier = id
         let theme = shown[row]
-        cell.configure(theme, isCurrent: theme.id == current)
+        cell.configure(theme, isCurrent: theme.id == current, colors: colors)
         return cell
+    }
+
+    func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+        let row = ThemeSelectionRowView()
+        row.selectionColor = colors?.selection
+        return row
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
@@ -123,11 +149,37 @@ final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     }
 }
 
+/// Row colors taken from the terminal theme.
+private struct ThemeRowColors {
+    let text: NSColor
+    let missing: NSColor
+    let selection: NSColor
+    let selectedText: NSColor
+}
+
+/// A row that fills its selection with the theme's accent instead of the
+/// system's.
+private final class ThemeSelectionRowView: NSTableRowView {
+    var selectionColor: NSColor?
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        guard let selectionColor else { return super.drawSelection(in: dirtyRect) }
+        selectionColor.setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 1), xRadius: 6, yRadius: 6).fill()
+    }
+}
+
 /// One theme: a small preview of its background, text and accent colors,
 /// then its name.
 private final class ThemeRowView: NSTableCellView {
     private let preview = ThemePreview()
     private let name = NSTextField(labelWithString: "")
+    private var colors: ThemeRowColors?
+    private var isInstalled = true
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { applyTextColor() }
+    }
 
     init() {
         super.init(frame: .zero)
@@ -151,12 +203,27 @@ private final class ThemeRowView: NSTableCellView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
-    func configure(_ theme: TermyTheme, isCurrent: Bool) {
+    func configure(_ theme: TermyTheme, isCurrent: Bool, colors: ThemeRowColors?) {
+        self.colors = colors
+        isInstalled = theme.isInstalled
         name.stringValue = theme.isInstalled ? theme.name : "\(theme.name) (missing)"
         name.font = isCurrent ? .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold) : .systemFont(ofSize: NSFont.systemFontSize)
-        name.textColor = theme.isInstalled ? .labelColor : .tertiaryLabelColor
+        applyTextColor()
         preview.swatches = theme.swatches.map(NSColor.init)
         setAccessibilityLabel(theme.name)
+    }
+
+    /// The name reads on the theme's selection fill when its row is selected.
+    private func applyTextColor() {
+        guard let colors else {
+            name.textColor = isInstalled ? .labelColor : .tertiaryLabelColor
+            return
+        }
+        if backgroundStyle == .emphasized {
+            name.textColor = colors.selectedText
+        } else {
+            name.textColor = isInstalled ? colors.text : colors.missing
+        }
     }
 }
 

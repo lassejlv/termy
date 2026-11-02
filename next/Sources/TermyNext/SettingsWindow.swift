@@ -3,7 +3,9 @@ import Termy
 
 /// The Settings window (⌘,): a standard macOS preferences window with a
 /// toolbar of panes. Every control writes straight to `Preferences`, and the
-/// window follows changes made elsewhere, such as from the View menu.
+/// window follows changes made elsewhere, such as from the View menu. It wears
+/// the terminal theme like the main window: the same backdrop under the
+/// toolbar and panes, the theme's text colors, and its accent on controls.
 @MainActor
 final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     static let shared = SettingsWindowController()
@@ -33,6 +35,15 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private static let width: CGFloat = 540
     private var pane: Pane = .general
     private var paneViews: [Pane: NSView] = [:]
+
+    // Chrome: the main window's backdrop, with the current pane on top.
+    private let root = NSView()
+    private let glass = NSVisualEffectView()
+    private let tint = NSView()
+    /// Form text, recolored with the theme.
+    private var formLabels: [NSTextField] = []
+    private var notes: [NSTextField] = []
+    private var separators: [NSBox] = []
 
     // General
     private let interfaceControl = NSSegmentedControl(labels: ["Liquid", "Classic"], trackingMode: .selectOne, target: nil, action: nil)
@@ -96,10 +107,27 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private init() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 300),
-            styleMask: [.titled, .closable], backing: .buffered, defer: true)
+            styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
         window.toolbarStyle = .preference
+        window.titlebarAppearsTransparent = true
+        window.isOpaque = false
+        window.backgroundColor = .clear
         super.init(window: window)
+
+        root.wantsLayer = true
+        root.layer?.cornerRadius = 12
+        root.layer?.masksToBounds = true
+        glass.material = .hudWindow
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        tint.wantsLayer = true
+        for view in [glass, tint] {
+            view.frame = root.bounds
+            view.autoresizingMask = [.width, .height]
+            root.addSubview(view)
+        }
+        window.contentView = root
 
         let toolbar = NSToolbar(identifier: "TermyNextSettings")
         toolbar.delegate = self
@@ -158,17 +186,51 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         refresh()
 
         view.layoutSubtreeIfNeeded()
-        let content = NSSize(width: Self.width, height: view.fittingSize.height)
-        var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: content))
-        frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+        // The content runs under the toolbar, so the window is the pane plus
+        // the title bar and toolbar above it.
+        let paneHeight = view.fittingSize.height
+        let toolbarHeight = window.frame.height - window.contentLayoutRect.height
+        let height = paneHeight + toolbarHeight
+        let frame = NSRect(x: window.frame.minX, y: window.frame.maxY - height, width: Self.width, height: height)
+        root.subviews.filter { $0 !== glass && $0 !== tint }.forEach { $0.removeFromSuperview() }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        if animated, window.isVisible, !reduceMotion {
-            window.contentView = NSView()
-            window.setFrame(frame, display: true, animate: true)
-        } else {
-            window.setFrame(frame, display: true)
+        window.setFrame(frame, display: true, animate: animated && window.isVisible && !reduceMotion)
+        view.frame = NSRect(x: 0, y: 0, width: Self.width, height: paneHeight)
+        view.autoresizingMask = [.width, .maxYMargin]
+        root.addSubview(view)
+    }
+
+    // MARK: Theme
+
+    /// Dresses the window in the terminal theme, the way the main window is.
+    private func applyTheme() {
+        let theme = AppConfig.shared.theme
+        window?.appearance = theme.appearance
+        glass.isHidden = !theme.isLiquid
+        glass.appearance = theme.appearance
+        tint.layer?.backgroundColor = (theme.isLiquid ? theme.backdropTint : theme.chrome).cgColor
+
+        for label in formLabels { label.textColor = theme.textPrimary }
+        for note in notes { note.textColor = theme.textSecondary }
+        for line in separators { line.fillColor = theme.paneStroke }
+        for label in [updateStatus, configLabel, hostStatus, hostFolderLabel] { label.textColor = theme.textSecondary }
+        themePicker.applyTheme(theme)
+        styleCheckboxes()
+    }
+
+    /// Checkbox titles in the theme's text color, dimmed while disabled, with
+    /// the theme's accent in the box.
+    private func styleCheckboxes() {
+        let theme = AppConfig.shared.theme
+        let checkboxes = [notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound,
+                          updateCheckbox, updateDownload, hostCheckbox]
+        for checkbox in checkboxes {
+            checkbox.contentTintColor = theme.accent
+            checkbox.attributedTitle = NSAttributedString(string: checkbox.title, attributes: [
+                .foregroundColor: checkbox.isEnabled ? theme.textPrimary : theme.textTertiary,
+                .font: checkbox.font ?? .systemFont(ofSize: NSFont.systemFontSize),
+            ])
         }
-        window.contentView = view
     }
 
     // MARK: Panes
@@ -245,20 +307,26 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
             case .control(let title, let view):
                 let label = NSTextField(labelWithString: title)
                 label.alignment = .right
+                if !title.isEmpty { formLabels.append(label) }
                 grid.addRow(with: [title.isEmpty ? NSGridCell.emptyContentView : label, view])
             case .note(let text):
                 let note = NSTextField(wrappingLabelWithString: text)
                 note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-                note.textColor = .secondaryLabelColor
                 note.preferredMaxLayoutWidth = 340
+                notes.append(note)
                 grid.addRow(with: [NSGridCell.emptyContentView, note])
                 grid.row(at: grid.numberOfRows - 1).topPadding = -4
             case .separator:
+                // A hairline in the theme's stroke color, across both columns.
                 let line = NSBox()
-                line.boxType = .separator
+                line.boxType = .custom
+                line.borderWidth = 0
+                line.heightAnchor.constraint(equalToConstant: 1).isActive = true
+                separators.append(line)
                 grid.addRow(with: [line])
                 let gridRow = grid.row(at: grid.numberOfRows - 1)
                 gridRow.mergeCells(in: NSRange(location: 0, length: 2))
+                gridRow.cell(at: 0).xPlacement = .fill
                 gridRow.topPadding = 4
                 gridRow.bottomPadding = 4
                 gridRow.rowAlignment = .none
@@ -321,7 +389,6 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         checkNowButton.target = self
         checkNowButton.action = #selector(checkForUpdates)
         updateStatus.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        updateStatus.textColor = .secondaryLabelColor
 
         let formatter = NumberFormatter()
         formatter.minimum = 6
@@ -345,15 +412,12 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         configLabel.isSelectable = true
         configLabel.lineBreakMode = .byTruncatingMiddle
         configLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 340).isActive = true
-        configLabel.textColor = .secondaryLabelColor
 
         hostCheckbox.target = self
         hostCheckbox.action = #selector(hostToggled)
-        hostStatus.textColor = .secondaryLabelColor
         hostFolderLabel.isSelectable = true
         hostFolderLabel.lineBreakMode = .byTruncatingMiddle
         hostFolderLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 340).isActive = true
-        hostFolderLabel.textColor = .secondaryLabelColor
         revealButton.bezelStyle = .push
         revealButton.target = self
         revealButton.action = #selector(revealHostFolder)
@@ -399,6 +463,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         } else {
             hostStatus.stringValue = prefs.usesSessionHost ? "Not connected" : "Off"
         }
+        applyTheme()
     }
 
     /// The font menu: monospaced families, then every other local family,
@@ -473,6 +538,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
             status += " · checked \(relative.localizedString(for: last, relativeTo: Date()))"
         }
         updateStatus.stringValue = status
+        styleCheckboxes()
     }
 
     @objc private func updatesChanged(_ sender: NSButton) {
