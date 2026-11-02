@@ -86,8 +86,19 @@ command line over a Unix socket as you type, and the app draws native UI at
 the cursor:
 
 - **Completions:** history entries and commands that start with what you
-  typed. ⌃N / ⌃P pick one (then ↓ / ↑ too), Return or Tab puts it on the
-  line, Esc hides the list.
+  typed. ↓ / ↑ or ⌃N / ⌃P pick one, Return or Tab puts it on the line, Esc
+  hides the list. With **Pick completions with ↑ and ↓** off, the arrows stay
+  with the shell's history until ⌃N / ⌃P picks a row.
+- **Command completions (experimental, off by default):** a second checkbox
+  under Shell plugins. The list then also offers what can come next for
+  git, brew, cargo, rustup, rustc, bun, bunx, npm, pnpm, npx, just, ssh,
+  claude, codex and file commands (rm, mkdir, cd, cp, mv, zed, code, open…):
+  subcommands and options with a short description, and the project's own
+  branches, stashes, changed files, installed formulae, Cargo binaries,
+  package.json scripts, node_modules tools, just recipes, ssh hosts, and
+  Claude Code and Codex sessions to resume. The specs are
+  Termy Next's own (`Sources/TermyNextCore/CommandSpecs.swift`); generators
+  run in the pane's directory and are cached for a few seconds.
 - **Command box (⇧⌘E):** describe a command and Claude Code (`claude -p`) or
   Codex (`codex exec`) writes it onto the line, with the sign-in they already
   have; no API keys of our own. Return runs it, a follow-up refines it, Esc

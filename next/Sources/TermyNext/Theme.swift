@@ -64,6 +64,19 @@ final class Preferences {
         get { defaults.object(forKey: "sshSendsColor") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "sshSendsColor") }
     }
+    /// Experimental: the completion popup also suggests subcommands,
+    /// options and arguments from Termy Next's command specs (git, brew,
+    /// cargo, rustup, rustc, bun). Off by default; needs the shell plugins.
+    var commandCompletions: Bool {
+        get { defaults.bool(forKey: "commandCompletions") }
+        set { defaults.set(newValue, forKey: "commandCompletions"); changed() }
+    }
+    /// ↑ and ↓ move through the completion list as soon as it shows. Off,
+    /// they go to the shell (history) until ⌃N / ⌃P picks a row. On by default.
+    var completionArrowKeys: Bool {
+        get { defaults.object(forKey: "completionArrowKeys") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "completionArrowKeys") }
+    }
     /// The agent the command box asks, a `ShellAgent.id` such as "claude:haiku".
     var shellAgent: String {
         get { defaults.string(forKey: "shellAgent") ?? "claude:haiku" }

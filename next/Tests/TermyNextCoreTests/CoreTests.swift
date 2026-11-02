@@ -147,3 +147,171 @@ import Testing
         #expect(ShellProtocol.command(fromAgentReply: "  \n") == nil)
     }
 }
+
+@Suite struct CommandSpecTests {
+    private func names(_ line: String) -> [String] {
+        let command = ShellWords.split(line).first?.text ?? ""
+        return CommandSpecs.spec(for: command)?.complete(line)?.items.map(\.name) ?? []
+    }
+
+    @Test func subcommandsByPrefix() {
+        #expect(names("git ch").contains("checkout"))
+        #expect(names("git ch").contains("cherry-pick"))
+        #expect(!names("git ch").contains("commit"))
+        #expect(names("cargo b").contains("build"))
+        #expect(names("brew up") == ["upgrade", "update"])
+        #expect(CommandSpecs.spec(for: "git")?.complete("git") == nil)
+    }
+
+    @Test func optionsAfterADash() {
+        #expect(names("git commit --am") == ["--amend"])
+        #expect(names("git commit -").contains("-m"))
+        // Used once already, so not again.
+        #expect(!names("git commit --amend --").contains("--amend"))
+        // Persistent options reach subcommands; cargo -C does.
+        #expect(names("cargo build -C ").isEmpty)
+    }
+
+    @Test func argumentsAndGenerators() {
+        let spec = CommandSpecs.spec(for: "git")!
+        #expect(spec.complete("git checkout ")?.generator == .gitBranches)
+        #expect(spec.complete("git checkout -b ")?.generator == nil)
+        #expect(spec.complete("git push origin ")?.generator == .gitBranches)
+        #expect(spec.complete("git stash pop ")?.generator == .gitStashes)
+        #expect(CommandSpecs.spec(for: "bun")?.complete("bun run ")?.generator == .packageScripts)
+        #expect(CommandSpecs.spec(for: "brew")?.complete("brew uninstall ")?.generator == .brewInstalled)
+        #expect(CommandSpecs.spec(for: "cargo")?.complete("cargo run --bin ")?.generator == .cargoBins)
+        // Only the last command of a pipeline counts.
+        #expect(names("ls | git sta") == ["status", "stash"])
+    }
+
+    @Test func takingAnItemReplacesTheWord() {
+        let line = "git chec"
+        let completion = CommandSpecs.spec(for: "git")!.complete(line)!
+        let item = completion.items.first { $0.name == "checkout" }!
+        #expect(completion.line(line, taking: item) == "git checkout ")
+    }
+
+    @Test func shellWords() {
+        #expect(ShellWords.split("git commit -m 'a b' ").map(\.text) == ["git", "commit", "-m", "a b", ""])
+        #expect(ShellWords.split("cd x && cargo b").map(\.text) == ["cargo", "b"])
+        #expect(ShellWords.split("cd x && cargo b").last?.start == 14)
+    }
+
+    @Test func generatorOutput() {
+        #expect(Generator.gitBranches.items(from: "main\nfeature/x\n").map(\.name) == ["main", "feature/x"])
+        #expect(Generator.gitRemoteBranches.items(from: "origin\norigin/main\n").map(\.name) == ["origin/main"])
+        #expect(Generator.gitChangedFiles.items(from: " M src/a.rs\n?? new.txt\nR  old -> moved\n").map(\.name) == ["src/a.rs", "new.txt", "moved"])
+        #expect(Generator.gitCommits.items(from: "abc1234 Fix it\n").first?.description == "Fix it")
+        #expect(Generator.rustupToolchains.items(from: "stable-aarch64-apple-darwin (default)\n").first?.description == "default")
+        #expect(Generator.brewServices.items(from: "Name Status User File\npostgresql@16 started me ~/x\n").map(\.name) == ["postgresql@16"])
+        #expect(Generator.packageScripts("{\"scripts\":{\"dev\":\"vite\",\"build\":\"tsc\"}}").map(\.name) == ["build", "dev"])
+        let metadata = #"{"packages":[{"name":"app","version":"0.1.0","targets":[{"name":"app","kind":["bin"]},{"name":"demo","kind":["example"]}]}]}"#
+        #expect(Generator.cargoBins.items(from: metadata).map(\.name) == ["app"])
+        #expect(Generator.cargoExamples.items(from: metadata).map(\.name) == ["demo"])
+        #expect(Generator.cargoPackages.items(from: metadata).map(\.name) == ["app"])
+    }
+
+    @Test func paths() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("spec-paths-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("src"), withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: folder.appendingPathComponent("src/main.rs").path, contents: Data())
+        FileManager.default.createFile(atPath: folder.appendingPathComponent("README.md").path, contents: Data())
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let top = Generator.paths(for: "", in: folder.path, foldersOnly: false)
+        #expect(top.map(\.name) == ["README.md", "src/"])
+        #expect(top.last?.appendsSpace == false)
+        #expect(Generator.paths(for: "src/m", in: folder.path, foldersOnly: false).map(\.name) == ["src/main.rs"])
+        #expect(Generator.paths(for: "", in: folder.path, foldersOnly: true).map(\.name) == ["src/"])
+    }
+}
+
+@Suite struct MoreSpecTests {
+    private func completion(_ line: String) -> SpecCompletion? {
+        CommandSpecs.spec(for: ShellWords.split(line).first?.text ?? "")?.complete(line)
+    }
+
+    @Test func newSpecsPointAtTheirSources() {
+        #expect(completion("claude --resume ")?.generators == [.claudeSessions])
+        #expect(completion("claude --model ")?.items.map(\.name).contains("opus") == true)
+        #expect(completion("codex resume ")?.generators == [.codexSessions])
+        #expect(completion("codex -s ")?.items.map(\.name) == ["read-only", "workspace-write", "danger-full-access"])
+        #expect(completion("npm run ")?.generators == [.packageScripts])
+        #expect(completion("pnpm d")?.generators == [.packageScripts])
+        #expect(completion("bun d")?.generators == [.packageScripts, .files])
+        #expect(completion("npx ")?.generators == [.nodeBins])
+        #expect(completion("bunx ")?.generators == [.nodeBins])
+        #expect(completion("just ")?.generators == [.justRecipes])
+        #expect(completion("ssh ")?.generators == [.sshHosts])
+        #expect(completion("ssh -J ")?.generators == [.sshHosts])
+        #expect(completion("rm -rf ")?.generators == [.files])
+        #expect(completion("cd ")?.generators == [.folders])
+        #expect(completion("zed ")?.generators == [.files])
+        #expect(completion("claude mcp a")?.items.map(\.name) == ["add"])
+    }
+
+    @Test func justRecipes() {
+        let output = """
+            Available recipes:
+                default                            # Show available recipes
+                run-cli *args
+                benchmark mib="32" # Measure it
+            """
+        let items = Generator.justRecipes.items(from: output)
+        #expect(items.map(\.name) == ["default", "run-cli", "benchmark"])
+        #expect(items.first?.description == "Show available recipes")
+        #expect(items.last?.description == "Measure it")
+    }
+
+    @Test func sshHosts() {
+        let config = """
+            Host box prod
+              HostName 10.0.0.2
+            Host *.internal
+              User me
+            Host hetzner
+              HostName example.com
+            """
+        let known = "github.com,140.82.1.1 ssh-ed25519 AAA\n[git.example.com]:2222 ssh-rsa BBB\n|1|hashed= ssh-rsa CCC\n"
+        let items = Generator.sshHosts(config: config, knownHosts: known)
+        #expect(items.map(\.name) == ["box", "prod", "hetzner", "github.com", "140.82.1.1", "git.example.com"])
+        #expect(items.first?.description == "10.0.0.2")
+    }
+
+    @Test func localSources() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("spec-home-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: home) }
+        // node_modules/.bin, found from a subfolder.
+        let project = home.appendingPathComponent("my.app")
+        try fm.createDirectory(at: project.appendingPathComponent("node_modules/.bin"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: project.appendingPathComponent("src"), withIntermediateDirectories: true)
+        for tool in ["vite", "tsc"] { fm.createFile(atPath: project.appendingPathComponent("node_modules/.bin/\(tool)").path, contents: Data()) }
+        #expect(Generator.nodeBins(from: project.appendingPathComponent("src").path).map(\.name) == ["tsc", "vite"])
+
+        // Claude Code: ~/.claude/projects/<folder with "-">/<id>.jsonl
+        let mangled = String(project.path.map { $0.isLetter || $0.isNumber ? $0 : "-" })
+        let claude = home.appendingPathComponent(".claude/projects/\(mangled)")
+        try fm.createDirectory(at: claude, withIntermediateDirectories: true)
+        let lines = [
+            #"{"type":"mode"}"#,
+            #"{"type":"user","message":{"role":"user","content":"Fix the login bug\nand more"}}"#,
+        ].joined(separator: "\n")
+        try lines.write(to: claude.appendingPathComponent("abc-123.jsonl"), atomically: true, encoding: .utf8)
+        let sessions = Generator.claudeSessions(for: project.path, home: home.path)
+        #expect(sessions.map(\.name) == ["abc-123"])
+        #expect(sessions.first?.description == "Fix the login bug")
+
+        // Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl
+        let day = home.appendingPathComponent(".codex/sessions/2026/11/02")
+        try fm.createDirectory(at: day, withIntermediateDirectories: true)
+        let rollout = [
+            #"{"type":"session_meta","payload":{"id":"01a1","cwd":"\#(project.path)"}}"#,
+            #"{"type":"event_msg","payload":{"type":"user_message","message":"Add dark mode"}}"#,
+        ].joined(separator: "\n")
+        try rollout.write(to: day.appendingPathComponent("rollout-2026-11-02T11-44-54-01a1.jsonl"), atomically: true, encoding: .utf8)
+        let codex = Generator.codexSessions(for: project.path, home: home.path)
+        #expect(codex.map(\.name) == ["01a1"])
+        #expect(codex.first?.description == "Add dark mode")
+    }
+}

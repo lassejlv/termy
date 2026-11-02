@@ -18,6 +18,9 @@ final class PaneShellUI: NSObject, NSTextFieldDelegate {
     private var pendingRun: String?
     /// The command the box last put on the line.
     private var generated: String?
+    /// How many characters left of the cursor the popup's text starts under:
+    /// the word being completed, or the whole line for history.
+    private var alignCount = 0
 
     init(pane: PaneView) {
         self.pane = pane
@@ -38,24 +41,96 @@ final class PaneShellUI: NSObject, NSTextFieldDelegate {
         }
         if let dismissed = dismissedBuffer, line?.buffer != dismissed { dismissedBuffer = nil }
         guard let line, ask == nil, line.buffer != dismissedBuffer, pane.isFocused else { return hideCompletion() }
-        let (history, commands) = line.suggestions
-        guard !history.isEmpty || !commands.isEmpty else { return hideCompletion() }
+        let sections = rows(for: line)
+        guard sections.contains(where: { !$0.isEmpty }) else { return hideCompletion() }
         if completion == nil {
             let view = ShellCompletionView()
-            view.onPick = { [weak self] text in self?.pick(text) }
+            view.onPick = { [weak self] row in self?.pick(row) }
             pane.addSubview(view)
             completion = view
-            view.typed = line.buffer
-            view.update(history: history, commands: commands)
+            view.update(sections: sections)
             position()
             Motion.appear(view, scale: 0.98, offsetY: -4, duration: 0.12)
         } else {
-            completion?.typed = line.buffer
-            completion?.update(history: history, commands: commands)
+            completion?.update(sections: sections)
             position()
         }
         // The cursor moves once zsh's redraw reaches the terminal; follow it.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.position() }
+    }
+
+    /// The popup's sections: what the command's spec says can come next
+    /// (with command completions on), then history, then command names.
+    private func rows(for line: ShellLine) -> [[CompletionRow]] {
+        let (history, commands) = line.suggestions
+        let historyRows = history.map { entry in
+            CompletionRow(title: entry, line: entry, typedCount: line.buffer.count,
+                          icon: .logo(firstWord(entry), fallback: "clock.arrow.circlepath"))
+        }
+        let commandRows = commands.map { name in
+            CompletionRow(title: name, line: name, typedCount: line.buffer.count, icon: .logo(name, fallback: "terminal"))
+        }
+        let specRows = self.specRows(for: line)
+        guard !specRows.isEmpty else {
+            alignCount = line.buffer.split(separator: "\n", omittingEmptySubsequences: false).last?.count ?? 0
+            return [historyRows, commandRows]
+        }
+        // The spec leads; a little history stays under it.
+        return [specRows, Array(historyRows.prefix(2))]
+    }
+
+    private func firstWord(_ text: String) -> String {
+        String(text.split(whereSeparator: \.isWhitespace).first ?? "")
+    }
+
+    private func specRows(for line: ShellLine) -> [CompletionRow] {
+        guard Preferences.shared.commandCompletions, line.cursor >= line.buffer.count,
+              let command = ShellWords.split(line.buffer).first?.text, let spec = CommandSpecs.spec(for: command),
+              let completion = spec.complete(line.buffer) else { return [] }
+        alignCount = completion.word.count
+        var rows: [CompletionRow] = []
+        func add(_ item: SpecCompletion.Item, from generator: Generator?) {
+            rows.append(CompletionRow(title: item.name, detail: item.description, line: completion.line(line.buffer, taking: item),
+                                      typedCount: completion.word.count, icon: icon(for: item, generator: generator, command: completion.command),
+                                      keepsOpen: true))
+        }
+        if let connection {
+            for generator in completion.generators {
+                let generated = GeneratorRunner.shared.items(
+                    generator, word: completion.word, directory: pane.directory ?? NSHomeDirectory(),
+                    searchPath: connection.path) { [weak self] in self?.lineChanged() }
+                Generator.matching(generated, word: completion.word).forEach { add($0, from: generator) }
+            }
+        }
+        completion.items.forEach { add($0, from: nil) }
+        return rows
+    }
+
+    private func icon(for item: SpecCompletion.Item, generator: Generator?, command: String) -> CompletionRow.Icon {
+        switch item.kind {
+        case .subcommand: return .logo(command, fallback: "terminal")
+        case .option: return .symbol("flag")
+        case .argument:
+            switch generator {
+            case .gitBranches?, .gitRemoteBranches?: return .symbol("arrow.triangle.branch")
+            case .gitTags?: return .symbol("tag")
+            case .gitCommits?: return .symbol("smallcircle.filled.circle")
+            case .gitStashes?: return .symbol("tray")
+            case .gitRemotes?: return .symbol("network")
+            case .gitChangedFiles?, .gitStagedFiles?: return .symbol("doc.badge.ellipsis")
+            case .files?, .folders?: return .symbol(item.name.hasSuffix("/") ? "folder" : "doc")
+            case .packageScripts?: return .symbol("play")
+            case .justRecipes?: return .symbol("checklist")
+            case .nodeBins?: return .symbol("shippingbox")
+            case .sshHosts?: return .symbol("network")
+            case .claudeSessions?: return .logo("claude", fallback: "bubble.left")
+            case .codexSessions?: return .logo("codex", fallback: "bubble.left")
+            case .brewInstalled?, .brewFormulae?, .brewCasks?, .brewOutdated?, .brewServices?, .brewTaps?: return .logo("brew", fallback: "shippingbox")
+            case .cargoPackages?, .cargoBins?, .cargoExamples?: return .logo("cargo", fallback: "shippingbox")
+            case .rustupToolchains?, .rustupTargets?, .rustupInstalledTargets?, .rustupComponents?: return .logo("rustup", fallback: "hammer")
+            case nil: return .symbol("smallcircle.filled.circle")
+            }
+        }
     }
 
     private func hideCompletion() {
@@ -64,26 +139,28 @@ final class PaneShellUI: NSObject, NSTextFieldDelegate {
         Motion.disappear(view, duration: 0.1) { view.removeFromSuperview() }
     }
 
-    private func pick(_ text: String) {
-        dismissedBuffer = text
+    private func pick(_ row: CompletionRow) {
+        if !row.keepsOpen { dismissedBuffer = row.line }
         hideCompletion()
-        connection?.setLine(text)
+        connection?.setLine(row.line)
     }
 
-    /// Keys for the popup: ⌃N / ⌃P (and ↓ / ↑ once a row is picked) move,
-    /// Return and Tab take the row, Esc closes. Others go to the shell.
+    /// Keys for the popup: ⌃N / ⌃P move, and ↓ / ↑ too (with arrow keys on in
+    /// Settings, else once a row is picked). Return and Tab take the row, Esc
+    /// closes. Others go to the shell.
     func handleKey(_ event: NSEvent) -> Bool {
         guard let completion, let line = connection?.line else { return false }
         let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
         let key = event.charactersIgnoringModifiers?.lowercased()
+        let arrows = Preferences.shared.completionArrowKeys
         switch (event.keyCode, flags) {
         case (_, .control) where key == "n": completion.move(1)
         case (_, .control) where key == "p": completion.move(-1)
-        case (125, []) where completion.selected != nil: completion.move(1)
-        case (126, []) where completion.selected != nil: completion.move(-1)
+        case (125, []) where arrows || completion.selected != nil: completion.move(1)
+        case (126, []) where arrows || completion.selected != nil: completion.move(-1)
         case (36, []), (76, []), (48, []):
-            guard let text = completion.selectedText else { return false }
-            pick(text)
+            guard let row = completion.selectedRow else { return false }
+            pick(row)
         case (53, []):
             dismissedBuffer = line.buffer
             hideCompletion()
@@ -201,9 +278,9 @@ final class PaneShellUI: NSObject, NSTextFieldDelegate {
         }
         if let completion {
             // Line the entries up under the start of what's typed.
-            let typed = connection?.line.map { $0.buffer.split(separator: "\n", omittingEmptySubsequences: false).last?.count ?? 0 } ?? 0
+            let typed = alignCount
             let size = completion.fittingSize(maxWidth: area.width)
-            var x = cursor.minX - CGFloat(typed) * cursorRect.width - (ShellCompletionView.textInset - 1)
+            var x = cursor.minX - CGFloat(typed) * cursorRect.width - completion.textOffset
             x = max(area.minX, min(x, area.maxX - size.width))
             var y = cursor.maxY + 4
             if y + size.height > area.maxY { y = max(area.minY, cursor.minY - size.height - 4) }
@@ -220,21 +297,38 @@ final class PaneShellUI: NSObject, NSTextFieldDelegate {
 
 // MARK: - Completion popup
 
-/// History matches, a divider, then command matches, in the terminal's font.
+/// One entry in the popup: what it shows, and the line taking it gives.
+struct CompletionRow: Equatable {
+    enum Icon: Equatable {
+        /// A program's logo, such as "git" (falls back to `symbol`).
+        case logo(String, fallback: String)
+        case symbol(String)
+    }
+
+    var title: String
+    var detail: String?
+    var line: String
+    /// Leading characters of `title` already typed, drawn dimmer.
+    var typedCount: Int
+    var icon: Icon
+    /// After taking it the popup stays, to offer what comes next (a
+    /// subcommand's options, a folder's files).
+    var keepsOpen = false
+}
+
+/// Sections of completions with dividers between them, in the terminal's font.
 @MainActor
 final class ShellCompletionView: NSView {
     static let textInset: CGFloat = 8
-    private static let maxRows = 8
+    static let maxRows = 8
+    private static let iconSize: CGFloat = 14
 
-    private var history: [String] = []
-    private var commands: [String] = []
+    private var sections: [[CompletionRow]] = []
     private(set) var selected: Int?
-    var onPick: ((String) -> Void)?
+    var onPick: ((CompletionRow) -> Void)?
 
-    private var rows: [String] { history + commands }
-    /// What's typed, drawn dimmer in each row so the rest stands out.
-    var typed = ""
-    var selectedText: String? { selected.map { rows[$0] } }
+    private var rows: [CompletionRow] { sections.flatMap { $0 } }
+    var selectedRow: CompletionRow? { selected.map { rows[$0] } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -262,14 +356,25 @@ final class ShellCompletionView: NSView {
         return NSFont(name: render.fontFamily, size: size) ?? .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
+    private var detailFont: NSFont { .systemFont(ofSize: max(9, font.pointSize - 1.5)) }
     private var rowHeight: CGFloat { ceil(font.ascender - font.descender + font.leading) + 5 }
-    private var dividerHeight: CGFloat { !history.isEmpty && !commands.isEmpty ? 7 : 0 }
+    private static let dividerHeight: CGFloat = 7
+    /// Where a row's text starts: after the icon slot.
+    private var textX: CGFloat { 3 + Self.textInset - 4 + Self.iconSize + 6 }
 
-    func update(history: [String], commands: [String]) {
-        let previous = selectedText
-        self.history = Array(history.prefix(Self.maxRows / 2))
-        self.commands = Array(commands.prefix(Self.maxRows - self.history.count))
-        selected = previous.flatMap { rows.firstIndex(of: $0) }
+    /// Text drawn this far right of the popup's left edge lines up under the
+    /// cursor's column, for placing the popup.
+    var textOffset: CGFloat { textX }
+
+    func update(sections: [[CompletionRow]]) {
+        let previous = selectedRow?.line
+        var remaining = Self.maxRows
+        self.sections = sections.compactMap { section in
+            let kept = Array(section.prefix(remaining))
+            remaining -= kept.count
+            return kept.isEmpty ? nil : kept
+        }
+        selected = previous.flatMap { line in rows.firstIndex { $0.line == line } }
         needsDisplay = true
     }
 
@@ -280,10 +385,11 @@ final class ShellCompletionView: NSView {
     }
 
     func fittingSize(maxWidth: CGFloat) -> NSSize {
-        let attributes: [NSAttributedString.Key: Any] = [.font: font]
-        let widest = rows.map { (display($0) as NSString).size(withAttributes: attributes).width }.max() ?? 0
-        let width = min(maxWidth, 520, max(160, ceil(widest) + Self.textInset * 2 + 6))
-        return NSSize(width: width, height: CGFloat(rows.count) * rowHeight + dividerHeight + 6)
+        let titleWidth = rows.map { (display($0.title) as NSString).size(withAttributes: [.font: font]).width }.max() ?? 0
+        let detailWidth = rows.compactMap { $0.detail.map { ($0 as NSString).size(withAttributes: [.font: detailFont]).width } }.max() ?? 0
+        let width = textX + ceil(titleWidth) + (detailWidth > 0 ? 18 + min(ceil(detailWidth), 260) : 0) + Self.textInset + 4
+        let dividers = CGFloat(max(0, sections.count - 1)) * Self.dividerHeight
+        return NSSize(width: min(maxWidth, 600, max(180, width)), height: CGFloat(rows.count) * rowHeight + dividers + 6)
     }
 
     /// One line per entry: a multi-line history entry shows its first line.
@@ -293,8 +399,18 @@ final class ShellCompletionView: NSView {
     }
 
     private func rowRect(_ index: Int) -> NSRect {
-        let divider = index >= history.count ? dividerHeight : 0
-        return NSRect(x: 3, y: 3 + CGFloat(index) * rowHeight + divider, width: bounds.width - 6, height: rowHeight)
+        var y: CGFloat = 3
+        var counted = 0
+        for (sectionIndex, section) in sections.enumerated() {
+            if index < counted + section.count {
+                y += CGFloat(index - counted) * rowHeight
+                break
+            }
+            counted += section.count
+            y += CGFloat(section.count) * rowHeight
+            if sectionIndex < sections.count - 1 { y += Self.dividerHeight }
+        }
+        return NSRect(x: 3, y: y, width: bounds.width - 6, height: rowHeight)
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -302,31 +418,67 @@ final class ShellCompletionView: NSView {
         layer?.backgroundColor = theme.popover.cgColor
         layer?.borderColor = theme.paneStroke.cgColor
         let font = self.font
-        for (index, text) in rows.enumerated() {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byTruncatingTail
+        let textHeight = ceil(font.ascender - font.descender)
+        for (index, row) in rows.enumerated() {
             let rect = rowRect(index)
             if index == selected {
                 theme.selected.setFill()
                 NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
             }
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineBreakMode = .byTruncatingTail
-            let shown = display(text)
+            let iconRect = NSRect(x: rect.minX + Self.textInset - 4, y: rect.midY - Self.iconSize / 2, width: Self.iconSize, height: Self.iconSize)
+            drawIcon(row.icon, in: iconRect, theme: theme)
+
+            var detailWidth: CGFloat = 0
+            if let detail = row.detail {
+                let attributes: [NSAttributedString.Key: Any] = [.font: detailFont, .foregroundColor: theme.textTertiary, .paragraphStyle: paragraph]
+                detailWidth = min(ceil((detail as NSString).size(withAttributes: attributes).width), max(0, rect.width * 0.45))
+                let detailHeight = ceil(detailFont.ascender - detailFont.descender)
+                let detailRect = NSRect(x: rect.maxX - Self.textInset - detailWidth, y: rect.midY - detailHeight / 2,
+                                        width: detailWidth, height: detailHeight)
+                (detail as NSString).draw(with: detailRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine], attributes: attributes)
+            }
+            let shown = display(row.title)
             let attributed = NSMutableAttributedString(string: shown, attributes: [
                 .font: font, .foregroundColor: theme.textPrimary, .paragraphStyle: paragraph,
             ])
-            if !typed.isEmpty, shown.hasPrefix(typed) {
-                attributed.addAttribute(.foregroundColor, value: theme.textSecondary, range: NSRange(location: 0, length: (typed as NSString).length))
+            let typed = min(row.typedCount, (shown as NSString).length)
+            if typed > 0 {
+                attributed.addAttribute(.foregroundColor, value: theme.textSecondary, range: NSRange(location: 0, length: typed))
             }
-            let textHeight = ceil(font.ascender - font.descender)
-            let textRect = NSRect(x: rect.minX + Self.textInset - 4, y: rect.minY + (rect.height - textHeight) / 2,
-                                  width: rect.width - Self.textInset * 2 + 8, height: textHeight)
+            let x = rect.minX + textX - 3
+            let textRect = NSRect(x: x, y: rect.minY + (rect.height - textHeight) / 2,
+                                  width: max(0, rect.maxX - x - Self.textInset - (detailWidth > 0 ? detailWidth + 12 : 0)), height: textHeight)
             attributed.draw(with: textRect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
         }
-        if dividerHeight > 0 {
-            let y = rowRect(history.count).minY - dividerHeight / 2
-            theme.paneStroke.setFill()
+        theme.paneStroke.setFill()
+        var counted = 0
+        for section in sections.dropLast() {
+            counted += section.count
+            let y = rowRect(counted).minY - Self.dividerHeight / 2
             NSRect(x: 8, y: floor(y), width: bounds.width - 16, height: 1).fill()
         }
+    }
+
+    private func drawIcon(_ icon: CompletionRow.Icon, in rect: NSRect, theme: Theme) {
+        var symbol: String
+        switch icon {
+        case .logo(let program, let fallback):
+            if let logo = ProgramLogos.image(for: program, dark: theme.isDark) {
+                ProgramLogos.draw(logo, in: rect.insetBy(dx: 0.5, dy: 0.5))
+                return
+            }
+            symbol = fallback
+        case .symbol(let name):
+            symbol = name
+        }
+        let config = NSImage.SymbolConfiguration(pointSize: rect.height - 3, weight: .medium)
+        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config) else { return }
+        let tinted = image.tinted(theme.textSecondary)
+        let size = tinted.size
+        tinted.draw(in: NSRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height),
+                    from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
     }
 
     override func mouseDown(with event: NSEvent) {
