@@ -40,6 +40,8 @@ final class ScrimView: NSView {
 @MainActor
 final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator, PaneDelegate {
     private(set) var session: TerminalSessionGroup
+    /// This window's ID in the session host's layout (`termy mux window <id>`).
+    var hostWindowID = UUID().uuidString
 
     private let root = RootView()
     private let glass = NSVisualEffectView()
@@ -292,6 +294,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     private func showSession(_ session: TerminalSessionGroup) {
         let changed = self.session !== session
         self.session = session
+        session.hostWindowID = hostWindowID
         session.lastActive = Date()
         strip.navigator = self
         if changed {
@@ -373,6 +376,22 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         }
     }
 
+    /// Shows the session the host's layout puts in this window, with its
+    /// tabs and splits as they now are.
+    func showFromHost(_ target: TerminalSessionGroup) {
+        if target !== session {
+            showSession(target)
+        } else {
+            showSelectedTab(transition: false)
+        }
+        for tab in session.tabs { tab.allPanes.forEach { $0.delegate = self } }
+        container.reloadPanes()
+        container.animateLayout()
+        strip.needsDisplay = true
+        sidebar.needsLayout = true
+        updateTitle()
+    }
+
     func switchTo(_ target: TerminalSessionGroup) {
         guard target !== session else { return }
         if let other = AppDelegate.shared.controllers.first(where: { $0 !== self && $0.session === target }) {
@@ -384,7 +403,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         Workspace.shared.changed()
     }
 
-    private func reveal(session target: TerminalSessionGroup, tab: TerminalTab, pane: PaneView) {
+    func reveal(session target: TerminalSessionGroup, tab: TerminalTab, pane: PaneView) {
         if target !== session { switchTo(target) }
         guard let owner = AppDelegate.shared.controllers.first(where: { $0.session === target }) else { return }
         if let index = target.tabs.firstIndex(where: { $0 === tab }) { owner.selectTab(at: index) }
@@ -545,9 +564,10 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     /// Where a pane dragged to `point` (screen coordinates) would land in
     /// this window: a tab or new tab in the tab bar or sidebar, or beside or
     /// in place of a pane. Nil over chrome, or over the dragged pane itself.
-    func dropTarget(atScreenPoint point: NSPoint, dragging pane: PaneView) -> PaneDropTarget? {
+    func dropTarget(atScreenPoint point: NSPoint, dragging pane: PaneView, tab dragged: TerminalTab? = nil) -> PaneDropTarget? {
         guard let window else { return nil }
         let inWindow = window.convertPoint(fromScreen: point)
+        if let dragged { return dropTarget(at: inWindow, draggingTab: dragged) }
 
         if !strip.isHidden, strip.superview != nil {
             let p = strip.convert(inWindow, from: nil)
@@ -576,6 +596,93 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         let sameTab = tab.panes[pane.id] != nil
         if sameTab, nearest.0 > 0.3 { return .swap(over) }
         return .split(over, nearest.1)
+    }
+
+    /// Where a whole dragged tab would land: merged beside a pane or into a
+    /// tab, or as a tab of this window.
+    private func dropTarget(at inWindow: NSPoint, draggingTab dragged: TerminalTab) -> PaneDropTarget? {
+        let ownTab = session.tabs.contains { $0 === dragged }
+        if !strip.isHidden, strip.superview != nil {
+            let p = strip.convert(inWindow, from: nil)
+            if strip.bounds.contains(p) {
+                if let index = strip.tabIndex(at: p) { return session.tabs[index] === dragged ? nil : .tab(session.tabs[index]) }
+                return ownTab ? nil : .newTab
+            }
+        }
+        if !sidebar.isHidden, sidebar.alphaValue > 0, sidebar.frame.width > 0 {
+            let p = sidebar.convert(inWindow, from: nil)
+            if sidebar.bounds.contains(p) {
+                if let hit = sidebar.tab(at: p) { return hit.tab === dragged ? nil : .tab(hit.tab) }
+                return ownTab ? nil : .newTab
+            }
+        }
+        let p = container.convert(inWindow, from: nil)
+        guard container.bounds.contains(p), let tab = currentTab, tab !== dragged else { return nil }
+        let candidates = tab.allPanes.filter { !$0.isFloating && $0.superview === container && !$0.isClosing }
+        guard let over = candidates.first(where: { $0.frame.contains(p) }) else { return nil }
+        let frame = over.frame
+        let x = (p.x - frame.minX) / max(frame.width, 1), y = (p.y - frame.minY) / max(frame.height, 1)
+        let edges: [(CGFloat, Direction)] = [(x, .left), (1 - x, .right), (y, .up), (1 - y, .down)]
+        return .split(over, edges.min { $0.0 < $1.0 }!.1)
+    }
+
+    /// Shows another tab while `tab` is pulled out of the tab bar.
+    func showOtherTab(than tab: TerminalTab, preferring index: Int?) {
+        let tabs = session.tabs
+        guard tabs.count > 1, let own = tabs.firstIndex(where: { $0 === tab }) else { return }
+        let target = index.flatMap { tabs.indices.contains($0) && $0 != own ? $0 : nil } ?? (own > 0 ? own - 1 : own + 1)
+        selectTab(at: target)
+    }
+
+    /// Takes `tab` out of this window without ending its programs; an
+    /// emptied window closes.
+    func detachTabForDrop(_ tab: TerminalTab) {
+        session.remove(tab)
+        tab.allPanes.forEach { $0.removeFromSuperview() }
+        if session.tabs.isEmpty {
+            Workspace.shared.remove(session)
+            window?.close()
+            return
+        }
+        showSelectedTab(transition: false)
+        strip.needsDisplay = true
+        sidebar.needsLayout = true
+    }
+
+    /// Puts a dragged tab where it was dropped: its panes merged beside a
+    /// pane or into a tab, or the tab itself added to this window.
+    func acceptTabDrop(_ tab: TerminalTab, at target: PaneDropTarget) {
+        let destination: TerminalTab
+        switch target {
+        case .split(let over, let direction):
+            guard let dest = session.tabs.first(where: { $0.panes[over.id] != nil }), dest !== tab else { return }
+            AppDelegate.shared.detachTab(tab)
+            dest.merge(tab, nextTo: over.id, direction: direction)
+            destination = dest
+        case .swap(let over):
+            guard let dest = session.tabs.first(where: { $0.panes[over.id] != nil }), dest !== tab else { return }
+            AppDelegate.shared.detachTab(tab)
+            dest.merge(tab, nextTo: over.id, direction: SplitNavigation.bestFitDirection(for: over.frame))
+            destination = dest
+        case .tab(let dest):
+            guard dest !== tab, session.tabs.contains(where: { $0 === dest }) else { return }
+            AppDelegate.shared.detachTab(tab)
+            let anchor = dest.focusedPane ?? dest.allPanes.first
+            let direction = anchor.map { $0.frame.isEmpty ? Direction.right : SplitNavigation.bestFitDirection(for: $0.frame) } ?? .right
+            dest.merge(tab, nextTo: anchor?.id ?? dest.focusedID, direction: direction)
+            destination = dest
+        case .newTab:
+            guard !session.tabs.contains(where: { $0 === tab }) else { return }
+            AppDelegate.shared.detachTab(tab)
+            session.append(tab)
+            destination = tab
+        case .newWindow:
+            return
+        }
+        for pane in destination.allPanes { pane.delegate = self }
+        select(destination)
+        guard let focused = destination.focusedPane else { return }
+        finishDrop(focused)
     }
 
     private func dropOnNewTab(dragging pane: PaneView) -> PaneDropTarget? {

@@ -42,6 +42,20 @@ import Testing
         #expect(tree.compactMap { _ -> String? in nil } == nil)
     }
 
+    @Test func insertsAWholeLayout() {
+        let target = SplitTree<Int>.leaf(1).inserting(2, at: 1, direction: .right)
+        let moved = SplitTree<Int>.leaf(10).inserting(11, at: 10, direction: .down)
+        let merged = target.inserting(moved, at: 2, direction: .left)
+        #expect(merged.leaves == [1, 10, 11, 2])
+        // The moved layout keeps its own vertical split.
+        guard case .split(_, _, _, let right) = merged, case .split(.horizontal, _, let block, _) = right,
+              case .split(.vertical, _, _, _) = block else {
+            Issue.record("unexpected shape \(merged)")
+            return
+        }
+        #expect(SplitTree<Int>.leaf(5).inserting(moved, at: 99, direction: .up) == .leaf(5))
+    }
+
     @Test func dividerRatio() {
         let tree = SplitTree<Int>.leaf(1).inserting(2, at: 1, direction: .down)
         let moved = tree.settingRatio(0.25, at: [])

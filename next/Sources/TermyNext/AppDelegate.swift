@@ -15,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NSApp.setActivationPolicy(.regular)
         NSApp.mainMenu = buildMainMenu()
         installKeyMonitor()
+        PaneNotifier.shared.start()
         processTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
             MainActor.assumeIsolated { AppDelegate.shared.refreshProcesses() }
         }
@@ -35,12 +36,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             guard let self else { return }
             switch result {
             case .success:
-                let open = SessionHost.shared.restore()
-                if open.isEmpty {
-                    self.newWindow(directory: ProcessInfo.processInfo.environment["TERMY_NEXT_CWD"] ?? NSHomeDirectory())
-                } else {
-                    open.reversed().forEach(self.open)
+                // The host's shared layout (`termy mux layout`) wins; the
+                // app's own saved layout is for a host that has none yet.
+                if let multiplexer = SessionHost.shared.multiplexer, let layout = HostLayoutSync.shared.attach(multiplexer) {
+                    SessionHost.shared.closeExitedPanes()
+                    HostLayoutSync.shared.apply(layout)
+                    SessionHost.shared.adoptUnlistedPanes()
                 }
+                if self.controllers.isEmpty {
+                    let open = SessionHost.shared.restore()
+                    if open.isEmpty {
+                        self.newWindow(directory: ProcessInfo.processInfo.environment["TERMY_NEXT_CWD"] ?? NSHomeDirectory())
+                    } else {
+                        open.reversed().forEach { self.open($0) }
+                    }
+                }
+                HostLayoutSync.shared.scheduleWrite()
             case .failure(let error):
                 // Say why it failed rather than quietly run shells in the app.
                 let alert = NSAlert()
@@ -86,6 +97,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Quitting detaches: every program keeps running in the session host,
     /// and the next launch attaches to it again.
     func applicationWillTerminate(_ notification: Notification) {
+        HostLayoutSync.shared.isQuitting = true
+        HostLayoutSync.shared.writeNow()
         SessionHost.shared.save()
         for session in Workspace.shared.sessions {
             session.tabs.forEach { $0.allPanes.forEach { $0.stop() } }
@@ -114,7 +127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
-    func open(_ session: TerminalSessionGroup) {
+    @discardableResult
+    func open(_ session: TerminalSessionGroup) -> WindowController? {
         let controller = WindowController(session: session)
         controllers.append(controller)
         if let frame = keyController?.window?.frame, controllers.count > 1 {
@@ -122,6 +136,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+        return controller
     }
 
     @discardableResult
@@ -148,6 +163,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    /// Takes a tab out of whichever session holds it, in a window or not.
+    func detachTab(_ tab: TerminalTab) {
+        guard let session = Workspace.shared.sessions.first(where: { $0.tabs.contains { $0 === tab } }) else { return }
+        if let controller = controllers.first(where: { $0.session === session }) {
+            controller.detachTabForDrop(tab)
+        } else {
+            session.remove(tab)
+            if session.tabs.isEmpty { Workspace.shared.remove(session) }
+        }
+    }
+
+    /// Opens a tab dropped outside every window in a window of its own.
+    func moveTabToNewWindow(_ tab: TerminalTab, at point: NSPoint) {
+        // The only tab of a window is already a window of its own: move it.
+        if let owner = controllers.first(where: { $0.session.tabs.count == 1 && $0.session.tabs[0] === tab }), let window = owner.window {
+            window.setFrameTopLeftPoint(NSPoint(x: point.x - 40, y: point.y + 14))
+            return
+        }
+        detachTab(tab)
+        let name = Workspace.shared.newSessionName(near: tab.focusedPane?.directory)
+        guard let controller = openWindow(withTab: tab, name: name), let window = controller.window else { return }
+        window.setFrameTopLeftPoint(NSPoint(x: point.x - 40, y: point.y + 14))
+        tab.focusedPane?.focus()
+    }
+
     /// Opens a pane dropped outside every window in a window of its own,
     /// with its top-left corner near the drop point.
     func movePaneToNewWindow(_ pane: PaneView, at point: NSPoint) {
@@ -164,6 +204,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         window.setFrameTopLeftPoint(NSPoint(x: point.x - 40, y: point.y + 14))
         Motion.appear(window.contentView ?? NSView(), scale: 0.96, duration: 0.2)
         pane.focus()
+    }
+
+    /// Brings a pane to the front, such as from its notification: its
+    /// window, session and tab, opening a window when none shows it.
+    func revealPane(_ id: UUID) {
+        for session in Workspace.shared.sessions {
+            guard let tab = session.tabs.first(where: { $0.panes[id] != nil }), let pane = tab.panes[id] else { continue }
+            let controller = controllers.first { $0.session === session } ?? keyController ?? open(session)
+            NSApp.activate(ignoringOtherApps: true)
+            controller?.window?.makeKeyAndOrderFront(nil)
+            controller?.reveal(session: session, tab: tab, pane: pane)
+            return
+        }
     }
 
     func windowClosed(_ controller: WindowController) {
@@ -227,6 +280,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         SessionHost.shared.connect { result in
             switch result {
             case .success:
+                if let multiplexer = SessionHost.shared.multiplexer { _ = HostLayoutSync.shared.attach(multiplexer) }
                 Preferences.shared.usesSessionHost = true
                 completion?(nil)
             case .failure(let error):
@@ -293,6 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         for session in Workspace.shared.sessions {
             for tab in session.tabs where tab.isEmpty { session.remove(tab) }
         }
+        if let multiplexer = SessionHost.shared.multiplexer { _ = HostLayoutSync.shared.attach(multiplexer) }
         SessionHost.shared.finishRestart()
         controllers.forEach { $0.showRestartedPanes() }
         Workspace.shared.changed()

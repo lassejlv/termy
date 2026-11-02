@@ -16,15 +16,36 @@ Without `just`: `../sdk/swift/scripts/build-libtermy.sh && swift run TermyNext`.
 
 ## Sessions outlive the app
 
-Termy Next always runs its shells in a Termy session host (the multiplexer
-behind `termy mux`), in its own directory
+Termy Next runs its shells in a Termy session host (the multiplexer behind
+`termy mux`), in its own directory
 `~/Library/Application Support/TermyNext/multiplexer`. Quitting detaches:
 every program keeps running, and the next launch reattaches to them in the
-same sessions, tabs and splits (saved in `layout.json` next to it). Closing a
-pane, tab or session ends its programs; closing a window only detaches its
-session, which stays in ⌘K. If the host can't start, the app says why instead
-of running shells itself. `termy mux` inside a pane reaches this host through
-`TERMY_MUX_DIR`.
+same windows, sessions, tabs and splits. Closing a pane, tab or session ends
+its programs; closing a window only detaches its session, which stays in ⌘K.
+The session host can be turned off in Settings (new panes then run in the
+app) and restarted from there or the app menu.
+
+## termy mux
+
+The host's shared layout is Termy Next's layout: each window is a host
+window, each session a workspace, and tabs, splits, titles, focus and font
+zoom match. Changes in the app are written to the host, and `termy mux`
+changes show up live:
+
+```sh
+termy mux layout                         # what is on screen
+termy mux create --window <id>           # a new tab in that window
+termy mux split <pane> --axis vertical   # split a pane
+termy mux tab <pane> rename build        # rename its tab
+termy mux window <id> select-workspace 1 # switch the window's session
+termy mux send <pane> "make" --enter     # type into a pane
+termy mux close <pane>                   # end a pane
+```
+
+Inside a Termy Next pane `termy mux` finds the host through `TERMY_MUX_DIR`;
+elsewhere pass `--session-dir ~/Library/Application\ Support/TermyNext/multiplexer`.
+Floating panes are stored as splits and float again when Termy Next shows
+them. Panes running in the app (session host off) are not in the layout.
 
 ## Model
 

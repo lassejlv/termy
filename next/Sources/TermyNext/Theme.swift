@@ -41,6 +41,31 @@ final class Preferences {
         set { defaults.set(newValue, forKey: "usesSessionHost"); changed() }
     }
 
+    // Notifications (OSC 7501). These don't restyle windows, so setting
+    // them posts no change.
+    private func flag(_ key: String) -> Bool { defaults.object(forKey: key) as? Bool ?? true }
+    /// Desktop notifications for program status at all.
+    var notificationsEnabled: Bool {
+        get { flag("notificationsEnabled") }
+        set { defaults.set(newValue, forKey: "notificationsEnabled") }
+    }
+    var notifyWhenBlocked: Bool {
+        get { flag("notifyWhenBlocked") }
+        set { defaults.set(newValue, forKey: "notifyWhenBlocked") }
+    }
+    var notifyWhenDone: Bool {
+        get { flag("notifyWhenDone") }
+        set { defaults.set(newValue, forKey: "notifyWhenDone") }
+    }
+    var notifyWhenFailed: Bool {
+        get { flag("notifyWhenFailed") }
+        set { defaults.set(newValue, forKey: "notifyWhenFailed") }
+    }
+    var notificationSound: Bool {
+        get { flag("notificationSound") }
+        set { defaults.set(newValue, forKey: "notificationSound") }
+    }
+
     private func changed() {
         NotificationCenter.default.post(name: Self.didChange, object: nil)
     }

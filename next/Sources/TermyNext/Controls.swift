@@ -147,6 +147,11 @@ enum ProgramIcon {
     /// (Claude Code, Codex…), else a dark rounded tile with a glyph.
     @MainActor
     static func draw(program: String?, executable: String? = nil, in rect: NSRect, theme: Theme) {
+        // Agents wear their own logo (svgl.app), in its light or dark version.
+        if let logo = ProgramLogos.image(for: program, dark: theme.isDark) {
+            ProgramLogos.draw(logo, in: rect)
+            return
+        }
         if let image = AppIcons.icon(program: program, executable: executable) {
             // App icons leave a margin around their shape; grow the rect so the shape fills it.
             let size = rect.width * 1.24
@@ -187,7 +192,9 @@ enum AppIcons {
 
     static let displayNames: [String: String] = [
         "claude": "Claude Code", "codex": "Codex", "cursor-agent": "Cursor Agent", "opencode": "OpenCode",
-        "gemini": "Gemini CLI", "copilot": "Copilot", "aider": "Aider", "pi": "Pi", "amp": "Amp",
+        "gemini": "Gemini CLI", "copilot": "GitHub Copilot", "aider": "Aider", "pi": "Pi", "amp": "Amp",
+        "grok": "Grok", "qwen": "Qwen Code", "kimi": "Kimi", "vibe": "Mistral Vibe", "ollama": "Ollama",
+        "kilo": "Kilo Code", "kilocode": "Kilo Code", "cursor": "Cursor", "deepseek": "DeepSeek", "windsurf": "Windsurf",
     ]
 
     /// A readable name for an agent ("Claude Code" for `claude`), or the program as is.

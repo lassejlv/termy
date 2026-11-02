@@ -140,6 +140,7 @@ final class SessionHost {
 
     /// Saves soon, coalescing bursts of changes.
     func scheduleSave() {
+        HostLayoutSync.shared.scheduleWrite()
         guard !saveScheduled else { return }
         saveScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -172,6 +173,27 @@ final class SessionHost {
         } catch {
             NSLog("Termy Next: cannot save layout: \(error)")
         }
+    }
+
+    /// Closes panes whose program exited while no window showed them.
+    func closeExitedPanes() {
+        guard let multiplexer, let panes = try? multiplexer.panes() else { return }
+        for pane in panes where pane.exited { try? multiplexer.close(paneID: pane.id) }
+    }
+
+    /// Live panes the shared layout doesn't list, such as ones from before
+    /// it existed, open as tabs in the front window's session.
+    func adoptUnlistedPanes() {
+        guard let multiplexer, let panes = try? multiplexer.panes() else { return }
+        let shown = Set(Workspace.shared.sessions.flatMap(\.tabs).flatMap(\.allPanes).compactMap(\.paneID))
+        guard let session = AppDelegate.shared.controllersFrontToBack.first?.session ?? Workspace.shared.sessions.first else { return }
+        var adopted = false
+        for pane in panes where !pane.exited && !shown.contains(pane.id) {
+            guard let view = try? PaneView(attaching: pane.id) else { continue }
+            session.append(TerminalTab(pane: view), select: false)
+            adopted = true
+        }
+        if adopted { Workspace.shared.changed() }
     }
 
     /// Rebuilds the saved sessions from the host's live panes. Panes whose

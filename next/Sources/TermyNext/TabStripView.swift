@@ -8,6 +8,9 @@ protocol TabNavigator: AnyObject {
     func closeTab(at index: Int)
     func moveTab(from source: Int, to destination: Int)
     func run(_ command: Command)
+    /// Shows a tab other than `tab`, preferring the one at `index`, so a tab
+    /// being dragged out can be dropped into it.
+    func showOtherTab(than tab: TerminalTab, preferring index: Int?)
 }
 
 /// Tabs in the titlebar (Tab Style: Above): a rounded track holding a capsule
@@ -22,6 +25,9 @@ final class TabStripView: GlassPanel {
     private var dragIndex: Int?
     private var dragStart: NSPoint = .zero
     private var dragOffset: CGFloat = 0
+    /// The tab that was showing before the press, to go back to when the
+    /// pressed tab is pulled out to be dropped elsewhere.
+    private var selectionBeforePress: Int?
     /// The pill under the selected tab: glass in Liquid, a filled capsule in Classic.
     private var pill: NSView?
     private var pillIsGlass = false
@@ -273,6 +279,7 @@ final class TabStripView: GlassPanel {
             navigator?.run(.renameTab)
             return
         }
+        selectionBeforePress = navigator?.session.selectedIndex
         navigator?.selectTab(at: index)
         dragIndex = index
         dragStart = point
@@ -280,13 +287,35 @@ final class TabStripView: GlassPanel {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard dragIndex != nil else { return }
-        dragOffset = convert(event.locationInWindow, from: nil).x - dragStart.x
+        if let drag = PaneDrag.current { return drag.update(event) }
+        guard let from = dragIndex else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        // Pulled away from the tab bar: the tab lifts out, to be split into
+        // another tab's panes, merged into a tab, or opened in a window.
+        if !bounds.insetBy(dx: -30, dy: -12).contains(point), let tabs = navigator?.session.tabs, tabs.indices.contains(from) {
+            let tab = tabs[from]
+            dragIndex = nil
+            dragOffset = 0
+            positionPill(animated: true)
+            navigator?.showOtherTab(than: tab, preferring: selectionBeforePress)
+            PaneDrag.begin(tab: tab, event: event)
+            PaneDrag.current?.onCancel = { [weak self] in
+                guard let navigator = self?.navigator, let index = navigator.session.tabs.firstIndex(where: { $0 === tab }) else { return }
+                navigator.selectTab(at: index)
+            }
+            PaneDrag.current?.update(event)
+            return
+        }
+        dragOffset = point.x - dragStart.x
         positionPill(animated: false)
         needsDisplay = true
     }
 
     override func mouseUp(with event: NSEvent) {
+        if let drag = PaneDrag.current {
+            drag.finish(event)
+            return
+        }
         defer {
             dragIndex = nil
             dragOffset = 0

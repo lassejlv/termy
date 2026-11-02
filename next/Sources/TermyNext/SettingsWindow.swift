@@ -38,6 +38,11 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private let interfaceControl = NSSegmentedControl(labels: ["Liquid", "Classic"], trackingMode: .selectOne, target: nil, action: nil)
     private let tabPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let paneControl = NSSegmentedControl(labels: ["Comfortable", "Compact"], trackingMode: .selectOne, target: nil, action: nil)
+    private let notifyCheckbox = NSButton(checkboxWithTitle: "Notify me about programs in panes", target: nil, action: nil)
+    private let notifyBlocked = NSButton(checkboxWithTitle: "When one needs attention", target: nil, action: nil)
+    private let notifyDone = NSButton(checkboxWithTitle: "When one finishes", target: nil, action: nil)
+    private let notifyFailed = NSButton(checkboxWithTitle: "When one fails", target: nil, action: nil)
+    private let notifySound = NSButton(checkboxWithTitle: "Play a sound", target: nil, action: nil)
 
     // Appearance
     private let fontPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -172,6 +177,13 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
                 .control("Tabs:", tabPopup),
                 .control("Pane spacing:", paneControl),
                 .note("Compact drops the gaps and headers around panes."),
+                .separator,
+                .control("Notifications:", notifyCheckbox),
+                .control("", notifyBlocked),
+                .control("", notifyDone),
+                .control("", notifyFailed),
+                .control("", notifySound),
+                .note("Programs report their status with OSC 7501, as Claude Code and other agents do. You're notified only about panes you aren't looking at; clicking a notification takes you to the pane."),
             ])
         case .appearance:
             let size = row([sizeField, sizeStepper, NSTextField(labelWithString: "pt")], spacing: 6)
@@ -282,6 +294,10 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         tabPopup.target = self
         tabPopup.action = #selector(tabStyleChanged)
 
+        for checkbox in [notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound] {
+            checkbox.target = self
+            checkbox.action = #selector(notificationsChanged(_:))
+        }
         paneControl.target = self
         paneControl.action = #selector(paneStyleChanged)
 
@@ -331,6 +347,12 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         interfaceControl.selectedSegment = prefs.interfaceStyle == .liquid ? 0 : 1
         tabPopup.selectItem(at: [TabStyle.above, .left, .right].firstIndex(of: prefs.tabStyle) ?? 0)
         paneControl.selectedSegment = prefs.paneStyle == .comfortable ? 0 : 1
+        notifyCheckbox.state = prefs.notificationsEnabled ? .on : .off
+        notifyBlocked.state = prefs.notifyWhenBlocked ? .on : .off
+        notifyDone.state = prefs.notifyWhenDone ? .on : .off
+        notifyFailed.state = prefs.notifyWhenFailed ? .on : .off
+        notifySound.state = prefs.notificationSound ? .on : .off
+        for option in [notifyBlocked, notifyDone, notifyFailed, notifySound] { option.isEnabled = prefs.notificationsEnabled }
 
         let render = app.renderConfig
         refreshFontMenu(current: render.fontFamily)
@@ -398,6 +420,20 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
 
     @objc private func tabStyleChanged() {
         Preferences.shared.tabStyle = [TabStyle.above, .left, .right][max(0, tabPopup.indexOfSelectedItem)]
+    }
+
+    @objc private func notificationsChanged(_ sender: NSButton) {
+        let prefs = Preferences.shared
+        let on = sender.state == .on
+        switch sender {
+        case notifyCheckbox: prefs.notificationsEnabled = on
+        case notifyBlocked: prefs.notifyWhenBlocked = on
+        case notifyDone: prefs.notifyWhenDone = on
+        case notifyFailed: prefs.notifyWhenFailed = on
+        default: prefs.notificationSound = on
+        }
+        PaneNotifier.shared.updateBadge()
+        refresh()
     }
 
     @objc private func paneStyleChanged() {

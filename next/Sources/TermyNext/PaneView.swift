@@ -306,6 +306,7 @@ final class PaneView: NSView, TerminalViewDelegate {
             seenDone = true
             recomputeActivity()
         }
+        if isFocused { PaneNotifier.shared.paneWasSeen(self) }
         updateShape()
         updateDim()
     }
@@ -418,8 +419,19 @@ final class PaneView: NSView, TerminalViewDelegate {
         return parts.joined(separator: " · ")
     }
 
+    /// The state the program last reported, for notifying on changes.
+    private var lastReported: PaneActivity = .idle
+    private let attachedAt = Date()
+
     private func recomputeActivity() {
         let reported = status.map { PaneActivity($0.state) } ?? .idle
+        if reported != lastReported {
+            // A pane that just attached replays its status; that isn't news.
+            if Date().timeIntervalSince(attachedAt) > 2 {
+                PaneNotifier.shared.pane(self, changedFrom: lastReported, to: reported)
+            }
+            lastReported = reported
+        }
         // "done" means the user hasn't seen the result yet.
         if reported != .done { seenDone = false } else if isFocused, window?.isKeyWindow == true { seenDone = true }
         let new: PaneActivity = reported == .done && seenDone ? .idle : reported
@@ -446,6 +458,24 @@ final class PaneView: NSView, TerminalViewDelegate {
     }
 
     func terminalView(_ view: TerminalView, shouldOpen url: URL) -> Bool { true }
+
+    /// A file, image or text dragged over the pane: the pane lights up and
+    /// says what dropping does.
+    func terminalView(_ view: TerminalView, isDropTarget: Bool) {
+        if isDropTarget {
+            guard dropHighlight == nil else { return }
+            let highlight = DropHighlightView(frame: terminal.frame)
+            highlight.autoresizingMask = [.width, .height]
+            clip.addSubview(highlight, positioned: .above, relativeTo: terminal)
+            dropHighlight = highlight
+            Motion.appear(highlight, scale: 0.98, duration: 0.14)
+        } else if let highlight = dropHighlight {
+            dropHighlight = nil
+            Motion.disappear(highlight, scale: 1, duration: 0.14) { highlight.removeFromSuperview() }
+        }
+    }
+
+    private var dropHighlight: DropHighlightView?
 
     func terminalView(_ view: TerminalView, didCopy text: String) {
         CopyShine.play(over: view.selectionRects, of: view)
@@ -586,5 +616,42 @@ final class PaneHeaderView: NSView {
     override func mouseUp(with event: NSEvent) {
         dragOrigin = nil
         PaneDrag.current?.finish(event)
+    }
+}
+
+/// The pane's look while something is dragged over it: a tinted edge and a
+/// label saying the drop types a path.
+private final class DropHighlightView: NSView {
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let theme = AppConfig.shared.theme
+        theme.selectionFill.withAlphaComponent(0.08).setFill()
+        bounds.fill()
+        let edge = NSBezierPath(roundedRect: bounds.insetBy(dx: 3, dy: 3), xRadius: 8, yRadius: 8)
+        edge.lineWidth = 2
+        let dash: [CGFloat] = [6, 4]
+        edge.setLineDash(dash, count: dash.count, phase: 0)
+        theme.selectionFill.withAlphaComponent(0.8).setStroke()
+        edge.stroke()
+
+        let text = NSAttributedString(string: "Drop to insert the path", attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: theme.selectionText,
+        ])
+        let size = text.size()
+        let pill = NSRect(x: (bounds.width - size.width) / 2 - 12, y: (bounds.height - size.height) / 2 - 6,
+                          width: size.width + 24, height: size.height + 12)
+        theme.selectionFill.setFill()
+        NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
+        text.draw(at: NSPoint(x: pill.minX + 12, y: pill.minY + 6))
     }
 }

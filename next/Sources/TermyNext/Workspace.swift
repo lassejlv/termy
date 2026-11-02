@@ -37,6 +37,8 @@ final class TerminalTab {
     }
 
     var focusedPane: PaneView? { panes[focusedID] }
+    /// Whether any pane runs in the session host.
+    var isHosted: Bool { panes.values.contains { $0.isHosted } }
     var allPanes: [PaneView] { (tree.leaves + floating.keys.sorted { $0.uuidString < $1.uuidString }).compactMap { panes[$0] } }
     var isEmpty: Bool { panes.isEmpty }
 
@@ -129,6 +131,35 @@ final class TerminalTab {
         return previous
     }
 
+    /// Brings every pane of `other` into this tab, its layout placed next to
+    /// `anchor` as one block, and focuses the pane that was focused there.
+    func merge(_ other: TerminalTab, nextTo anchor: UUID, direction: Direction) {
+        for pane in other.allPanes { panes[pane.id] = pane }
+        floating.merge(other.floating) { mine, _ in mine }
+        if tree.contains(anchor) {
+            tree = tree.inserting(other.tree, at: anchor, direction: direction)
+        } else if let last = tree.leaves.last {
+            tree = tree.inserting(other.tree, at: last, direction: direction)
+        } else {
+            tree = other.tree
+        }
+        zoomedID = nil
+        setFocus(other.focusedID)
+    }
+
+    /// Takes on a layout from the session host: `tree` over `panes`, with
+    /// the floating ones on top. Focus stays where it was when that pane is
+    /// still here.
+    func adopt(tree: SplitTree<UUID>, panes newPanes: [PaneView], floating newFloating: [UUID: CGRect], focus: UUID?, zoomed: UUID?) {
+        panes = Dictionary(uniqueKeysWithValues: newPanes.map { ($0.id, $0) })
+        for pane in newPanes { pane.isFloating = newFloating[pane.id] != nil }
+        self.tree = tree
+        floating = newFloating
+        focusHistory.removeAll { panes[$0] == nil }
+        if let focus, panes[focus] != nil { setFocus(focus) } else if panes[focusedID] == nil { focusedID = tree.leaves.first ?? focusedID }
+        zoomedID = zoomed.flatMap { panes[$0] != nil ? $0 : nil }
+    }
+
     func toggleFloating(_ id: UUID) {
         guard let pane = panes[id] else { return }
         if floating[id] != nil {
@@ -161,6 +192,9 @@ final class TerminalSessionGroup {
     private(set) var tabs: [TerminalTab] = []
     var selectedIndex = 0
     let created = Date()
+    /// The session host window this session belongs to (`termy mux layout`):
+    /// the window showing it, or the one that last did.
+    var hostWindowID: String?
     var lastActive = Date()
 
     init(name: String) {
@@ -178,6 +212,13 @@ final class TerminalSessionGroup {
         let index = min(selectedIndex + 1, tabs.count)
         tabs.insert(tab, at: tabs.isEmpty ? 0 : index)
         if select { selectedIndex = tabs.firstIndex { $0 === tab } ?? 0 }
+    }
+
+    /// Takes on the session host's tabs for this session.
+    func adopt(tabs newTabs: [TerminalTab], selected: Int) {
+        for tab in newTabs { tab.session = self }
+        tabs = newTabs
+        selectedIndex = min(max(selected, 0), max(0, tabs.count - 1))
     }
 
     func remove(_ tab: TerminalTab) {
@@ -236,6 +277,13 @@ final class Workspace {
         session.name = Naming.uniqued(session.name, taken: Set(sessions.map(\.name)))
         sessions.append(session)
         changed()
+    }
+
+    /// Takes on the session host's sessions, in its order, keeping sessions
+    /// it doesn't know (those of in-app panes) after them.
+    func adopt(sessions newSessions: [TerminalSessionGroup]) {
+        let rest = sessions.filter { old in !newSessions.contains { $0 === old } && old.tabs.contains { !$0.isHosted } }
+        sessions = newSessions + rest
     }
 
     func remove(_ session: TerminalSessionGroup) {

@@ -263,7 +263,32 @@ final class SidebarView: GlassPanel {
         needsDisplay = true
     }
 
+    /// A tab row being pressed, which lifts out when dragged.
+    private var press: (tab: TerminalTab, point: NSPoint, selectionBefore: Int?)?
+
+    override func mouseDragged(with event: NSEvent) {
+        if let drag = PaneDrag.current { return drag.update(event) }
+        guard let press else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard hypot(point.x - press.point.x, point.y - press.point.y) > 6 else { return }
+        self.press = nil
+        navigator?.showOtherTab(than: press.tab, preferring: press.selectionBefore)
+        let tab = press.tab
+        PaneDrag.begin(tab: tab, event: event)
+        PaneDrag.current?.onCancel = { [weak self] in
+            guard let navigator = self?.navigator, let index = navigator.session.tabs.firstIndex(where: { $0 === tab }) else { return }
+            navigator.selectTab(at: index)
+        }
+        PaneDrag.current?.update(event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        press = nil
+        PaneDrag.current?.finish(event)
+    }
+
     override func mouseDown(with event: NSEvent) {
+        press = nil
         guard let index = rowIndex(at: convert(event.locationInWindow, from: nil)) else { return }
         switch rows[index].0 {
         case .host:
@@ -275,7 +300,8 @@ final class SidebarView: GlassPanel {
             } else {
                 onSelectSession?(session)
             }
-        case .tab(_, let i):
+        case .tab(let tab, let i):
+            press = (tab, convert(event.locationInWindow, from: nil), navigator?.session.selectedIndex)
             navigator?.selectTab(at: i)
             if event.clickCount == 2 { navigator?.run(.renameTab) }
         }

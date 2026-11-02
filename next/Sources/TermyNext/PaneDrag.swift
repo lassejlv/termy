@@ -44,6 +44,12 @@ final class PaneDrag {
     private(set) static var current: PaneDrag?
 
     let pane: PaneView
+    /// Set when a whole tab of several panes is being dragged; `pane` is then
+    /// its focused pane, shown on the card.
+    let tab: TerminalTab?
+    /// Runs when the drag ends without moving anything, such as to show
+    /// again a tab that was pulled out of the tab bar.
+    var onCancel: (() -> Void)?
     private let ghost: NSPanel
     private let card: PaneDragCard
     private let grab: NSPoint
@@ -59,16 +65,28 @@ final class PaneDrag {
     /// Starts dragging `pane`; `event` is the drag that crossed the threshold.
     static func begin(pane: PaneView, event: NSEvent) {
         guard current == nil, pane.window != nil else { return }
-        current = PaneDrag(pane: pane, event: event)
+        current = PaneDrag(pane: pane, tab: nil, event: event)
     }
 
-    private init(pane: PaneView, event: NSEvent) {
+    /// Starts dragging a tab pulled out of the tab bar or sidebar. A tab with
+    /// one pane drags just like that pane.
+    static func begin(tab: TerminalTab, event: NSEvent) {
+        guard current == nil, let pane = tab.focusedPane ?? tab.allPanes.first else { return }
+        current = PaneDrag(pane: pane, tab: tab.allPanes.count > 1 ? tab : nil, event: event)
+    }
+
+    private init(pane: PaneView, tab: TerminalTab?, event: NSEvent) {
         self.pane = pane
-        card = PaneDragCard(pane: pane)
+        self.tab = tab
+        card = PaneDragCard(pane: pane, title: tab?.title, badge: tab.map { "\($0.allPanes.count) panes" })
         let size = card.frame.size
         // Hold the card where the header was grabbed, scaled to the card.
-        let inPane = pane.convert(event.locationInWindow, from: nil)
-        grab = NSPoint(x: min(max(inPane.x / max(pane.bounds.width, 1), 0.1), 0.9) * size.width, y: 16)
+        if tab == nil, pane.window != nil {
+            let inPane = pane.convert(event.locationInWindow, from: nil)
+            grab = NSPoint(x: min(max(inPane.x / max(pane.bounds.width, 1), 0.1), 0.9) * size.width, y: 16)
+        } else {
+            grab = NSPoint(x: size.width / 2, y: 16)
+        }
         ghost = NSPanel(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless, .nonactivatingPanel],
                         backing: .buffered, defer: false)
         ghost.isOpaque = false
@@ -83,9 +101,11 @@ final class PaneDrag {
         move(to: NSEvent.mouseLocation)
         ghost.orderFrontRegardless()
         Motion.appear(card, scale: 0.92, duration: 0.16)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
-            pane.animator().alphaValue = 0.35
+        if tab == nil, pane.window != nil {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.15
+                pane.animator().alphaValue = 0.35
+            }
         }
         NSCursor.closedHand.push()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -153,7 +173,7 @@ final class PaneDrag {
         windows.removeAll { $0.window?.isVisible != true }
         for controller in windows {
             guard let window = controller.window, window.isVisible, window.frame.contains(point) else { continue }
-            return controller.dropTarget(atScreenPoint: point, dragging: pane).map { (controller, $0) }
+            return controller.dropTarget(atScreenPoint: point, dragging: pane, tab: tab).map { (controller, $0) }
         }
         let overOtherWindow = NSApp.windows.contains { $0.isVisible && $0 !== ghost && $0.frame.contains(point) && $0.level == .normal }
         return overOtherWindow ? nil : (nil, .newWindow)
@@ -164,17 +184,29 @@ final class PaneDrag {
     func finish(_ event: NSEvent) {
         let landing = target
         end()
-        guard let landing else { return restorePane(animated: true) }
+        guard let landing else {
+            onCancel?()
+            return restorePane(animated: true)
+        }
         restorePane(animated: false)
         if case .newWindow = landing.drop {
-            AppDelegate.shared.movePaneToNewWindow(pane, at: NSEvent.mouseLocation)
+            if let tab {
+                AppDelegate.shared.moveTabToNewWindow(tab, at: NSEvent.mouseLocation)
+            } else {
+                AppDelegate.shared.movePaneToNewWindow(pane, at: NSEvent.mouseLocation)
+            }
         } else if let controller = landing.controller {
-            controller.acceptDrop(pane, at: landing.drop)
+            if let tab {
+                controller.acceptTabDrop(tab, at: landing.drop)
+            } else {
+                controller.acceptDrop(pane, at: landing.drop)
+            }
         }
     }
 
     func cancel() {
         end()
+        onCancel?()
         restorePane(animated: true)
     }
 
@@ -211,13 +243,14 @@ final class PaneDrag {
 final class PaneDragCard: NSView {
     var hint: String? { didSet { if hint != oldValue { needsDisplay = true } } }
     private let title: String
+    private let badge: String?
     private let program: String?
     private let executable: String?
     private let lines: [String]
 
-    init(pane: PaneView) {
-        let tab = pane.label
-        title = tab.name
+    init(pane: PaneView, title: String? = nil, badge: String? = nil) {
+        self.title = title ?? pane.label.name
+        self.badge = badge
         program = pane.foregroundProgram
         executable = pane.foregroundExecutable
         let frame = pane.terminal.session.frame
@@ -250,7 +283,19 @@ final class PaneDragCard: NSView {
         let titleText = NSAttributedString(string: title, attributes: [
             .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: theme.textPrimary,
         ])
-        titleText.draw(with: NSRect(x: 34, y: 10, width: bounds.width - 46, height: 16),
+        var titleWidth = bounds.width - 46
+        if let badge {
+            let text = NSAttributedString(string: badge, attributes: [
+                .font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: theme.textSecondary,
+            ])
+            let size = text.size()
+            let pill = NSRect(x: bounds.width - size.width - 24, y: 8, width: size.width + 12, height: size.height + 4)
+            theme.selected.setFill()
+            NSBezierPath(roundedRect: pill, xRadius: pill.height / 2, yRadius: pill.height / 2).fill()
+            text.draw(at: NSPoint(x: pill.minX + 6, y: pill.minY + 2))
+            titleWidth = pill.minX - 40
+        }
+        titleText.draw(with: NSRect(x: 34, y: 10, width: titleWidth, height: 16),
                        options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
         theme.paneStroke.setFill()
         NSRect(x: 1, y: 33, width: bounds.width - 2, height: 1).fill()

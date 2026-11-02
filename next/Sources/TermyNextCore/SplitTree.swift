@@ -47,6 +47,23 @@ public indirect enum SplitTree<ID: Hashable & Sendable>: Hashable, Sendable {
         }
     }
 
+    /// Puts a whole layout next to `anchor` on the side `direction` names,
+    /// keeping that layout's own splits intact.
+    public func inserting(_ subtree: SplitTree, at anchor: ID, direction: Direction, ratio: CGFloat = 0.5) -> SplitTree {
+        switch self {
+        case .leaf(let id) where id == anchor:
+            let pair: (SplitTree, SplitTree) = direction.isTrailing ? (self, subtree) : (subtree, self)
+            return .split(axis: direction.axis, ratio: ratio, first: pair.0, second: pair.1)
+        case .leaf:
+            return self
+        case .split(let axis, let r, let first, let second):
+            return .split(
+                axis: axis, ratio: r,
+                first: first.inserting(subtree, at: anchor, direction: direction, ratio: ratio),
+                second: second.inserting(subtree, at: anchor, direction: direction, ratio: ratio))
+        }
+    }
+
     /// Removes `id`; its sibling takes the freed space. Nil when the tree was only `id`.
     public func removing(_ id: ID) -> SplitTree? {
         switch self {
