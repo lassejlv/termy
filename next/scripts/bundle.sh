@@ -65,7 +65,7 @@ while read -r rpath; do
 done < <(otool -l "$app/Contents/MacOS/TermyNext" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }')
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$app/Contents/MacOS/TermyNext" 2>/dev/null || true
 
-icon="$next_dir/../assets/termy.icns"
+icon="$next_dir/Resources/icon/TermyNext.icns"
 if [[ -f "$icon" ]]; then
   cp "$icon" "$app/Contents/Resources/AppIcon.icns"
 fi
