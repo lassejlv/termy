@@ -1,5 +1,6 @@
 ---
-import { Button } from '@/components/ui/button'
+import { buttonVariants } from '@/components/ui/button'
+import { images } from '@/lib/assets'
 
 const links = [
   { href: '#sessions', label: 'Sessions' },
@@ -9,25 +10,23 @@ const links = [
 ]
 ---
 
-<header class="relative z-20 flex items-center justify-between px-6 py-6 md:px-16 md:py-6">
-  <a href="/" class="flex items-center gap-3 rounded-lg">
-    <img src="/images/icon-256.png" alt="" width="28" height="28" class="size-7" />
+<header class="relative z-20 flex h-[72px] items-center justify-between px-6 md:px-16">
+  <a href="/" class="flex items-center gap-2.5 rounded-lg">
+    <img src={images.icon} alt="" width="28" height="28" class="size-7" />
     <span class="text-[15px] font-semibold tracking-[-0.01em]">Termy Next</span>
   </a>
-  <nav class="flex items-center gap-8" aria-label="Main">
-    <ul class="hidden items-center gap-8 md:flex">
+  <nav class="flex items-center gap-6" aria-label="Main">
+    <ul class="hidden items-center gap-6 md:flex">
       {
         links.map((link) => (
           <li>
-            <a href={link.href} class="text-[14px] text-soft transition-colors hover:text-foreground">
+            <a href={link.href} class="text-[14px] font-medium text-muted-foreground transition-colors hover:text-foreground">
               {link.label}
             </a>
           </li>
         ))
       }
     </ul>
-    <Button asChild variant="light" size="sm">
-      <a href="#download">Download</a>
-    </Button>
+    <a href="#download" class={buttonVariants({ variant: 'secondary', size: 'sm' })}>Download</a>
   </nav>
 </header>

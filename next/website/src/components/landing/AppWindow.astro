@@ -1,4 +1,5 @@
 ---
+import { logos } from '@/lib/assets'
 import WorkingDots from './WorkingDots.astro'
 
 // A Termy Next window as it looks mid-afternoon: Claude Code working in one
@@ -19,19 +20,19 @@ import WorkingDots from './WorkingDots.astro'
     </div>
     <div class="flex items-center gap-0.5 rounded-full bg-white/4 p-[3px]">
       <div class="flex h-[30px] w-[210px] items-center gap-2 rounded-full bg-white/11 pr-3 pl-[9px] shadow-[inset_0_1px_0_rgb(255_255_255/8%)]">
-        <img src="/logos/claude.svg" alt="" class="size-[15px]" />
+        <img src={logos.claude} alt="" class="size-[15px]" />
         <span class="grow truncate text-[13px] font-medium">Splitting PaneView</span>
         <WorkingDots />
       </div>
       <div class="flex h-[30px] w-[170px] items-center gap-2 rounded-full pr-3 pl-[9px]">
         <span class="relative size-[15px]">
-          <img src="/logos/codex-dark.svg" alt="" class="size-[15px]" />
+          <img src={logos.codex} alt="" class="size-[15px]" />
           <span class="absolute -top-[3px] -right-[3px] size-2 rounded-full border-[1.5px] border-[#16161e] bg-blocked"></span>
         </span>
         <span class="text-[13px] text-[#a9b1d6]">Codex</span>
       </div>
       <div class="flex h-[30px] w-[170px] items-center gap-2 rounded-full pr-3 pl-[9px]">
-        <img src="/logos/neovim.svg" alt="" class="h-[15px] w-[14px]" />
+        <img src={logos.neovim} alt="" class="h-[15px] w-[14px]" />
         <span class="text-[13px] text-[#a9b1d6]">nvim ~/notes</span>
       </div>
     </div>
@@ -45,16 +46,16 @@ import WorkingDots from './WorkingDots.astro'
         <WorkingDots />
       </div>
       <div class="flex h-7 items-center gap-2 rounded-[9px] bg-white/9 pr-2 pl-[18px]">
-        <img src="/logos/claude.svg" alt="" class="size-3.5" />
+        <img src={logos.claude} alt="" class="size-3.5" />
         <span class="text-[13px]">Claude Code</span>
       </div>
       <div class="flex h-7 items-center gap-2 pr-2 pl-[18px]">
-        <img src="/logos/codex-dark.svg" alt="" class="size-3.5" />
+        <img src={logos.codex} alt="" class="size-3.5" />
         <span class="grow text-[13px] text-[#a9b1d6]">Codex</span>
         <span class="size-[7px] rounded-full bg-blocked"></span>
       </div>
       <div class="flex h-7 items-center gap-2 pr-2 pl-[18px]">
-        <img src="/logos/neovim.svg" alt="" class="h-3.5 w-[13px]" />
+        <img src={logos.neovim} alt="" class="h-3.5 w-[13px]" />
         <span class="text-[13px] text-[#a9b1d6]">nvim ~/notes</span>
       </div>
       <div class="mt-2.5 flex h-7 items-center justify-between px-2">
@@ -70,7 +71,7 @@ import WorkingDots from './WorkingDots.astro'
     <div class="flex w-[420px] shrink-0 flex-col gap-2">
       <div class="flex h-[300px] shrink-0 flex-col overflow-hidden rounded-xl border border-white/7 bg-terminal">
         <div class="flex h-8 shrink-0 items-center gap-2 bg-white/3 px-3">
-          <img src="/logos/claude.svg" alt="" class="size-[13px]" />
+          <img src={logos.claude} alt="" class="size-[13px]" />
           <span class="text-xs font-medium text-[#c0caf5]">Claude Code</span>
           <span class="text-xs text-faint">~/Dev/termy</span>
         </div>
@@ -87,7 +88,7 @@ import WorkingDots from './WorkingDots.astro'
       </div>
       <div class="flex grow flex-col overflow-hidden rounded-xl border border-blocked/45 bg-terminal">
         <div class="flex h-8 shrink-0 items-center gap-2 bg-white/3 px-3">
-          <img src="/logos/codex-dark.svg" alt="" class="size-[13px]" />
+          <img src={logos.codex} alt="" class="size-[13px]" />
           <span class="text-xs font-medium text-[#c0caf5]">Codex</span>
           <span class="grow text-xs text-faint">~/Dev/termy</span>
           <span class="text-[11px] font-semibold text-[#7dcfff]">Needs permission</span>

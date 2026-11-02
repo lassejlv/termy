@@ -1,5 +1,6 @@
 ---
-import { Button } from '@/components/ui/button'
+import { buttonVariants } from '@/components/ui/button'
+import { images } from '@/lib/assets'
 import { formatDate, formatSize, type Release } from '@/lib/release'
 import AppleLogo from './AppleLogo.astro'
 
@@ -8,72 +9,47 @@ interface Props {
 }
 const { release } = Astro.props
 
-const secondary = [
-  release.zip && { label: 'Zip archive', file: release.zip, action: 'Download .zip' },
-  release.checksums && { label: 'SHA-256 checksums', file: release.checksums, action: 'View checksums' },
-].filter((row) => !!row)
+const box = 'flex flex-col gap-3 rounded-[10px] bg-white/[0.04] px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between'
+const link = 'text-soft underline decoration-white/25 underline-offset-4 transition-colors hover:text-foreground hover:decoration-white/70'
 ---
 
 <section id="download" class="bg-panel">
-  <div class="mx-auto flex max-w-[1440px] flex-col gap-12 px-6 py-20 md:py-24 md:px-16 xl:py-32">
-    <div class="reveal flex flex-col justify-between gap-6 lg:flex-row lg:items-end">
-      <div class="flex items-center gap-4 md:gap-5">
-        <img src="/images/icon-256.png" alt="" width="64" height="64" class="size-11 md:size-12" />
-        <h2 class="text-[26px] leading-[1.15] font-semibold tracking-[-0.02em] md:text-[32px]">Download Termy Next</h2>
-      </div>
-      <p class="max-w-[400px] text-[16px] leading-[1.55] text-soft">
-        Version {release.version}, {release.prerelease ? 'a pre-release' : 'released'} from {formatDate(release.publishedAt)}.
+  <div class="mx-auto flex max-w-[1440px] flex-col gap-10 px-6 py-20 md:px-16 md:py-28 lg:flex-row lg:items-start lg:justify-between lg:gap-20">
+    <div class="reveal flex flex-col items-start gap-5">
+      <img src={images.icon} alt="" width="56" height="56" class="size-14" />
+      <h2 class="text-[24px] leading-[1.2] font-semibold tracking-[-0.02em] text-balance md:text-[28px]">
+        Download Termy Next.<br />
+        <span class="text-shimmer [animation-delay:3.5s]">Free, for any Mac on macOS 14.</span>
+      </h2>
+      <p class="max-w-[420px] text-[15px] leading-[1.65] text-soft">
+        Version {release.version}, {release.prerelease ? 'a pre-release' : 'released'} on {formatDate(release.publishedAt)}.
         Open the disk image and drag Termy Next to Applications.
       </p>
     </div>
 
-    <div class="flex flex-col gap-16 lg:flex-row lg:items-start">
-      <div class="flex flex-col gap-1.5 lg:w-[760px] lg:shrink-0">
-        <div class="flex flex-col gap-5 rounded-[18px] bg-raised p-6 sm:flex-row sm:items-center sm:gap-6 sm:py-6 sm:pr-6 sm:pl-7">
-          <div class="flex min-w-0 grow flex-col gap-1.5">
-            <span class="text-[18px] font-semibold tracking-[-0.01em]">Disk image</span>
-            <span class="truncate text-[14px] text-muted-foreground">{release.dmg.name}</span>
-          </div>
-          <span class="text-[15px] text-soft sm:w-20 sm:text-right">{formatSize(release.dmg.size)}</span>
-          <Button asChild className="sm:w-[180px]">
-            <a href={release.dmg.url}><AppleLogo class="size-4" />Download .dmg</a>
-          </Button>
+    <div class="flex w-full flex-col gap-2 lg:w-[540px] lg:shrink-0">
+      <div class={box}>
+        <div class="flex flex-col gap-0.5">
+          <span class="text-[13px] font-medium">Termy Next for Mac</span>
+          <span class="text-[12px] text-faint">Apple Silicon and Intel in one app, {formatSize(release.dmg.size)}</span>
         </div>
-        {
-          secondary.map((row) => (
-            <div class="flex flex-col gap-4 rounded-[18px] bg-muted p-6 sm:flex-row sm:items-center sm:gap-6 sm:py-[18px] sm:pr-6 sm:pl-7">
-              <div class="flex min-w-0 grow flex-col gap-1.5">
-                <span class="text-[16px] font-semibold">{row.label}</span>
-                <span class="truncate text-[14px] text-muted-foreground">{row.file.name}</span>
-              </div>
-              <span class="text-[15px] text-soft sm:w-20 sm:text-right">{formatSize(row.file.size)}</span>
-              <Button asChild variant="secondary" className="sm:w-[180px]">
-                <a href={row.file.url}>{row.action}</a>
-              </Button>
-            </div>
-          ))
-        }
-        <p class="pt-3 text-[14px] text-muted-foreground sm:pl-7">
-          Release notes for every version are on <a href={release.notesUrl} class="text-soft underline decoration-white/30 underline-offset-4 hover:decoration-white/80">GitHub Releases</a>.
-        </p>
-      </div>
-
-      <div class="flex grow flex-col gap-10 pt-2">
-        <div class="flex flex-col gap-4">
-          <h3 class="text-[16px] font-semibold">What you need</h3>
-          <ul class="flex flex-col gap-3 text-[15px] leading-6 text-soft">
-            <li>macOS 14 Sonoma or later</li>
-            <li>An Apple Silicon or Intel Mac, one app for both</li>
-            <li>Nothing else: it is signed and notarized, so it opens without a warning</li>
-            <li>Updates arrive through Sparkle, or check with Termy Next › Check for Updates</li>
-          </ul>
-        </div>
-        <div class="flex flex-col gap-3.5">
-          <h3 class="text-[16px] font-semibold">Build it yourself</h3>
-          <pre class="overflow-x-auto rounded-[14px] bg-terminal px-5 py-[18px] font-mono text-[13px] leading-6 text-[#c0caf5]"><code><span class="text-[#7aa2f7]">❯</span> git clone https://github.com/lassejlv/termy
-<span class="text-[#7aa2f7]">❯</span> cd termy && just bundle-next</code></pre>
+        <div class="flex gap-2">
+          <a href={release.dmg.url} class={buttonVariants({ size: 'sm' })}><AppleLogo class="size-3" />Download</a>
+          {release.zip && <a href={release.zip.url} class={buttonVariants({ variant: 'secondary', size: 'sm' })}>Zip</a>}
         </div>
       </div>
+      <div class={box}>
+        <div class="flex flex-col gap-0.5">
+          <span class="text-[13px] font-medium">Build it yourself</span>
+          <span class="text-[12px] text-faint">From a clone of the Termy repository</span>
+        </div>
+        <code class="rounded-md bg-terminal px-2.5 py-1.5 font-mono text-[12px] text-[#c0caf5]">just bundle-next</code>
+      </div>
+      <p class="px-1 pt-2 text-[12px] leading-[1.6] text-muted-foreground">
+        Signed and notarized, and kept up to date by Sparkle.
+        {release.checksums && <><a href={release.checksums.url} class={link}>SHA-256 checksums</a>, </>}
+        <a href={release.notesUrl} class={link}>release notes</a>.
+      </p>
     </div>
   </div>
 </section>

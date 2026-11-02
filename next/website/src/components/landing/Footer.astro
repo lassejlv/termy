@@ -1,4 +1,6 @@
 ---
+import { images } from '@/lib/assets'
+
 const columns = [
   {
     title: 'Termy Next',
@@ -30,11 +32,11 @@ const columns = [
 ---
 
 <footer class="relative isolate overflow-hidden">
-  <img src="/images/sun-footer.webp" alt="" width="1440" height="260" class="pointer-events-none absolute bottom-0 left-1/2 -z-10 w-[1440px] max-w-none -translate-x-1/2 opacity-90" />
-  <div class="mx-auto flex max-w-[1440px] flex-col justify-between gap-14 px-6 pt-20 pb-[260px] md:flex-row md:px-16">
+  <img src={images.sunFooter} alt="" width="1440" height="260" class="pointer-events-none absolute bottom-0 left-1/2 -z-10 w-[1440px] max-w-none -translate-x-1/2 opacity-90" />
+  <div class="mx-auto flex max-w-[1440px] flex-col justify-between gap-14 px-6 pt-16 pb-[220px] md:flex-row md:px-16">
     <div class="flex max-w-[360px] flex-col gap-[18px]">
       <a href="/" class="flex items-center gap-3">
-        <img src="/images/icon-256.png" alt="" width="28" height="28" class="size-7" />
+        <img src={images.icon} alt="" width="28" height="28" class="size-7" />
         <span class="text-[15px] font-semibold">Termy Next</span>
       </a>
       <p class="text-[14px] leading-[1.55] text-muted-foreground">

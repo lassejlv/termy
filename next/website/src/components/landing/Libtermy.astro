@@ -1,6 +1,8 @@
 ---
+import { images, logos } from '@/lib/assets'
+
 // One frame of a Claude Code pane. Each line is a list of [text, redrawn] runs;
-// the cell map beside it (public/images/cellmap.svg) is drawn from the same lines.
+// the cell map beside it (scripts/cellmap.mjs) is drawn from the same lines.
 type Run = [string, boolean]
 const lines: Run[][] = [
   [['> give the pane header its own drag handle', false]],
@@ -24,48 +26,48 @@ const facts = [
 ]
 ---
 
-<section id="libtermy" class="mx-auto flex max-w-[1440px] flex-col gap-12 px-6 py-20 md:py-24 md:px-16 xl:py-32">
-  <div class="reveal flex max-w-[560px] flex-col gap-5">
-    <h2 class="text-[26px] leading-[1.15] font-semibold tracking-[-0.02em] md:text-[32px]">Built on libtermy.</h2>
-    <p class="text-[16px] leading-[1.6] text-soft md:text-[17px]">
+<section id="libtermy" class="mx-auto flex max-w-[1440px] flex-col gap-10 px-6 py-20 md:px-16 md:py-28">
+  <div class="reveal flex max-w-[520px] flex-col gap-4">
+    <h2 class="text-[24px] leading-[1.2] font-semibold tracking-[-0.02em] text-balance md:text-[28px]">Built on libtermy.</h2>
+    <p class="text-[15px] leading-[1.65] text-soft md:text-[16px]">
       The engine that draws Termy, packaged as a library and wrapped in Swift. Each frame, libtermy hands over only the
       cells that changed, and only those get drawn.
     </p>
   </div>
 
   <div
-    class="overflow-hidden rounded-[18px] border border-white/8 bg-[#0f1018]"
+    class="overflow-hidden rounded-[14px] border border-white/8 bg-[#0f1018]"
     role="img"
     aria-label="A frame of a Claude Code pane shown as text and as a grid of cells; only the new lines and the timer were redrawn"
   >
-    <div class="flex h-10 items-center gap-2 bg-white/3 px-[18px]">
-      <img src="/logos/claude.svg" alt="" class="size-3.5" />
-      <span class="text-[13px] font-medium text-[#c0caf5]">Claude Code</span>
-      <span class="text-[13px] text-faint">~/Dev/termy</span>
+    <div class="flex h-9 items-center gap-2 bg-white/3 px-4">
+      <img src={logos.claude} alt="" class="size-3.5" />
+      <span class="text-[12px] font-medium text-[#c0caf5]">Claude Code</span>
+      <span class="text-[12px] text-faint">~/Dev/termy</span>
     </div>
     <div class="flex flex-col lg:flex-row">
-      <div class="overflow-x-auto px-[26px] py-[22px] font-mono text-[13px] leading-[26px] text-dim md:text-[14px] lg:w-[640px] lg:shrink-0">
+      <div class="overflow-x-auto px-5 py-4 font-mono text-[12px] leading-[22px] text-dim md:text-[13px] lg:w-[560px] lg:shrink-0">
         {
           lines.map((runs) => (
-            <div class="flex h-[26px] whitespace-pre">
+            <div class="flex h-[22px] whitespace-pre">
               {runs.map(([text, lit]) => (lit ? <span class="bg-brand/24 text-[#e8eeff]">{text}</span> : <span>{text}</span>))}
             </div>
           ))
         }
       </div>
-      <div class="flex grow flex-col gap-[18px] bg-[#13141c] px-8 pt-[22px] pb-[26px]">
-        <img src="/images/cellmap.svg" alt="" width="576" height="312" class="h-auto w-full max-w-[576px]" />
-        <span class="text-[14px] text-muted-foreground">The same frame as cells. Coral cells were redrawn.</span>
+      <div class="flex grow flex-col gap-3 bg-[#13141c] px-6 pt-4 pb-5">
+        <img src={images.cellmap} alt="" width="576" height="312" class="h-auto w-full max-w-[480px]" />
+        <span class="text-[13px] text-muted-foreground">The same frame as cells. Blue cells were redrawn.</span>
       </div>
     </div>
   </div>
 
-  <div class="grid gap-8 md:grid-cols-3 md:gap-12">
+  <div class="grid gap-6 md:grid-cols-3 md:gap-10">
     {
       facts.map((fact) => (
-        <div class="flex flex-col gap-1.5">
-          <h3 class="text-[15px] font-semibold">{fact.title}</h3>
-          <p class="text-[15px] leading-6 text-muted-foreground">{fact.body}</p>
+        <div class="flex flex-col gap-1">
+          <h3 class="text-[14px] font-semibold">{fact.title}</h3>
+          <p class="text-[14px] leading-[1.6] text-muted-foreground">{fact.body}</p>
         </div>
       ))
     }

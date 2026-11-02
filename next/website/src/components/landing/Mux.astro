@@ -1,32 +1,32 @@
 <section id="termy-mux" class="bg-panel">
-  <div class="mx-auto flex max-w-[1440px] flex-col gap-14 px-6 py-20 md:py-24 md:px-16 lg:flex-row lg:items-start lg:gap-24 xl:py-32">
-    <div class="reveal flex shrink-0 flex-col gap-5 pt-2 lg:w-[400px]">
-      <h2 class="text-[26px] leading-[1.15] font-semibold tracking-[-0.02em] md:text-[32px]">Script the layout from any shell.</h2>
-      <p class="text-[16px] leading-[1.6] text-soft md:text-[17px]">
-        Every window, session, tab and split lives in the session host, and <code class="font-mono text-[14px]">termy mux</code>
+  <div class="mx-auto flex max-w-[1440px] flex-col gap-10 px-6 py-20 md:px-16 md:py-28 lg:flex-row lg:items-start lg:gap-20">
+    <div class="reveal flex shrink-0 flex-col gap-4 pt-1 lg:w-[380px]">
+      <h2 class="text-[24px] leading-[1.2] font-semibold tracking-[-0.02em] text-balance md:text-[28px]">Script the layout from any shell.</h2>
+      <p class="text-[15px] leading-[1.65] text-soft md:text-[16px]">
+        Every window, session, tab and split lives in the session host, and <code class="font-mono text-[14px]">termy mux</code>{' '}
         reads and writes it. Run a command and the window changes in front of you. Rename a tab in the app and the command
         line sees it.
       </p>
-      <p class="text-[15px] leading-[1.55] text-muted-foreground">
-        Inside a Termy Next pane, <code class="font-mono text-[14px]">termy mux</code> finds the host on its own.
+      <p class="text-[14px] leading-[1.6] text-muted-foreground">
+        Inside a Termy Next pane, <code class="font-mono text-[13px]">termy mux</code> finds the host on its own.
       </p>
     </div>
-    <div class="min-w-0 grow overflow-hidden rounded-2xl border border-white/8 bg-terminal">
-      <div class="flex h-10 items-center gap-2 bg-white/3 px-4">
-        <span class="text-[13px] font-medium text-[#c0caf5]">zsh</span>
-        <span class="text-[13px] text-faint">~/Dev/termy</span>
+    <div class="min-w-0 grow overflow-hidden rounded-[14px] border border-white/8 bg-terminal">
+      <div class="flex h-9 items-center gap-2 bg-white/3 px-4">
+        <span class="text-[12px] font-medium text-[#c0caf5]">zsh</span>
+        <span class="text-[12px] text-faint">~/Dev/termy</span>
       </div>
-      <pre class="overflow-x-auto px-7 pt-6 pb-8 font-mono text-[13px] leading-[26px] text-[#c0caf5] md:text-[14px]"><code><span class="text-[#7aa2f7]">❯</span> termy mux split 3 --axis vertical
-<span class="text-[#7aa2f7]">❯</span> termy mux send 7 "just test-next" --enter
-<span class="text-[#7aa2f7]">❯</span> termy mux tab 7 rename tests
+      <pre class="overflow-x-auto px-5 pt-4 pb-6 font-mono text-[12px] leading-[22px] text-[#c0caf5] md:text-[13px]"><code><span class="text-brand">❯</span> termy mux split 3 --axis vertical
+<span class="text-brand">❯</span> termy mux send 7 "just test-next" --enter
+<span class="text-brand">❯</span> termy mux tab 7 rename tests
 
-<span class="text-[#7aa2f7]">❯</span> termy mux layout
+<span class="text-brand">❯</span> termy mux layout
 window 1  shy-orchard
   tab 1  Claude Code     <span class="text-faint">panes 3, 5</span>
   tab 2  tests           <span class="text-faint">pane 7</span>
   tab 3  nvim ~/notes    <span class="text-faint">pane 4</span>
 
-<span class="text-[#7aa2f7]">❯</span> <span class="caret inline-block h-4 w-2 translate-y-0.5 bg-foreground"></span></code></pre>
+<span class="text-brand">❯</span> <span class="caret inline-block h-3.5 w-[7px] translate-y-0.5 bg-foreground"></span></code></pre>
     </div>
   </div>
 </section>

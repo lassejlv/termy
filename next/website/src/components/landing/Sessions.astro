@@ -1,62 +1,64 @@
 ---
-const sessions = [
+import { images, logos, type Logo } from '@/lib/assets'
+
+const sessions: { name: string; match?: [number, number]; detail: string; logos: Logo[]; selected?: boolean }[] = [
   { name: 'quiet-harbor', match: [6, 9], detail: '2 tabs, detached 3 hours ago', logos: ['node', 'docker'], selected: true },
-  { name: 'shy-orchard', detail: '3 tabs, in this window', logos: ['claude', 'codex-dark'] },
-  { name: 'late-ember', detail: '1 tab, detached yesterday', logos: ['rust-dark'] },
+  { name: 'shy-orchard', detail: '3 tabs, in this window', logos: ['claude', 'codex'] },
+  { name: 'late-ember', detail: '1 tab, detached yesterday', logos: ['rust'] },
 ]
 ---
 
-<section id="sessions" class="mx-auto flex max-w-[1440px] flex-col gap-14 px-6 py-20 md:py-24 md:px-16 lg:flex-row lg:items-center lg:gap-20 xl:py-32">
-  <div class="reveal flex shrink-0 flex-col gap-5 lg:w-[420px]">
-    <h2 class="text-[26px] leading-[1.15] font-semibold tracking-[-0.02em] md:text-[32px]">Close the window. Keep the work.</h2>
-    <p class="text-[16px] leading-[1.6] text-soft md:text-[17px]">
+<section id="sessions" class="mx-auto flex max-w-[1440px] flex-col gap-12 px-6 py-20 md:px-16 md:py-28 lg:flex-row lg:items-center lg:gap-20">
+  <div class="reveal flex shrink-0 flex-col gap-4 lg:w-[400px]">
+    <h2 class="text-[24px] leading-[1.2] font-semibold tracking-[-0.02em] text-balance md:text-[28px]">Close the window. Keep the work.</h2>
+    <p class="text-[15px] leading-[1.65] text-soft md:text-[16px]">
       Your shells run in a Termy session host, not in the app. Closing a window only detaches its session, and quitting
       detaches all of them. Builds, servers and agents carry on without a window.
     </p>
-    <div class="flex flex-col gap-3 pt-1 text-[15px] leading-6">
+    <div class="flex flex-col gap-2 pt-1 text-[14px] leading-6">
       <p><kbd class="font-sans font-semibold">⌘K</kbd> <span class="text-soft">brings any session back into the window you are in.</span></p>
       <p><kbd class="font-sans font-semibold">⌘W</kbd> <span class="text-soft">on a pane, tab or session is the only thing that ends a program.</span></p>
     </div>
   </div>
 
-  <div class="relative flex h-[440px] grow items-center justify-center overflow-hidden rounded-3xl bg-panel md:h-[520px]">
-    <img src="/images/sun-stage.webp" alt="" width="712" height="520" class="pointer-events-none absolute bottom-0 left-1/2 w-[712px] max-w-none -translate-x-1/2 opacity-85" />
+  <div class="relative flex h-[380px] grow items-center justify-center overflow-hidden rounded-2xl bg-panel md:h-[440px]">
+    <img src={images.sunStage} alt="" width="712" height="520" class="pointer-events-none absolute -bottom-10 left-1/2 w-[640px] max-w-none -translate-x-1/2 opacity-70" />
     <div
-      class="relative w-[calc(100%-32px)] max-w-[520px] overflow-hidden rounded-[18px] border border-white/10 bg-[#1f2335]/96 shadow-[0_30px_80px_rgb(0_0_0/50%)]"
+      class="relative w-[calc(100%-32px)] max-w-[440px] overflow-hidden rounded-[14px] border border-white/10 bg-[#1f2335]/96 shadow-[0_24px_64px_rgb(0_0_0/45%)]"
       role="img"
       aria-label="The session picker filtering sessions by 'har', with quiet-harbor selected"
     >
-      <div class="flex h-[54px] items-center gap-2.5 border-b border-white/7 px-[18px]">
-        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="#787c99" stroke-width="1.6"></circle><path d="M11 11l3.5 3.5" stroke="#787c99" stroke-width="1.6" stroke-linecap="round"></path></svg>
-        <span class="grow text-[16px]">har<span class="caret ml-px inline-block h-[18px] w-px translate-y-[3px] bg-brand"></span></span>
-        <span class="text-[13px] text-faint">Change session</span>
+      <div class="flex h-11 items-center gap-2 border-b border-white/7 px-3.5">
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="#787c99" stroke-width="1.6"></circle><path d="M11 11l3.5 3.5" stroke="#787c99" stroke-width="1.6" stroke-linecap="round"></path></svg>
+        <span class="grow text-[14px]">har<span class="caret ml-px inline-block h-4 w-px translate-y-[3px] bg-brand"></span></span>
+        <span class="text-[12px] text-faint">Change session</span>
       </div>
-      <div class="flex flex-col gap-0.5 p-2">
+      <div class="flex flex-col gap-0.5 p-1.5">
         {
           sessions.map((session) => (
-            <div class:list={['flex h-14 items-center gap-3 rounded-[11px] px-3', session.selected && 'bg-brand/16']}>
-              <div class="flex grow flex-col gap-0.5">
-                <span class="text-[15px] font-medium">
+            <div class:list={['flex h-12 items-center gap-2.5 rounded-lg px-2.5', session.selected && 'bg-brand/15']}>
+              <div class="flex grow flex-col">
+                <span class="text-[13px] font-medium">
                   {session.match ? (
                     <>
                       {session.name.slice(0, session.match[0])}
-                      <span class="font-bold text-[#7aa2f7]">{session.name.slice(session.match[0], session.match[1])}</span>
+                      <span class="font-bold text-brand">{session.name.slice(session.match[0], session.match[1])}</span>
                       {session.name.slice(session.match[1])}
                     </>
                   ) : (
                     session.name
                   )}
                 </span>
-                <span class="text-[13px] text-muted-foreground">{session.detail}</span>
+                <span class="text-[12px] text-muted-foreground">{session.detail}</span>
               </div>
-              {session.logos.map((logo) => <img src={`/logos/${logo}.svg`} alt="" class="size-4" />)}
-              <span class:list={['w-4 pl-1 text-[13px] text-soft', !session.selected && 'invisible']}>↩</span>
+              {session.logos.map((logo) => <img src={logos[logo]} alt="" class="size-3.5" />)}
+              <span class:list={['w-3.5 pl-0.5 text-[12px] text-soft', !session.selected && 'invisible']}>↩</span>
             </div>
           ))
         }
-        <div class="flex h-12 items-center gap-3 px-3">
-          <span class="grow text-[15px] text-muted-foreground">New session</span>
-          <span class="text-[13px] text-faint">⇧⌘N</span>
+        <div class="flex h-10 items-center px-2.5">
+          <span class="grow text-[13px] text-muted-foreground">New session</span>
+          <span class="text-[12px] text-faint">⇧⌘N</span>
         </div>
       </div>
     </div>
