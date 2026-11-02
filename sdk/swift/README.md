@@ -121,6 +121,18 @@ bundle it in `Contents/Helpers`. Calls block on the host (starting one takes
 seconds), so connect off the main thread. Pass your own `root` to keep your
 panes apart from Termy's; it must not be readable by other users.
 
+### Sharing the layout with `termy mux`
+
+The host keeps a window, workspace, tab and split layout that `termy mux`
+reads and edits. An app that shows the host's panes can follow it:
+
+```swift
+var layout = try mux.layout()               // windows → workspaces → tabs → split trees of pane IDs
+let watch = try mux.watchLayout { revision in /* read and apply mux.layout() */ }
+layout.windows[0].workspaces[0].tabs[0].title = "build"
+let (written, revision) = try mux.setLayout(layout)  // false when another client wrote first
+```
+
 ### A config of your own
 
 `TermySettings.set(_:to:)` edits the Termy app's own config. An app that

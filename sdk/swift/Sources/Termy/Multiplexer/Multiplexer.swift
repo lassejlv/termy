@@ -31,7 +31,7 @@ public struct MultiplexerPane: Decodable, Hashable, Sendable {
 /// any thread may use the instance.
 public final class Multiplexer: @unchecked Sendable {
     let handle: OpaquePointer
-    private let lock = NSLock()
+    let lock = NSLock()
 
     private init(handle: OpaquePointer) {
         self.handle = handle

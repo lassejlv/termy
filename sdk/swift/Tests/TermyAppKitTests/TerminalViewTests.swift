@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import Testing
 import Termy
 @testable import TermyAppKit
@@ -181,6 +182,47 @@ struct TerminalViewTests {
         view.reveal(old)
         #expect(view.session.frame.displayOffset > 0)
         #expect(view.rect(for: old) != nil)
+    }
+
+    @Test func dropsTypeQuotedPathsAndSaveImages() throws {
+        let pasteboard = privatePasteboard()
+        defer { pasteboard.releaseGlobally() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("termy-drop-test-\(UUID().uuidString.prefix(6))")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        pasteboard.clearContents()
+        pasteboard.writeObjects([URL(fileURLWithPath: "/tmp/plain.txt") as NSURL, URL(fileURLWithPath: "/tmp/with space.png") as NSURL])
+        #expect(TerminalView.dropText(from: pasteboard, savingImagesIn: directory) == "/tmp/plain.txt '/tmp/with space.png' ")
+
+        // An image without a file is saved as PNG and its path typed.
+        let image = NSImage(size: NSSize(width: 4, height: 4))
+        image.lockFocus(); NSColor.red.setFill(); NSRect(x: 0, y: 0, width: 4, height: 4).fill(); image.unlockFocus()
+        pasteboard.clearContents()
+        pasteboard.setData(image.tiffRepresentation, forType: .tiff)
+        let text = try #require(TerminalView.dropText(from: pasteboard, savingImagesIn: directory))
+        let path = String(text.dropFirst().dropLast(2))  // strip the quotes and trailing space
+        #expect(text.hasSuffix("' "))
+        let saved = try Data(contentsOf: URL(fileURLWithPath: path))
+        #expect(saved.starts(with: [0x89, 0x50, 0x4E, 0x47]))
+
+        pasteboard.clearContents()
+        pasteboard.setString("just text", forType: .string)
+        #expect(TerminalView.dropText(from: pasteboard, savingImagesIn: directory) == "just text")
+        #expect(TerminalView.canDrop(pasteboard))
+    }
+
+    /// Nerd Font icons (here the octicons git branch, U+F418) come from an
+    /// installed Nerd Font, not the system's LastResort box. Skipped when no
+    /// Nerd Font is installed.
+    @Test func iconGlyphsComeFromAnInstalledNerdFont() throws {
+        guard !TerminalFonts.symbolFonts(size: 13).isEmpty,
+              NSFontManager.shared.availableFontFamilies.contains(where: { $0.lowercased().contains("nerd font") }) else { return }
+        let fonts = TerminalFonts(fontFamily: "Menlo", fontSize: 13)
+        let glyph = try #require(fonts.glyph(for: 0xF418, style: .regular))
+        let name = CTFontCopyPostScriptName(fonts.font(at: glyph.fontIndex)) as String
+        #expect(!name.hasPrefix("LastResort"))
+        let symbolNames = TerminalFonts.symbolFonts(size: 13).map { CTFontCopyPostScriptName($0) as String }
+        #expect(symbolNames.contains(name))
     }
 
     @Test func boxDrawingUsesGlyphGeometry() throws {

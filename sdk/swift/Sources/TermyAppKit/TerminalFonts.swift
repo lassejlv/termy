@@ -76,8 +76,18 @@ final class TerminalFonts {
         if let glyph = lookUp(utf16, in: fonts[primaryIndex]) {
             return Glyph(fontIndex: primaryIndex, glyph: glyph, isColor: false)
         }
-        let fallback = CTFontCreateForString(fonts[primaryIndex], string as CFString, CFRange(location: 0, length: utf16.count))
-        guard let glyph = lookUp(utf16, in: fallback) else { return nil }
+        // Icons in the private use areas (Nerd Font, Powerline) come from an
+        // installed Nerd Font first: the system's fallback doesn't look there
+        // and ends at LastResort, which draws a boxed question mark.
+        let privateUse = (0xE000...0xF8FF).contains(codepoint) || codepoint >= 0xF0000
+        var fallback = CTFontCreateForString(fonts[primaryIndex], string as CFString, CFRange(location: 0, length: utf16.count))
+        var glyph = lookUp(utf16, in: fallback)
+        if privateUse || glyph == nil || Self.isLastResort(fallback),
+           let symbol = Self.symbolFonts(size: fontSize).lazy.compactMap({ font in self.lookUp(utf16, in: font).map { (font, $0) } }).first {
+            fallback = symbol.0
+            glyph = symbol.1
+        }
+        guard let glyph else { return nil }
         let name = "\(CTFontCopyPostScriptName(fallback))|\(style.bold)|\(style.italic)"
         let index: Int
         if let existing = fallbackIndices[name] {
@@ -89,6 +99,37 @@ final class TerminalFonts {
         }
         let isColor = CTFontGetSymbolicTraits(fallback).contains(.traitColorGlyphs)
         return Glyph(fontIndex: index, glyph: glyph, isColor: isColor)
+    }
+
+    private static func isLastResort(_ font: CTFont) -> Bool {
+        (CTFontCopyPostScriptName(font) as String).hasPrefix("LastResort")
+    }
+
+    /// Installed fonts that carry icon glyphs, best first: the Nerd Font
+    /// symbols font, other Nerd Fonts (monospaced ones first), then Apple
+    /// Symbols. Looked up once per size.
+    private static var symbolFontCache: [CGFloat: [CTFont]] = [:]
+    private static let symbolFamilies: [String] = {
+        let families = NSFontManager.shared.availableFontFamilies
+        func rank(_ family: String) -> Int? {
+            let name = family.lowercased()
+            if name.hasPrefix("symbols nerd font") { return name.contains("mono") ? 0 : 1 }
+            if name.contains("nerd font") { return name.contains("propo") ? 4 : name.contains("mono") ? 2 : 3 }
+            if name == "apple symbols" { return 5 }
+            return nil
+        }
+        return families.compactMap { family in rank(family).map { ($0, family) } }
+            .sorted { $0.0 != $1.0 ? $0.0 < $1.0 : $0.1 < $1.1 }
+            .map(\.1)
+    }()
+
+    static func symbolFonts(size: CGFloat) -> [CTFont] {
+        if let cached = symbolFontCache[size] { return cached }
+        let fonts = symbolFamilies.compactMap { family -> CTFont? in
+            NSFontManager.shared.font(withFamily: family, traits: [], weight: 5, size: size)
+        }
+        symbolFontCache[size] = fonts
+        return fonts
     }
 
     private func lookUp(_ utf16: [UniChar], in font: CTFont) -> CGGlyph? {

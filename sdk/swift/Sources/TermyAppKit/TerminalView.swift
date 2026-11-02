@@ -19,6 +19,8 @@ public protocol TerminalViewDelegate: AnyObject {
     /// The user copied the selection, with ⌘C or the Copy menu item. Hosts can
     /// acknowledge it, for example by animating `view.selectionRects`.
     func terminalView(_ view: TerminalView, didCopy text: String)
+    /// Something that can be dropped is over the view (true) or left it.
+    func terminalView(_ view: TerminalView, isDropTarget: Bool)
 }
 
 extension TerminalViewDelegate {
@@ -28,6 +30,7 @@ extension TerminalViewDelegate {
     public func terminalView(_ view: TerminalView, shouldWriteClipboard text: String) -> Bool { false }
     public func terminalViewDidExit(_ view: TerminalView) {}
     public func terminalView(_ view: TerminalView, didCopy text: String) {}
+    public func terminalView(_ view: TerminalView, isDropTarget: Bool) {}
 }
 
 /// How a `TerminalView` draws.
@@ -103,6 +106,7 @@ public final class TerminalView: NSView {
         session.onFrameChange = { [weak self] change in self?.frameDidChange(change) }
         session.onEvent = { [weak self] event in self?.handle(event) }
         session.poll(forceFull: true)
+        registerForDraggedTypes(Self.droppableTypes)
     }
 
     /// Spawns a shell configured by `config` (the user's Termy config by default).
