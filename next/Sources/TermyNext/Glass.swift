@@ -19,7 +19,11 @@ final class GlassView: NSView {
         if #available(macOS 26.0, *) {
             let glass = NSGlassEffectView()
             glass.style = style == .clear ? .clear : .regular
-            if #available(macOS 27.0, *) { glass.effectIsInteractive = interactive }
+            // Interactive glass is macOS 27 API. Set it by name so the app
+            // still builds with the macOS 26 SDK that CI runners have.
+            if glass.responds(to: NSSelectorFromString("setEffectIsInteractive:")) {
+                glass.setValue(interactive, forKey: "effectIsInteractive")
+            }
             effect = glass
         } else {
             let material = NSVisualEffectView()
