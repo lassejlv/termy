@@ -43,6 +43,10 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private let notifyDone = NSButton(checkboxWithTitle: "When one finishes", target: nil, action: nil)
     private let notifyFailed = NSButton(checkboxWithTitle: "When one fails", target: nil, action: nil)
     private let notifySound = NSButton(checkboxWithTitle: "Play a sound", target: nil, action: nil)
+    private let updateCheckbox = NSButton(checkboxWithTitle: "Check for updates automatically", target: nil, action: nil)
+    private let updateDownload = NSButton(checkboxWithTitle: "Download and install them automatically", target: nil, action: nil)
+    private let checkNowButton = NSButton(title: "Check Now", target: nil, action: nil)
+    private let updateStatus = NSTextField(labelWithString: "")
 
     // Appearance
     private let fontPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -106,6 +110,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         configureControls()
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Preferences.didChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Workspace.didChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Updates.didChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(fontsChanged), name: NSFont.fontSetChangedNotification, object: nil)
         select(.general, animated: false)
         window.center()
@@ -184,6 +189,13 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
                 .control("", notifyFailed),
                 .control("", notifySound),
                 .note("Programs report their status with OSC 7501, as Claude Code and other agents do. You're notified only about panes you aren't looking at; clicking a notification takes you to the pane."),
+                .separator,
+                .control("Updates:", updateCheckbox),
+                .control("", updateDownload),
+                .control("", row([checkNowButton, updateStatus], spacing: 10)),
+                .note(Updates.shared.isAvailable
+                    ? "Updates are installed when you quit or relaunch. Programs in panes keep running through it."
+                    : "This build doesn't update itself. Releases are on GitHub, tagged next-v*."),
             ])
         case .appearance:
             let size = row([sizeField, sizeStepper, NSTextField(labelWithString: "pt")], spacing: 6)
@@ -301,6 +313,16 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         paneControl.target = self
         paneControl.action = #selector(paneStyleChanged)
 
+        for checkbox in [updateCheckbox, updateDownload] {
+            checkbox.target = self
+            checkbox.action = #selector(updatesChanged(_:))
+        }
+        checkNowButton.bezelStyle = .push
+        checkNowButton.target = self
+        checkNowButton.action = #selector(checkForUpdates)
+        updateStatus.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        updateStatus.textColor = .secondaryLabelColor
+
         let formatter = NumberFormatter()
         formatter.minimum = 6
         formatter.maximum = 72
@@ -353,6 +375,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         notifyFailed.state = prefs.notifyWhenFailed ? .on : .off
         notifySound.state = prefs.notificationSound ? .on : .off
         for option in [notifyBlocked, notifyDone, notifyFailed, notifySound] { option.isEnabled = prefs.notificationsEnabled }
+        refreshUpdates()
 
         let render = app.renderConfig
         refreshFontMenu(current: render.fontFamily)
@@ -435,6 +458,34 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         PaneNotifier.shared.updateBadge()
         refresh()
     }
+
+    private func refreshUpdates() {
+        let updates = Updates.shared
+        updateCheckbox.state = updates.checksAutomatically ? .on : .off
+        updateDownload.state = updates.downloadsAutomatically ? .on : .off
+        updateCheckbox.isEnabled = updates.isAvailable
+        updateDownload.isEnabled = updates.isAvailable && updates.checksAutomatically
+        checkNowButton.isEnabled = updates.canCheck
+        var status = "Version \(Updates.currentVersion)"
+        if let last = updates.lastCheck {
+            let relative = RelativeDateTimeFormatter()
+            relative.unitsStyle = .full
+            status += " · checked \(relative.localizedString(for: last, relativeTo: Date()))"
+        }
+        updateStatus.stringValue = status
+    }
+
+    @objc private func updatesChanged(_ sender: NSButton) {
+        let on = sender.state == .on
+        if sender === updateCheckbox {
+            Updates.shared.checksAutomatically = on
+        } else {
+            Updates.shared.downloadsAutomatically = on
+        }
+        refreshUpdates()
+    }
+
+    @objc private func checkForUpdates() { Updates.shared.checkForUpdates() }
 
     @objc private func paneStyleChanged() {
         Preferences.shared.paneStyle = paneControl.selectedSegment == 0 ? .comfortable : .compact

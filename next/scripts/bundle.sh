@@ -3,7 +3,9 @@
 # bundled, signed ad hoc for running locally (scripts/release.sh signs for
 # distribution).
 #
-# Usage: scripts/bundle.sh [debug|release] [--universal] [--version X.Y.Z] [--build N]
+# Usage: scripts/bundle.sh [debug|release] [--universal] [--version X.Y.Z] [--build N] [--update-feed URL]
+#   --update-feed  the Sparkle appcast this build updates from (scripts/release.sh
+#                  sets it); without one the app never checks for updates
 # Output: next/build/Termy Next.app
 set -euo pipefail
 
@@ -11,13 +13,18 @@ profile="release"
 universal=0
 version="0.1.0"
 build_number="1"
+update_feed=""
+# The public half of the EdDSA key that signs Termy's and Termy Next's
+# releases (the SPARKLE_ED_PRIVATE_KEY Actions secret); see scripts/build-dmg.sh.
+sparkle_public_key="${TERMY_SPARKLE_PUBLIC_ED_KEY:-1hTfFqyrg+XaxfZ5ywbvd20aT5YXvL15BschCg2L57o=}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     debug|release) profile="$1" ;;
     --universal) universal=1 ;;
     --version) version="$2"; shift ;;
     --build) build_number="$2"; shift ;;
-    *) echo "usage: $0 [debug|release] [--universal] [--version X.Y.Z] [--build N]" >&2; exit 64 ;;
+    --update-feed) update_feed="$2"; shift ;;
+    *) echo "usage: $0 [debug|release] [--universal] [--version X.Y.Z] [--build N] [--update-feed URL]" >&2; exit 64 ;;
   esac
   shift
 done
@@ -45,8 +52,17 @@ cp "$executable" "$app/Contents/MacOS/TermyNext"
 cp "$sdk_dir/lib/libtermy_core.dylib" "$app/Contents/Frameworks/"
 # The session host that runs every pane's program, so they outlive the app.
 cp "$sdk_dir/lib/termy-session-host" "$app/Contents/Helpers/"
-# Load libtermy from the bundle, not the SDK build directory.
-install_name_tool -delete_rpath "$sdk_dir/lib" "$app/Contents/MacOS/TermyNext" 2>/dev/null || true
+# Sparkle, for automatic updates. SwiftPM puts it next to the executable.
+# Its XPC services are only for sandboxed apps; Termy Next isn't sandboxed.
+ditto "$(dirname "$executable")/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
+rm -rf "$app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" "$app/Contents/Frameworks/Sparkle.framework/XPCServices"
+# Load libtermy and Sparkle from the bundle, never from the build directories,
+# whose copies on this Mac are signed differently.
+while read -r rpath; do
+  case "$rpath" in
+    "$sdk_dir"/*|"$sdk_dir"|"$next_dir"/*) install_name_tool -delete_rpath "$rpath" "$app/Contents/MacOS/TermyNext" ;;
+  esac
+done < <(otool -l "$app/Contents/MacOS/TermyNext" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }')
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$app/Contents/MacOS/TermyNext" 2>/dev/null || true
 
 icon="$next_dir/../assets/termy.icns"
@@ -74,6 +90,14 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict>
 </plist>
 PLIST
+if [[ -n "$update_feed" ]]; then
+  plist=(/usr/libexec/PlistBuddy "$app/Contents/Info.plist")
+  "${plist[@]}" -c "Add :SUFeedURL string $update_feed"
+  "${plist[@]}" -c "Add :SUPublicEDKey string $sparkle_public_key"
+  "${plist[@]}" -c "Add :SUEnableAutomaticChecks bool true"
+  "${plist[@]}" -c "Add :SUScheduledCheckInterval integer 21600"
+fi
 
+codesign --force --sign - "$app/Contents/Frameworks/Sparkle.framework" >/dev/null 2>&1 || true
 codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
 echo "built $app ($version, $( [[ $universal -eq 1 ]] && echo universal || uname -m ))"

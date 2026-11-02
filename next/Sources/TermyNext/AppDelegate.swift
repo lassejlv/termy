@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // `swift run` starts an unbundled executable; make it a regular app.
         NSApp.setActivationPolicy(.regular)
+        // Before the menu, which shows Check for Updates only when this build updates itself.
+        Updates.shared.start()
         NSApp.mainMenu = buildMainMenu()
         installKeyMonitor()
         PaneNotifier.shared.start()
@@ -420,6 +422,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         guard let raw = sender.representedObject as? String, let command = Command(rawValue: raw) else { return }
         if command == .settings { return showSettings() }
         if command == .restartSessionHost { return restartSessionHost() }
+        if command == .checkForUpdates { return Updates.shared.checkForUpdates() }
         // Close commands close the key window when it isn't a terminal window, such as Settings.
         if [.closePane, .closeTab, .closeWindow].contains(command), let key = NSApp.keyWindow,
            !controllers.contains(where: { $0.window === key }) {
@@ -446,6 +449,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case .toggleActivity: item.title = keyController?.isActivityOpen == true ? "Hide Activity" : "Show Activity"
         default: break
         }
+        if command == .checkForUpdates { return Updates.shared.canCheck }
         if command == .restartSessionHost {
             return Preferences.shared.usesSessionHost && SessionHost.shared.multiplexer != nil && !SessionHost.shared.isRestarting
         }
@@ -466,11 +470,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
         let appName = "Termy Next"
         let settings = c(.settings)
+        // Development builds can't update themselves, so they leave it out.
+        let updates = Updates.shared.isAvailable ? [c(.checkForUpdates)] : []
         let config = NSMenuItem(title: "Open Config File", action: #selector(openConfig), keyEquivalent: "")
         let reload = NSMenuItem(title: "Reload Config", action: #selector(reloadConfig), keyEquivalent: ",")
         reload.keyEquivalentModifierMask = [.command, .shift]
         main.addItem(submenu(appName, [
             NSMenuItem(title: "About \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
+        ] + updates + [
             sep(), settings, config, reload, c(.restartSessionHost), sep(),
             NSMenuItem(title: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
             NSMenuItem(title: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),

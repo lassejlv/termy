@@ -5,6 +5,9 @@
 #   TermyNext-<version>-macos-universal.zip   the stapled app, zipped
 #
 # Usage: scripts/release.sh --version X.Y.Z [--build N] [--native] [--no-notarize]
+#
+# The app updates itself with Sparkle from TERMY_NEXT_UPDATE_FEED (default:
+# the appcast on the next-appcast release, which release-next.yml refreshes).
 #   --native       build for this Mac's architecture only (faster, for testing)
 #   --no-notarize  sign but skip notarization and stapling
 #
@@ -53,7 +56,8 @@ dmg="$dist/$base.dmg"
 zip="$dist/$base.zip"
 
 log "Building Termy Next $version ($arch_name)"
-bundle_args=(release --version "$version" --build "$build_number")
+update_feed="${TERMY_NEXT_UPDATE_FEED:-https://github.com/lassejlv/termy/releases/download/next-appcast/appcast-universal.xml}"
+bundle_args=(release --version "$version" --build "$build_number" --update-feed "$update_feed")
 [[ "$universal" -eq 1 ]] && bundle_args+=(--universal)
 "$next_dir/scripts/bundle.sh" "${bundle_args[@]}"
 
@@ -64,8 +68,12 @@ if [[ "$identity" != "-" ]]; then
   # Hardened runtime and a secure timestamp, which notarization requires.
   sign+=(--options runtime --timestamp)
 fi
-# Inside out: the library and helper first, then the app that seals them.
+# Inside out: the library, Sparkle and the helper first, then the app that seals them.
 "${sign[@]}" "$app/Contents/Frameworks/libtermy_core.dylib"
+sparkle="$app/Contents/Frameworks/Sparkle.framework"
+"${sign[@]}" "$sparkle/Versions/B/Autoupdate"
+"${sign[@]}" "$sparkle/Versions/B/Updater.app"
+"${sign[@]}" "$sparkle"
 "${sign[@]}" "$app/Contents/Helpers/termy-session-host"
 "${sign[@]}" "$app/Contents/MacOS/TermyNext"
 "${sign[@]}" "$app"

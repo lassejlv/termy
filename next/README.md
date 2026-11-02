@@ -154,8 +154,20 @@ and Intel), signs it with Termy's Developer ID, notarizes and staples it, and
 publishes a GitHub release with `TermyNext-<version>-macos-universal.dmg`, a
 zip of the app and checksums. Releases are pre-releases unless the workflow
 run says otherwise, and never become the repository's "Latest", which stays
-Termy's. Termy's own release workflows skip `next-v*` tags, and this one
+Termy's. Termy's own release workflows skip `next-*` tags, and this one
 never runs for Termy's.
+
+### Updates
+
+Release builds update themselves with [Sparkle](https://sparkle-project.org).
+They read `appcast-universal.xml` from the `next-appcast` release, which each
+release run replaces with a feed that lists the version it just published.
+The DMG is EdDSA-signed with the same `SPARKLE_ED_PRIVATE_KEY` secret as
+Termy's releases. Sparkle checks every six hours. **Termy Next → Check for
+Updates…** (also in the command palette) checks right away, and **Settings →
+General → Updates** turns automatic checks and downloads on or off.
+Development builds and `scripts/bundle.sh` bundles have no feed and never
+update.
 
 To try the release build locally, signed ad hoc and without notarization:
 

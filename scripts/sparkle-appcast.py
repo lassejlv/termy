@@ -66,12 +66,12 @@ def feed(args: argparse.Namespace) -> None:
         record = json.loads(Path(record_path).read_text())
         rss = ET.Element("rss", {"version": "2.0"})
         channel = ET.SubElement(rss, "channel")
-        ET.SubElement(channel, "title").text = "Termy"
+        ET.SubElement(channel, "title").text = args.app_name
         ET.SubElement(channel, "link").text = f"https://github.com/{args.repo}/releases"
         ET.SubElement(channel, "language").text = "en"
 
         item = ET.SubElement(channel, "item")
-        ET.SubElement(item, "title").text = f"Termy {record['short_version']}"
+        ET.SubElement(item, "title").text = f"{args.app_name} {record['short_version']}"
         ET.SubElement(item, "pubDate").text = pub_date
         ET.SubElement(item, f"{{{SPARKLE_NS}}}version").text = record["version"]
         ET.SubElement(item, f"{{{SPARKLE_NS}}}shortVersionString").text = record[
@@ -117,6 +117,7 @@ def main() -> None:
     feed_parser.add_argument("--repo", required=True, help="owner/name")
     feed_parser.add_argument("--tag", required=True)
     feed_parser.add_argument("--notes-html", help="Release notes rendered as HTML")
+    feed_parser.add_argument("--app-name", default="Termy", help="App name for the feed and item titles")
     feed_parser.add_argument("--out-dir", required=True)
     feed_parser.add_argument("records", nargs="+", help="JSON records from `sign`")
     feed_parser.set_defaults(run=feed)

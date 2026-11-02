@@ -4,7 +4,7 @@ import TermyNextCore
 /// Every action the app offers. Menus, the command palette and shortcuts all
 /// go through this list, so each one has a single title and key binding.
 enum Command: String, CaseIterable {
-    case settings, restartSessionHost, commandPalette, changeSession, renameSession, renameTab, addRemoteHost
+    case settings, checkForUpdates, restartSessionHost, commandPalette, changeSession, renameSession, renameTab, addRemoteHost
     case newSession, newTab, goToDirectory, newWindow
     case previousTab, nextTab, moveTabLeft, moveTabRight, moveTabToNewWindow
     case closePane, closeTab, closeSession, closeWindow
@@ -21,6 +21,7 @@ enum Command: String, CaseIterable {
     var title: String {
         switch self {
         case .settings: "Settings…"
+        case .checkForUpdates: "Check for Updates…"
         case .restartSessionHost: "Restart Session Host…"
         case .commandPalette: "Command Palette…"
         case .changeSession: "Change Session…"

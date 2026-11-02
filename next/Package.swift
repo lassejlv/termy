@@ -10,6 +10,9 @@ let package = Package(
     platforms: [.macOS(.v14)],
     dependencies: [
         .package(path: "../sdk/swift"),
+        // Automatic updates. Keep in step with scripts/fetch-sparkle.sh, whose
+        // sign_update signs the releases this version installs.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
     ],
     targets: [
         // Layout tree, fuzzy matching and naming: no AppKit, no libtermy.
@@ -20,6 +23,7 @@ let package = Package(
                 "TermyNextCore",
                 .product(name: "Termy", package: "swift"),
                 .product(name: "TermyAppKit", package: "swift"),
+                .product(name: "Sparkle", package: "Sparkle"),
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),

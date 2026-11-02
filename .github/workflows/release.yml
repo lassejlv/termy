@@ -24,8 +24,8 @@ env:
 jobs:
   build-dmg:
     name: Build ${{ matrix.arch }} DMG
-    # Termy Next has its own release (release-next.yml, tags next-v*).
-    if: ${{ !startsWith(github.event.release.tag_name, 'next-v') }}
+    # Termy Next has its own releases (release-next.yml, tags next-*).
+    if: ${{ !startsWith(github.event.release.tag_name, 'next-') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -102,8 +102,8 @@ jobs:
 
   build-windows-setup:
     name: Build Windows ${{ matrix.arch }} Setup
-    # Termy Next has its own release (release-next.yml, tags next-v*).
-    if: ${{ !startsWith(github.event.release.tag_name, 'next-v') }}
+    # Termy Next has its own releases (release-next.yml, tags next-*).
+    if: ${{ !startsWith(github.event.release.tag_name, 'next-') }}
     runs-on: windows-latest
     timeout-minutes: 60
     permissions:
@@ -187,8 +187,8 @@ jobs:
 
   build-linux:
     name: Build Linux ${{ matrix.arch }}
-    # Termy Next has its own release (release-next.yml, tags next-v*).
-    if: ${{ !startsWith(github.event.release.tag_name, 'next-v') }}
+    # Termy Next has its own releases (release-next.yml, tags next-*).
+    if: ${{ !startsWith(github.event.release.tag_name, 'next-') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:

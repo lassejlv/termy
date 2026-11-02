@@ -4,8 +4,13 @@ name: Release Termy Next
 # separate from Termy's releases: pushing next-v0.1.0, or running this
 # workflow with a version, builds a universal app, signs it with Termy's
 # Developer ID, notarizes it and publishes a GitHub release with only its
-# files. Termy's own release workflows skip next-v* tags, and this one never
+# files. Termy's own release workflows skip next-* tags, and this one never
 # runs for Termy's tags.
+#
+# Installed copies update themselves with Sparkle from appcast-universal.xml
+# on the next-appcast release, which each run replaces with a feed listing
+# the version it just published. The DMG is EdDSA-signed with the same
+# SPARKLE_ED_PRIVATE_KEY as Termy's.
 
 on:
   push:
@@ -92,6 +97,19 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: ./next/scripts/release.sh --version "$VERSION" --build "$GITHUB_RUN_NUMBER"
 
+      - name: Sign the DMG for Sparkle
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          sparkle_dir="$(./scripts/fetch-sparkle.sh)"
+          python3 scripts/sparkle-appcast.py sign \
+            --sign-update "$sparkle_dir/bin/sign_update" \
+            --dmg "next/dist/TermyNext-$VERSION-macos-universal.dmg" \
+            --info-plist "next/build/Termy Next.app/Contents/Info.plist" \
+            --arch universal \
+            --out next/dist/sparkle-universal.json
+
       - name: Test Termy Next
         run: swift test --package-path next
 
@@ -111,6 +129,7 @@ jobs:
             next/dist/*.dmg
             next/dist/*.zip
             next/dist/*.sha256
+            next/dist/sparkle-*.json
           if-no-files-found: error
 
   release:
@@ -121,6 +140,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout scripts
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          sparse-checkout: scripts
+
       - name: Download release files
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -145,5 +169,28 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*.sha256
+          fail_on_unmatched_files: true
+          overwrite_files: true
+
+      - name: Generate the update feed
+        env:
+          TAG: next-v${{ needs.build.outputs.version }}
+        run: |
+          python3 scripts/sparkle-appcast.py feed \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --app-name "Termy Next" \
+            --out-dir dist dist/sparkle-universal.json
+
+      # After the release, so the feed never points at a DMG that isn't there yet.
+      - name: Publish the update feed
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: next-appcast
+          target_commitish: ${{ github.sha }}
+          name: Termy Next update feed
+          prerelease: true
+          make_latest: false
+          body: |
+            The Sparkle update feed for Termy Next, not a release. Installed copies read `appcast-universal.xml` here to find new versions; each Termy Next release replaces it with a feed that lists itself.
+          files: dist/appcast-universal.xml
           fail_on_unmatched_files: true
           overwrite_files: true

@@ -970,6 +970,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         let prefs = Preferences.shared
         switch command {
         case .settings: AppDelegate.shared.showSettings()
+        case .checkForUpdates: Updates.shared.checkForUpdates()
         case .find: focusedPane?.showSearch()
         case .findNext: focusedPane?.findStep(-1)
         case .findPrevious: focusedPane?.findStep(1)
@@ -1129,7 +1130,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     }
 
     private func paletteItems() -> [PickerItem] {
-        var items: [PickerItem] = Command.allCases.filter(\.showsInPalette).map { command in
+        var items: [PickerItem] = Command.allCases.filter { $0.showsInPalette && ($0 != .checkForUpdates || Updates.shared.isAvailable) }.map { command in
             PickerItem(
                 title: command.title,
                 accessory: command.opensSubpicker ? .chevron(command.shortcutLabel) : command.shortcutLabel.map { .shortcut($0) } ?? .none,
