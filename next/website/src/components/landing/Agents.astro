@@ -14,10 +14,10 @@ type Row = {
 }
 
 const rows: Row[] = [
-  { logo: 'codex-dark', name: 'Codex', state: 'needs permission', stateClass: 'text-[#7db5ff]', message: 'Run git push origin next', session: 'shy-orchard', badge: 'bg-blocked', highlight: true },
-  { logo: 'claude', name: 'Claude Code', state: 'working', stateClass: 'text-[#b9b1bb]', message: 'Splitting PaneView', working: true },
-  { logo: 'claude', name: 'Claude Code', state: 'done', stateClass: 'text-[#6fd99a]', message: 'Wrote the release notes for next-v0.2.0', session: 'quiet-harbor', badge: 'bg-done' },
-  { logo: 'rust-dark', name: 'cargo build', state: 'error', stateClass: 'text-[#ff8a8e]', message: '2 errors in termy_ffi', session: 'late-ember', badge: 'bg-failed' },
+  { logo: 'codex-dark', name: 'Codex', state: 'needs permission', stateClass: 'text-[#7dcfff]', message: 'Run git push origin next', session: 'shy-orchard', badge: 'bg-blocked', highlight: true },
+  { logo: 'claude', name: 'Claude Code', state: 'working', stateClass: 'text-[#a9b1d6]', message: 'Splitting PaneView', working: true },
+  { logo: 'claude', name: 'Claude Code', state: 'done', stateClass: 'text-[#9ece6a]', message: 'Wrote the release notes for next-v0.2.0', session: 'quiet-harbor', badge: 'bg-done' },
+  { logo: 'rust-dark', name: 'cargo build', state: 'error', stateClass: 'text-[#f7768e]', message: '2 errors in termy_ffi', session: 'late-ember', badge: 'bg-failed' },
 ]
 ---
 
@@ -44,7 +44,7 @@ const rows: Row[] = [
                 <span class="text-[15px] font-semibold">
                   {row.name} <span class:list={['font-medium', row.stateClass]}>{row.state}</span>
                 </span>
-                <span class="truncate text-[14px] text-[#b9b1bb]">{row.message}</span>
+                <span class="truncate text-[14px] text-[#a9b1d6]">{row.message}</span>
               </div>
               <span class="hidden w-24 shrink-0 justify-end text-right text-[13px] text-faint sm:flex">
                 {row.working ? <WorkingDots /> : row.session}

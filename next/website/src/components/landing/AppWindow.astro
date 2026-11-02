@@ -6,7 +6,7 @@ import WorkingDots from './WorkingDots.astro'
 ---
 
 <div
-  class="flex h-[640px] w-[900px] flex-col overflow-hidden rounded-2xl border border-white/9 bg-[#1c191f]/92 shadow-[0_40px_120px_rgb(0_0_0/55%)]"
+  class="flex h-[640px] w-[900px] flex-col overflow-hidden rounded-2xl border border-white/9 bg-[#16161e]/92 shadow-[0_40px_120px_rgb(0_0_0/55%)]"
   role="img"
   aria-label="A Termy Next window with Claude Code working, Codex asking for permission and a shell, in the session shy-orchard"
 >
@@ -26,13 +26,13 @@ import WorkingDots from './WorkingDots.astro'
       <div class="flex h-[30px] w-[170px] items-center gap-2 rounded-full pr-3 pl-[9px]">
         <span class="relative size-[15px]">
           <img src="/logos/codex-dark.svg" alt="" class="size-[15px]" />
-          <span class="absolute -top-[3px] -right-[3px] size-2 rounded-full border-[1.5px] border-[#1c191f] bg-blocked"></span>
+          <span class="absolute -top-[3px] -right-[3px] size-2 rounded-full border-[1.5px] border-[#16161e] bg-blocked"></span>
         </span>
-        <span class="text-[13px] text-[#b9b1bb]">Codex</span>
+        <span class="text-[13px] text-[#a9b1d6]">Codex</span>
       </div>
       <div class="flex h-[30px] w-[170px] items-center gap-2 rounded-full pr-3 pl-[9px]">
         <img src="/logos/neovim.svg" alt="" class="h-[15px] w-[14px]" />
-        <span class="text-[13px] text-[#b9b1bb]">nvim ~/notes</span>
+        <span class="text-[13px] text-[#a9b1d6]">nvim ~/notes</span>
       </div>
     </div>
   </div>
@@ -50,19 +50,19 @@ import WorkingDots from './WorkingDots.astro'
       </div>
       <div class="flex h-7 items-center gap-2 pr-2 pl-[18px]">
         <img src="/logos/codex-dark.svg" alt="" class="size-3.5" />
-        <span class="grow text-[13px] text-[#b9b1bb]">Codex</span>
+        <span class="grow text-[13px] text-[#a9b1d6]">Codex</span>
         <span class="size-[7px] rounded-full bg-blocked"></span>
       </div>
       <div class="flex h-7 items-center gap-2 pr-2 pl-[18px]">
         <img src="/logos/neovim.svg" alt="" class="h-3.5 w-[13px]" />
-        <span class="text-[13px] text-[#b9b1bb]">nvim ~/notes</span>
+        <span class="text-[13px] text-[#a9b1d6]">nvim ~/notes</span>
       </div>
       <div class="mt-2.5 flex h-7 items-center justify-between px-2">
-        <span class="text-[13px] font-medium text-[#b9b1bb]">quiet-harbor</span>
+        <span class="text-[13px] font-medium text-[#a9b1d6]">quiet-harbor</span>
         <span class="size-[7px] rounded-full bg-done"></span>
       </div>
       <div class="flex h-7 items-center px-2">
-        <span class="text-[13px] font-medium text-[#b9b1bb]">late-ember</span>
+        <span class="text-[13px] font-medium text-[#a9b1d6]">late-ember</span>
       </div>
     </div>
 
@@ -71,31 +71,31 @@ import WorkingDots from './WorkingDots.astro'
       <div class="flex h-[300px] shrink-0 flex-col overflow-hidden rounded-xl border border-white/7 bg-terminal">
         <div class="flex h-8 shrink-0 items-center gap-2 bg-white/3 px-3">
           <img src="/logos/claude.svg" alt="" class="size-[13px]" />
-          <span class="text-xs font-medium text-[#e6e0e8]">Claude Code</span>
+          <span class="text-xs font-medium text-[#c0caf5]">Claude Code</span>
           <span class="text-xs text-faint">~/Dev/termy</span>
         </div>
-        <pre class="px-4 py-3.5 font-mono text-xs leading-5 text-[#d8d1da]"><span class="text-faint">&gt;</span> give the pane header its own drag handle
+        <pre class="px-4 py-3.5 font-mono text-xs leading-5 text-[#c0caf5]"><span class="text-faint">&gt;</span> give the pane header its own drag handle
 
 <span class="text-done">●</span> Read <span class="text-faint">Sources/TermyNext/PaneView.swift</span>
 <span class="text-done">●</span> Read <span class="text-faint">Sources/TermyNext/PaneDrag.swift</span>
 <span class="text-done">●</span> Update <span class="text-faint">PaneView.swift</span>
-  <span class="text-faint">⎿</span>  <span class="text-done">+42</span> <span class="text-coral">−17</span>
+  <span class="text-faint">⎿</span>  <span class="text-done">+42</span> <span class="text-brand">−17</span>
 <span class="text-done">●</span> Bash <span class="text-faint">just test-next</span>
   <span class="text-faint">⎿</span>  38 tests passed
 
-<span class="text-[#ff9a5a]">✻ Splitting PaneView…</span> <span class="text-faint">1m 12s, esc to interrupt</span></pre>
+<span class="text-[#ff9e64]">✻ Splitting PaneView…</span> <span class="text-faint">1m 12s, esc to interrupt</span></pre>
       </div>
       <div class="flex grow flex-col overflow-hidden rounded-xl border border-blocked/45 bg-terminal">
         <div class="flex h-8 shrink-0 items-center gap-2 bg-white/3 px-3">
           <img src="/logos/codex-dark.svg" alt="" class="size-[13px]" />
-          <span class="text-xs font-medium text-[#e6e0e8]">Codex</span>
+          <span class="text-xs font-medium text-[#c0caf5]">Codex</span>
           <span class="grow text-xs text-faint">~/Dev/termy</span>
-          <span class="text-[11px] font-semibold text-[#7db5ff]">Needs permission</span>
+          <span class="text-[11px] font-semibold text-[#7dcfff]">Needs permission</span>
         </div>
-        <pre class="px-3.5 py-3 font-mono text-xs leading-5 text-[#d8d1da]">Run this command?
+        <pre class="px-3.5 py-3 font-mono text-xs leading-5 text-[#c0caf5]">Run this command?
 <span class="text-faint">$</span> git push origin next
 
-<span class="text-[#7db5ff]">› 1. Yes</span>
+<span class="text-[#7dcfff]">› 1. Yes</span>
   2. Yes, always for git push
   3. No, tell Codex what to do</pre>
       </div>
@@ -104,15 +104,15 @@ import WorkingDots from './WorkingDots.astro'
     <!-- Right split: a shell -->
     <div class="flex grow flex-col overflow-hidden rounded-xl border border-white/7 bg-terminal">
       <div class="flex h-8 shrink-0 items-center gap-2 bg-white/3 px-3">
-        <span class="text-xs font-medium text-[#e6e0e8]">zsh</span>
+        <span class="text-xs font-medium text-[#c0caf5]">zsh</span>
         <span class="text-xs text-faint">~/Dev/termy</span>
       </div>
-      <pre class="px-3.5 py-3 font-mono text-xs leading-5 text-[#d8d1da]"><span class="text-[#ff9a5a]">❯</span> termy mux layout
+      <pre class="px-3.5 py-3 font-mono text-xs leading-5 text-[#c0caf5]"><span class="text-[#7aa2f7]">❯</span> termy mux layout
 window 1  shy-orchard
   tab 1  Claude Code   <span class="text-faint">3 panes</span>
   tab 2  Codex
   tab 3  nvim ~/notes
-<span class="text-[#ff9a5a]">❯</span> <span class="caret inline-block h-3.5 w-[7px] translate-y-0.5 bg-foreground"></span></pre>
+<span class="text-[#7aa2f7]">❯</span> <span class="caret inline-block h-3.5 w-[7px] translate-y-0.5 bg-foreground"></span></pre>
     </div>
   </div>
 </div>

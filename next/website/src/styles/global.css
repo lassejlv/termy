@@ -33,8 +33,8 @@
   --color-soft: var(--soft);
   --color-faint: var(--faint);
   --color-dim: var(--dim);
-  --color-coral: var(--coral);
-  --color-on-coral: var(--on-coral);
+  --color-brand: var(--brand);
+  --color-on-brand: var(--on-brand);
   --color-blocked: var(--blocked);
   --color-done: var(--done);
   --color-failed: var(--failed);
@@ -46,38 +46,38 @@
   --radius-2xl: calc(var(--radius) * 1.8);
 }
 
-/* Dusk: the Termy Next icon's sunset over a night-time desk. */
+/* Termy's palette: Tokyo Night, as on termy.sh. */
 :root {
-  --background: #141216;
-  --foreground: #f2eef0;
-  --card: #1e1b21;
-  --card-foreground: #f2eef0;
-  --popover: #2a262e;
-  --popover-foreground: #f2eef0;
-  --primary: #ff6a55;
-  --primary-foreground: #1a0f12;
+  --background: #0d0f17;
+  --foreground: #e8eeff;
+  --card: #16161e;
+  --card-foreground: #e8eeff;
+  --popover: #1c1f30;
+  --popover-foreground: #e8eeff;
+  --primary: #7aa2f7;
+  --primary-foreground: #10192e;
   --secondary: rgb(255 255 255 / 8%);
-  --secondary-foreground: #f2eef0;
-  --muted: #26222b;
-  --muted-foreground: #a39ba5;
-  --accent: #2a262e;
-  --accent-foreground: #f2eef0;
+  --secondary-foreground: #e8eeff;
+  --muted: #1c1f30;
+  --muted-foreground: #787c99;
+  --accent: #1c1f30;
+  --accent-foreground: #e8eeff;
   --border: rgb(255 255 255 / 8%);
   --input: rgb(255 255 255 / 12%);
-  --ring: #ff6a55;
+  --ring: #7aa2f7;
   --radius: 0.75rem;
 
-  --panel: #1e1b21;
-  --raised: #2e2933;
-  --terminal: #110f13;
-  --soft: #c9c2cb;
-  --faint: #8a828c;
-  --dim: #6a626e;
-  --coral: #ff6a55;
-  --on-coral: #1a0f12;
-  --blocked: #4d9bff;
-  --done: #46c97a;
-  --failed: #ff5a5f;
+  --panel: #16161e;
+  --raised: #283457;
+  --terminal: #0f1018;
+  --soft: #a9b1d6;
+  --faint: #787c99;
+  --dim: #565f89;
+  --brand: #7aa2f7;
+  --on-brand: #10192e;
+  --blocked: #7dcfff;
+  --done: #9ece6a;
+  --failed: #f7768e;
 
   color-scheme: dark;
 }
@@ -90,7 +90,7 @@
     @apply bg-background font-sans text-foreground antialiased;
   }
   ::selection {
-    background: rgb(255 106 85 / 35%);
+    background: rgb(122 162 247 / 35%);
   }
   button:not(:disabled),
   [role="button"]:not(:disabled) {
@@ -105,7 +105,7 @@
       100deg,
       var(--foreground) 40%,
       #fff 46%,
-      #ffc4b8 50%,
+      #c0d4ff 50%,
       #fff 54%,
       var(--foreground) 60%
     );
