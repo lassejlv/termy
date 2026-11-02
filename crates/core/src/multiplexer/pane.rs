@@ -922,6 +922,11 @@ fn run(
                         | RemoteCommand::Graphics
                 );
                 let input = matches!(command, RemoteCommand::Write(_));
+                // Views that attach later read the colors from the launch
+                // settings, to resolve frames as this terminal does.
+                if let RemoteCommand::SetQueryColors(colors) = &command {
+                    shared.lock().unwrap().launch.config.query_colors = *colors;
+                }
                 if input {
                     // What the program printed before the input comes first.
                     let (found, more) =

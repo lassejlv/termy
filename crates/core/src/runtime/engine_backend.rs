@@ -346,6 +346,12 @@ impl Backend {
         }
     }
 
+    pub(super) fn seed_remote_query_colors(&mut self, query_colors: TerminalQueryColors) {
+        if let Self::Remote(backend) = self {
+            backend.seed_query_colors(query_colors);
+        }
+    }
+
     pub(super) fn palette(&self) -> crate::TerminalPalette {
         match self {
             Self::Custom(backend) => backend.palette(),

@@ -572,6 +572,113 @@ fn legacy_cell(
     }
 }
 
+/// The frame cell of a render cell, resolved like [`legacy_cell`] resolves
+/// the engine cell it was read from: a viewer of a hosted pane builds frame
+/// updates from the state it mirrors, as the host would (see
+/// [`legacy_frame_update`]).
+fn legacy_render_cell(
+    cell: &TerminalRenderCell,
+    palette: &TerminalPalette,
+    fallback: TerminalQueryColors,
+) -> TermyCell {
+    let (mut foreground, background) = if cell.inverse {
+        (cell.background, cell.foreground)
+    } else {
+        (cell.foreground, cell.background)
+    };
+    if cell.bold
+        && let TerminalRenderColor::Indexed(index @ 0..=7) = foreground
+    {
+        foreground = TerminalRenderColor::Indexed(index + 8);
+    }
+    let mut fg = resolve_color(foreground, palette, fallback);
+    if cell.dim {
+        fg.r /= 2;
+        fg.g /= 2;
+        fg.b /= 2;
+    }
+    let character = cell.text.chars().next().unwrap_or(' ');
+    let spacer = cell.wide_character_spacer || cell.leading_wide_character_spacer;
+    TermyCell {
+        char: character,
+        fg,
+        bg: resolve_color(background, palette, fallback),
+        uses_terminal_default_bg: background == TerminalRenderColor::DefaultBackground,
+        bold: cell.bold,
+        italic: cell.italic,
+        underline: cell.underline_style != TerminalUnderlineStyle::None,
+        strikethrough: cell.strikethrough,
+        render_text: !spacer && !cell.hidden && character != '\0' && !character.is_control(),
+        wide_character_spacer: spacer,
+        line_wrapped: cell.line_wrapped,
+    }
+}
+
+/// A frame update from a render read of the whole viewport (such as a
+/// hosted pane's mirrored state) and the damage since the read before.
+/// Scrolls become damage on the rows they moved, as in a local terminal's
+/// [`CustomBackend::frame_update`].
+pub(crate) fn legacy_frame_update(
+    read: &TerminalRenderRead,
+    mut update: TerminalRenderDamageSnapshot,
+    fallback: TerminalQueryColors,
+) -> TermyFrameUpdate {
+    let metadata = read.metadata;
+    let cols = usize::from(metadata.cols);
+    let rows = usize::from(metadata.rows);
+    expand_legacy_scroll_damage(&mut update, cols);
+    let mut damage = update.damage;
+    // Damage that does not fit the read, or a read that does not cover the
+    // viewport, cannot patch it: send the whole viewport.
+    let fits = read.cells.len() == cols * rows
+        && match &damage {
+            TerminalDamageSnapshot::Full => true,
+            TerminalDamageSnapshot::Partial(spans) => spans.iter().all(|span| {
+                span.row < rows && span.left_col <= span.right_col && span.right_col < cols
+            }),
+        };
+    if !fits {
+        damage = TerminalDamageSnapshot::Full;
+    }
+    let cells = match &damage {
+        TerminalDamageSnapshot::Full => {
+            let mut cells = crate::frame::frame_cells(read.cells.len());
+            cells.extend(
+                read.cells
+                    .iter()
+                    .map(|cell| legacy_render_cell(cell, &read.palette, fallback)),
+            );
+            cells
+        }
+        TerminalDamageSnapshot::Partial(spans) => {
+            let mut cells = crate::frame::frame_cells(
+                spans
+                    .iter()
+                    .map(|span| span.right_col + 1 - span.left_col)
+                    .sum(),
+            );
+            for span in spans {
+                let start = span.row * cols;
+                cells.extend(
+                    read.cells[start + span.left_col..=start + span.right_col]
+                        .iter()
+                        .map(|cell| legacy_render_cell(cell, &read.palette, fallback)),
+                );
+            }
+            cells
+        }
+    };
+    TermyFrameUpdate {
+        cols: metadata.cols,
+        rows: metadata.rows,
+        cells,
+        cursor: metadata.cursor,
+        display_offset: metadata.display_offset,
+        history_size: metadata.history_size,
+        damage,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

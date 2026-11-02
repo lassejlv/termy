@@ -94,6 +94,13 @@ public final class TerminalView: NSView {
     private var decodedImages: [String: CGImage] = [:]
     private var blinkTimer: Timer?
     private var metalFrameScheduled = false
+    /// The scheduled frame draws in this run-loop turn, not at the display link.
+    private var metalFrameRunsThisTurn = false
+    /// A frame was skipped because every frame in flight was on the GPU.
+    private var metalFrameWaitsForGPU = false
+    /// Paces Metal frames to the display: a `CADisplayLink` (macOS 14 and
+    /// later), paused while idle.
+    private var frameLink: NSObject?
     private var animationTimer: Timer?
     /// An animation frame came due while the window was hidden.
     private var animationPaused = false
@@ -139,6 +146,7 @@ public final class TerminalView: NSView {
     isolated deinit {
         blinkTimer?.invalidate()
         animationTimer?.invalidate()
+        stopDisplayLink()
         windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
         session.stop()
     }
@@ -246,27 +254,91 @@ public final class TerminalView: NSView {
         renderMetalFrame()
     }
 
+    /// Frames wait for the display's next refresh, so every pane of a window
+    /// draws once per refresh, in one Core Animation commit, however often
+    /// its program redraws. A frame that changes the view's size draws in
+    /// this run-loop turn instead, together with the new size.
     private func scheduleMetalFrame() {
-        guard metalRenderer != nil, !metalFrameScheduled else { return }
+        guard metalRenderer != nil else { return }
+        let resizing = inLiveResize || drawableSizeChanges
+        // A frame waiting for the display link still draws now when the size changes.
+        guard !metalFrameScheduled || (resizing && !metalFrameRunsThisTurn) else { return }
         metalFrameScheduled = true
-        // Common modes keep frames coming during live resize and mouse tracking.
-        RunLoop.main.perform(inModes: [.common]) { [weak self] in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.metalFrameScheduled = false
-                self.renderMetalFrame()
+        if resizing || !startDisplayLink() {
+            metalFrameRunsThisTurn = true
+            // Common modes keep frames coming during live resize and mouse tracking.
+            RunLoop.main.perform(inModes: [.common]) { [weak self] in
+                MainActor.assumeIsolated { self?.renderScheduledMetalFrame() }
             }
         }
+    }
+
+    private func renderScheduledMetalFrame() {
+        guard metalFrameScheduled else { return }
+        metalFrameScheduled = false
+        metalFrameRunsThisTurn = false
+        renderMetalFrame()
+    }
+
+    /// The drawable size that fits the view now.
+    private var fittingDrawableSize: CGSize {
+        let scale = layer?.contentsScale ?? 1
+        return CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())
+    }
+
+    private var drawableSizeChanges: Bool {
+        (layer as? CAMetalLayer)?.drawableSize != fittingDrawableSize
     }
 
     private func renderMetalFrame() {
         // Hidden windows skip frames; becoming visible redraws everything.
         guard let metalRenderer, let layer = layer as? CAMetalLayer, isOnScreen else { return }
-        let scale = layer.contentsScale
-        let size = CGSize(width: (bounds.width * scale).rounded(), height: (bounds.height * scale).rounded())
-        if layer.drawableSize != size { layer.drawableSize = size }
+        let size = fittingDrawableSize
+        let resized = layer.drawableSize != size
+        if resized { layer.drawableSize = size }
         layer.isOpaque = isOpaque
-        metalRenderer.draw(renderState, in: layer)
+        let drawn = metalRenderer.draw(
+            renderState, in: layer, synchronized: resized || inLiveResize,
+            onFrameCompleted: { [weak self] in
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.metalSlotFreed() } }
+            })
+        // Every frame in flight is still on the GPU: draw when one finishes.
+        if !drawn { metalFrameWaitsForGPU = true }
+    }
+
+    private func metalSlotFreed() {
+        guard metalFrameWaitsForGPU else { return }
+        metalFrameWaitsForGPU = false
+        scheduleMetalFrame()
+    }
+
+    // MARK: - Display link
+
+    /// Starts the display link, or returns false where there is none (before
+    /// macOS 14, or outside a window).
+    private func startDisplayLink() -> Bool {
+        guard #available(macOS 14.0, *), window != nil else { return false }
+        let link: CADisplayLink
+        if let existing = frameLink as? CADisplayLink {
+            link = existing
+        } else {
+            link = displayLink(target: DisplayLinkTarget(self), selector: #selector(DisplayLinkTarget.tick(_:)))
+            link.add(to: .main, forMode: .common)
+            frameLink = link
+        }
+        link.isPaused = false
+        return true
+    }
+
+    fileprivate func displayLinkTick() {
+        // Idle views don't keep the display link running.
+        if #available(macOS 14.0, *) { (frameLink as? CADisplayLink)?.isPaused = true }
+        renderScheduledMetalFrame()
+    }
+
+    private func stopDisplayLink() {
+        if #available(macOS 14.0, *) { (frameLink as? CADisplayLink)?.invalidate() }
+        frameLink = nil
     }
 
     private func frameDidChange(_ change: FrameChange) {
@@ -450,6 +522,13 @@ public final class TerminalView: NSView {
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        // A view's display link follows the screen of its window.
+        stopDisplayLink()
+        if metalFrameScheduled {
+            metalFrameScheduled = false
+            metalFrameRunsThisTurn = false
+            if window != nil { scheduleMetalFrame() }
+        }
         if let window { layer?.contentsScale = window.backingScaleFactor }
         observeWindow()
         resizeGridToFit()
@@ -567,5 +646,27 @@ public final class TerminalView: NSView {
 
 extension NSAppearance {
     var isDark: Bool { bestMatch(from: [.darkAqua, .aqua]) == .darkAqua }
+}
+#endif
+
+#if os(macOS)
+/// The display link's target. A display link retains its target, so it
+/// holds the view weakly, and the view invalidates the link when it goes.
+@MainActor
+private final class DisplayLinkTarget: NSObject {
+    weak var view: TerminalView?
+
+    init(_ view: TerminalView) {
+        self.view = view
+    }
+
+    @available(macOS 14.0, *)
+    @objc func tick(_ link: CADisplayLink) {
+        guard let view else {
+            link.invalidate()
+            return
+        }
+        view.displayLinkTick()
+    }
 }
 #endif

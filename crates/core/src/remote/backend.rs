@@ -40,6 +40,10 @@ pub(crate) struct RemoteBackend {
     /// Resizes are queued to the host; its frames report them later. Until a
     /// frame shows this size, resize decisions must compare against it.
     requested_size: Mutex<Option<TerminalSize>>,
+    /// The colors the host resolves default and ANSI colors with, once
+    /// known: what this view sent, or the pane's launch settings. Until
+    /// then frame updates are the host's own snapshots.
+    query_colors: Option<TerminalQueryColors>,
 }
 
 impl RemoteBackend {
@@ -52,6 +56,7 @@ impl RemoteBackend {
                 snapshot: (u64::MAX, Vec::new()),
             }),
             requested_size: Mutex::new(None),
+            query_colors: None,
         }
     }
 
@@ -136,7 +141,11 @@ impl RemoteBackend {
         self.transport.send(RemoteCommand::SetScrollback(lines));
     }
     pub(crate) fn set_query_colors(&mut self, colors: TerminalQueryColors) {
+        self.query_colors = Some(colors);
         self.transport.send(RemoteCommand::SetQueryColors(colors));
+    }
+    pub(crate) fn seed_query_colors(&mut self, colors: TerminalQueryColors) {
+        self.query_colors = Some(colors);
     }
     pub(crate) fn palette(&self) -> TerminalPalette {
         self.transport.state().render.palette.clone()
@@ -582,7 +591,16 @@ impl RemoteBackend {
         }
     }
 
-    pub(crate) fn frame_update(&self, _force_full: bool) -> TermyFrameUpdate {
+    /// Built from the mirrored state and its damage, as `render_read` is:
+    /// no round trip to the host, and only the cells that changed. A host
+    /// frame then costs a renderer polling on its UI thread a copy, not a
+    /// request that waits for the host (and could for seconds). Without the
+    /// pane's query colors the host's snapshot stays the source.
+    pub(crate) fn frame_update(&self, force_full: bool) -> TermyFrameUpdate {
+        if let Some(colors) = self.query_colors {
+            let (state, update) = self.damage(force_full);
+            return crate::runtime::legacy_frame_update(&state.render, update, colors);
+        }
         let frame = self.snapshot();
         TermyFrameUpdate {
             cols: frame.cols,

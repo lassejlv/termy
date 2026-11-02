@@ -1137,3 +1137,19 @@ fn panes_keep_their_launch_settings_and_actual_directory() {
     );
     pane.close().unwrap();
 }
+
+/// Views that attach later resolve frames with the pane's launch colors,
+/// so colors a view sent since replace them there.
+#[cfg(unix)]
+#[test]
+fn query_colors_a_view_sends_become_the_launch_colors() {
+    let pane = launched_pane("sleep 30", None);
+    let colors = crate::TerminalQueryColors {
+        foreground: crate::TerminalColor { r: 1, g: 2, b: 3 },
+        ..crate::TerminalQueryColors::default()
+    };
+    assert_ne!(pane.launch_config().config.query_colors, colors);
+    pane.command(RemoteCommand::SetQueryColors(colors)).unwrap();
+    assert_eq!(pane.launch_config().config.query_colors, colors);
+    pane.close().unwrap();
+}

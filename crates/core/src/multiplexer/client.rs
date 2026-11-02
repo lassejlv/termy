@@ -328,9 +328,13 @@ impl SessionClient {
         launch: PaneLaunch,
         wakeup: Option<TerminalWakeupNotifier>,
     ) -> anyhow::Result<(String, Terminal)> {
+        let query_colors = launch.config.query_colors;
         let (info, state) = self.create_pane(launch)?;
         match self.attach_state(&info.id, state, wakeup, true) {
-            Ok(terminal) => Ok((info.id, terminal)),
+            Ok(mut terminal) => {
+                terminal.seed_remote_query_colors(query_colors);
+                Ok((info.id, terminal))
+            }
             Err(error) => {
                 // Nobody would know of the new pane, or ever close it (audit L3).
                 if let Err(close) = self.close(&info.id) {
@@ -410,7 +414,15 @@ impl SessionClient {
         else {
             bail!("invalid attach response");
         };
-        self.attach_state(id, state, wakeup, host_capable)
+        let mut terminal = self.attach_state(id, state, wakeup, host_capable)?;
+        // The colors the host resolves frames with, so that the view builds
+        // them itself (see `RemoteBackend::frame_update`). Without them it
+        // asks the host for each frame, as before.
+        match self.launch_config(id) {
+            Ok(settings) => terminal.seed_remote_query_colors(settings.config.query_colors),
+            Err(error) => log::warn!("cannot read the launch settings of {id}: {error:#}"),
+        }
+        Ok(terminal)
     }
 
     /// The pane's current state, read once without attaching.

@@ -101,8 +101,8 @@ final class MetalTerminalRenderer {
         layer.pixelFormat = .bgra8Unorm
         layer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         layer.framebufferOnly = true
-        // Present in step with Core Animation so live resizes don't stretch.
-        layer.presentsWithTransaction = true
+        // `draw` turns this on for frames that change the layer's size.
+        layer.presentsWithTransaction = false
     }
 
     // MARK: - Invalidation
@@ -138,22 +138,48 @@ final class MetalTerminalRenderer {
 
     // MARK: - Drawing
 
-    /// Renders into the layer's next drawable and presents it.
-    func draw(_ state: RenderState, in layer: CAMetalLayer) {
+    /// Renders into the layer's next drawable and presents it, without
+    /// waiting for the GPU. Returns false, drawing nothing, while every frame
+    /// in flight is still on the GPU; `onFrameCompleted` is called (on a
+    /// Metal thread) as each frame finishes, so the caller can draw then.
+    ///
+    /// `synchronized` presents with the Core Animation transaction, for a
+    /// frame that changes the layer's size: the new size and its content
+    /// then appear together instead of the old frame stretching. It waits
+    /// until the GPU has scheduled the frame, so other frames don't use it.
+    @discardableResult
+    func draw(
+        _ state: RenderState, in layer: CAMetalLayer, synchronized: Bool = false,
+        onFrameCompleted: (@Sendable () -> Void)? = nil
+    ) -> Bool {
         let scale = layer.contentsScale
-        guard layer.drawableSize.width >= 1, layer.drawableSize.height >= 1,
-              let commandBuffer = queue.makeCommandBuffer() else { return }
-        inFlight.wait()
+        guard layer.drawableSize.width >= 1, layer.drawableSize.height >= 1 else { return true }
+        // Blocking here would stall the main thread on a busy GPU.
+        guard inFlight.wait(timeout: .now()) == .success else { return false }
+        guard let commandBuffer = queue.makeCommandBuffer() else {
+            inFlight.signal()
+            return true
+        }
         let semaphore = inFlight
-        commandBuffer.addCompletedHandler { _ in semaphore.signal() }
+        commandBuffer.addCompletedHandler { _ in
+            semaphore.signal()
+            onFrameCompleted?()
+        }
+        if layer.presentsWithTransaction != synchronized { layer.presentsWithTransaction = synchronized }
         guard let drawable = layer.nextDrawable() else {
             commandBuffer.commit()
-            return
+            return true
         }
         encode(state, scale: scale, target: drawable.texture, commandBuffer: commandBuffer)
-        commandBuffer.commit()
-        commandBuffer.waitUntilScheduled()
-        drawable.present()
+        if synchronized {
+            commandBuffer.commit()
+            commandBuffer.waitUntilScheduled()
+            drawable.present()
+        } else {
+            commandBuffer.present(drawable)
+            commandBuffer.commit()
+        }
+        return true
     }
 
     /// Renders into an offscreen texture and returns its BGRA bytes, top row

@@ -827,6 +827,7 @@ pub struct Terminal {
 
 mod custom_backend;
 mod engine_backend;
+pub(crate) use custom_backend::legacy_frame_update;
 
 impl Terminal {
     /// Attach a renderer to a terminal owned by the built-in session host.
@@ -1163,6 +1164,14 @@ impl Terminal {
 
     pub fn set_query_colors(&mut self, query_colors: TerminalQueryColors) {
         self.backend.set_query_colors(query_colors);
+    }
+
+    /// Tells a view of a hosted pane the colors its host resolves default
+    /// and ANSI colors with, without sending them to the host. With them,
+    /// [`Self::frame_update`] is built from the mirrored state instead of
+    /// asking the host for a snapshot. Does nothing for other terminals.
+    pub(crate) fn seed_remote_query_colors(&mut self, query_colors: TerminalQueryColors) {
+        self.backend.seed_remote_query_colors(query_colors);
     }
 
     pub fn palette(&self) -> crate::TerminalPalette {

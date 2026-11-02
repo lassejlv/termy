@@ -48,6 +48,7 @@ mod replica;
 mod viewport;
 use damage::expand_legacy_scroll_damage;
 use legacy::LegacyCells;
+pub(crate) use legacy::legacy_frame_update;
 
 const EVENT_BATCH: usize = 2048;
 const MAX_EVENTS: usize = 65_536;

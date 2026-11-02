@@ -870,3 +870,97 @@ fn a_full_input_queue_keeps_the_latest_size_and_drops_typing() {
     assert_eq!(resizes, [120]);
     assert_eq!(writes, INPUT_CAPACITY - 1);
 }
+
+/// A view that knows the pane's query colors builds its frame updates from
+/// the frames it mirrors: the same cells the host's own frame updates hold,
+/// patched by damage, scrolls included, and no request reaches the host.
+#[test]
+fn frame_updates_are_built_from_mirrored_frames_without_asking_the_host() {
+    let host = FakeHost::new();
+    let (view, mut rpc, _input, mut subscription) = host.attach();
+    let transport: Arc<dyn RemoteTransport> = view.clone();
+    let mut terminal = Terminal::from_remote(transport);
+    let mut colors = TerminalQueryColors {
+        foreground: TerminalColor { r: 1, g: 2, b: 3 },
+        background: TerminalColor { r: 4, g: 5, b: 6 },
+        ..TerminalQueryColors::default()
+    };
+    colors.ansi[1] = TerminalColor { r: 7, g: 8, b: 9 };
+    terminal.seed_remote_query_colors(colors);
+    let mut source = Terminal::new_display(size(80, 24), None);
+    source.set_query_colors(colors);
+
+    let mut frames = crate::remote::frame::FrameEncoder::default();
+    let mut images = graphics::GraphicsEncoder::default();
+    let mut shown: Vec<TermyCell> = Vec::new();
+    let mut patches = 0;
+    let wide = "\u{4e2d}\u{6587} e\u{301}";
+    let outputs: Vec<Vec<u8>> = vec![
+        b"plain \x1b[1;31mbold red\x1b[0m \x1b[2;34mdim\x1b[7m inverse\x1b[0m\r\n".to_vec(),
+        format!("\x1b[8mhidden\x1b[0m {wide} \x1b[48;5;22m\x1b[K\x1b[0m\r\n").into_bytes(),
+        b"\x1b[4munder\x1b[9mstrike\x1b[3mitalic\x1b[0m \x1b]4;2;rgb:aa/bb/cc\x07\x1b[32mosc4\x1b[0m\r\n"
+            .to_vec(),
+        "x".repeat(130).into_bytes(),
+        // Scrolls the screen into history: past a whole screen, then by a
+        // few rows, which the view patches by the rows that moved.
+        (0..40).flat_map(|line| format!("\r\nline {line}").into_bytes()).collect(),
+        (40..45).flat_map(|line| format!("\r\nline {line}").into_bytes()).collect(),
+        b"\x1b[5;10H\x1b[7mchanged\x1b[0m".to_vec(),
+        b"\x1b[?1049h\x1b[2J\x1b[Halternate".to_vec(),
+    ];
+    for output in outputs {
+        source.feed_output(&output);
+        let state = RemoteState::capture(&source);
+        let generation = state.render.metadata.generation;
+        let (_, placements) = images.encode(&[]);
+        write_message(
+            &mut subscription,
+            &Update::Frame(Box::new(frames.encode(&state)), placements),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while view.state().render.metadata.generation != generation {
+            assert!(Instant::now() < deadline, "the frame never arrived");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let update = terminal.frame_update(shown.is_empty());
+        match &update.damage {
+            TerminalDamageSnapshot::Full => shown = update.cells.clone(),
+            TerminalDamageSnapshot::Partial(spans) => {
+                patches += 1;
+                let cols = usize::from(update.cols);
+                let mut cells = update.cells.iter();
+                for span in spans {
+                    for col in span.left_col..=span.right_col {
+                        shown[span.row * cols + col] = *cells.next().unwrap();
+                    }
+                }
+                assert!(cells.next().is_none(), "cells left over after the spans");
+            }
+        }
+        let expected = source.frame_update(true);
+        assert_eq!(
+            shown,
+            expected.cells,
+            "after {:?}",
+            String::from_utf8_lossy(&output)
+        );
+        assert_eq!(update.cursor, expected.cursor);
+        assert_eq!(
+            (update.display_offset, update.history_size),
+            (expected.display_offset, expected.history_size)
+        );
+    }
+    assert_eq!(patches, 4, "updates that were patches");
+    assert!(
+        matches!(terminal.frame_update(false).damage, TerminalDamageSnapshot::Partial(ref spans) if spans.is_empty()),
+        "an unchanged frame has no damage"
+    );
+    rpc.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    assert!(
+        read_message::<Request>(&mut rpc).is_err(),
+        "a frame update asked the host"
+    );
+}
