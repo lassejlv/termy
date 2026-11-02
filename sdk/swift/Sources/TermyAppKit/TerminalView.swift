@@ -292,6 +292,15 @@ public final class TerminalView: NSView {
         }
     }
 
+    /// The cursor's cell in this view, or nil while the view is scrolled back
+    /// from it. Hosts anchor popups at the prompt with it.
+    public var cursorRect: CGRect? {
+        let frame = session.frame
+        guard !frame.isEmpty, frame.displayOffset == 0 else { return nil }
+        let cursor = frame.cursor
+        return renderer.cellRect(row: max(0, min(cursor.row, frame.rows - 1)), col: max(0, min(cursor.col, frame.cols - 1)))
+    }
+
     /// Where a search match is drawn in this view, or nil while it is
     /// scrolled out of the viewport.
     public func rect(for match: SearchMatch) -> CGRect? {

@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NSApp.mainMenu = buildMainMenu()
         installKeyMonitor()
         PaneNotifier.shared.start()
+        ShellPlugins.shared.start()
         processTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
             MainActor.assumeIsolated { AppDelegate.shared.refreshProcesses() }
         }
@@ -133,8 +134,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func open(_ session: TerminalSessionGroup) -> WindowController? {
         let controller = WindowController(session: session)
         controllers.append(controller)
-        if let frame = keyController?.window?.frame, controllers.count > 1 {
-            controller.window?.setFrame(frame.offsetBy(dx: 28, dy: -28), display: false)
+        // Opens at the remembered frame; steps down and right off any window already there.
+        if let window = controller.window {
+            let others = controllers.filter { $0 !== controller }.compactMap(\.window).filter(\.isVisible)
+            var frame = window.frame
+            while others.contains(where: { abs($0.frame.minX - frame.minX) < 4 && abs($0.frame.maxY - frame.maxY) < 4 }) {
+                frame = frame.offsetBy(dx: 28, dy: -28)
+            }
+            if frame != window.frame { window.setFrame(frame, display: false) }
         }
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
@@ -392,10 +399,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private func handleKey(_ event: NSEvent) -> Bool {
         guard let window = event.window, let controller = controllers.first(where: { $0.window === window }) else { return false }
         let editingText = window.firstResponder is NSTextView
+        // The zsh completion popup takes ⌃N, ⌃P, Return, Tab and Esc while it's up.
+        if let pane = (window.firstResponder as? TerminalView)?.delegate as? PaneView, pane.shellUI.handleKey(event) {
+            return true
+        }
         if var command = Command.matching(event) {
+            // ⇧⌘E is the terminal's own key while the zsh plugins are off.
+            if command == .askForCommand, !Preferences.shared.shellPlugins { return false }
             // ⇧⌘G is Go to Directory, except while finding, where it goes back.
             if command == .goToDirectory, controller.isSearching { command = .findPrevious }
-            if editingText, ![.commandPalette, .changeSession, .find, .findNext, .findPrevious].contains(command) { return false }
+            if editingText, ![.commandPalette, .changeSession, .find, .findNext, .findPrevious, .askForCommand].contains(command) { return false }
             controller.run(command)
             return true
         }
@@ -490,7 +503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             NSMenuItem(title: "Copy", action: #selector(TerminalView.copy(_:)), keyEquivalent: "c"),
             NSMenuItem(title: "Paste", action: #selector(TerminalView.paste(_:)), keyEquivalent: "v"),
             NSMenuItem(title: "Select All", action: #selector(NSResponder.selectAll(_:)), keyEquivalent: "a"),
-            sep(), c(.find), c(.findNext), c(.findPrevious), sep(), c(.insertPath), c(.clearScrollback),
+            sep(), c(.find), c(.findNext), c(.findPrevious), sep(), c(.insertPath), c(.askForCommand), c(.clearScrollback),
         ]))
         main.addItem(submenu("View", [
             c(.commandPalette), c(.changeSession), c(.renameSession), c(.renameTab), sep(),

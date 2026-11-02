@@ -77,6 +77,35 @@ screen or the process tree.
   sessions, with its kind ("Needs permission") and `msg`. Click a row to jump
   there.
 
+## zsh plugins
+
+Off by default; turn on **Shell plugins** in Settings → General. New panes
+then start zsh with a small plugin (`Sources/TermyNext/ShellScripts.swift`),
+loaded through a ZDOTDIR of ours that puts yours back first. It reports the
+command line over a Unix socket as you type, and the app draws native UI at
+the cursor:
+
+- **Completions:** history entries and commands that start with what you
+  typed. ⌃N / ⌃P pick one (then ↓ / ↑ too), Return or Tab puts it on the
+  line, Esc hides the list.
+- **Command box (⇧⌘E):** describe a command and Claude Code (`claude -p`) or
+  Codex (`codex exec`) writes it onto the line, with the sign-in they already
+  have; no API keys of our own. Return runs it, a follow-up refines it, Esc
+  leaves it on the line to edit.
+
+The plugin does nothing when Termy Next isn't listening, and a closed socket
+can't end the shell. The protocol is in `ShellProtocol.swift`.
+
+## SSH
+
+`ssh` typed in zsh and Add Remote Host send `COLORTERM` along (Settings →
+General → SSH, on by default), so Claude Code and other programs on the server
+draw 24-bit color instead of guessing 256 or 16 colors from `TERM`. The server
+must accept it (`AcceptEnv COLORTERM`, as Debian and Ubuntu ship). Copying
+over SSH goes through OSC 52, which Termy Next accepts from the pane you're
+working in. Shift- or Option-drag selects text locally inside programs that
+track the mouse.
+
 ## Shortcuts
 
 These are Rex's defaults.

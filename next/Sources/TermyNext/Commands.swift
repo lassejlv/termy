@@ -15,7 +15,7 @@ enum Command: String, CaseIterable {
     case toggleSidebar, toggleActivity
     case tabsAbove, tabsLeft, tabsRight, paneComfortable, paneCompact, interfaceLiquid, interfaceClassic
     case increaseFontSize, decreaseFontSize, resetFontSize
-    case clearScrollback, insertPath, find, findNext, findPrevious
+    case clearScrollback, insertPath, askForCommand, find, findNext, findPrevious
     case selectTab1, selectTab2, selectTab3, selectTab4, selectTab5, selectTab6, selectTab7, selectTab8, selectLastTab
 
     var title: String {
@@ -76,6 +76,7 @@ enum Command: String, CaseIterable {
         case .findNext: "Find Next"
         case .findPrevious: "Find Previous"
         case .insertPath: "Insert Path…"
+        case .askForCommand: "Ask for a Command…"
         case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8:
             "Show Tab \(tabNumber!)"
         case .selectLastTab: "Show Last Tab"
@@ -116,7 +117,10 @@ enum Command: String, CaseIterable {
     }
 
     /// Hidden from the palette: they only make sense as shortcuts.
-    var showsInPalette: Bool { tabNumber == nil && self != .selectLastTab && self != .commandPalette }
+    @MainActor var showsInPalette: Bool {
+        guard tabNumber == nil, self != .selectLastTab, self != .commandPalette else { return false }
+        return self != .askForCommand || Preferences.shared.shellPlugins
+    }
 
     // Rex's default bindings (see the Rex Beta menus).
     var shortcut: (key: String, modifiers: NSEvent.ModifierFlags)? {
@@ -167,6 +171,7 @@ enum Command: String, CaseIterable {
         case .find: return ("f", .command)
         case .findNext: return ("g", .command)
         case .insertPath: return ("i", [.command, .control])
+        case .askForCommand: return ("e", [.command, .shift])
         case .equalizePanes: return ("=", [.command, .control])
         case .selectLastTab: return ("9", .command)
         default:

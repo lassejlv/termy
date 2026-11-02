@@ -266,7 +266,8 @@ final class TabStripView: GlassPanel {
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         guard let index = index(at: point) else {
-            if event.clickCount == 2 { navigator?.run(.newTab) }
+            // Between tabs is titlebar too: drag the window, double-click to zoom.
+            (window as? TermyWindow)?.titlebarMouseDown(event)
             return
         }
         if hoverClose, (navigator?.session.tabs.count ?? 0) > 1 {

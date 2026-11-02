@@ -96,3 +96,40 @@ import Testing
         #expect(ShellProcess.workingDirectory(of: getpid()) != nil)
     }
 }
+
+@Suite struct ShellProtocolTests {
+    @Test func parsesMessagesFromZsh() {
+        #expect(ShellProtocol.parse("hello\u{1F}pane-1\u{1F}42\u{1F}/usr/bin:/bin") == .hello(pane: "pane-1", pid: 42, path: "/usr/bin:/bin"))
+        #expect(ShellProtocol.parse("done") == .done)
+        #expect(ShellProtocol.parse("nonsense") == nil)
+        let line = ShellProtocol.parse("line\u{1F}2\u{1F}cl\u{1F}claude\u{1E}clear\u{1F}clang\u{1E}clang++")
+        #expect(line == .line(ShellLine(buffer: "cl", cursor: 2, history: ["claude", "clear"], commands: ["clang", "clang++"])))
+        let empty = ShellProtocol.parse("line\u{1F}0\u{1F}\u{1F}\u{1F}")
+        #expect(empty == .line(ShellLine(buffer: "", cursor: 0)))
+    }
+
+    @Test func escapingRoundTrips() {
+        let text = "print -r -- \"a\\b\"\necho second"
+        #expect(ShellProtocol.escape(text) == "print -r -- \"a\\\\b\"\\necho second")
+        #expect(ShellProtocol.unescape(ShellProtocol.escape(text)) == text)
+        #expect(ShellProtocol.encode("set", "a\u{1F}b") == "set\u{1F}ab\n")
+    }
+
+    @Test func suggestionsSkipTheLineItself() {
+        let line = ShellLine(buffer: "clear", cursor: 5, history: ["clear", "clear -x"], commands: ["clear"])
+        #expect(line.suggestions.history == ["clear -x"])
+        #expect(line.suggestions.commands.isEmpty)
+        #expect(ShellLine(buffer: "cl", cursor: 1, history: ["clear"]).suggestions.history.isEmpty)
+        #expect(ShellLine(buffer: "  ", cursor: 2, history: ["  ls"]).suggestions.history.isEmpty)
+    }
+
+    @Test func commandFromAgentReply() {
+        #expect(ShellProtocol.command(fromAgentReply: "find . -name mod.rs\n") == "find . -name mod.rs")
+        #expect(ShellProtocol.command(fromAgentReply: "```zsh\nls -la\n```") == "ls -la")
+        #expect(ShellProtocol.command(fromAgentReply: "Here:\n```\n$ du -sh *\n```\nDone.") == "du -sh *")
+        #expect(ShellProtocol.command(fromAgentReply: "Must output one command. Likely clear.\n\nman clear") == "man clear")
+        #expect(ShellProtocol.command(fromAgentReply: "`git status`") == "git status")
+        #expect(ShellProtocol.command(fromAgentReply: "for f in *; do\n  echo $f\ndone") == "for f in *; do\n  echo $f\ndone")
+        #expect(ShellProtocol.command(fromAgentReply: "  \n") == nil)
+    }
+}

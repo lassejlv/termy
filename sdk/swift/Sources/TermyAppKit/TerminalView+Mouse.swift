@@ -12,9 +12,10 @@ extension TerminalView {
         KeyMapping.modifiers(event.modifierFlags).intersection([.control, .alt, .shift])
     }
 
-    /// Option forces local selection even when the program tracks the mouse.
+    /// Shift or Option selects text locally even when the program tracks the
+    /// mouse, as Claude Code and other full-screen programs suggest.
     private func forcesLocalSelection(_ event: NSEvent) -> Bool {
-        event.modifierFlags.contains(.option)
+        !event.modifierFlags.intersection([.shift, .option]).isEmpty
     }
 
     // MARK: Buttons

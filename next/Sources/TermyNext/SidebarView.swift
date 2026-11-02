@@ -289,7 +289,10 @@ final class SidebarView: GlassPanel {
 
     override func mouseDown(with event: NSEvent) {
         press = nil
-        guard let index = rowIndex(at: convert(event.locationInWindow, from: nil)) else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        // The band above the rows is titlebar: drag the window, double-click to zoom.
+        if point.y < topInset { return (window as? TermyWindow)?.titlebarMouseDown(event) ?? () }
+        guard let index = rowIndex(at: point) else { return }
         switch rows[index].0 {
         case .host:
             break

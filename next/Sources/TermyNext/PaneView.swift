@@ -62,6 +62,12 @@ final class PaneView: NSView, TerminalViewDelegate {
 
     /// The pane in the session host that runs this pane's program.
     let paneID: String?
+    /// Names an in-app pane to its zsh plugin (`TERMY_NEXT_PANE`).
+    private let inAppShellToken: String?
+    /// How this pane's zsh plugin names it: the host's pane ID, or ours.
+    var shellToken: String? { paneID ?? inAppShellToken }
+    /// The zsh plugin's completion popup and ⇧⌘E command box.
+    private(set) lazy var shellUI = PaneShellUI(pane: self)
     /// The program the host started for this pane, usually the shell.
     private(set) var shellPID: pid_t?
     private var processName: String?
@@ -108,13 +114,16 @@ final class PaneView: NSView, TerminalViewDelegate {
         var options = TerminalOptions(config: app.termyConfig, workingDirectory: workingDirectory, startupCommand: command)
         options.environment["TERM_PROGRAM"] = "TermyNext"
         if Preferences.shared.usesSessionHost {
+            options.environment.merge(ShellPlugins.shared.environment(token: nil)) { $1 }
             let terminal = try SessionHost.shared.requireMultiplexer().createTerminal(size: Self.initialSize, options: options)
             self.init(hostTerminal: terminal, directory: workingDirectory)
         } else {
+            let token = UUID().uuidString
+            options.environment.merge(ShellPlugins.shared.environment(token: token)) { $1 }
             // The shell is a child of the app; the new child is this pane's.
             let before = ShellProcess.children()
             let terminal = try Terminal(size: Self.initialSize, options: options)
-            self.init(hostTerminal: terminal, directory: workingDirectory)
+            self.init(hostTerminal: terminal, directory: workingDirectory, shellToken: token)
             shellPID = ShellProcess.children().subtracting(before).min()
         }
     }
@@ -134,12 +143,13 @@ final class PaneView: NSView, TerminalViewDelegate {
         return TerminalSize(cols: 80, rows: 24, cellWidth: render.cellWidth, cellHeight: render.cellHeight)
     }
 
-    private init(hostTerminal: Terminal, directory: String?) {
+    private init(hostTerminal: Terminal, directory: String?, shellToken: String? = nil) {
         let app = AppConfig.shared
         let session = TerminalSession(terminal: hostTerminal, size: Self.initialSize)
         terminal = TerminalView(session: session, renderConfig: app.terminalRenderConfig)
         terminal.optionAsAlt = (try? app.termyConfig.native().macosOptionAsAlt) ?? false
         paneID = hostTerminal.paneID
+        inAppShellToken = shellToken
         shellPID = SessionHost.shared.childPID(for: hostTerminal.paneID)
         self.directory = directory
         super.init(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
@@ -155,6 +165,7 @@ final class PaneView: NSView, TerminalViewDelegate {
         header.pane = self
         updateShape()
         refreshProcess()
+        ShellPlugins.shared.register(self)
     }
 
     @available(*, unavailable)
@@ -202,6 +213,7 @@ final class PaneView: NSView, TerminalViewDelegate {
                                       width: barSize.width, height: barSize.height)
             search.spotlight.frame = terminal.frame
         }
+        shellUI.position()
         updateShadowPath()
     }
 
@@ -264,10 +276,16 @@ final class PaneView: NSView, TerminalViewDelegate {
     private var zoomBadge: NSView?
 
     private func showZoomBadge() {
-        zoomBadge?.removeFromSuperview()
         let size = AppConfig.shared.fontSize(zoom: zoom)
         let points = size.rounded() == size ? "\(Int(size)) pt" : String(format: "%.1f pt", size)
-        let label = NSTextField(labelWithString: zoom == 0 ? "\(points) · default" : points)
+        showBadge(zoom == 0 ? "\(points) · default" : points)
+    }
+
+    /// A short note in the middle of the pane for a moment, such as the font
+    /// size or "Copied".
+    private func showBadge(_ text: String) {
+        zoomBadge?.removeFromSuperview()
+        let label = NSTextField(labelWithString: text)
         label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
         label.textColor = AppConfig.shared.theme.textPrimary
         label.sizeToFit()
@@ -294,12 +312,14 @@ final class PaneView: NSView, TerminalViewDelegate {
         terminal.apply(AppConfig.shared.terminalRenderConfig(zoom: zoom))
         search?.bar.applyTheme()
         search?.spotlight.applyTheme()
+        shellUI.applyTheme()
         updateShape()
         needsLayout = true
         header.needsDisplay = true
     }
 
     private func focusChanged() {
+        shellUI.lineChanged()
         header.showsButtons = hovering || isFocused
         header.needsDisplay = true
         if isFocused, activity == .done {
@@ -365,7 +385,13 @@ final class PaneView: NSView, TerminalViewDelegate {
         if let search { search.step(direction) } else { showSearch() }
     }
 
-    func searchTick() { search?.tick() }
+    func searchTick() {
+        search?.tick()
+        shellUI.position()
+    }
+
+    /// The zsh plugin reported a new command line, or went away.
+    func shellLineChanged() { shellUI.lineChanged() }
 
     // MARK: Process and status
 
@@ -458,6 +484,14 @@ final class PaneView: NSView, TerminalViewDelegate {
     }
 
     func terminalView(_ view: TerminalView, shouldOpen url: URL) -> Bool { true }
+
+    /// OSC 52 copies, as Claude Code and Neovim send over SSH: allowed from
+    /// the pane you're working in, never from one in the background.
+    func terminalView(_ view: TerminalView, shouldWriteClipboard text: String) -> Bool {
+        guard isFocused, window?.isKeyWindow == true, NSApp.isActive else { return false }
+        showBadge("Copied")
+        return true
+    }
 
     /// A file, image or text dragged over the pane: the pane lights up and
     /// says what dropping does.

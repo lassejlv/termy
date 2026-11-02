@@ -41,6 +41,30 @@ final class Preferences {
         set { defaults.set(newValue, forKey: "usesSessionHost"); changed() }
     }
 
+    /// zsh plugins: the completion popup and the ⇧⌘E command box. Off by
+    /// default; applies to panes opened after it's turned on.
+    var shellPlugins: Bool {
+        get { defaults.bool(forKey: "shellPlugins") }
+        set { defaults.set(newValue, forKey: "shellPlugins"); changed() }
+    }
+    /// The size and place of the window last moved or resized, for new
+    /// windows and the next launch.
+    var lastWindowFrame: NSRect? {
+        get { defaults.string(forKey: "lastWindowFrame").map(NSRectFromString).flatMap { $0.width > 0 ? $0 : nil } }
+        set { defaults.set(newValue.map(NSStringFromRect), forKey: "lastWindowFrame") }
+    }
+    /// ssh sends COLORTERM along (zsh and Add Remote Host), so programs on
+    /// the server use 24-bit color. On by default.
+    var sshSendsColor: Bool {
+        get { defaults.object(forKey: "sshSendsColor") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "sshSendsColor") }
+    }
+    /// The agent the command box asks, a `ShellAgent.id` such as "claude:haiku".
+    var shellAgent: String {
+        get { defaults.string(forKey: "shellAgent") ?? "claude:haiku" }
+        set { defaults.set(newValue, forKey: "shellAgent") }
+    }
+
     // Notifications (OSC 7501). These don't restyle windows, so setting
     // them posts no change.
     private func flag(_ key: String) -> Bool { defaults.object(forKey: key) as? Bool ?? true }

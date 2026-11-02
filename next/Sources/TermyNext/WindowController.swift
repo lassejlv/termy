@@ -14,16 +14,50 @@ final class TermyWindow: NSWindow {
         onFirstResponderChange?()
         return result
     }
+
+    /// A press on empty titlebar: drags the window, and a double-click does
+    /// what System Settings → Desktop & Dock says (zoom by default).
+    func titlebarMouseDown(_ event: NSEvent) {
+        guard event.clickCount == 2 else { return performDrag(with: event) }
+        switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
+        case "Minimize": performMiniaturize(nil)
+        case "None": break
+        default: performZoom(nil)
+        }
+    }
 }
 
 /// Root of the window's views; lays out chrome around the pane area.
 @MainActor
 final class RootView: NSView {
     var onLayout: (() -> Void)?
+    /// The band at the top that acts as the titlebar where nothing covers it.
+    var titlebarHeight: CGFloat = 0
+    /// The views under the chrome (backdrop, tint) that the titlebar band
+    /// answers for.
+    var backdrops: [NSView] = []
     override var isFlipped: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
     override func layout() {
         super.layout()
         onLayout?()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        guard let hit, hit === self || backdrops.contains(where: { $0 === hit }) else { return hit }
+        let local = convert(point, from: superview)
+        return local.y < titlebarHeight ? self : hit
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        if local.y < titlebarHeight, let window = window as? TermyWindow {
+            window.titlebarMouseDown(event)
+        } else {
+            super.mouseDown(with: event)
+        }
     }
 }
 
@@ -92,8 +126,13 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         window.onFirstResponderChange = { [weak self] in self?.syncFocus() }
         buildViews()
         window.contentView = root
-        window.setFrameAutosaveName("TermyNextMain")
-        if window.frame.origin == .zero { window.center() }
+        // The last size and place any window had; the frame macOS kept under
+        // the old autosave name before that.
+        if let frame = Preferences.shared.lastWindowFrame, NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) {
+            window.setFrame(frame, display: false)
+        } else if !window.setFrameUsingName("TermyNextMain") {
+            window.center()
+        }
         showSession(session)
         NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged), name: Preferences.didChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(workspaceChanged), name: Workspace.didChange, object: nil)
@@ -107,6 +146,8 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     private func buildViews() {
         root.wantsLayer = true
         root.onLayout = { [weak self] in self?.layoutRoot() }
+        root.titlebarHeight = titlebarHeight
+        root.backdrops = [glass, tint]
         glass.material = .hudWindow
         glass.blendingMode = .behindWindow
         glass.state = .active
@@ -583,6 +624,8 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
                 return dropOnNewTab(dragging: pane)
             }
         }
+        // Anywhere else in the titlebar opens it as a new tab, not just beside the tabs.
+        if isInTitlebar(inWindow) { return dropOnNewTab(dragging: pane) }
 
         let p = container.convert(inWindow, from: nil)
         guard container.bounds.contains(p), let tab = currentTab else { return nil }
@@ -596,6 +639,12 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         let sameTab = tab.panes[pane.id] != nil
         if sameTab, nearest.0 > 0.3 { return .swap(over) }
         return .split(over, nearest.1)
+    }
+
+    /// Whether a window point is in the titlebar band, outside the panes.
+    private func isInTitlebar(_ inWindow: NSPoint) -> Bool {
+        let p = root.convert(inWindow, from: nil)
+        return root.bounds.contains(p) && p.y < titlebarHeight && !container.frame.contains(p)
     }
 
     /// Where a whole dragged tab would land: merged beside a pane or into a
@@ -616,6 +665,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
                 return ownTab ? nil : .newTab
             }
         }
+        if isInTitlebar(inWindow) { return ownTab ? nil : .newTab }
         let p = container.convert(inWindow, from: nil)
         guard container.bounds.contains(p), let tab = currentTab, tab !== dragged else { return nil }
         let candidates = tab.allPanes.filter { !$0.isFloating && $0.superview === container && !$0.isClosing }
@@ -949,7 +999,18 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         syncFocus()
         DispatchQueue.main.async { [weak self] in self?.positionTrafficLights() }
     }
-    func windowDidResize(_ notification: Notification) { positionTrafficLights() }
+    func windowDidResize(_ notification: Notification) {
+        positionTrafficLights()
+        rememberFrame()
+    }
+
+    func windowDidMove(_ notification: Notification) { rememberFrame() }
+
+    /// New windows and the next launch open at this window's size and place.
+    private func rememberFrame() {
+        guard let window, window.isVisible, !window.styleMask.contains(.fullScreen), !window.isMiniaturized else { return }
+        Preferences.shared.lastWindowFrame = window.frame
+    }
     func windowDidEnterFullScreen(_ notification: Notification) { root.needsLayout = true }
     func windowDidExitFullScreen(_ notification: Notification) { root.needsLayout = true }
 
@@ -996,6 +1057,8 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         case .newTab: newTab()
         case .goToDirectory: showDirectoryPicker(insert: false)
         case .insertPath: showDirectoryPicker(insert: true)
+        case .askForCommand:
+            if Preferences.shared.shellPlugins { focusedPane?.shellUI.toggleAsk() } else { NSSound.beep() }
         case .newWindow: AppDelegate.shared.newWindow(directory: focusedPane?.directory)
         case .previousTab: selectTab(at: (session.selectedIndex - 1 + session.tabs.count) % max(session.tabs.count, 1))
         case .nextTab: selectTab(at: (session.selectedIndex + 1) % max(session.tabs.count, 1))
@@ -1168,10 +1231,10 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     private func showRemoteHostPicker() {
         let view = PickerView(mode: .list(placeholder: "Host, user@host or SSH alias…", items: { [weak self] in
             SSHConfig.hosts().map { host in
-                PickerItem(title: host, symbol: "network", run: { self?.newTab(command: "ssh \(host)") })
+                PickerItem(title: host, symbol: "network", run: { self?.newTab(command: SSHConfig.command(for: host)) })
             }
         }, create: { [weak self] host in
-            PickerItem(title: "Connect to \(host)", symbol: "network", run: { self?.newTab(command: "ssh \(host)") })
+            PickerItem(title: "Connect to \(host)", symbol: "network", run: { self?.newTab(command: SSHConfig.command(for: host)) })
         }))
         present(view)
     }
@@ -1231,6 +1294,11 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
 
 /// Host aliases from ~/.ssh/config for Add Remote Host.
 enum SSHConfig {
+    /// `ssh host`, sending COLORTERM along when SSH colors are on.
+    @MainActor static func command(for host: String) -> String {
+        Preferences.shared.sshSendsColor ? "ssh -o SendEnv=COLORTERM \(host)" : "ssh \(host)"
+    }
+
     static func hosts() -> [String] {
         let path = (NSHomeDirectory() as NSString).appendingPathComponent(".ssh/config")
         guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return [] }

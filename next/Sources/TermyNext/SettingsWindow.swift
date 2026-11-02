@@ -48,6 +48,9 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     // General
     private let interfaceControl = NSSegmentedControl(labels: ["Liquid", "Classic"], trackingMode: .selectOne, target: nil, action: nil)
     private let tabPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let shellCheckbox = NSButton(checkboxWithTitle: "zsh completions and the ⇧⌘E command box", target: nil, action: nil)
+    private let agentPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let sshColorCheckbox = NSButton(checkboxWithTitle: "Send 24-bit color support to SSH hosts", target: nil, action: nil)
     private let paneControl = NSSegmentedControl(labels: ["Comfortable", "Compact"], trackingMode: .selectOne, target: nil, action: nil)
     private let notifyCheckbox = NSButton(checkboxWithTitle: "Notify me about programs in panes", target: nil, action: nil)
     private let notifyBlocked = NSButton(checkboxWithTitle: "When one needs attention", target: nil, action: nil)
@@ -223,7 +226,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     private func styleCheckboxes() {
         let theme = AppConfig.shared.theme
         let checkboxes = [notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound,
-                          updateCheckbox, updateDownload, hostCheckbox]
+                          updateCheckbox, updateDownload, hostCheckbox, shellCheckbox, sshColorCheckbox]
         for checkbox in checkboxes {
             checkbox.contentTintColor = theme.accent
             checkbox.attributedTitle = NSAttributedString(string: checkbox.title, attributes: [
@@ -251,6 +254,12 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
                 .control("", notifyFailed),
                 .control("", notifySound),
                 .note("Programs report their status with OSC 7501, as Claude Code and other agents do. You're notified only about panes you aren't looking at; clicking a notification takes you to the pane."),
+                .separator,
+                .control("Shell plugins:", shellCheckbox),
+                .control("Ask with:", agentPopup),
+                .note("A small zsh plugin shows matching history and commands under the prompt: ⌃N and ⌃P pick one, Return takes it. ⇧⌘E describes a command to Claude Code (claude -p) or Codex (codex exec), with the sign-in they already have. Applies to panes opened after you turn it on."),
+                .control("SSH:", sshColorCheckbox),
+                .note("ssh in zsh and Add Remote Host send COLORTERM, so Claude Code and other programs on the server draw true colors. The server has to accept it (AcceptEnv COLORTERM), as Debian and Ubuntu do. Copying over SSH works through OSC 52 from the pane you're in."),
                 .separator,
                 .control("Updates:", updateCheckbox),
                 .control("", updateDownload),
@@ -374,6 +383,14 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         tabPopup.target = self
         tabPopup.action = #selector(tabStyleChanged)
 
+        shellCheckbox.target = self
+        shellCheckbox.action = #selector(shellPluginsChanged)
+        sshColorCheckbox.target = self
+        sshColorCheckbox.action = #selector(sshColorChanged)
+        agentPopup.addItems(withTitles: ShellAgent.all.map(\.title))
+        agentPopup.target = self
+        agentPopup.action = #selector(shellAgentChanged)
+
         for checkbox in [notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound] {
             checkbox.target = self
             checkbox.action = #selector(notificationsChanged(_:))
@@ -439,6 +456,10 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         notifyFailed.state = prefs.notifyWhenFailed ? .on : .off
         notifySound.state = prefs.notificationSound ? .on : .off
         for option in [notifyBlocked, notifyDone, notifyFailed, notifySound] { option.isEnabled = prefs.notificationsEnabled }
+        shellCheckbox.state = prefs.shellPlugins ? .on : .off
+        agentPopup.selectItem(at: ShellAgent.all.firstIndex { $0.id == prefs.shellAgent } ?? 0)
+        agentPopup.isEnabled = prefs.shellPlugins
+        sshColorCheckbox.state = prefs.sshSendsColor ? .on : .off
         refreshUpdates()
 
         let render = app.renderConfig
@@ -566,6 +587,14 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     @objc private func openConfig() { AppDelegate.shared.openConfig() }
     @objc private func importConfig() { AppDelegate.shared.importTermyConfig(attachedTo: window) }
     @objc private func reloadConfig() { AppDelegate.shared.reloadConfig() }
+
+    @objc private func shellPluginsChanged() { Preferences.shared.shellPlugins = shellCheckbox.state == .on }
+
+    @objc private func sshColorChanged() { Preferences.shared.sshSendsColor = sshColorCheckbox.state == .on }
+
+    @objc private func shellAgentChanged() {
+        Preferences.shared.shellAgent = ShellAgent.all[max(0, agentPopup.indexOfSelectedItem)].id
+    }
 
     @objc private func hostToggled() {
         let on = hostCheckbox.state == .on
