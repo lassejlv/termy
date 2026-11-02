@@ -913,6 +913,27 @@ TermyFfiStatus termy_multiplexer_close(
     size_t pane_id_len);
 /* End every pane and stop the host. */
 TermyFfiStatus termy_multiplexer_shutdown(const TermyFfiMultiplexer *multiplexer);
+
+/* The shared window, workspace, tab and split layout, as a JSON tree of pane
+ * IDs; see the ffi README. Writes are compare-and-set on the revision. */
+typedef struct TermyFfiLayoutWatch TermyFfiLayoutWatch;
+typedef void (*TermyFfiLayoutChangedCallback)(void *context, uint64_t revision);
+TermyFfiStatus termy_multiplexer_layout_json(
+    const TermyFfiMultiplexer *multiplexer,
+    TermyFfiBytes *out_json);
+TermyFfiStatus termy_multiplexer_set_layout_json(
+    const TermyFfiMultiplexer *multiplexer,
+    const uint8_t *json_ptr,
+    size_t json_len,
+    uint64_t expected_revision,
+    uint64_t *out_revision,
+    bool *out_updated);
+TermyFfiStatus termy_multiplexer_watch_layout(
+    const TermyFfiMultiplexer *multiplexer,
+    TermyFfiLayoutChangedCallback callback,
+    TermyFfiUserData context,
+    TermyFfiLayoutWatch **out_watch);
+TermyFfiStatus termy_layout_watch_free(TermyFfiLayoutWatch *watch);
 TermyFfiBytes termy_null_buffer(void);
 size_t termy_runtime_config_default_scrollback(void);
 size_t termy_terminal_options_default_scrollback(void);

@@ -41,6 +41,14 @@ detaches; `termy_multiplexer_close` ends the program. Statuses
 problems. The host binary is `termy-session-host`; hosts ship it beside the
 library.
 
+The host also owns the window, workspace, tab and split layout that Termy and
+`termy mux` share. `termy_multiplexer_layout_json` returns it as a tree of
+pane IDs (`{"leaf": id}` or `{"axis", "ratio", "first", "second"}` per tab),
+`termy_multiplexer_set_layout_json` writes one back if the layout is still at
+the caller's revision (libtermy derives the stored cell rectangles and split
+tree), and `termy_multiplexer_watch_layout` calls back on a thread of its own
+with each new revision until `termy_layout_watch_free`.
+
 The `termy_settings_*` calls edit the Termy app's config file. The `_at`
 variants (`termy_settings_set_root_at`, `termy_settings_reset_root_at`) take a
 config path, so a host app can keep a config of its own. A config loaded from
