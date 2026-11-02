@@ -62,7 +62,8 @@ while read -r rpath; do
   case "$rpath" in
     "$sdk_dir"/*|"$sdk_dir"|"$next_dir"/*) install_name_tool -delete_rpath "$rpath" "$app/Contents/MacOS/TermyNext" ;;
   esac
-done < <(otool -l "$app/Contents/MacOS/TermyNext" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }')
+# A universal binary lists each rpath once per architecture.
+done < <(otool -l "$app/Contents/MacOS/TermyNext" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }' | sort -u)
 install_name_tool -add_rpath "@executable_path/../Frameworks" "$app/Contents/MacOS/TermyNext" 2>/dev/null || true
 
 icon="$next_dir/Resources/icon/TermyNext.icns"
