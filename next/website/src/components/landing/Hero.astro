@@ -17,25 +17,25 @@ import Nav from './Nav.astro'
     />
     <Nav />
 
-    <section class="relative z-10 flex flex-col items-start px-6 pt-16 pb-14 md:px-16 xl:pt-[132px] xl:pb-24">
+    <section class="relative z-10 flex flex-col items-start px-6 pt-16 pb-14 md:px-16 xl:pt-[148px] xl:pb-24">
       <h1
-        class="text-shimmer text-[40px] leading-[1.06] font-semibold tracking-[-0.03em] text-balance md:text-[52px] xl:text-[56px] xl:whitespace-nowrap"
+        class="text-shimmer text-[34px] leading-[1.08] font-semibold tracking-[-0.03em] text-balance md:text-[42px] xl:text-[46px] xl:whitespace-nowrap"
       >
         Sessions that outlive the app.
       </h1>
-      <p class="mt-7 max-w-[520px] text-[17px] leading-[1.6] text-pretty text-soft md:text-[19px]">
+      <p class="mt-6 max-w-[500px] text-[16px] leading-[1.6] text-pretty text-soft md:text-[17px]">
         A native macOS terminal in Swift, running on libtermy, the engine inside Termy. Quit it or update it and every
         program keeps running. The next launch puts each window, tab and split back where you left it.
       </p>
-      <div class="mt-10 flex flex-wrap items-center gap-x-6 gap-y-4">
-        <Button asChild size="lg">
-          <a href="#download"><AppleLogo class="size-[17px]" />Download for macOS</a>
+      <div class="mt-8 flex flex-wrap items-center gap-x-6 gap-y-4">
+        <Button asChild>
+          <a href="#download"><AppleLogo class="size-[15px]" />Download for macOS</a>
         </Button>
         <Button asChild variant="link" size="link">
           <a href="https://github.com/lassejlv/termy/tree/main/next">Read the source on GitHub</a>
         </Button>
       </div>
-      <p class="mt-4 text-[15px] text-muted-foreground">
+      <p class="mt-4 text-[14px] text-muted-foreground">
         macOS 14 or later. One universal build for Apple Silicon and Intel, updated in place.
       </p>
     </section>

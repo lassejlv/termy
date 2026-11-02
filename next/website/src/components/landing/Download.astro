@@ -15,53 +15,53 @@ const secondary = [
 ---
 
 <section id="download" class="bg-panel">
-  <div class="mx-auto flex max-w-[1440px] flex-col gap-16 px-6 py-28 md:px-16 xl:py-40">
+  <div class="mx-auto flex max-w-[1440px] flex-col gap-12 px-6 py-20 md:py-24 md:px-16 xl:py-32">
     <div class="reveal flex flex-col justify-between gap-6 lg:flex-row lg:items-end">
-      <div class="flex items-center gap-5 md:gap-7">
-        <img src="/images/icon-256.png" alt="" width="64" height="64" class="size-14 md:size-16" />
-        <h2 class="text-[32px] leading-[1.1] font-semibold tracking-[-0.025em] md:text-[44px]">Download Termy Next</h2>
+      <div class="flex items-center gap-4 md:gap-5">
+        <img src="/images/icon-256.png" alt="" width="64" height="64" class="size-11 md:size-12" />
+        <h2 class="text-[26px] leading-[1.15] font-semibold tracking-[-0.02em] md:text-[32px]">Download Termy Next</h2>
       </div>
-      <p class="max-w-[430px] text-[18px] leading-[1.55] text-soft">
+      <p class="max-w-[400px] text-[16px] leading-[1.55] text-soft">
         Version {release.version}, {release.prerelease ? 'a pre-release' : 'released'} from {formatDate(release.publishedAt)}.
         Open the disk image and drag Termy Next to Applications.
       </p>
     </div>
 
     <div class="flex flex-col gap-16 lg:flex-row lg:items-start">
-      <div class="flex flex-col gap-1.5 lg:w-[820px] lg:shrink-0">
-        <div class="flex flex-col gap-5 rounded-[18px] bg-raised p-6 sm:flex-row sm:items-center sm:gap-6 sm:py-7 sm:pr-7 sm:pl-8">
+      <div class="flex flex-col gap-1.5 lg:w-[760px] lg:shrink-0">
+        <div class="flex flex-col gap-5 rounded-[18px] bg-raised p-6 sm:flex-row sm:items-center sm:gap-6 sm:py-6 sm:pr-6 sm:pl-7">
           <div class="flex min-w-0 grow flex-col gap-1.5">
-            <span class="text-[22px] font-semibold tracking-[-0.01em]">Disk image</span>
-            <span class="truncate text-[15px] text-muted-foreground">{release.dmg.name}</span>
+            <span class="text-[18px] font-semibold tracking-[-0.01em]">Disk image</span>
+            <span class="truncate text-[14px] text-muted-foreground">{release.dmg.name}</span>
           </div>
           <span class="text-[15px] text-soft sm:w-20 sm:text-right">{formatSize(release.dmg.size)}</span>
-          <Button asChild size="lg" className="sm:w-[210px]">
+          <Button asChild className="sm:w-[180px]">
             <a href={release.dmg.url}><AppleLogo class="size-4" />Download .dmg</a>
           </Button>
         </div>
         {
           secondary.map((row) => (
-            <div class="flex flex-col gap-4 rounded-[18px] bg-muted p-6 sm:flex-row sm:items-center sm:gap-6 sm:py-[22px] sm:pr-7 sm:pl-8">
+            <div class="flex flex-col gap-4 rounded-[18px] bg-muted p-6 sm:flex-row sm:items-center sm:gap-6 sm:py-[18px] sm:pr-6 sm:pl-7">
               <div class="flex min-w-0 grow flex-col gap-1.5">
-                <span class="text-[18px] font-semibold">{row.label}</span>
-                <span class="truncate text-[15px] text-muted-foreground">{row.file.name}</span>
+                <span class="text-[16px] font-semibold">{row.label}</span>
+                <span class="truncate text-[14px] text-muted-foreground">{row.file.name}</span>
               </div>
               <span class="text-[15px] text-soft sm:w-20 sm:text-right">{formatSize(row.file.size)}</span>
-              <Button asChild variant="secondary" className="h-[46px] sm:w-[210px]">
+              <Button asChild variant="secondary" className="sm:w-[180px]">
                 <a href={row.file.url}>{row.action}</a>
               </Button>
             </div>
           ))
         }
-        <p class="pt-3.5 text-[15px] text-muted-foreground sm:pl-8">
+        <p class="pt-3 text-[14px] text-muted-foreground sm:pl-7">
           Release notes for every version are on <a href={release.notesUrl} class="text-soft underline decoration-white/30 underline-offset-4 hover:decoration-white/80">GitHub Releases</a>.
         </p>
       </div>
 
       <div class="flex grow flex-col gap-10 pt-2">
         <div class="flex flex-col gap-4">
-          <h3 class="text-[18px] font-semibold">What you need</h3>
-          <ul class="flex flex-col gap-4 text-[16px] leading-6 text-soft">
+          <h3 class="text-[16px] font-semibold">What you need</h3>
+          <ul class="flex flex-col gap-3 text-[15px] leading-6 text-soft">
             <li>macOS 14 Sonoma or later</li>
             <li>An Apple Silicon or Intel Mac, one app for both</li>
             <li>Nothing else: it is signed and notarized, so it opens without a warning</li>
@@ -69,8 +69,8 @@ const secondary = [
           </ul>
         </div>
         <div class="flex flex-col gap-3.5">
-          <h3 class="text-[18px] font-semibold">Build it yourself</h3>
-          <pre class="overflow-x-auto rounded-[14px] bg-terminal px-5 py-[18px] font-mono text-[14px] leading-6 text-[#d8d1da]"><code><span class="text-[#ff9a5a]">❯</span> git clone https://github.com/lassejlv/termy
+          <h3 class="text-[16px] font-semibold">Build it yourself</h3>
+          <pre class="overflow-x-auto rounded-[14px] bg-terminal px-5 py-[18px] font-mono text-[13px] leading-6 text-[#d8d1da]"><code><span class="text-[#ff9a5a]">❯</span> git clone https://github.com/lassejlv/termy
 <span class="text-[#ff9a5a]">❯</span> cd termy && just bundle-next</code></pre>
         </div>
       </div>

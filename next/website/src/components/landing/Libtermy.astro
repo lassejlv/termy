@@ -24,10 +24,10 @@ const facts = [
 ]
 ---
 
-<section id="libtermy" class="mx-auto flex max-w-[1440px] flex-col gap-14 px-6 py-28 md:px-16 xl:pt-[180px] xl:pb-40">
+<section id="libtermy" class="mx-auto flex max-w-[1440px] flex-col gap-12 px-6 py-20 md:py-24 md:px-16 xl:py-32">
   <div class="reveal flex max-w-[560px] flex-col gap-5">
-    <h2 class="text-[32px] leading-[1.12] font-semibold tracking-[-0.025em] md:text-[40px]">Built on libtermy.</h2>
-    <p class="text-[18px] leading-[1.6] text-soft">
+    <h2 class="text-[26px] leading-[1.15] font-semibold tracking-[-0.02em] md:text-[32px]">Built on libtermy.</h2>
+    <p class="text-[16px] leading-[1.6] text-soft md:text-[17px]">
       The engine that draws Termy, packaged as a library and wrapped in Swift. Each frame, libtermy hands over only the
       cells that changed, and only those get drawn.
     </p>
@@ -44,7 +44,7 @@ const facts = [
       <span class="text-[13px] text-faint">~/Dev/termy</span>
     </div>
     <div class="flex flex-col lg:flex-row">
-      <div class="overflow-x-auto px-[26px] py-[22px] font-mono text-[13px] leading-[26px] text-dim md:text-[15px] lg:w-[640px] lg:shrink-0">
+      <div class="overflow-x-auto px-[26px] py-[22px] font-mono text-[13px] leading-[26px] text-dim md:text-[14px] lg:w-[640px] lg:shrink-0">
         {
           lines.map((runs) => (
             <div class="flex h-[26px] whitespace-pre">
@@ -64,8 +64,8 @@ const facts = [
     {
       facts.map((fact) => (
         <div class="flex flex-col gap-1.5">
-          <h3 class="text-[16px] font-semibold">{fact.title}</h3>
-          <p class="text-[16px] leading-6 text-muted-foreground">{fact.body}</p>
+          <h3 class="text-[15px] font-semibold">{fact.title}</h3>
+          <p class="text-[15px] leading-6 text-muted-foreground">{fact.body}</p>
         </div>
       ))
     }
