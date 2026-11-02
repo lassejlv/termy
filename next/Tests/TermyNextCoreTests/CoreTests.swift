@@ -97,6 +97,20 @@ import Testing
     }
 }
 
+@Suite struct ScriptNameTests {
+    @Test func namesInterpretedTools() {
+        #expect(ShellProcess.scriptName(arguments: ["/bin/bash", "-p", "/opt/homebrew/Library/Homebrew/brew.sh", "install", "jq"]) == "brew")
+        #expect(ShellProcess.scriptName(arguments: ["/opt/homebrew/Library/Homebrew/vendor/portable-ruby/current/bin/ruby", "-W1",
+                                                    "-I", "/opt/homebrew/Library/Homebrew", "--", "/opt/homebrew/Library/Homebrew/brew.rb", "up"]) == "brew")
+        #expect(ShellProcess.scriptName(arguments: ["/usr/bin/git", "status"]) == nil)
+        #expect(ShellProcess.scriptName(arguments: ["/bin/bash"]) == nil)
+    }
+
+    @Test func readsThisProcessArguments() {
+        #expect(!ShellProcess.arguments(of: getpid()).isEmpty)
+    }
+}
+
 @Suite struct ShellProtocolTests {
     @Test func parsesMessagesFromZsh() {
         #expect(ShellProtocol.parse("hello\u{1F}pane-1\u{1F}42\u{1F}/usr/bin:/bin") == .hello(pane: "pane-1", pid: 42, path: "/usr/bin:/bin"))

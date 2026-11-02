@@ -403,6 +403,13 @@ final class PaneView: NSView, TerminalViewDelegate {
             processName = ShellProcess.name(of: front) ?? ShellProcess.name(of: shell)
             processPath = front == shell ? nil : ShellProcess.executablePath(of: front)
             isShellInFront = front == shell
+            // A tool that's a script names itself after the script, so `brew`
+            // (bash running brew.sh, then ruby running brew.rb) gets its logo.
+            if !isShellInFront, let script = ShellProcess.scriptName(arguments: ShellProcess.arguments(of: front)),
+               ProgramLogos.aliases[AppIcons.normalized(script)] != nil {
+                processName = script
+                processPath = nil
+            }
             if let cwd = ShellProcess.workingDirectory(of: front) ?? ShellProcess.workingDirectory(of: shell) {
                 directory = cwd
             }

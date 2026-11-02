@@ -46,6 +46,50 @@ public enum ShellProcess {
         return String(decoding: buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
 
+    /// The process's argv, read from the kernel (KERN_PROCARGS2).
+    public static func arguments(of pid: pid_t) -> [String] {
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        var size = 0
+        guard sysctl(&mib, 3, nil, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return [] }
+        var buffer = [UInt8](repeating: 0, count: size)
+        guard sysctl(&mib, 3, &buffer, &size, nil, 0) == 0, size > MemoryLayout<Int32>.size else { return [] }
+        // argc, the executable path, padding NULs, then argc NUL-terminated arguments.
+        let argc = buffer.withUnsafeBytes { $0.load(as: Int32.self) }
+        var index = MemoryLayout<Int32>.size
+        while index < size, buffer[index] != 0 { index += 1 }
+        while index < size, buffer[index] == 0 { index += 1 }
+        var arguments: [String] = []
+        while arguments.count < argc, index < size {
+            let start = index
+            while index < size, buffer[index] != 0 { index += 1 }
+            arguments.append(String(decoding: buffer[start..<index], as: UTF8.self))
+            index += 1
+        }
+        return arguments
+    }
+
+    private static let interpreters: Set<String> = [
+        "bash", "sh", "zsh", "dash", "ruby", "python", "python3", "node", "bun", "deno", "perl",
+    ]
+    private static let scriptExtensions: Set<String> = ["sh", "bash", "rb", "py", "js", "mjs", "cjs", "ts", "pl"]
+
+    /// The tool an interpreter is running, named after its script: `bash
+    /// …/Homebrew/brew.sh` and `ruby … …/brew.rb` are both "brew". Nil when
+    /// argv[0] isn't an interpreter or no script file is among the first arguments.
+    public static func scriptName(arguments: [String]) -> String? {
+        guard let first = arguments.first,
+              interpreters.contains(((first as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased())
+        else { return nil }
+        for argument in arguments.dropFirst().prefix(12) where !argument.hasPrefix("-") {
+            let file = (argument as NSString).lastPathComponent
+            let ext = (file as NSString).pathExtension.lowercased()
+            guard scriptExtensions.contains(ext) else { continue }
+            let name = (file as NSString).deletingPathExtension
+            return name.isEmpty ? nil : name
+        }
+        return nil
+    }
+
     public static func isAlive(_ pid: pid_t) -> Bool {
         kill(pid, 0) == 0 || errno == EPERM
     }
