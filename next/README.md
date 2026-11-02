@@ -139,3 +139,27 @@ on every frame. Reduce Motion in System Settings turns all of it off.
 | `Sources/TermyNext/PickerView.swift` | The palette, session picker and prompts. |
 | `Sources/TermyNext/Glass.swift` | `GlassView` (Liquid Glass with fallback), `GlassPanel`, and `Motion` timing and transitions. |
 | `Sources/TermyNext/Commands.swift` | Every command with its title and shortcut; menus and the palette are built from it. |
+
+## Releasing
+
+Termy Next releases on its own tags, `next-v*`, separate from Termy's.
+Push a tag, or run the **Release Termy Next** workflow with a version:
+
+```sh
+git tag next-v0.1.0 && git push origin next-v0.1.0
+```
+
+`.github/workflows/release-next.yml` builds a universal app (Apple Silicon
+and Intel), signs it with Termy's Developer ID, notarizes and staples it, and
+publishes a GitHub release with `TermyNext-<version>-macos-universal.dmg`, a
+zip of the app and checksums. Releases are pre-releases unless the workflow
+run says otherwise, and never become the repository's "Latest", which stays
+Termy's. Termy's own release workflows skip `next-v*` tags, and this one
+never runs for Termy's.
+
+To try the release build locally, signed ad hoc and without notarization:
+
+```sh
+TERMY_SIGN_IDENTITY=- next/scripts/release.sh --version 0.1.0 --native
+```
+

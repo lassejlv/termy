@@ -15,7 +15,8 @@ concurrency:
 jobs:
   finalize-stable-release:
     name: Mark release as latest and publish AUR
-    if: ${{ github.event.release.prerelease == false && github.event.release.draft == false }}
+    # Termy Next releases (tags next-v*) are finalized by release-next.yml.
+    if: ${{ github.event.release.prerelease == false && github.event.release.draft == false && !startsWith(github.event.release.tag_name, 'next-v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 70
     steps:

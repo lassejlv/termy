@@ -1,0 +1,149 @@
+name: Release Termy Next
+
+# Termy Next (the Swift app in next/) releases on its own tags, next-v*,
+# separate from Termy's releases: pushing next-v0.1.0, or running this
+# workflow with a version, builds a universal app, signs it with Termy's
+# Developer ID, notarizes it and publishes a GitHub release with only its
+# files. Termy's own release workflows skip next-v* tags, and this one never
+# runs for Termy's tags.
+
+on:
+  push:
+    tags: ["next-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Termy Next version, e.g. 0.1.0 (tagged next-v0.1.0 on the selected branch)"
+        required: true
+        type: string
+      prerelease:
+        description: Mark the release as a pre-release
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-next-${{ github.ref }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build, sign and notarize
+    runs-on: macos-26
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      TERMY_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+      TERMY_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Resolve version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            version="${REF_NAME#next-v}"
+          else
+            version="${INPUT_VERSION#next-v}"
+            version="${version#v}"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Termy Next versions look like 0.1.0 or 0.2.0-beta.1, not '$version'"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Termy Next $version"
+
+      - name: Import Developer ID and notarization credentials
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+        run: ./scripts/setup-macos-signing.sh
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: termy-next-universal
+
+      - name: Show toolchains
+        run: |
+          swift --version
+          xcodebuild -version
+
+      - name: Build, sign and notarize
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ./next/scripts/release.sh --version "$VERSION" --build "$GITHUB_RUN_NUMBER"
+
+      - name: Test Termy Next
+        run: swift test --package-path next
+
+      - name: Remove signing credentials
+        if: always()
+        run: |
+          if [[ -n "${TERMY_SIGNING_DIR:-}" && -d "$TERMY_SIGNING_DIR" ]]; then
+            security delete-keychain "$TERMY_SIGNING_DIR/signing.keychain-db" || true
+            rm -rf "$TERMY_SIGNING_DIR"
+          fi
+
+      - name: Upload release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: termy-next
+          path: |
+            next/dist/*.dmg
+            next/dist/*.zip
+            next/dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: termy-next
+          path: dist
+
+      - name: Publish release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: next-v${{ needs.build.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: Termy Next ${{ needs.build.outputs.version }}
+          # Early builds are pre-releases unless the run says otherwise.
+          prerelease: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
+          # Termy's own release stays the repository's "Latest".
+          make_latest: false
+          body: |
+            Termy Next ${{ needs.build.outputs.version }}, the native Swift terminal built on libtermy.
+
+            Download `TermyNext-${{ needs.build.outputs.version }}-macos-universal.dmg`, open it and drag Termy Next to Applications. It runs on Apple Silicon and Intel Macs with macOS 14 or later, and is signed and notarized.
+          files: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.sha256
+          fail_on_unmatched_files: true
+          overwrite_files: true
