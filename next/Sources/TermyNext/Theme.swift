@@ -53,6 +53,11 @@ final class Preferences {
         get { defaults.string(forKey: "lastWindowFrame").map(NSRectFromString).flatMap { $0.width > 0 ? $0 : nil } }
         set { defaults.set(newValue.map(NSStringFromRect), forKey: "lastWindowFrame") }
     }
+    /// Whether the window was in full screen when the app last quit.
+    var lastWindowFullScreen: Bool {
+        get { defaults.bool(forKey: "lastWindowFullScreen") }
+        set { defaults.set(newValue, forKey: "lastWindowFullScreen") }
+    }
     /// ssh sends COLORTERM along (zsh and Add Remote Host), so programs on
     /// the server use 24-bit color. On by default.
     var sshSendsColor: Bool {

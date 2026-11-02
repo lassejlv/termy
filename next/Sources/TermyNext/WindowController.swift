@@ -6,8 +6,21 @@ import TermyNextCore
 /// Tells the controller whenever keyboard focus moves, so the focused pane,
 /// tab badges and pane fading follow the first responder.
 @MainActor
-final class TermyWindow: NSWindow {
+final class TermyWindow: NSWindow, TerminalGridHolding {
     var onFirstResponderChange: (() -> Void)?
+
+    /// Keeps pane grids at their size while set (quitting, restoring full
+    /// screen); letting go fits every pane to its view once.
+    var holdsTerminalGrids = false {
+        didSet {
+            guard oldValue, !holdsTerminalGrids, let contentView else { return }
+            Self.terminals(in: contentView).forEach { $0.fitGridToView() }
+        }
+    }
+
+    private static func terminals(in view: NSView) -> [TerminalView] {
+        (view as? TerminalView).map { [$0] } ?? view.subviews.flatMap(terminals(in:))
+    }
 
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
         let result = super.makeFirstResponder(responder)
@@ -1008,11 +1021,37 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
 
     /// New windows and the next launch open at this window's size and place.
     private func rememberFrame() {
-        guard let window, window.isVisible, !window.styleMask.contains(.fullScreen), !window.isMiniaturized else { return }
+        guard let window, window.isVisible, !window.styleMask.contains(.fullScreen), !window.isMiniaturized,
+              !inFullScreenTransition, !AppDelegate.shared.isTerminating,
+              (window as? TermyWindow)?.holdsTerminalGrids != true
+        else { return }
         Preferences.shared.lastWindowFrame = window.frame
     }
-    func windowDidEnterFullScreen(_ notification: Notification) { root.needsLayout = true }
-    func windowDidExitFullScreen(_ notification: Notification) { root.needsLayout = true }
+    /// Between will- and did-, the frame passes through sizes worth neither
+    /// remembering nor sending to programs.
+    private var inFullScreenTransition = false
+
+    func windowWillEnterFullScreen(_ notification: Notification) { inFullScreenTransition = true }
+    func windowWillExitFullScreen(_ notification: Notification) { inFullScreenTransition = true }
+
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        inFullScreenTransition = false
+        root.needsLayout = true
+        // The next launch reopens in full screen.
+        if !AppDelegate.shared.isTerminating { Preferences.shared.lastWindowFullScreen = true }
+        (window as? TermyWindow)?.holdsTerminalGrids = false
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        inFullScreenTransition = false
+        root.needsLayout = true
+        if !AppDelegate.shared.isTerminating { Preferences.shared.lastWindowFullScreen = false }
+    }
+
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        inFullScreenTransition = false
+        (window as? TermyWindow)?.holdsTerminalGrids = false
+    }
 
     func windowWillClose(_ notification: Notification) {
         // Closing a window detaches its session; it keeps running and stays in ⌘K.

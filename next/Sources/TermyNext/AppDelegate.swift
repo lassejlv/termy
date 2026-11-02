@@ -26,6 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             MainActor.assumeIsolated { AppDelegate.shared.controllers.forEach { $0.tick() } }
         }
         NSApp.activate(ignoringOtherApps: true)
+        // Only for the windows launch opens, not one opened much later.
+        launchesInFullScreen = Preferences.shared.lastWindowFullScreen
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in self?.launchesInFullScreen = false }
         startSessionHost()
     }
 
@@ -97,6 +100,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return true
     }
 
+    private(set) var isTerminating = false
+
+    /// From here on, windows may leave full screen or close on the way out;
+    /// programs keep the size they have, so they come back as they were.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        isTerminating = true
+        for controller in controllers { (controller.window as? TermyWindow)?.holdsTerminalGrids = true }
+        return .terminateNow
+    }
+
     /// Quitting detaches: every program keeps running in the session host,
     /// and the next launch attaches to it again.
     func applicationWillTerminate(_ notification: Notification) {
@@ -130,9 +143,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    /// Quit in full screen, come back in full screen: the first window opened
+    /// at launch, whichever way it opens (saved layout or the host's).
+    private var launchesInFullScreen = false
+
+    /// Opens a window for `session`. A window going straight to full screen
+    /// keeps its panes' size until it gets there, so programs resize once.
     @discardableResult
     func open(_ session: TerminalSessionGroup) -> WindowController? {
         let controller = WindowController(session: session)
+        let fullScreen = launchesInFullScreen
+        launchesInFullScreen = false
+        if fullScreen { (controller.window as? TermyWindow)?.holdsTerminalGrids = true }
         controllers.append(controller)
         // Opens at the remembered frame; steps down and right off any window already there.
         if let window = controller.window {
@@ -145,6 +167,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+        if fullScreen, let window = controller.window as? TermyWindow {
+            window.toggleFullScreen(nil)
+            // In case full screen never comes (another app's Space, a refusal).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { window.holdsTerminalGrids = false }
+        }
         return controller
     }
 

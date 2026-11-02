@@ -2,6 +2,15 @@
 import AppKit
 import Termy
 
+/// A window that can keep its terminals' grids at their size while its frame
+/// changes in passing, such as while the app quits or a window restores full
+/// screen. Programs then get one resize, to the final size, instead of one per
+/// step. Call `fitGridToView()` on its terminals when it lets go.
+@MainActor
+public protocol TerminalGridHolding: AnyObject {
+    var holdsTerminalGrids: Bool { get }
+}
+
 /// Receives terminal events a host app usually reflects in its chrome.
 @MainActor
 public protocol TerminalViewDelegate: AnyObject {
@@ -182,9 +191,23 @@ public final class TerminalView: NSView {
         needsDisplay = true
     }
 
+    /// Resizes the grid to the view, telling the program. Only for a view
+    /// that's showing in a visible window that isn't holding its grids:
+    /// layout passes before a window opens, or of a hidden pane, would
+    /// otherwise send full-screen programs sizes they never get to show.
     private func resizeGridToFit() {
-        guard bounds.width > 0, bounds.height > 0 else { return }
+        guard bounds.width > 0, bounds.height > 0, let window, window.isVisible, !isHiddenOrHasHiddenAncestor,
+              (window as? TerminalGridHolding)?.holdsTerminalGrids != true
+        else { return }
         try? session.resize(fittingGridSize)
+    }
+
+    /// Fits the grid to the view now, such as after its window stops holding grids.
+    public func fitGridToView() { resizeGridToFit() }
+
+    public override func viewDidUnhide() {
+        super.viewDidUnhide()
+        resizeGridToFit()
     }
 
     var renderState: RenderState {
@@ -460,6 +483,8 @@ public final class TerminalView: NSView {
     }
 
     private func windowStateDidChange() {
+        // Opening (or coming back from the Dock) makes the window visible.
+        resizeGridToFit()
         restartBlinkTimer()
         invalidateCursor(session.frame.cursor)
         if isOnScreen {
