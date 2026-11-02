@@ -1,0 +1,30 @@
+---
+import Layout from '@/layouts/Layout.astro'
+import Agents from '@/components/landing/Agents.astro'
+import Download from '@/components/landing/Download.astro'
+import Footer from '@/components/landing/Footer.astro'
+import Hero from '@/components/landing/Hero.astro'
+import Libtermy from '@/components/landing/Libtermy.astro'
+import Mux from '@/components/landing/Mux.astro'
+import Sessions from '@/components/landing/Sessions.astro'
+import Shortcuts from '@/components/landing/Shortcuts.astro'
+import { loadRelease } from '@/lib/release'
+
+const release = await loadRelease()
+---
+
+<Layout
+  title="Termy Next: sessions that outlive the app"
+  description="A native macOS terminal in Swift, built on libtermy. Quit it or update it and every program keeps running; the next launch puts each window, tab and split back."
+>
+  <main>
+    <Hero />
+    <Sessions />
+    <Agents />
+    <Libtermy />
+    <Mux />
+    <Shortcuts />
+    <Download release={release} />
+  </main>
+  <Footer />
+</Layout>

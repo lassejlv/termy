@@ -1,0 +1,12 @@
+---
+interface Props {
+  class?: string
+}
+const { class: className } = Astro.props
+---
+
+<span class:list={['working-dots inline-flex items-center gap-[3px]', className]} aria-label="Working">
+  <span class="size-1 rounded-full bg-foreground"></span>
+  <span class="size-1 rounded-full bg-foreground"></span>
+  <span class="size-1 rounded-full bg-foreground"></span>
+</span>

@@ -1,0 +1,118 @@
+---
+import WorkingDots from './WorkingDots.astro'
+
+// A Termy Next window as it looks mid-afternoon: Claude Code working in one
+// pane, Codex waiting on a permission prompt below it, a shell beside them.
+---
+
+<div
+  class="flex h-[640px] w-[900px] flex-col overflow-hidden rounded-2xl border border-white/9 bg-[#1c191f]/92 shadow-[0_40px_120px_rgb(0_0_0/55%)]"
+  role="img"
+  aria-label="A Termy Next window with Claude Code working, Codex asking for permission and a shell, in the session shy-orchard"
+>
+  <!-- Titlebar with tabs above -->
+  <div class="flex h-12 shrink-0 items-center gap-[18px] px-3.5">
+    <div class="flex items-center gap-2">
+      <span class="size-3 rounded-full bg-[#ff5f57]"></span>
+      <span class="size-3 rounded-full bg-[#febc2e]"></span>
+      <span class="size-3 rounded-full bg-[#28c840]"></span>
+    </div>
+    <div class="flex items-center gap-0.5 rounded-full bg-white/4 p-[3px]">
+      <div class="flex h-[30px] w-[210px] items-center gap-2 rounded-full bg-white/11 pr-3 pl-[9px] shadow-[inset_0_1px_0_rgb(255_255_255/8%)]">
+        <img src="/logos/claude.svg" alt="" class="size-[15px]" />
+        <span class="grow truncate text-[13px] font-medium">Splitting PaneView</span>
+        <WorkingDots />
+      </div>
+      <div class="flex h-[30px] w-[170px] items-center gap-2 rounded-full pr-3 pl-[9px]">
+        <span class="relative size-[15px]">
+          <img src="/logos/codex-dark.svg" alt="" class="size-[15px]" />
+          <span class="absolute -top-[3px] -right-[3px] size-2 rounded-full border-[1.5px] border-[#1c191f] bg-blocked"></span>
+        </span>
+        <span class="text-[13px] text-[#b9b1bb]">Codex</span>
+      </div>
+      <div class="flex h-[30px] w-[170px] items-center gap-2 rounded-full pr-3 pl-[9px]">
+        <img src="/logos/neovim.svg" alt="" class="h-[15px] w-[14px]" />
+        <span class="text-[13px] text-[#b9b1bb]">nvim ~/notes</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="flex min-h-0 grow gap-2 px-2 pb-2">
+    <!-- Sidebar -->
+    <div class="flex w-[176px] shrink-0 flex-col gap-0.5 px-1 py-1.5">
+      <div class="flex h-7 items-center justify-between px-2">
+        <span class="text-[13px] font-semibold">shy-orchard</span>
+        <WorkingDots />
+      </div>
+      <div class="flex h-7 items-center gap-2 rounded-[9px] bg-white/9 pr-2 pl-[18px]">
+        <img src="/logos/claude.svg" alt="" class="size-3.5" />
+        <span class="text-[13px]">Claude Code</span>
+      </div>
+      <div class="flex h-7 items-center gap-2 pr-2 pl-[18px]">
+        <img src="/logos/codex-dark.svg" alt="" class="size-3.5" />
+        <span class="grow text-[13px] text-[#b9b1bb]">Codex</span>
+        <span class="size-[7px] rounded-full bg-blocked"></span>
+      </div>
+      <div class="flex h-7 items-center gap-2 pr-2 pl-[18px]">
+        <img src="/logos/neovim.svg" alt="" class="h-3.5 w-[13px]" />
+        <span class="text-[13px] text-[#b9b1bb]">nvim ~/notes</span>
+      </div>
+      <div class="mt-2.5 flex h-7 items-center justify-between px-2">
+        <span class="text-[13px] font-medium text-[#b9b1bb]">quiet-harbor</span>
+        <span class="size-[7px] rounded-full bg-done"></span>
+      </div>
+      <div class="flex h-7 items-center px-2">
+        <span class="text-[13px] font-medium text-[#b9b1bb]">late-ember</span>
+      </div>
+    </div>
+
+    <!-- Left split: Claude Code over Codex -->
+    <div class="flex w-[420px] shrink-0 flex-col gap-2">
+      <div class="flex h-[300px] shrink-0 flex-col overflow-hidden rounded-xl border border-white/7 bg-terminal">
+        <div class="flex h-8 shrink-0 items-center gap-2 bg-white/3 px-3">
+          <img src="/logos/claude.svg" alt="" class="size-[13px]" />
+          <span class="text-xs font-medium text-[#e6e0e8]">Claude Code</span>
+          <span class="text-xs text-faint">~/Dev/termy</span>
+        </div>
+        <pre class="px-4 py-3.5 font-mono text-xs leading-5 text-[#d8d1da]"><span class="text-faint">&gt;</span> give the pane header its own drag handle
+
+<span class="text-done">●</span> Read <span class="text-faint">Sources/TermyNext/PaneView.swift</span>
+<span class="text-done">●</span> Read <span class="text-faint">Sources/TermyNext/PaneDrag.swift</span>
+<span class="text-done">●</span> Update <span class="text-faint">PaneView.swift</span>
+  <span class="text-faint">⎿</span>  <span class="text-done">+42</span> <span class="text-coral">−17</span>
+<span class="text-done">●</span> Bash <span class="text-faint">just test-next</span>
+  <span class="text-faint">⎿</span>  38 tests passed
+
+<span class="text-[#ff9a5a]">✻ Splitting PaneView…</span> <span class="text-faint">1m 12s, esc to interrupt</span></pre>
+      </div>
+      <div class="flex grow flex-col overflow-hidden rounded-xl border border-blocked/45 bg-terminal">
+        <div class="flex h-8 shrink-0 items-center gap-2 bg-white/3 px-3">
+          <img src="/logos/codex-dark.svg" alt="" class="size-[13px]" />
+          <span class="text-xs font-medium text-[#e6e0e8]">Codex</span>
+          <span class="grow text-xs text-faint">~/Dev/termy</span>
+          <span class="text-[11px] font-semibold text-[#7db5ff]">Needs permission</span>
+        </div>
+        <pre class="px-3.5 py-3 font-mono text-xs leading-5 text-[#d8d1da]">Run this command?
+<span class="text-faint">$</span> git push origin next
+
+<span class="text-[#7db5ff]">› 1. Yes</span>
+  2. Yes, always for git push
+  3. No, tell Codex what to do</pre>
+      </div>
+    </div>
+
+    <!-- Right split: a shell -->
+    <div class="flex grow flex-col overflow-hidden rounded-xl border border-white/7 bg-terminal">
+      <div class="flex h-8 shrink-0 items-center gap-2 bg-white/3 px-3">
+        <span class="text-xs font-medium text-[#e6e0e8]">zsh</span>
+        <span class="text-xs text-faint">~/Dev/termy</span>
+      </div>
+      <pre class="px-3.5 py-3 font-mono text-xs leading-5 text-[#d8d1da]"><span class="text-[#ff9a5a]">❯</span> termy mux layout
+window 1  shy-orchard
+  tab 1  Claude Code   <span class="text-faint">3 panes</span>
+  tab 2  Codex
+  tab 3  nvim ~/notes
+<span class="text-[#ff9a5a]">❯</span> <span class="caret inline-block h-3.5 w-[7px] translate-y-0.5 bg-foreground"></span></pre>
+    </div>
+  </div>
+</div>

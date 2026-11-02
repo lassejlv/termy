@@ -1,0 +1,32 @@
+<section id="termy-mux" class="bg-panel">
+  <div class="mx-auto flex max-w-[1440px] flex-col gap-14 px-6 py-28 md:px-16 lg:flex-row lg:items-start lg:gap-24 xl:py-40">
+    <div class="reveal flex shrink-0 flex-col gap-6 pt-3 lg:w-[440px]">
+      <h2 class="text-[32px] leading-[1.12] font-semibold tracking-[-0.025em] md:text-[40px]">Script the layout from any shell.</h2>
+      <p class="text-[18px] leading-[1.6] text-soft">
+        Every window, session, tab and split lives in the session host, and <code class="font-mono text-[16px]">termy mux</code>
+        reads and writes it. Run a command and the window changes in front of you. Rename a tab in the app and the command
+        line sees it.
+      </p>
+      <p class="text-[16px] leading-[1.55] text-muted-foreground">
+        Inside a Termy Next pane, <code class="font-mono text-[15px]">termy mux</code> finds the host on its own.
+      </p>
+    </div>
+    <div class="min-w-0 grow overflow-hidden rounded-2xl border border-white/8 bg-terminal">
+      <div class="flex h-10 items-center gap-2 bg-white/3 px-4">
+        <span class="text-[13px] font-medium text-[#e6e0e8]">zsh</span>
+        <span class="text-[13px] text-faint">~/Dev/termy</span>
+      </div>
+      <pre class="overflow-x-auto px-7 pt-6 pb-8 font-mono text-[13px] leading-[26px] text-[#d8d1da] md:text-[15px]"><code><span class="text-[#ff9a5a]">❯</span> termy mux split 3 --axis vertical
+<span class="text-[#ff9a5a]">❯</span> termy mux send 7 "just test-next" --enter
+<span class="text-[#ff9a5a]">❯</span> termy mux tab 7 rename tests
+
+<span class="text-[#ff9a5a]">❯</span> termy mux layout
+window 1  shy-orchard
+  tab 1  Claude Code     <span class="text-faint">panes 3, 5</span>
+  tab 2  tests           <span class="text-faint">pane 7</span>
+  tab 3  nvim ~/notes    <span class="text-faint">pane 4</span>
+
+<span class="text-[#ff9a5a]">❯</span> <span class="caret inline-block h-4 w-2 translate-y-0.5 bg-foreground"></span></code></pre>
+    </div>
+  </div>
+</section>

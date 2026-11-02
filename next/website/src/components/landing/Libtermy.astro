@@ -1,0 +1,73 @@
+---
+// One frame of a Claude Code pane. Each line is a list of [text, redrawn] runs;
+// the cell map beside it (public/images/cellmap.svg) is drawn from the same lines.
+type Run = [string, boolean]
+const lines: Run[][] = [
+  [['> give the pane header its own drag handle', false]],
+  [],
+  [['● Read Sources/TermyNext/PaneView.swift', false]],
+  [['● Read Sources/TermyNext/PaneDrag.swift', false]],
+  [['● Update PaneView.swift', false]],
+  [['  ⎿  +42 −17', false]],
+  [['● Bash just test-next', false]],
+  [['  ⎿  38 tests passed', false]],
+  [['● Update SplitContainerView.swift', true]],
+  [['  ⎿  +8 −3', true]],
+  [],
+  [['✻', true], [' Splitting PaneView… 1m 1', false], ['3', true], ['s, esc to interrupt', false]],
+]
+
+const facts = [
+  { title: 'Your Termy config', body: 'Same format and theme library, so font, padding and shell carry over.' },
+  { title: 'Swift on top', body: 'AppKit chrome through the Termy Swift SDK, with Liquid Glass on macOS 26.' },
+  { title: 'One engine', body: 'The same libtermy runs Termy on macOS, Linux and Windows.' },
+]
+---
+
+<section id="libtermy" class="mx-auto flex max-w-[1440px] flex-col gap-14 px-6 py-28 md:px-16 xl:pt-[180px] xl:pb-40">
+  <div class="reveal flex max-w-[560px] flex-col gap-5">
+    <h2 class="text-[32px] leading-[1.12] font-semibold tracking-[-0.025em] md:text-[40px]">Built on libtermy.</h2>
+    <p class="text-[18px] leading-[1.6] text-soft">
+      The engine that draws Termy, packaged as a library and wrapped in Swift. Each frame, libtermy hands over only the
+      cells that changed, and only those get drawn.
+    </p>
+  </div>
+
+  <div
+    class="overflow-hidden rounded-[18px] border border-white/8 bg-[#0e0c10]"
+    role="img"
+    aria-label="A frame of a Claude Code pane shown as text and as a grid of cells; only the new lines and the timer were redrawn"
+  >
+    <div class="flex h-10 items-center gap-2 bg-white/3 px-[18px]">
+      <img src="/logos/claude.svg" alt="" class="size-3.5" />
+      <span class="text-[13px] font-medium text-[#e6e0e8]">Claude Code</span>
+      <span class="text-[13px] text-faint">~/Dev/termy</span>
+    </div>
+    <div class="flex flex-col lg:flex-row">
+      <div class="overflow-x-auto px-[26px] py-[22px] font-mono text-[13px] leading-[26px] text-dim md:text-[15px] lg:w-[640px] lg:shrink-0">
+        {
+          lines.map((runs) => (
+            <div class="flex h-[26px] whitespace-pre">
+              {runs.map(([text, lit]) => (lit ? <span class="bg-coral/24 text-[#ffe2dc]">{text}</span> : <span>{text}</span>))}
+            </div>
+          ))
+        }
+      </div>
+      <div class="flex grow flex-col gap-[18px] bg-[#161419] px-8 pt-[22px] pb-[26px]">
+        <img src="/images/cellmap.svg" alt="" width="576" height="312" class="h-auto w-full max-w-[576px]" />
+        <span class="text-[14px] text-muted-foreground">The same frame as cells. Coral cells were redrawn.</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid gap-8 md:grid-cols-3 md:gap-12">
+    {
+      facts.map((fact) => (
+        <div class="flex flex-col gap-1.5">
+          <h3 class="text-[16px] font-semibold">{fact.title}</h3>
+          <p class="text-[16px] leading-6 text-muted-foreground">{fact.body}</p>
+        </div>
+      ))
+    }
+  </div>
+</section>

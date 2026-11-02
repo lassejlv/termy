@@ -1,0 +1,33 @@
+---
+import { Button } from '@/components/ui/button'
+
+const links = [
+  { href: '#sessions', label: 'Sessions' },
+  { href: '#agents', label: 'Agents' },
+  { href: '#termy-mux', label: 'termy mux' },
+  { href: 'https://github.com/lassejlv/termy/tree/main/next', label: 'GitHub' },
+]
+---
+
+<header class="relative z-20 flex items-center justify-between px-6 py-6 md:px-16 md:py-7">
+  <a href="/" class="flex items-center gap-3 rounded-lg">
+    <img src="/images/icon-256.png" alt="" width="34" height="34" class="size-[34px]" />
+    <span class="text-[17px] font-semibold tracking-[-0.01em]">Termy Next</span>
+  </a>
+  <nav class="flex items-center gap-9" aria-label="Main">
+    <ul class="hidden items-center gap-9 md:flex">
+      {
+        links.map((link) => (
+          <li>
+            <a href={link.href} class="text-[15px] text-soft transition-colors hover:text-foreground">
+              {link.label}
+            </a>
+          </li>
+        ))
+      }
+    </ul>
+    <Button asChild variant="light" size="sm">
+      <a href="#download">Download</a>
+    </Button>
+  </nav>
+</header>

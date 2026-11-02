@@ -1,0 +1,70 @@
+---
+import WorkingDots from './WorkingDots.astro'
+
+type Row = {
+  logo: string
+  name: string
+  state: string
+  stateClass: string
+  message: string
+  session?: string
+  badge?: string
+  highlight?: boolean
+  working?: boolean
+}
+
+const rows: Row[] = [
+  { logo: 'codex-dark', name: 'Codex', state: 'needs permission', stateClass: 'text-[#7db5ff]', message: 'Run git push origin next', session: 'shy-orchard', badge: 'bg-blocked', highlight: true },
+  { logo: 'claude', name: 'Claude Code', state: 'working', stateClass: 'text-[#b9b1bb]', message: 'Splitting PaneView', working: true },
+  { logo: 'claude', name: 'Claude Code', state: 'done', stateClass: 'text-[#6fd99a]', message: 'Wrote the release notes for next-v0.2.0', session: 'quiet-harbor', badge: 'bg-done' },
+  { logo: 'rust-dark', name: 'cargo build', state: 'error', stateClass: 'text-[#ff8a8e]', message: '2 errors in termy_ffi', session: 'late-ember', badge: 'bg-failed' },
+]
+---
+
+<section id="agents" class="bg-panel">
+  <div class="mx-auto flex max-w-[1440px] flex-col-reverse gap-14 px-6 py-28 md:px-16 lg:flex-row lg:items-center lg:gap-24 xl:py-40">
+    <div
+      class="w-full overflow-hidden rounded-[18px] border border-white/9 bg-popover shadow-[0_30px_80px_rgb(0_0_0/45%)] lg:w-[600px] lg:shrink-0 xl:w-[640px]"
+      role="img"
+      aria-label="The Activity popup listing four programs: Codex needs permission, Claude Code working, Claude Code done, cargo build failed"
+    >
+      <div class="flex h-[52px] items-center justify-between border-b border-white/7 px-5">
+        <span class="text-[15px] font-semibold">Activity</span>
+        <span class="text-[13px] text-faint">4 programs reporting</span>
+      </div>
+      <div class="flex flex-col gap-0.5 p-2">
+        {
+          rows.map((row) => (
+            <div class:list={['flex items-center gap-3.5 rounded-[11px] px-3 py-3.5', row.highlight && 'bg-blocked/13']}>
+              <span class="relative size-7 shrink-0">
+                <img src={`/logos/${row.logo}.svg`} alt="" class="size-7" />
+                {row.badge && <span class:list={['absolute -top-[3px] -right-[3px] size-[11px] rounded-full border-2 border-popover', row.badge]} />}
+              </span>
+              <div class="flex min-w-0 grow flex-col gap-[3px]">
+                <span class="text-[15px] font-semibold">
+                  {row.name} <span class:list={['font-medium', row.stateClass]}>{row.state}</span>
+                </span>
+                <span class="truncate text-[14px] text-[#b9b1bb]">{row.message}</span>
+              </div>
+              <span class="hidden w-24 shrink-0 justify-end text-right text-[13px] text-faint sm:flex">
+                {row.working ? <WorkingDots /> : row.session}
+              </span>
+            </div>
+          ))
+        }
+      </div>
+    </div>
+
+    <div class="reveal flex flex-col gap-6">
+      <h2 class="text-[32px] leading-[1.12] font-semibold tracking-[-0.025em] md:text-[40px]">See which agent needs you.</h2>
+      <p class="text-[18px] leading-[1.6] text-soft">
+        Claude Code, Codex and the rest show up under their own name and logo. Tabs carry their state: dots while
+        working, then blue when blocked, green when done, red on an error. Press ⌘. to see every program across every
+        session, and click one to jump there.
+      </p>
+      <p class="text-[16px] leading-[1.55] text-muted-foreground">
+        Status comes from the Program Status Protocol, OSC 7501. Termy Next never guesses from what is on screen.
+      </p>
+    </div>
+  </div>
+</section>

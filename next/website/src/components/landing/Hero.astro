@@ -1,0 +1,52 @@
+---
+import { Button } from '@/components/ui/button'
+import AppleLogo from './AppleLogo.astro'
+import AppWindow from './AppWindow.astro'
+import Nav from './Nav.astro'
+---
+
+<div class="relative isolate w-full overflow-hidden">
+  <div class="relative mx-auto w-full max-w-[1440px] xl:h-[900px]">
+    <!-- The icon's sunset, as terminal cells, setting behind the window. -->
+    <img
+      src="/images/sun-hero.webp"
+      alt=""
+      width="900"
+      height="720"
+      class="sun-drift pointer-events-none absolute top-[120px] -right-[360px] -z-10 w-[680px] opacity-90 md:top-[60px] md:-right-[100px] md:w-[900px] xl:right-auto xl:left-[600px]"
+    />
+    <Nav />
+
+    <section class="relative z-10 flex flex-col items-start px-6 pt-16 pb-14 md:px-16 xl:pt-[132px] xl:pb-24">
+      <h1
+        class="text-shimmer text-[40px] leading-[1.06] font-semibold tracking-[-0.03em] text-balance md:text-[52px] xl:text-[56px] xl:whitespace-nowrap"
+      >
+        Sessions that outlive the app.
+      </h1>
+      <p class="mt-7 max-w-[520px] text-[17px] leading-[1.6] text-pretty text-soft md:text-[19px]">
+        A native macOS terminal in Swift, running on libtermy, the engine inside Termy. Quit it or update it and every
+        program keeps running. The next launch puts each window, tab and split back where you left it.
+      </p>
+      <div class="mt-10 flex flex-wrap items-center gap-x-6 gap-y-4">
+        <Button asChild size="lg">
+          <a href="#download"><AppleLogo class="size-[17px]" />Download for macOS</a>
+        </Button>
+        <Button asChild variant="link" size="link">
+          <a href="https://github.com/lassejlv/termy/tree/main/next">Read the source on GitHub</a>
+        </Button>
+      </div>
+      <p class="mt-4 text-[15px] text-muted-foreground">
+        macOS 14 or later. One universal build for Apple Silicon and Intel, updated in place.
+      </p>
+    </section>
+
+    <!-- Beside the copy from 1280px, bleeding off the right edge; under it on narrower screens. -->
+    <div
+      class="relative mx-6 mb-16 h-[330px] overflow-hidden rounded-2xl md:mx-16 md:h-[400px] lg:h-[540px] xl:absolute xl:top-[318px] xl:left-[calc(100%-740px)] xl:m-0 xl:h-[640px] xl:overflow-visible xl:rounded-none"
+    >
+      <div class="origin-top-left scale-[0.5] md:scale-[0.62] lg:scale-[0.84] xl:scale-100">
+        <AppWindow />
+      </div>
+    </div>
+  </div>
+</div>
