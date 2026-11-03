@@ -23,6 +23,13 @@ extension TerminalView: @preconcurrency NSTextInputClient {
     }
 
     public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        // AppKit opens the context menu for Control-Return; programs get the key instead.
+        if window?.firstResponder === self, event.type == .keyDown,
+           KeyMapping.namedKey(forKeyCode: event.keyCode) == "enter",
+           event.modifierFlags.contains(.control), !event.modifierFlags.contains(.command) {
+            keyDown(with: event)
+            return true
+        }
         guard window?.firstResponder === self, event.type == .keyDown,
               event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command
         else { return super.performKeyEquivalent(with: event) }

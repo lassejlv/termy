@@ -114,6 +114,29 @@ struct TerminalViewTests {
         #expect(view.validateMenuItem(menu.items[1]))
     }
 
+    @Test func controlReturnGoesToTheProgramNotTheMenu() throws {
+        let view = try makeView()
+        _ = NSApplication.shared
+        let window = NSWindow(
+            contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSView(frame: view.frame)
+        window.contentView?.addSubview(view)
+        window.makeFirstResponder(view)
+        defer {
+            view.removeFromSuperview()
+            window.close()
+        }
+        var sent = Data()
+        view.session.terminal.onInput = { sent.append($0) }
+        let event = try #require(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: .control, timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\r",
+            charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        #expect(view.performKeyEquivalent(with: event))
+        #expect(!sent.isEmpty)
+    }
+
     @Test func rightClickOnALinkOffersToOpenAndCopyIt() throws {
         let view = try makeView(feeding: "\u{1b}]8;;https://termy.sh/\u{1b}\\link\u{1b}]8;;\u{1b}\\")
         view.pasteboard = privatePasteboard()
