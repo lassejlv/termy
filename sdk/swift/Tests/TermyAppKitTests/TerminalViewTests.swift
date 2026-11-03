@@ -53,6 +53,25 @@ struct TerminalViewTests {
         let view = try makeView()
         #expect(view.session.size.cols == 20)
         #expect(view.session.size.rows == 5)
+
+        // Without a visible window the program keeps its size.
+        view.setFrameSize(view.size(cols: 30, rows: 8))
+        #expect(view.session.size.cols == 20)
+
+        _ = NSApplication.shared
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: view.size(cols: 40, rows: 10)),
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = NSView(frame: NSRect(origin: .zero, size: view.size(cols: 40, rows: 10)))
+        window.contentView?.addSubview(view)
+        window.orderFrontRegardless()
+        defer {
+            view.removeFromSuperview()
+            window.orderOut(nil)
+        }
+        try #require(window.isVisible)
+
         view.setFrameSize(view.size(cols: 30, rows: 8))
         #expect(view.session.size.cols == 30)
         #expect(view.session.size.rows == 8)
