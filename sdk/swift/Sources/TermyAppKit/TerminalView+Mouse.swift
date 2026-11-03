@@ -3,7 +3,7 @@ import AppKit
 import Termy
 
 extension TerminalView {
-    private func gridPosition(for event: NSEvent) -> GridPosition {
+    func gridPosition(for event: NSEvent) -> GridPosition {
         let frame = session.frame
         return renderer.position(at: convert(event.locationInWindow, from: nil), cols: frame.cols, rows: frame.rows)
     }

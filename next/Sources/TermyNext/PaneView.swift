@@ -518,6 +518,15 @@ final class PaneView: NSView, TerminalViewDelegate {
 
     private var dropHighlight: DropHighlightView?
 
+    /// Pane items after the terminal's own Copy, Paste and Select All.
+    /// Right-clicking focuses the pane first, so they act on this one.
+    func terminalView(_ view: TerminalView, willShowMenu menu: NSMenu) {
+        for group in [[Command.clearScrollback, .find], [.splitRight, .splitDown], [.closePane]] {
+            menu.addItem(.separator())
+            group.forEach { menu.addItem($0.menuItem()) }
+        }
+    }
+
     func terminalView(_ view: TerminalView, didCopy text: String) {
         CopyShine.play(over: view.selectionRects, of: view)
     }

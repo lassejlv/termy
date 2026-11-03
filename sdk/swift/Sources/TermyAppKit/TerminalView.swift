@@ -30,6 +30,10 @@ public protocol TerminalViewDelegate: AnyObject {
     func terminalView(_ view: TerminalView, didCopy text: String)
     /// Something that can be dropped is over the view (true) or left it.
     func terminalView(_ view: TerminalView, isDropTarget: Bool)
+    /// The view is about to show its right-click menu, which holds the link
+    /// items for a link under the pointer, then Copy, Paste and Select All.
+    /// Hosts can add their own items, such as splitting or closing a pane.
+    func terminalView(_ view: TerminalView, willShowMenu menu: NSMenu)
 }
 
 extension TerminalViewDelegate {
@@ -40,6 +44,7 @@ extension TerminalViewDelegate {
     public func terminalViewDidExit(_ view: TerminalView) {}
     public func terminalView(_ view: TerminalView, didCopy text: String) {}
     public func terminalView(_ view: TerminalView, isDropTarget: Bool) {}
+    public func terminalView(_ view: TerminalView, willShowMenu menu: NSMenu) {}
 }
 
 /// How a `TerminalView` draws.

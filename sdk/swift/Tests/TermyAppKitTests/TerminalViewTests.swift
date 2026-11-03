@@ -78,6 +78,52 @@ struct TerminalViewTests {
         #expect(view.session.frame.cols == 30)
     }
 
+    @MainActor
+    private final class MenuDelegate: TerminalViewDelegate {
+        var shownMenus = 0
+
+        func terminalView(_ view: TerminalView, willShowMenu menu: NSMenu) {
+            shownMenus += 1
+            menu.addItem(NSMenuItem(title: "Host Item", action: nil, keyEquivalent: ""))
+        }
+    }
+
+    private func rightClick(_ view: TerminalView, row: Int, col: Int) throws -> NSEvent {
+        let rect = view.renderer.cellRect(row: row, col: col)
+        return try #require(NSEvent.mouseEvent(
+            with: .rightMouseDown, location: view.convert(NSPoint(x: rect.midX, y: rect.midY), to: nil), modifierFlags: [],
+            timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+    }
+
+    @Test func rightClickShowsEditItemsAndTheHostsOwn() throws {
+        let view = try makeView(feeding: "hello")
+        let delegate = MenuDelegate()
+        view.delegate = delegate
+        view.pasteboard = privatePasteboard()
+        let menu = try #require(view.menu(for: rightClick(view, row: 0, col: 0)))
+        #expect(menu.items.map(\.title) == ["Copy", "Paste", "Select All", "Host Item"])
+        #expect(delegate.shownMenus == 1)
+
+        let copy = menu.items[0]
+        #expect(!view.validateMenuItem(copy))
+        view.selectAll(nil)
+        #expect(view.validateMenuItem(copy))
+        #expect(!view.validateMenuItem(menu.items[1]))
+        view.pasteboard.clearContents()
+        view.pasteboard.setString("pasted", forType: .string)
+        #expect(view.validateMenuItem(menu.items[1]))
+    }
+
+    @Test func rightClickOnALinkOffersToOpenAndCopyIt() throws {
+        let view = try makeView(feeding: "\u{1b}]8;;https://termy.sh/\u{1b}\\link\u{1b}]8;;\u{1b}\\")
+        view.pasteboard = privatePasteboard()
+        let menu = try #require(view.menu(for: rightClick(view, row: 0, col: 1)))
+        #expect(Array(menu.items.prefix(2).map(\.title)) == ["Open Link", "Copy Link"])
+        let copyLink = menu.items[1]
+        _ = (copyLink.target as AnyObject?)?.perform(copyLink.action, with: copyLink)
+        #expect(view.pasteboard.string(forType: .string) == "https://termy.sh/")
+    }
+
     @Test func rendersCellBackgrounds() throws {
         let view = try makeView(feeding: "\u{1b}[41m  \u{1b}[0m")
         let bitmap = try render(view)
