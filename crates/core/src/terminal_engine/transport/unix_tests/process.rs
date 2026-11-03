@@ -1073,9 +1073,9 @@ fn a_reply_during_the_drop_grace_keeps_the_hup_handler_running() {
     let mut ready_reported = false;
     let mut query_reported = false;
     // The handler spins on builtins until the test releases it, so it stays
-    // inside the drop grace without a fixed sleep that a loaded runner can
-    // stretch past the grace.
-    let terminal = Transport::spawn(
+    // inside the drop grace without a fixed sleep. The grace is lengthened so
+    // a loaded runner can't stretch the handshake past it.
+    let mut terminal = Transport::spawn(
         SpawnConfig {
             program: "/bin/sh".to_string(),
             args: vec![
@@ -1106,6 +1106,7 @@ fn a_reply_during_the_drop_grace_keeps_the_hup_handler_running() {
         || {},
     )
     .expect("PTY should start");
+    terminal.set_drop_grace(Duration::from_secs(5));
     let cleanup = KillProcessOnDrop(terminal.child_pid);
     ready_rx
         .recv_timeout(Duration::from_secs(2))

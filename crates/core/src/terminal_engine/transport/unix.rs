@@ -198,6 +198,8 @@ pub(crate) struct Transport {
     alive: Arc<ChildLiveness>,
     /// A CLOEXEC duplicate of the PTY master, used only for foreground queries.
     control: File,
+    /// How long a dropped child gets after SIGHUP before it is killed.
+    drop_grace: Duration,
 }
 
 #[derive(Clone)]
@@ -963,7 +965,15 @@ impl Transport {
             child_pid: pid,
             alive,
             control,
+            drop_grace: DROP_SHUTDOWN_GRACE,
         })
+    }
+
+    /// Lengthens the SIGHUP grace a drop gives the child, so a test can hold
+    /// a HUP handler inside it without racing a loaded runner's scheduler.
+    #[cfg(test)]
+    pub(crate) fn set_drop_grace(&mut self, grace: Duration) {
+        self.drop_grace = grace;
     }
 
     pub(crate) fn write(&self, input: &[u8]) -> io::Result<()> {
@@ -1450,7 +1460,7 @@ impl Drop for Transport {
             .is_some();
         self.writer.close();
         if child_was_alive {
-            schedule_child_shutdown_escalation(self.child_pid, self.alive.clone());
+            schedule_child_shutdown_escalation(self.child_pid, self.alive.clone(), self.drop_grace);
         }
     }
 }

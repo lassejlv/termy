@@ -124,12 +124,12 @@ fn force_child_shutdown(pid: c_int) {
     }
 }
 
-fn schedule_child_shutdown_escalation(pid: c_int, alive: Arc<ChildLiveness>) {
+fn schedule_child_shutdown_escalation(pid: c_int, alive: Arc<ChildLiveness>, grace: Duration) {
     let fallback_alive = alive.clone();
     let escalation = thread::Builder::new()
         .name("termy-native-pty-shutdown".to_string())
         .spawn(move || {
-            thread::sleep(DROP_SHUTDOWN_GRACE);
+            thread::sleep(grace);
             alive.signal_if_alive(|| force_child_shutdown(pid));
         });
 
