@@ -987,6 +987,37 @@ mod tests {
     }
 
     #[test]
+    fn osc_1337_file_transfers_but_not_shell_marks_pass_the_string_limit() {
+        let options = Options {
+            max_string_bytes: 16,
+            ..Options::default()
+        };
+        let stream = osc_file(
+            "inline=1;width=2",
+            &inline_file(::image::ImageFormat::Png, 4, 4),
+        );
+        let mark = format!("\x1b]133;A;{}\x07", "x".repeat(32));
+        // Split inside the selecting prefix, and across a snapshot there.
+        for split in [3, 6, 9, 15] {
+            let mut engine = Engine::new(Size { cols: 20, rows: 6 }, options);
+            engine.feed(&stream[..split]);
+            let mut engine = Engine::decode_snapshot(&engine.encode_snapshot()).unwrap();
+            engine.feed(&stream[split..]);
+            assert_eq!(engine.graphics_placements().len(), 1, "split at {split}");
+        }
+        // A shell mark keeps the generic limit.
+        let mut engine = Engine::new(Size { cols: 20, rows: 6 }, options);
+        let marks = |engine: &mut Engine, bytes: &[u8]| {
+            engine.feed(bytes);
+            std::iter::from_fn(|| engine.pop_event())
+                .filter(|event| matches!(event, crate::terminal_engine::Event::ShellIntegration(_)))
+                .count()
+        };
+        assert_eq!(marks(&mut engine, b"\x1b]133;A\x07"), 1);
+        assert_eq!(marks(&mut engine, mark.as_bytes()), 0);
+    }
+
+    #[test]
     fn osc_1337_multipart_files_join_parts_split_anywhere() {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         let encoded = STANDARD.encode(inline_file(::image::ImageFormat::Png, 9, 18));
