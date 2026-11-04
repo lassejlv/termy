@@ -4,8 +4,8 @@ use termy_core::{
     TerminalClipboardLocation, TerminalClipboardReadRequest, TerminalClipboardReadResult,
     TerminalClipboardTarget, TerminalClipboardWriteRequest, TerminalClipboardWriteResult,
     TerminalCursorState, TerminalKeyboardMode, TerminalMouseMode, TerminalOptions, TerminalPalette,
-    TerminalQueryColors, TerminalRenderRead, TerminalReplyHost, TerminalRuntimeConfig,
-    TerminalSize,
+    TerminalProtocolReplies, TerminalQueryColors, TerminalRenderRead, TerminalReplyHost,
+    TerminalRuntimeConfig, TerminalSize,
 };
 
 /// Display terminal for a tmux pane. Core owns parsing, screen state and protocols
@@ -21,8 +21,15 @@ impl PaneTerminal {
             default_cursor_style: options.default_cursor_style,
             ..TerminalRuntimeConfig::default()
         };
+        let terminal = Terminal::new_display(size, Some(&config));
+        // tmux answers device attributes, cursor and status reports, colors
+        // and sizes itself before passing the query on in `%output`. A
+        // second answer from here would arrive as typed input (stray
+        // `^[[?62;22c` at the prompt, a second cursor report for readline),
+        // so the pane sends only what tmux leaves to its client.
+        terminal.set_protocol_replies(TerminalProtocolReplies::Passthrough);
         Self {
-            terminal: RwLock::new(Terminal::new_display(size, Some(&config))),
+            terminal: RwLock::new(terminal),
         }
     }
 
@@ -117,6 +124,10 @@ impl PaneTerminal {
             .kitty_clipboard_paste_notification(location, available_formats)
     }
 
+    /// Runs the pane's clipboard requests through `host` and returns the
+    /// replies the pane owes the program, for the caller to send with
+    /// send-keys: clipboard, kitty graphics and kitty keyboard answers only,
+    /// as `new` configures (tmux answers the other queries itself).
     pub fn drain_kitty_clipboard_events(&self, host: &mut impl TerminalReplyHost) -> Vec<Vec<u8>> {
         let mut collector = PaneReplyHost {
             host,
@@ -545,6 +556,44 @@ mod tests {
             .unwrap();
         assert!(String::from_utf8_lossy(&notification).contains("status=DATA:mime=Lg=="));
     }
+    #[test]
+    fn tmux_panes_leave_queries_tmux_answers_to_tmux() {
+        let terminal = PaneTerminal::new(
+            TerminalSize {
+                cols: 20,
+                rows: 4,
+                cell_width: 10.0,
+                cell_height: 20.0,
+            },
+            test_term_options(100),
+        );
+        // What tmux 3.4 answers itself (DA1, DA2, CPR, DSR, XTVERSION,
+        // XTWINOPS sizes, OSC 10/11), and terminal state queries a plain tmux
+        // client never sees either (DECRQM, DECRQSS, XTGETTCAP, DECID).
+        terminal.feed_output(
+            b"\x1b[c\x1b[>c\x1b[6n\x1b[?6n\x1b[5n\x1b[>q\x1b[14t\x1b[16t\x1b[18t\
+              \x1b]10;?\x1b\\\x1b]11;?\x1b\\\x1b]4;1;?\x1b\\\x1b[?2004$p\x1bP$qm\x1b\\\
+              \x1bP+q544e\x1b\\\x1bZ",
+        );
+        assert!(
+            terminal
+                .drain_kitty_clipboard_events(&mut |_| None)
+                .is_empty()
+        );
+
+        // tmux passes these through unanswered; the pane implements them.
+        terminal.feed_output(
+            b"\x1b[>1u\x1b[?u\x1b[?5522$p\x1b_Ga=q,i=7,s=1,v=1,f=24;AAAA\x1b\\\x1b]52;c;?\x1b\\",
+        );
+        let replies = terminal
+            .drain_kitty_clipboard_events(&mut |_| Some("hi".to_string()))
+            .concat();
+        assert_eq!(
+            String::from_utf8(replies).unwrap(),
+            "\x1b[?1u\x1b[?5522;2$y\x1b_Gi=7;OK\x1b\\\x1b]52;c;aGk=\x1b\\"
+        );
+    }
+
     #[test]
     fn clipboard_drains_more_than_one_core_event_batch() {
         struct Host {

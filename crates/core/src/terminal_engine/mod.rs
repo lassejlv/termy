@@ -640,6 +640,17 @@ impl Engine {
         }
     }
 
+    /// Answer only the queries a terminal multiplexer such as tmux passes
+    /// through without answering (kitty graphics, kitty keyboard flags and
+    /// the kitty clipboard's paste-event mode) and drop the replies it gives
+    /// itself, such as device attributes and cursor reports. For display
+    /// terminals that draw a multiplexer's pane: the multiplexer already
+    /// answered, so a second answer would reach the program as typed input.
+    /// Host configuration, which snapshots do not carry. Off by default.
+    pub fn set_passthrough_replies_only(&mut self, enabled: bool) {
+        self.state.passthrough_replies_only = enabled;
+    }
+
     /// Recognize `?1016` (SGR pixel mouse reports). Enable it only when the
     /// host reports pointer positions in pixels; otherwise the mode stays
     /// unrecognized, as DECRQM reports. Engines that must agree (a server

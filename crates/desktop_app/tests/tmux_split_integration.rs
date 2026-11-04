@@ -9,12 +9,13 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use support::tmux_harness::{tmux_preflight, tmux_test_binary, tmux_test_guard};
 
 use termy::terminal_ui::{
-    TmuxClient, TmuxLaunchTarget, TmuxRuntimeConfig, TmuxSnapshot, TmuxWindowState,
+    PaneTerminal, TmuxClient, TmuxLaunchTarget, TmuxNotification, TmuxRuntimeConfig, TmuxSnapshot,
+    TmuxWindowState,
 };
 
 const TEST_COLS: u16 = 149;
@@ -811,4 +812,102 @@ fn tmux_snapshot_decodes_escaped_names_once_and_survives_non_utf8_paths() {
         thread::sleep(Duration::from_millis(100));
     }
     panic!("pane path never became unknown after cd; last path: {last:?}");
+}
+
+fn decode_hex(hex: &str) -> Vec<u8> {
+    hex.as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            u8::from_str_radix(std::str::from_utf8(pair).expect("ascii hex"), 16).expect("hex byte")
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "requires local tmux 3.3+; run explicitly"]
+fn tmux_pane_queries_get_one_answer() {
+    let binary = tmux_test_binary();
+    let _guard = tmux_test_guard(binary.as_str());
+    tmux_preflight(binary.as_str());
+
+    let client = new_tmux_client_with_persistence_clean(binary.as_str(), false);
+    let snapshot = client.refresh_snapshot().expect("initial snapshot");
+    let pane = active_window(&snapshot)
+        .panes
+        .iter()
+        .find(|pane| pane.is_active)
+        .expect("active pane")
+        .clone();
+    // The display terminal the desktop app keeps for this pane, fed and
+    // drained as `process_tmux_terminal_events` does.
+    let terminal = PaneTerminal::new(
+        termy_core::TerminalSize {
+            cols: pane.width,
+            rows: pane.height,
+            ..termy_core::TerminalSize::default()
+        },
+        termy_core::TerminalOptions::default(),
+    );
+
+    // Ask for device attributes and the cursor position with the tty raw,
+    // let every answer arrive, then print what came back as hex. The marker
+    // is split on the command line so the shell's echo of it cannot match.
+    client
+        .send_input(
+            pane.id.as_str(),
+            b"stty raw -echo min 0 time 5; printf '\\033[c\\033[6n'; sleep 2; \
+              r=$(dd bs=4096 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n'); \
+              stty sane; printf '%s<%s>\\n' TERMY''REPLIES \"$r\"\n",
+        )
+        .expect("send-input should succeed");
+
+    let marker = "TERMYREPLIES<";
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut output = Vec::new();
+    let replies = loop {
+        assert!(
+            Instant::now() < deadline,
+            "pane never printed its replies; output: {:?}",
+            String::from_utf8_lossy(&output)
+        );
+        for notification in client.poll_notifications() {
+            let TmuxNotification::Output { pane_id, bytes } = notification else {
+                continue;
+            };
+            if pane_id != pane.id {
+                continue;
+            }
+            terminal.feed_output(&bytes);
+            for reply in terminal.drain_kitty_clipboard_events(&mut |_| None) {
+                client
+                    .send_input(pane_id.as_str(), &reply)
+                    .expect("reply send-input should succeed");
+            }
+            output.extend_from_slice(&bytes);
+        }
+        let text = String::from_utf8_lossy(&output);
+        if let Some(start) = text.find(marker).map(|start| start + marker.len())
+            && let Some(len) = text[start..].find('>')
+        {
+            break decode_hex(&text[start..start + len]);
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+
+    // tmux answers both queries itself, for the terminal it emulates, so
+    // the program must read exactly its two replies and nothing from Termy.
+    let replies = String::from_utf8_lossy(&replies).into_owned();
+    let sequences = replies
+        .split('\u{1b}')
+        .filter(|sequence| !sequence.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(sequences.len(), 2, "expected two replies: {replies:?}");
+    assert!(
+        sequences[0].starts_with("[?") && sequences[0].ends_with('c'),
+        "expected tmux's device attributes first: {replies:?}"
+    );
+    assert!(
+        sequences[1].starts_with('[') && sequences[1].ends_with('R'),
+        "expected tmux's cursor position report second: {replies:?}"
+    );
 }

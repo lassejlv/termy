@@ -128,6 +128,9 @@ struct State {
     title_changed: bool,
     // False for replicas of another terminal: protocol replies are dropped.
     replies_enabled: bool,
+    // Multiplexer panes: the engine answers only passthrough protocols.
+    // Kept here so a restored snapshot's engine gets it too.
+    passthrough_replies_only: bool,
     // The maintenance deadline last handed to the timer, or `None` when the
     // timer may hold a different one. Feeds skip the timer's lock while their
     // deadline is unchanged.
@@ -274,6 +277,7 @@ impl State {
             history_quiet: true,
             title_changed: false,
             replies_enabled: true,
+            passthrough_replies_only: false,
             published_maintenance: None,
             ordered_events: 0,
             ordered_in_flight: 0,

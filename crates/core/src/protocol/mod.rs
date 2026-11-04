@@ -15,5 +15,6 @@ pub use kitty_clipboard_control::{
 };
 pub use query_colors::TerminalQueryColors;
 pub use replies::{
-    TerminalClipboardReply, TerminalClipboardRequest, TerminalClipboardTarget, TerminalReplyHost,
+    TerminalClipboardReply, TerminalClipboardRequest, TerminalClipboardTarget,
+    TerminalProtocolReplies, TerminalReplyHost,
 };

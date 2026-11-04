@@ -122,9 +122,9 @@ impl Backend {
         }
     }
 
-    pub(super) fn set_protocol_replies_enabled(&self, enabled: bool) {
+    pub(super) fn set_protocol_replies(&self, replies: crate::TerminalProtocolReplies) {
         if let Self::Custom(backend) = self {
-            backend.set_protocol_replies_enabled(enabled);
+            backend.set_protocol_replies(replies);
         }
     }
 

@@ -96,8 +96,8 @@ pub use protocol::{
     KittyClipboardOsc, KittyClipboardOscTerminator, TerminalClipboardContent,
     TerminalClipboardLocation, TerminalClipboardReadRequest, TerminalClipboardReadResult,
     TerminalClipboardReply, TerminalClipboardRequest, TerminalClipboardTarget,
-    TerminalClipboardWriteRequest, TerminalClipboardWriteResult, TerminalQueryColors,
-    TerminalReplyHost,
+    TerminalClipboardWriteRequest, TerminalClipboardWriteResult, TerminalProtocolReplies,
+    TerminalQueryColors, TerminalReplyHost,
 };
 #[cfg(feature = "native")]
 pub use render_metrics::{

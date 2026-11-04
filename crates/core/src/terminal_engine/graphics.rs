@@ -407,7 +407,7 @@ impl State {
         screen: KittyGraphicsScreen,
     ) {
         if let Some(reply) = result.response {
-            self.reply(&reply);
+            self.passthrough_reply(&reply);
         }
         if result.changed {
             self.graphics.changed();

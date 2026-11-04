@@ -2,6 +2,7 @@
 //! feed, and a mode that parses queries without answering them.
 
 use super::{CustomBackend, Engine, TerminalSize, cursor_shape, engine};
+use crate::TerminalProtocolReplies;
 
 impl CustomBackend {
     /// Display terminals: parse output and return every queued protocol
@@ -14,11 +15,15 @@ impl CustomBackend {
         std::mem::take(&mut self.shared.state().replies)
     }
 
-    /// Replicas parse queries without answering them.
-    pub(in crate::runtime) fn set_protocol_replies_enabled(&self, enabled: bool) {
+    /// Replicas parse queries without answering them; multiplexer panes
+    /// answer only what the multiplexer passes through.
+    pub(in crate::runtime) fn set_protocol_replies(&self, replies: TerminalProtocolReplies) {
         let mut state = self.shared.state();
-        state.replies_enabled = enabled;
-        if !enabled {
+        state.replies_enabled = replies != TerminalProtocolReplies::None;
+        state.passthrough_replies_only = replies == TerminalProtocolReplies::Passthrough;
+        let passthrough_only = state.passthrough_replies_only;
+        state.engine.set_passthrough_replies_only(passthrough_only);
+        if !state.replies_enabled {
             state.replies.clear();
             state.engine.discard_replies();
         }
@@ -39,6 +44,7 @@ impl CustomBackend {
         engine.set_query_colors(state.query_colors);
         engine.set_default_cursor_shape(cursor_shape(state.default_cursor_style));
         engine.set_cell_pixels(state.size.cell_width, state.size.cell_height);
+        engine.set_passthrough_replies_only(state.passthrough_replies_only);
         let actual = engine.size();
         state.engine = engine;
         state.size = TerminalSize {

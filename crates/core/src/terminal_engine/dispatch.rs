@@ -34,6 +34,9 @@ pub(super) struct State {
     pub(super) cursor_shape_overridden: bool,
     pub(super) cell_pixels: (u16, u16),
     pub(super) pixel_mouse_reports: bool,
+    /// Host configuration, not terminal state (snapshots leave it out): see
+    /// [`super::Engine::set_passthrough_replies_only`].
+    pub(super) passthrough_replies_only: bool,
     pub(super) program_status: crate::program_status::ProgramStatus,
     title: String,
     title_stack: Vec<String>,
@@ -72,6 +75,7 @@ impl State {
             cursor_shape_overridden: false,
             cell_pixels: (9, 18),
             pixel_mouse_reports: false,
+            passthrough_replies_only: false,
             program_status: crate::program_status::ProgramStatus::default(),
             title: String::new(),
             title_stack: Vec::new(),
@@ -116,7 +120,23 @@ impl State {
         self.working_directory.as_deref()
     }
 
+    /// Answers a query that a multiplexer such as tmux answers itself for
+    /// the terminal it emulates: device attributes, status and cursor
+    /// reports, mode and setting reports, colors, sizes.
     pub(super) fn reply(&mut self, bytes: &[u8]) {
+        if !self.passthrough_replies_only {
+            self.queue_reply(bytes);
+        }
+    }
+
+    /// Answers a query for a protocol that tmux passes through to this
+    /// terminal without answering: kitty graphics, the kitty keyboard flags
+    /// and the kitty clipboard's paste-event mode.
+    pub(super) fn passthrough_reply(&mut self, bytes: &[u8]) {
+        self.queue_reply(bytes);
+    }
+
+    fn queue_reply(&mut self, bytes: &[u8]) {
         if self.replies.len().saturating_add(bytes.len()) <= MAX_REPLY_BYTES {
             self.replies.extend_from_slice(bytes);
         } else {
@@ -369,7 +389,9 @@ impl State {
         let screen = usize::from(self.alternate_screen);
         let flags = (value(params, 0, 0) & 31) as u8;
         match private {
-            b'?' => self.reply(format!("\x1b[?{}u", self.modes.kitty_keyboard).as_bytes()),
+            b'?' => {
+                self.passthrough_reply(format!("\x1b[?{}u", self.modes.kitty_keyboard).as_bytes());
+            }
             b'>' => {
                 let stack = &mut self.keyboard_stack[screen];
                 if stack.len() == MAX_KEYBOARD_STACK {

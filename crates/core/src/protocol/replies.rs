@@ -9,6 +9,26 @@ pub enum TerminalClipboardTarget {
     Selection,
 }
 
+/// Which protocol replies a terminal without its own PTY sends (see
+/// `Terminal::set_protocol_replies`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TerminalProtocolReplies {
+    /// Answer every query: the terminal is the program's only terminal.
+    #[default]
+    All,
+    /// The terminal draws a multiplexer's pane (tmux control mode), which
+    /// answers the queries it understands itself before passing them on. Send
+    /// only what it leaves unanswered and the host supports through this
+    /// terminal: kitty graphics, kitty keyboard flags, clipboard reads and
+    /// writes (OSC 52 and the kitty clipboard) and the kitty clipboard's
+    /// paste-event mode. Device attributes, status and cursor reports, other
+    /// mode and setting reports, colors and sizes are dropped.
+    Passthrough,
+    /// A replica of a terminal that already answered: parse queries, change
+    /// no state, send nothing.
+    None,
+}
+
 pub trait TerminalReplyHost {
     fn load_clipboard(&mut self, target: TerminalClipboardTarget) -> Option<String>;
 

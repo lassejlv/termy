@@ -98,7 +98,8 @@ require_issue_url_for_pattern() {
 require_ignored_test_budget() {
   # #388 adds a desktop tmux cwd regression, run by test-tmux-integration in CI.
   # #452 adds a desktop tmux snapshot decoding regression, run there too.
-  local max_ignored_tests=12
+  # A desktop tmux regression for queries answered twice runs there too.
+  local max_ignored_tests=13
   local ignored_count
 
   ignored_count="$(rg -n '#\[ignore' crates | wc -l | tr -d ' ')"
