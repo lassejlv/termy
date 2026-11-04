@@ -1036,3 +1036,153 @@ fn compositions_write_into_unshared_frames_in_place() {
     assert!(state.images[&2].animation.is_none());
     assert_eq!(state.images[&2].image.rgba().unwrap(), &[1; 4]);
 }
+
+/// Whether every placement's image is stored, every relative placement's
+/// parent exists and the stored bytes are counted right.
+fn placements_are_consistent(state: &KittyGraphicsState) -> bool {
+    let placements = state.placements.iter().all(|placement| {
+        state.images.contains_key(&placement.image_id)
+            && match placement.location {
+                PlacementLocation::Relative {
+                    parent_image_id,
+                    parent_placement_id,
+                    ..
+                } => state
+                    .placement_by_key(placement.screen, parent_image_id, parent_placement_id)
+                    .is_some(),
+                _ => true,
+            }
+    });
+    let stored: usize = state.images.values().map(StoredImage::byte_len).sum();
+    placements && state.stored_bytes == stored
+}
+
+fn placed(state: &KittyGraphicsState, image_id: u32) -> bool {
+    state
+        .placements
+        .iter()
+        .any(|placement| placement.image_id == image_id)
+}
+
+#[test]
+fn placed_images_make_room_oldest_first_sparing_the_viewport() {
+    let pixel = [1, 2, 3, 255];
+    let mut state = KittyGraphicsState::default();
+    let upload = |state: &mut KittyGraphicsState, id: u32, history_size: usize| {
+        let control = format!("a=T,f=32,s=1,v=1,i={id},p=1,c=1,r=1");
+        state.apply(command(&control, &pixel), 0, 0, history_size, size())
+    };
+    // Image 1 far back in history, image 2 on the rows the program will be
+    // drawing on, and enough others to fill the image count.
+    upload(&mut state, 1, 0);
+    upload(&mut state, 2, 5000);
+    upload(&mut state, 3, 100);
+    // Copies of image 3, placed below it: each upload costs a scan of every
+    // placement, which is slow for this many in a debug build.
+    let (image, placement) = (state.images[&3].clone(), state.placements[2].clone());
+    for id in 4..MAX_IMAGES as u32 {
+        state.stored_bytes += image.byte_len();
+        state.images.insert(id, image.clone());
+        state.insertion_order.push_back(id);
+        state.next_placement_serial += 1;
+        state.placements.push(Placement {
+            placement_serial: state.next_placement_serial,
+            image_id: id,
+            location: PlacementLocation::Direct {
+                anchor_line: 100 + i64::from(id),
+                col: 0,
+            },
+            ..placement.clone()
+        });
+    }
+    assert!(placements_are_consistent(&state));
+    // The last is shown relative to image 1's placement.
+    let last = MAX_IMAGES as u32;
+    let control = format!("a=t,f=32,s=1,v=1,i={last},q=2");
+    state.apply(command(&control, &pixel), 0, 0, 0, size());
+    let control = format!("a=p,i={last},p=1,P=1,Q=1,c=1,r=1,q=2");
+    state.apply(command(&control, &[]), 0, 0, 0, size());
+    assert_eq!(state.images.len(), MAX_IMAGES);
+    assert!(placed(&state, last));
+
+    // The oldest image goes, with its placement and the one relative to it.
+    let result = upload(&mut state, 5000, 5000);
+    assert_eq!(reply(&result), "\x1b_Gi=5000,p=1;OK\x1b\\");
+    assert!(result.changed);
+    assert!(!state.images.contains_key(&1));
+    assert!(!placed(&state, 1));
+    assert!(state.images.contains_key(&last));
+    assert!(!placed(&state, last));
+    assert!(placements_are_consistent(&state));
+
+    // Unplaced images still go first.
+    upload(&mut state, 5001, 5000);
+    assert!(!state.images.contains_key(&last));
+    assert!(state.images.contains_key(&2));
+    assert!(state.images.contains_key(&3));
+
+    // Image 2 is older than image 3, but on screen.
+    upload(&mut state, 5002, 5000);
+    assert!(state.images.contains_key(&2));
+    assert!(!state.images.contains_key(&3));
+    assert!(state.images.contains_key(&4));
+    assert_eq!(state.images.len(), MAX_IMAGES);
+    assert!(placements_are_consistent(&state));
+    let rendered = state.render_placements(5000, 0, 24, 80);
+    assert!(rendered.iter().any(|placement| placement.image_id == 2));
+    assert!(rendered.iter().any(|placement| placement.image_id == 5002));
+}
+
+/// Zero pixels for a `width`×`height` RGBA upload, compressed so payloads
+/// that fill the byte quota stay cheap to send.
+fn blank_pixels(width: u32, height: u32) -> Vec<u8> {
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder
+        .write_all(&vec![0; width as usize * height as usize * 4])
+        .unwrap();
+    encoder.finish().unwrap()
+}
+
+#[test]
+fn the_byte_quota_evicts_placed_images_but_never_the_one_replaced() {
+    // Three 40 MiB images fill most of the 128 MiB quota.
+    let (width, height) = (4096, 2560);
+    let image = blank_pixels(width, height);
+    let control =
+        |id: u32, height: u32| format!("a=T,f=32,s={width},v={height},o=z,i={id},c=1,r=1");
+    let mut state = KittyGraphicsState::default();
+    for (id, history_size) in [(1, 0), (2, 100), (3, 200)] {
+        let upload = command(&control(id, height), &image);
+        let result = state.apply(upload, 0, 0, history_size, size());
+        assert_eq!(reply(&result), format!("\x1b_Gi={id};OK\x1b\\"));
+    }
+
+    // Replacing the oldest with a larger image evicts the next oldest.
+    let taller = height + 768;
+    let taller_image = blank_pixels(width, taller);
+    let upload = command(&control(1, taller), &taller_image);
+    let result = state.apply(upload, 0, 0, 300, size());
+    assert_eq!(reply(&result), "\x1b_Gi=1;OK\x1b\\");
+    assert_eq!(state.images[&1].height, taller);
+    assert!(placed(&state, 1));
+    assert!(!state.images.contains_key(&2));
+    assert!(placed(&state, 3));
+    assert!(placements_are_consistent(&state));
+
+    // A new upload evicts image 3; image 1 is now the oldest.
+    let upload = command(&control(4, height), &image);
+    state.apply(upload, 0, 0, 400, size());
+    assert!(!state.images.contains_key(&3));
+    assert_eq!(state.insertion_order, [1, 4]);
+
+    // A frame that grows an animation past the quota evicts the others,
+    // sparing the animated image though it is the oldest.
+    let frame = format!("a=f,i=1,f=32,s={width},v={taller},o=z");
+    let result = state.apply(command(&frame, &taller_image), 0, 0, 500, size());
+    assert_eq!(reply(&result), "\x1b_Gi=1;OK\x1b\\");
+    assert!(state.images[&1].animation.is_some());
+    assert!(!state.images.contains_key(&4));
+    assert!(placed(&state, 1));
+    assert!(state.stored_bytes <= MAX_IMAGE_BYTES);
+    assert!(placements_are_consistent(&state));
+}

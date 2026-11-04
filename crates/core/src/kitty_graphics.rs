@@ -41,6 +41,7 @@ const MAX_CONTROL_FIELDS: usize = 64;
 const MAX_DIMENSION: u32 = 32_768;
 const MAX_PIXELS: u64 = (MAX_IMAGE_BYTES / 4) as u64;
 const MAX_PLACEMENTS: usize = 4_096;
+const MAX_IMAGES: usize = 4_096;
 
 /// Decodes payloads as leniently as kitty does: padding is optional and the
 /// unused bits of a final symbol are ignored. chafa encodes every chunk on its
@@ -176,6 +177,27 @@ impl KittyGraphicsPlaceholder {
 enum ResolvedOrigin {
     Buffer { anchor_line: i64, col: i64 },
     Viewport { row: i64, col: i64 },
+}
+
+/// The screen a command runs on and where its rows are: the program's
+/// viewport, whose images quota eviction spares while it can.
+#[derive(Clone, Copy, Debug)]
+struct Viewport {
+    screen: KittyGraphicsScreen,
+    history_size: usize,
+    rows: u16,
+    cols: u16,
+}
+
+impl Viewport {
+    fn new(screen: KittyGraphicsScreen, history_size: usize, size: TerminalSize) -> Self {
+        Self {
+            screen,
+            history_size,
+            rows: size.rows,
+            cols: size.cols,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -375,6 +397,7 @@ impl KittyGraphicsState {
     ) -> KittyGraphicsApplyResult {
         let (cursor_col, cursor_row) = cursor;
         self.viewport_rows = size.rows;
+        let viewport = Viewport::new(screen, history_size, size);
         log::debug!(
             "kitty graphics command: a={:?} i={:?} p={:?} q={:?} m={:?} f={:?} t={:?} s={:?} v={:?} c={:?} r={:?} payload={}B cursor=({cursor_col},{cursor_row}) screen={screen:?}",
             command.char_value('a'),
@@ -422,7 +445,7 @@ impl KittyGraphicsState {
             // says. A reply the client doesn't read lands at its prompt.
             let mut result = if matches!(command.char_value('d'), Some('f' | 'F')) {
                 self.pending = None;
-                match self.edit_animation(&command, None) {
+                match self.edit_animation(&command, None, viewport) {
                     Ok(_) => self.success(&command, true, None, screen),
                     Err(error) => self.failure(&command, &error),
                 }
@@ -440,7 +463,7 @@ impl KittyGraphicsState {
             return result;
         }
         if matches!(action, 'a' | 'c') {
-            return match self.edit_animation(&command, None) {
+            return match self.edit_animation(&command, None, viewport) {
                 Ok(id) => {
                     if command.u32_value('I').is_some() {
                         command.control.push(('i', id.to_string()));
@@ -1005,6 +1028,7 @@ impl KittyGraphicsState {
             screen,
         } = prepared;
         self.viewport_rows = size.rows;
+        let viewport = Viewport::new(screen, history_size, size);
         let (image, width, height) = match image {
             Ok(image) => image,
             Err(error) => return self.failure(&command, &error),
@@ -1020,7 +1044,7 @@ impl KittyGraphicsState {
         }
 
         if command.char_value('a') == Some('f') {
-            return match self.edit_animation(&command, Some(image)) {
+            return match self.edit_animation(&command, Some(image), viewport) {
                 Ok(id) => {
                     if command.u32_value('I').is_some() {
                         command.control.push(('i', id.to_string()));
@@ -1055,7 +1079,8 @@ impl KittyGraphicsState {
             animation: None,
         };
         let byte_len = image.byte_len();
-        let Some(evictions) = self.quota_evictions_for_replacement(image_id, byte_len) else {
+        let Some(evictions) = self.quota_evictions_for_replacement(image_id, byte_len, viewport)
+        else {
             return self.failure(&command, "ENOSPC:image storage quota exceeded");
         };
         let staged = if command.char_value('a') == Some('T') {
@@ -1356,7 +1381,18 @@ impl KittyGraphicsState {
         id
     }
 
-    fn quota_evictions_for_replacement(&self, image_id: u32, new_bytes: usize) -> Option<Vec<u32>> {
+    /// Images to remove, with their placements, so that `image_id` can hold
+    /// `new_bytes`; `None` when even that is not enough. Like kitty, the
+    /// oldest images go first, never `image_id` itself, but images nothing
+    /// shows go before placed ones, and those placed in `viewport` go last.
+    /// Placements in scrollback, or on the other screen, would otherwise keep
+    /// their images until every later upload failed.
+    fn quota_evictions_for_replacement(
+        &self,
+        image_id: u32,
+        new_bytes: usize,
+        viewport: Viewport,
+    ) -> Option<Vec<u32>> {
         let old_bytes = self
             .images
             .get(&image_id)
@@ -1366,7 +1402,10 @@ impl KittyGraphicsState {
             .saturating_sub(old_bytes)
             .saturating_add(new_bytes);
         let mut image_count = self.images.len() + usize::from(!self.images.contains_key(&image_id));
-        if stored_bytes <= MAX_IMAGE_BYTES && image_count <= 4096 {
+        let fits = |stored_bytes, image_count| {
+            stored_bytes <= MAX_IMAGE_BYTES && image_count <= MAX_IMAGES
+        };
+        if fits(stored_bytes, image_count) {
             return Some(Vec::new());
         }
 
@@ -1375,24 +1414,53 @@ impl KittyGraphicsState {
             .iter()
             .map(|placement| placement.image_id)
             .collect::<HashSet<_>>();
+        let visible = self.images_in_viewport(viewport);
+        let tier = |id: &u32| usize::from(placed.contains(id)) + usize::from(visible.contains(id));
         let mut evictions = Vec::new();
-        for candidate in self
-            .insertion_order
-            .iter()
-            .copied()
-            .filter(|candidate| *candidate != image_id && !placed.contains(candidate))
-        {
-            if stored_bytes <= MAX_IMAGE_BYTES && image_count <= 4096 {
-                break;
+        for wanted in 0..=2 {
+            for candidate in self
+                .insertion_order
+                .iter()
+                .filter(|candidate| **candidate != image_id && tier(candidate) == wanted)
+            {
+                if fits(stored_bytes, image_count) {
+                    return Some(evictions);
+                }
+                let Some(image) = self.images.get(candidate) else {
+                    continue;
+                };
+                stored_bytes = stored_bytes.saturating_sub(image.byte_len());
+                image_count = image_count.saturating_sub(1);
+                evictions.push(*candidate);
             }
-            let Some(image) = self.images.get(&candidate) else {
-                continue;
-            };
-            stored_bytes = stored_bytes.saturating_sub(image.byte_len());
-            image_count = image_count.saturating_sub(1);
-            evictions.push(candidate);
         }
-        (stored_bytes <= MAX_IMAGE_BYTES && image_count <= 4096).then_some(evictions)
+        fits(stored_bytes, image_count).then_some(evictions)
+    }
+
+    /// Images with a placement on `viewport`'s rows: its screen's live
+    /// rows, below the history. The store does not track placeholder cells
+    /// outside deletion commands, so a virtual placement, and one relative
+    /// to it, counts as visible. The rows a user has scrolled back to are
+    /// not known here, and the other screen is not showing, so placements
+    /// there get no protection.
+    fn images_in_viewport(&self, viewport: Viewport) -> HashSet<u32> {
+        let top = i64::try_from(viewport.history_size).unwrap_or(i64::MAX);
+        let bottom = top.saturating_add(i64::from(viewport.rows));
+        let mut origins = placement::OriginResolver::new(&self.placements, &[]);
+        self.placements
+            .iter()
+            .filter(|placement| placement.screen == viewport.screen)
+            .filter(|placement| match origins.resolve(placement) {
+                Some(ResolvedOrigin::Buffer { anchor_line, col }) => {
+                    anchor_line < bottom
+                        && anchor_line.saturating_add(i64::from(placement.occupied_rows)) > top
+                        && col < i64::from(viewport.cols)
+                        && col.saturating_add(i64::from(placement.occupied_cols)) > 0
+                }
+                Some(ResolvedOrigin::Viewport { .. }) | None => true,
+            })
+            .map(|placement| placement.image_id)
+            .collect()
     }
 
     fn remove_image(&mut self, image_id: u32) {
