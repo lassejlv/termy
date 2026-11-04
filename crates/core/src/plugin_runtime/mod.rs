@@ -54,6 +54,13 @@ const MAX_VIEW_PARAMS_BYTES: usize = 64 * 1024;
 const MAX_LAUNCH_ARGS: usize = 128;
 const MAX_LAUNCH_TEXT_LENGTH: usize = 4_096;
 const PLUGIN_CAPABILITIES: [&str; 2] = ["storage", "native-ui"];
+/// What every place that installs or manages plugins tells the user.
+/// Plugins can use every Bun and Node API (files, subprocesses, network);
+/// manifest capabilities only decide which Termy APIs they get, so they are
+/// not a sandbox.
+pub const PLUGIN_FULL_ACCESS_WARNING: &str = "Plugins run with your full user permissions: \
+they can read and write your files, run programs and use the network. Only install plugins \
+you trust.";
 pub const MAX_INSTALLED_PLUGINS: usize = 32;
 pub const MAX_PLUGIN_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_PLUGIN_SOURCE_FILES: usize = 4_096;

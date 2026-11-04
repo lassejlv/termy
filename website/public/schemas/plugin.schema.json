@@ -62,7 +62,7 @@
       "default": [],
       "maxItems": 2,
       "uniqueItems": true,
-      "description": "Termy host APIs used by the plugin. These are not operating-system permissions.",
+      "description": "Termy API access used by the plugin. Not a sandbox: plugins can always read and write your files, run programs and use the network.",
       "items": {
         "type": "string",
         "enum": ["storage", "native-ui"]

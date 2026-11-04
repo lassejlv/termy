@@ -43,14 +43,15 @@ directory and cannot be a symlink.
 [plugin manifest schema](/schemas/plugin.schema.json). `termy plugin init` adds it
 automatically.
 
-`capabilities` declares the Termy host APIs a plugin uses. Supported values are
+`capabilities` declares the Termy API access a plugin uses. Supported values are
 `storage` for `context.storage` and `context.paths`, and `native-ui` for views and
 `view.open`. Omitting the field means no capabilities; unknown and duplicate values
 are rejected.
 
-<Callout type="info">
-  Capabilities gate Termy APIs. They are not operating-system permissions: plugins
-  are still trusted Bun code with normal file, network, and process access.
+<Callout type="warn">
+  Capabilities gate Termy APIs only; they are not a sandbox. Plugins run with your
+  full user permissions: they can read and write your files, run programs and use
+  the network. Only install plugins you trust.
 </Callout>
 
 The entrypoint exports a plugin definition without repeating manifest metadata:
@@ -105,8 +106,10 @@ predictable status and updates. A repository with multiple valid plugins require
 
 The installer downloads regular files as data. It does not clone the repository,
 run scripts, evaluate plugin code, or install dependencies while installing. The
-plugin becomes trusted Bun code when Termy loads it, so interactive CLI installs
-require confirmation and automation must pass `--yes`.
+plugin gets your full user access when Termy loads it, so the CLI prints the
+full-access warning before every install or update, and GitHub installs and updates
+ask for confirmation; automation must pass `--yes`. Local folder installs print the
+warning without prompting, so scripts keep working.
 
 ## Develop safely
 

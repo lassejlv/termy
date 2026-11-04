@@ -99,7 +99,10 @@ enum Action {
 #[derive(Subcommand)]
 enum PluginCommand {
     /// Install a plugin from a local directory or GitHub repository
-    #[command(visible_alias = "install")]
+    #[command(
+        visible_alias = "install",
+        after_help = termy_core::plugin_runtime::PLUGIN_FULL_ACCESS_WARNING
+    )]
     Add {
         /// Local plugin directory, GitHub repository, or /tree/<ref>/<path> URL
         #[arg(value_name = "SOURCE")]
@@ -110,7 +113,7 @@ enum PluginCommand {
         /// Plugin directory inside a GitHub repository
         #[arg(long, value_name = "PATH")]
         path: Option<String>,
-        /// Accept the trusted-code warning without prompting
+        /// Install from GitHub without the confirmation prompt
         #[arg(long)]
         yes: bool,
     },
@@ -157,10 +160,11 @@ enum PluginCommand {
     },
 
     /// Update an installed GitHub plugin
+    #[command(after_help = termy_core::plugin_runtime::PLUGIN_FULL_ACCESS_WARNING)]
     Update {
         /// Installed plugin ID
         id: String,
-        /// Accept the trusted-code warning without prompting
+        /// Update without the confirmation prompt
         #[arg(long)]
         yes: bool,
     },

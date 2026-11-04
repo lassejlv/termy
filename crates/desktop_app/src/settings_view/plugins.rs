@@ -1,5 +1,5 @@
 use super::*;
-use termy_core::plugin_runtime::{PluginInventory, PluginSetting};
+use termy_core::plugin_runtime::{PLUGIN_FULL_ACCESS_WARNING, PluginInventory, PluginSetting};
 
 const PLUGIN_SETTING_CONTROL_WIDTH: f32 = SETTINGS_CONTROL_WIDTH;
 const PLUGIN_SETTING_CONTROL_HEIGHT: f32 = SETTINGS_CONTROL_HEIGHT;
@@ -341,9 +341,7 @@ impl SettingsWindow {
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or("this plugin");
-            let message = format!(
-                "Install \"{folder_name}\"? Plugins are trusted local code and run with your user permissions."
-            );
+            let message = format!("Install \"{folder_name}\"?\n\n{PLUGIN_FULL_ACCESS_WARNING}");
             if !crate::native_sdk::confirm("Install Plugin", &message) {
                 let _ = cx.update(|cx| {
                     this.update(cx, |view, cx| {
@@ -354,12 +352,14 @@ impl SettingsWindow {
                 return;
             }
 
-            let (result, snapshot) = cx.background_executor().spawn(async move {
-                let result = runtime.install_from_directory(&path);
-                let snapshot = Self::load_plugin_settings_snapshot(&runtime);
-                (result, snapshot)
-            })
-            .await;
+            let (result, snapshot) = cx
+                .background_executor()
+                .spawn(async move {
+                    let result = runtime.install_from_directory(&path);
+                    let snapshot = Self::load_plugin_settings_snapshot(&runtime);
+                    (result, snapshot)
+                })
+                .await;
             let _ = cx.update(|cx| {
                 this.update(cx, |view, cx| {
                     view.apply_plugin_settings_snapshot(snapshot);
@@ -941,6 +941,7 @@ impl SettingsWindow {
                     self.render_plugin_actions_row(cx),
                 ],
             ))
+            .child(self.render_plugin_trust_notice())
             .child(self.render_settings_group("Installed plugins", installed_rows));
 
         for (plugin_id, settings) in self.plugin_settings.clone() {
@@ -966,7 +967,7 @@ impl SettingsWindow {
             section = section.child(self.render_plugin_errors());
         }
 
-        section.child(self.render_plugin_trust_notice())
+        section
     }
 
     fn render_plugin_runtime_row(&self) -> AnyElement {
@@ -1348,11 +1349,14 @@ impl SettingsWindow {
                     .text_sm()
                     .font_weight(gpui_kit::FontWeight::MEDIUM)
                     .text_color(self.text_primary())
-                    .child("Trusted local code"),
+                    .child("Plugins have full access"),
             )
-            .child(div().text_xs().text_color(self.text_muted()).child(
-                "Plugins run through Bun with your user permissions. Install only code you trust.",
-            ))
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(self.text_muted())
+                    .child(PLUGIN_FULL_ACCESS_WARNING),
+            )
             .into_any_element()
     }
 }
