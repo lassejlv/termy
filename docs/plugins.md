@@ -574,7 +574,7 @@ already running when its plugin changed, was disabled, or was removed.
 
 Plugin loading and command execution have timeouts. A thrown error or timeout is contained to that plugin Worker and reported in Termy, while other plugins and the terminal keep running. A subprocess started by plugin code can outlive its Worker, so plugins that spawn processes must stop them themselves when cancellation matters. Plugins share the persistent host transport; if that transport exits, Termy discards it and rebuilds the host and Workers on the next plugin refresh instead of taking down the app. Fix a failed plugin and reopen the palette to load it again.
 
-A plugin that fails validation before loading, such as a symlinked or invalidly named plugin directory, an invalid `.termy-disabled` marker, or a source tree with a symlink or over the size limits, is skipped and reported in Termy and in Settings; the other plugins still load. When more than 32 plugins are enabled, Termy loads the first 32 in ID order and reports the rest.
+A plugin that fails validation before loading, such as a symlinked or invalidly named plugin directory, an invalid `.termy-disabled` marker, or a source tree with a symlink or over the size limits, is skipped and reported in Termy and in Settings; the other plugins still load. When more than 32 plugins are enabled, Termy loads the first 32 in ID order and reports the rest. Likewise, a plugin whose commands would take the catalog past 512 commands is left out, in ID order, while the others load.
 
 ## Security and v1 limits
 

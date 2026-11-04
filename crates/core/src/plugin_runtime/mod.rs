@@ -301,6 +301,9 @@ impl PluginCommandWhen {
 }
 
 impl PluginCommand {
+    /// `<plugin-id>.<command-id>`, for display. Two plugins can share one,
+    /// since both IDs may contain dots, so commands are identified by the two
+    /// IDs together.
     pub fn qualified_id(&self) -> String {
         format!("{}.{}", self.plugin_id, self.id)
     }
@@ -1898,7 +1901,11 @@ impl PluginRuntime {
         let mut views = Vec::new();
         let mut settings = BTreeMap::new();
         let mut revisions = BTreeMap::new();
-        for loaded in load_result.plugins {
+        // Plugins are admitted in ID order, so when the catalog-wide command
+        // limit leaves one out it is always the same one.
+        let mut loaded_plugins = load_result.plugins;
+        loaded_plugins.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
+        for loaded in loaded_plugins {
             let Some(revision) = source_revisions.get(loaded.plugin_id.as_str()) else {
                 errors.push(format!(
                     "{}: runtime returned an unknown plugin",
@@ -1936,6 +1943,10 @@ impl PluginRuntime {
             }
             if let Err(error) = validate_commands(&plugin_commands) {
                 errors.push(format!("{}: {error}", loaded.plugin_id));
+                continue;
+            }
+            if commands.len() + plugin_commands.len() > MAX_PLUGIN_COMMANDS {
+                errors.push(plugin_command_limit_error(&loaded.plugin_id));
                 continue;
             }
             let plugin_events = match serde_json::from_value::<Vec<PluginEventSubscriptionDescriptor>>(
@@ -2019,8 +2030,9 @@ impl PluginRuntime {
             settings.insert(loaded.plugin_id.clone(), plugin_settings);
             revisions.insert(loaded.plugin_id, (*revision).to_string());
         }
-        validate_commands(&commands)?;
-        validate_views(&views)?;
+        // No catalog-wide check is needed: commands and views are identified
+        // by plugin ID and their own ID together, each plugin's were checked
+        // for duplicates above, and no two plugins share an ID.
         let mut catalog = self
             .inner
             .catalog
@@ -3983,6 +3995,8 @@ fn validate_commands(commands: &[PluginCommand]) -> Result<(), String> {
             commands.len()
         ));
     }
+    // Keyed by both IDs: `git` + `tools.status` and `git.tools` + `status`
+    // share a qualified ID but are different commands.
     let mut command_ids = HashSet::new();
     for command in commands {
         if !valid_id(&command.plugin_id) || !valid_id(&command.id) {
@@ -3991,7 +4005,7 @@ fn validate_commands(commands: &[PluginCommand]) -> Result<(), String> {
                 command.qualified_id()
             ));
         }
-        if !command_ids.insert(command.qualified_id()) {
+        if !command_ids.insert((command.plugin_id.as_str(), command.id.as_str())) {
             return Err(format!(
                 "Duplicate plugin command `{}`",
                 command.qualified_id()
@@ -4112,6 +4126,12 @@ fn validate_commands(commands: &[PluginCommand]) -> Result<(), String> {
     Ok(())
 }
 
+fn plugin_command_limit_error(plugin_id: &str) -> String {
+    format!(
+        "{plugin_id}: not loaded; the plugin catalog would exceed {MAX_PLUGIN_COMMANDS} commands"
+    )
+}
+
 fn validate_event_subscriptions(
     subscriptions: &[PluginEventSubscriptionDescriptor],
 ) -> Result<(), String> {
@@ -4142,9 +4162,11 @@ fn validate_views(views: &[PluginViewDescriptor]) -> Result<(), String> {
                 view.plugin_id, view.id
             ));
         }
-        let qualified_id = format!("{}.{}", view.plugin_id, view.id);
-        if !ids.insert(qualified_id.clone()) {
-            return Err(format!("Duplicate plugin view `{qualified_id}`"));
+        if !ids.insert((view.plugin_id.as_str(), view.id.as_str())) {
+            return Err(format!(
+                "Duplicate plugin view `{}.{}`",
+                view.plugin_id, view.id
+            ));
         }
         let count = counts.entry(&view.plugin_id).or_default();
         *count += 1;

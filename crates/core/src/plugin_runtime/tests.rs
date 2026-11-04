@@ -1777,6 +1777,159 @@ fn protocol_handshake_honors_its_absolute_deadline() {
 }
 
 #[test]
+fn catalog_validation_tells_apart_plugins_whose_qualified_ids_match() {
+    let command = |plugin_id: &str, id: &str| -> PluginCommand {
+        serde_json::from_value(json!({
+            "pluginId": plugin_id,
+            "pluginName": plugin_id,
+            "id": id,
+            "title": id,
+        }))
+        .expect("decode command")
+    };
+    let view = |plugin_id: &str, id: &str| -> PluginViewDescriptor {
+        serde_json::from_value(json!({
+            "pluginId": plugin_id,
+            "pluginName": plugin_id,
+            "id": id,
+            "title": id,
+        }))
+        .expect("decode view")
+    };
+
+    let commands = [
+        command("git", "tools.status"),
+        command("git.tools", "status"),
+    ];
+    assert_eq!(commands[0].qualified_id(), commands[1].qualified_id());
+    validate_commands(&commands).expect("different plugins' commands are distinct");
+    validate_views(&[view("git", "tools.panel"), view("git.tools", "panel")])
+        .expect("different plugins' views are distinct");
+
+    let error = validate_commands(&[command("git", "status"), command("git", "status")])
+        .expect_err("a plugin can't repeat a command ID");
+    assert!(error.contains("Duplicate plugin command"), "{error}");
+    let error = validate_views(&[view("git", "panel"), view("git", "panel")])
+        .expect_err("a plugin can't repeat a view ID");
+    assert!(error.contains("Duplicate plugin view"), "{error}");
+}
+
+#[test]
+fn refresh_loads_plugins_whose_qualified_ids_collide() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugins = temp.path().join("plugins");
+    for (plugin_id, command_id, view_id) in [
+        ("git", "tools.status", "tools.panel"),
+        ("git.tools", "status", "panel"),
+    ] {
+        let plugin_dir = write_plugin(
+            &plugins,
+            plugin_id,
+            plugin_id,
+            &format!(
+                r#"export default definePlugin({{
+  commands: [{{
+    id: "{command_id}",
+    title: "Status",
+    run() {{ return {{ type: "toast", level: "info", message: "from {plugin_id}" }}; }},
+  }}],
+  views: {{
+    "{view_id}": {{
+      title: "Panel",
+      render() {{ return TermyUI.createElement(TermyUI.EmptyState, {{ title: "{plugin_id}" }}); }},
+    }},
+  }},
+}});"#
+            ),
+        );
+        fs::write(
+            plugin_dir.join("plugin.json"),
+            format!(
+                r#"{{"apiVersion":1,"id":"{plugin_id}","name":"{plugin_id}","capabilities":["native-ui"]}}"#
+            ),
+        )
+        .expect("declare native UI capability");
+    }
+
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.errors.is_empty(), "errors: {:?}", refresh.errors);
+    assert_eq!(runtime.commands().len(), 2);
+    assert_eq!(runtime.views().len(), 2);
+    for (plugin_id, command_id, view_id) in [
+        ("git", "tools.status", "tools.panel"),
+        ("git.tools", "status", "panel"),
+    ] {
+        let (command, revision) = runtime
+            .command_with_revision(plugin_id, command_id)
+            .expect("command is registered");
+        assert_eq!(command.qualified_id(), "git.tools.status");
+        let actions = runtime
+            .invoke(
+                plugin_id,
+                command_id,
+                &revision,
+                BTreeMap::new(),
+                test_plugin_context(),
+            )
+            .expect("invoke command");
+        assert_eq!(
+            actions,
+            [PluginAction::Toast {
+                level: PluginToastLevel::Info,
+                message: format!("from {plugin_id}"),
+            }]
+        );
+        let (view, _) = runtime
+            .view_with_revision(plugin_id, view_id)
+            .expect("view is registered");
+        assert_eq!(view.plugin_name, plugin_id);
+    }
+}
+
+#[test]
+fn refresh_leaves_out_only_plugins_past_the_catalog_command_limit() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugins = temp.path().join("plugins");
+    for (plugin_id, count) in [("a-many", 300), ("b-many", 300), ("c-few", 1)] {
+        write_plugin(
+            &plugins,
+            plugin_id,
+            plugin_id,
+            &format!(
+                r#"export default definePlugin({{
+  commands: Array.from({{ length: {count} }}, (_, index) => ({{
+    id: `command-${{index}}`,
+    title: `Command ${{index}}`,
+    run() {{}},
+  }})),
+}});"#
+            ),
+        );
+    }
+
+    let runtime = PluginRuntime::new(Some(&config_path));
+    for _ in 0..2 {
+        let refresh = runtime.refresh_if_changed();
+        assert_eq!(refresh.errors, [plugin_command_limit_error("b-many")]);
+        let commands = runtime.commands();
+        assert_eq!(commands.len(), 301);
+        assert!(commands.iter().all(|command| command.plugin_id != "b-many"));
+        assert!(commands.iter().any(|command| command.plugin_id == "c-few"));
+    }
+}
+
+#[test]
 fn discovery_caps_plugin_count_before_starting_workers() {
     let temp = TempDir::new().expect("temp dir");
     let plugins = temp.path().join("plugins");

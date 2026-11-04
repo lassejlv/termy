@@ -55,7 +55,7 @@ from 100 to 30,000 milliseconds.
 | --- | --- |
 | Installed plugins | 32 |
 | Source tree | 4,096 files and 16 MiB total |
-| Definitions | 512 commands, 64 settings, and 32 views per plugin |
+| Definitions | 512 commands, 64 settings, and 32 views per plugin; 512 commands across all plugins |
 | Command input | 16 inputs per command and 128 options per select or pick result |
 | Returned actions | 32 per invocation |
 | View params | 64 KiB JSON object |
@@ -63,7 +63,8 @@ from 100 to 30,000 milliseconds.
 
 A plugin that breaks a source rule or limit is skipped and reported, and the other
 plugins still load. When more than 32 plugins are enabled, Termy loads the first 32
-in ID order.
+in ID order, and a plugin whose commands would take the catalog past 512 is left out
+the same way.
 
 Small persistent storage has separate limits documented under
 [Lifecycle and storage](/docs/using-termy/plugins/lifecycle-storage#store-json-values).
