@@ -1,9 +1,6 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::io::Write;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallShell {
     Zsh,
@@ -282,12 +279,21 @@ fn install_cli_session_command(shell: InstallShell, install_dir: &str) -> String
     }
 }
 
+/// Appends `block` to the profile unless its marker is already there.
+///
+/// The block is only ever appended, so the profile is opened in append mode
+/// and extended in place instead of being rewritten through a temp file and a
+/// rename. That keeps everything the user set on the file: its mode (a 0600
+/// `.zshrc` stays 0600), owner, ACLs, extended attributes and hard links. No
+/// sibling path such as `.zshrc.tmp` is created, truncated or followed.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn ensure_install_cli_profile_block(profile_path: &Path, block: &str) -> Result<bool, String> {
+    use std::io::{Read, Write};
+
     const START: &str = "# >>> termy cli path >>>";
 
     // Update the file a symlinked profile points at (stow, chezmoi,
-    // home-manager): renaming over the link would replace it.
+    // home-manager), creating the parent of a dangling link's target first.
     let profile_path = &resolve_profile_symlinks(profile_path);
     if let Some(parent) = profile_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -299,53 +305,48 @@ fn ensure_install_cli_profile_block(profile_path: &Path, block: &str) -> Result<
         })?;
     }
 
-    let existing = match std::fs::read_to_string(profile_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => {
-            return Err(format!(
-                "Failed to read shell config {}: {}",
+    // A missing profile is created with the default (umask) permissions.
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(profile_path)
+        .map_err(|error| {
+            format!(
+                "Failed to open shell config {}: {}",
                 profile_path.display(),
                 error
-            ));
-        }
-    };
+            )
+        })?;
 
-    let Some(updated) = append_install_cli_profile_block_if_missing(&existing, START, block) else {
-        return Ok(false);
-    };
-
-    let temp_path = profile_path.with_extension("tmp");
-    {
-        let mut temp_file = std::fs::File::create(&temp_path).map_err(|error| {
-            format!(
-                "Failed to write shell config {}: {}",
-                profile_path.display(),
-                error
-            )
-        })?;
-        temp_file.write_all(updated.as_bytes()).map_err(|error| {
-            format!(
-                "Failed to write shell config {}: {}",
-                profile_path.display(),
-                error
-            )
-        })?;
-        temp_file.sync_all().map_err(|error| {
-            format!(
-                "Failed to write shell config {}: {}",
-                profile_path.display(),
-                error
-            )
-        })?;
-    }
-    std::fs::rename(&temp_path, profile_path).map_err(|error| {
+    let mut existing = Vec::new();
+    file.read_to_end(&mut existing).map_err(|error| {
         format!(
-            "Failed to write shell config {}: {}",
+            "Failed to read shell config {}: {}",
             profile_path.display(),
             error
         )
     })?;
+
+    let Some(addition) =
+        install_cli_profile_block_addition(&String::from_utf8_lossy(&existing), START, block)
+    else {
+        return Ok(false);
+    };
+
+    let written = file
+        .write_all(addition.as_bytes())
+        .and_then(|()| file.sync_all());
+    if let Err(error) = written {
+        // Drop a partly written block, so the profile is not left with an
+        // unterminated `case` that a later install would also skip.
+        let _ = file.set_len(existing.len() as u64);
+        return Err(format!(
+            "Failed to write shell config {}: {}",
+            profile_path.display(),
+            error
+        ));
+    }
     Ok(true)
 }
 
@@ -369,25 +370,23 @@ fn resolve_profile_symlinks(path: &Path) -> PathBuf {
     path
 }
 
+/// The text to append to a profile holding `existing` so that it ends with
+/// `block`, or `None` when the block's `marker` is already there.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn append_install_cli_profile_block_if_missing(
-    existing: &str,
-    marker: &str,
-    block: &str,
-) -> Option<String> {
+fn install_cli_profile_block_addition(existing: &str, marker: &str, block: &str) -> Option<String> {
     if existing.contains(marker) {
         return None;
     }
 
-    let mut updated = existing.to_string();
-    if !updated.is_empty() && !updated.ends_with('\n') {
-        updated.push('\n');
+    let mut addition = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        addition.push('\n');
     }
-    updated.push_str(block);
-    if !updated.ends_with('\n') {
-        updated.push('\n');
+    addition.push_str(block);
+    if !addition.ends_with('\n') {
+        addition.push('\n');
     }
-    Some(updated)
+    Some(addition)
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -935,6 +934,8 @@ fn cli_binary_candidates(exe_dir: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1013,9 +1014,14 @@ mod tests {
     fn install_cli_profile_append_is_idempotent() {
         let marker = "# >>> termy cli path >>>";
         let block = install_cli_profile_block(InstallShell::Zsh, "/tmp/bin");
-        let once = append_install_cli_profile_block_if_missing("", marker, &block).unwrap();
+        let once = install_cli_profile_block_addition("", marker, &block).unwrap();
         assert!(once.contains(marker));
-        assert!(append_install_cli_profile_block_if_missing(&once, marker, &block).is_none());
+        assert!(once.ends_with('\n'));
+        assert!(install_cli_profile_block_addition(&once, marker, &block).is_none());
+        assert_eq!(
+            install_cli_profile_block_addition("alias ll='ls -l'", marker, &block).unwrap(),
+            format!("\n{once}")
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1091,6 +1097,8 @@ mod tests {
         std::fs::create_dir_all(&dotfiles).expect("dotfiles");
         let target = dotfiles.join("zshrc");
         std::fs::write(&target, "export EDITOR=vi\n").expect("write target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))
+            .expect("chmod target");
         let profile = home.path().join(".zshrc");
         std::os::unix::fs::symlink(Path::new("dotfiles").join("zshrc"), &profile).expect("symlink");
 
@@ -1106,6 +1114,107 @@ mod tests {
         let contents = std::fs::read_to_string(&target).expect("read target");
         assert!(contents.starts_with("export EDITOR=vi\n"));
         assert!(contents.contains("# >>> termy cli path >>>"));
+        assert_eq!(file_mode(&target), 0o600);
+        assert!(!dotfiles.join("zshrc.tmp").exists());
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn file_mode(path: &Path) -> u32 {
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o7777
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn profile_update_keeps_mode_and_hard_links() {
+        use std::os::unix::fs::MetadataExt;
+
+        let home = TempDir::new().expect("home");
+        let profile = home.path().join(".zshrc");
+        std::fs::write(&profile, "export EDITOR=vi").expect("write profile");
+        std::fs::set_permissions(&profile, std::fs::Permissions::from_mode(0o600))
+            .expect("chmod profile");
+        let hard_link = home.path().join("zshrc-backup");
+        std::fs::hard_link(&profile, &hard_link).expect("hard link");
+        let inode = std::fs::metadata(&profile).expect("metadata").ino();
+
+        let block = install_cli_profile_block(InstallShell::Zsh, "/tmp/bin");
+        assert!(ensure_install_cli_profile_block(&profile, &block).expect("update profile"));
+
+        assert_eq!(file_mode(&profile), 0o600);
+        assert_eq!(std::fs::metadata(&profile).expect("metadata").ino(), inode);
+        let contents = std::fs::read_to_string(&profile).expect("read profile");
+        assert_eq!(contents, format!("export EDITOR=vi\n{block}\n"));
+        assert_eq!(
+            std::fs::read_to_string(&hard_link).expect("read hard link"),
+            contents
+        );
+
+        // A second install leaves the file exactly as it is.
+        assert!(!ensure_install_cli_profile_block(&profile, &block).expect("second update"));
+        assert_eq!(
+            std::fs::read_to_string(&profile).expect("read profile"),
+            contents
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn profile_update_leaves_a_sibling_tmp_path_alone() {
+        let home = TempDir::new().expect("home");
+        let profile = home.path().join(".zshrc");
+        std::fs::write(&profile, "export EDITOR=vi\n").expect("write profile");
+        let tmp = home.path().join(".zshrc.tmp");
+        std::fs::write(&tmp, "user data\n").expect("write tmp");
+        // A link where a fixed temp name used to be written must not be
+        // followed either.
+        let victim = home.path().join("victim");
+        std::fs::write(&victim, "keep me\n").expect("write victim");
+        let config_tmp = home.path().join("config.tmp");
+        std::os::unix::fs::symlink(&victim, &config_tmp).expect("symlink");
+        let fish_profile = home.path().join("config.fish");
+        std::fs::write(&fish_profile, "set -gx EDITOR vi\n").expect("write fish profile");
+
+        let block = install_cli_profile_block(InstallShell::Zsh, "/tmp/bin");
+        assert!(ensure_install_cli_profile_block(&profile, &block).expect("update profile"));
+        let fish_block = install_cli_profile_block(InstallShell::Fish, "/tmp/bin");
+        assert!(
+            ensure_install_cli_profile_block(&fish_profile, &fish_block)
+                .expect("update fish profile")
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&tmp).expect("read tmp"),
+            "user data\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&victim).expect("read victim"),
+            "keep me\n"
+        );
+        assert!(
+            std::fs::symlink_metadata(&config_tmp)
+                .expect("link metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn profile_update_creates_a_missing_profile() {
+        let home = TempDir::new().expect("home");
+        let profile = home.path().join(".config").join("fish").join("config.fish");
+
+        let block = install_cli_profile_block(InstallShell::Fish, "/tmp/bin");
+        assert!(ensure_install_cli_profile_block(&profile, &block).expect("create profile"));
+
+        assert_eq!(
+            std::fs::read_to_string(&profile).expect("read profile"),
+            format!("{block}\n")
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
