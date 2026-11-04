@@ -75,6 +75,7 @@ mod inline_input;
 mod inspector;
 mod interaction;
 mod kitty_images;
+mod link_preview;
 #[cfg(target_os = "macos")]
 mod macos_file_drop;
 #[cfg(target_os = "macos")]
