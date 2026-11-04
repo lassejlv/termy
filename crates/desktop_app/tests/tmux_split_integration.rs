@@ -728,3 +728,87 @@ fn repeated_reconnect_does_not_increase_client_count() {
         "persistent session must remain after reconnect loop"
     );
 }
+
+#[test]
+#[ignore = "requires local tmux 3.3+; run explicitly"]
+fn tmux_snapshot_decodes_escaped_names_once_and_survives_non_utf8_paths() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let binary = tmux_test_binary();
+    let _guard = tmux_test_guard(binary.as_str());
+    tmux_preflight(binary.as_str());
+
+    let client = new_tmux_client_with_persistence_clean(binary.as_str(), false);
+    let snapshot = client.refresh_snapshot().expect("initial snapshot");
+    let window = active_window(&snapshot);
+    let window_id = window.id.clone();
+    let pane_id = active_pane_id(window).to_string();
+
+    // A name with a backslash before digits: the snapshot used to decode its
+    // escapes twice and turn the backslash and digits into another character.
+    // tmux stores window names vis-encoded (this one as `a\\101`), so compare
+    // with the name tmux itself reports.
+    client
+        .rename_window(window_id.as_str(), r"a\101")
+        .expect("rename-window should succeed");
+    let listed = run_tmux_test_socket_output(
+        binary.as_str(),
+        &["list-windows", "-a", "-F", "#{window_id} #{window_name}"],
+    );
+    let listed = String::from_utf8(listed.stdout).expect("list-windows output");
+    let expected_name = listed
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{window_id} ")))
+        .expect("renamed window should be listed")
+        .to_string();
+    assert!(expected_name.contains('\\'), "{expected_name:?}");
+    let renamed = client.refresh_snapshot().expect("snapshot after rename");
+    let renamed_window = renamed
+        .windows
+        .iter()
+        .find(|window| window.id == window_id)
+        .expect("renamed window should be in the snapshot");
+    assert_eq!(renamed_window.name, expected_name);
+
+    // tmux prints a non-UTF-8 directory as `\377` inside `#{q:...}`. The
+    // snapshot must still parse, with the pane's path reported as unknown.
+    // APFS (macOS) refuses such names, so this half needs a filesystem that
+    // allows them.
+    let tmux_tmpdir = isolated_tmux_tmpdir_from_env();
+    let mut raw_name = b"raw-a".to_vec();
+    raw_name.push(0xff);
+    raw_name.push(b'b');
+    let raw_dir = tmux_tmpdir.join(std::ffi::OsStr::from_bytes(&raw_name));
+    match fs::create_dir_all(&raw_dir) {
+        Ok(()) => {}
+        Err(_) if cfg!(target_os = "macos") => return,
+        Err(error) => panic!("create non-utf8 directory: {error}"),
+    }
+    let prefix = tmux_tmpdir.join("raw-a");
+    client
+        .send_input(
+            pane_id.as_str(),
+            format!("cd \"$(printf '%s\\377b' '{}')\"\n", prefix.display()).as_bytes(),
+        )
+        .expect("send-input should succeed");
+
+    let mut last = None;
+    for _attempt in 0..60 {
+        let snapshot = client
+            .refresh_snapshot()
+            .expect("snapshot with a non-utf8 pane path should parse");
+        let path = snapshot
+            .windows
+            .iter()
+            .flat_map(|window| &window.panes)
+            .find(|pane| pane.id == pane_id)
+            .map(|pane| pane.current_path.clone())
+            .expect("pane should be in the snapshot");
+        if path.is_empty() {
+            return;
+        }
+        last = Some(path);
+        thread::sleep(Duration::from_millis(100));
+    }
+    panic!("pane path never became unknown after cd; last path: {last:?}");
+}

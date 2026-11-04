@@ -75,13 +75,34 @@ pub(crate) fn session_snapshot_format() -> &'static str {
     SESSION_SNAPSHOT_FORMAT
 }
 
-fn decode_snapshot_field(value: &str) -> Result<String> {
-    let bytes = value.as_bytes();
+/// Splits one snapshot record into fields and decodes each field's escapes,
+/// in a single pass so every escape is decoded exactly once.
+///
+/// Records come in two encodings. Output of `tmux -F` run as a subprocess has
+/// raw `\x1f` separators. Output of the same query sent through control mode
+/// is escaped again by tmux: every byte below 0x20 (the separator too) prints
+/// as an octal escape (`\037`), but backslashes are left as they are. So in
+/// control mode, `\\` is a backslash that `#{q:...}` escaped, `\NNN` is a byte,
+/// and an escaped 0x1f ends the field. Decoding the whole line first and then
+/// decoding fields again turned `a\\101` (a window named `a\101`) into `aA`.
+///
+/// tmux escapes a 0x1f inside a `#{q:...}` field as `\037` too, so in control
+/// mode such a byte still cannot be told apart from a separator; the field
+/// count check below rejects the record instead of misreading it.
+fn decode_snapshot_fields(line: &str) -> Result<Vec<String>> {
+    let escaped_separator = !line.contains(SNAPSHOT_FIELD_SEP);
+    let bytes = line.as_bytes();
+    let mut fields = Vec::new();
     let mut output = Vec::with_capacity(bytes.len());
     let mut index = 0;
 
     while index < bytes.len() {
         let current = bytes[index];
+        if current == SNAPSHOT_FIELD_SEP as u8 && !escaped_separator {
+            fields.push(snapshot_field_text(std::mem::take(&mut output)));
+            index += 1;
+            continue;
+        }
         if current != b'\\' {
             output.push(current);
             index += 1;
@@ -91,69 +112,93 @@ fn decode_snapshot_field(value: &str) -> Result<String> {
         index += 1;
         let escape = bytes
             .get(index)
-            .ok_or_else(|| anyhow!("invalid trailing escape in snapshot field '{value}'"))?;
-        match escape {
+            .ok_or_else(|| anyhow!("invalid trailing escape in snapshot field '{line}'"))?;
+        let decoded = match escape {
             b'\\' => {
-                output.push(b'\\');
                 index += 1;
+                b'\\'
             }
             b'n' => {
-                output.push(b'\n');
                 index += 1;
+                b'\n'
             }
             b'r' => {
-                output.push(b'\r');
                 index += 1;
+                b'\r'
             }
             b't' => {
-                output.push(b'\t');
                 index += 1;
+                b'\t'
             }
             b'x' => {
                 let hex = bytes
                     .get(index + 1..index + 3)
-                    .ok_or_else(|| anyhow!("invalid hex escape in snapshot field '{value}'"))?;
+                    .ok_or_else(|| anyhow!("invalid hex escape in snapshot field '{line}'"))?;
                 let hi = (hex[0] as char)
                     .to_digit(16)
-                    .ok_or_else(|| anyhow!("invalid hex escape in snapshot field '{value}'"))?;
+                    .ok_or_else(|| anyhow!("invalid hex escape in snapshot field '{line}'"))?;
                 let lo = (hex[1] as char)
                     .to_digit(16)
-                    .ok_or_else(|| anyhow!("invalid hex escape in snapshot field '{value}'"))?;
-                output.push(((hi << 4) | lo) as u8);
+                    .ok_or_else(|| anyhow!("invalid hex escape in snapshot field '{line}'"))?;
                 index += 3;
+                ((hi << 4) | lo) as u8
             }
             b'0'..=b'7' => {
                 let octal = bytes
                     .get(index..index + 3)
-                    .ok_or_else(|| anyhow!("invalid octal escape in snapshot field '{value}'"))?;
+                    .ok_or_else(|| anyhow!("invalid octal escape in snapshot field '{line}'"))?;
                 if !octal.iter().all(|digit| (b'0'..=b'7').contains(digit)) {
-                    return Err(anyhow!("invalid octal escape in snapshot field '{value}'"));
+                    return Err(anyhow!("invalid octal escape in snapshot field '{line}'"));
                 }
-                let decoded =
-                    ((octal[0] - b'0') << 6) | ((octal[1] - b'0') << 3) | (octal[2] - b'0');
-                output.push(decoded);
                 index += 3;
+                // Computed in u16: `\400`..`\777` would overflow a u8 shift.
+                ((u16::from(octal[0] - b'0') << 6)
+                    | (u16::from(octal[1] - b'0') << 3)
+                    | u16::from(octal[2] - b'0')) as u8
             }
             _ => {
                 // tmux `#{q:...}` uses shell-style escaping for punctuation and whitespace
                 // (for example: "\\[", "\\(", "\\ ", "\\*", "\\?"), so decode these as literals.
-                output.push(*escape);
                 index += 1;
+                *escape
             }
+        };
+        if decoded == SNAPSHOT_FIELD_SEP as u8 && escaped_separator {
+            fields.push(snapshot_field_text(std::mem::take(&mut output)));
+        } else {
+            output.push(decoded);
         }
     }
 
-    String::from_utf8(output)
-        .with_context(|| format!("snapshot field is not valid utf-8: '{value}'"))
+    fields.push(snapshot_field_text(output));
+    Ok(fields)
+}
+
+/// tmux escapes bytes that are not valid UTF-8 (a directory named with a raw
+/// 0xff byte prints as `\377`), so a decoded field can hold them. Keep the rest
+/// of the snapshot rather than failing it over one name or path.
+fn snapshot_field_text(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    }
+}
+
+/// A pane path that could not be decoded as UTF-8 is reported as unknown
+/// (empty) instead of a path with replacement characters, which no directory
+/// matches and which would make new splits and tabs fail to start there.
+fn snapshot_pane_path(path: String) -> String {
+    if path.contains(char::REPLACEMENT_CHARACTER) {
+        String::new()
+    } else {
+        path
+    }
 }
 
 fn parse_snapshot_fields<const N: usize>(line: &str, kind: &str) -> Result<[String; N]> {
     // Snapshot rows must have a fixed schema. Rejecting mismatched field counts
     // prevents silent record drift when delimiters appear unescaped in data.
-    let fields = line
-        .split(SNAPSHOT_FIELD_SEP)
-        .map(decode_snapshot_field)
-        .collect::<Result<Vec<_>>>()?;
+    let fields = decode_snapshot_fields(line)?;
     let field_count = fields.len();
 
     fields.try_into().map_err(|_| {
@@ -284,7 +329,7 @@ pub(crate) fn parse_snapshot(
                 cursor_x,
                 cursor_y,
                 mouse_mode,
-                current_path,
+                current_path: snapshot_pane_path(current_path),
                 current_command,
             });
     }
@@ -476,6 +521,83 @@ mod tests {
         );
         let error = parse_snapshot("termy", windows.as_str(), panes.as_str()).unwrap_err();
         assert!(error.to_string().contains("invalid hex escape"));
+    }
+
+    /// A record as tmux prints it in control mode: separators and other bytes
+    /// below 0x20 octal-escaped, backslashes left as `#{q:...}` wrote them.
+    fn control_mode_record(fields: &[&str]) -> String {
+        fields.join("\\037")
+    }
+
+    #[test]
+    fn parse_snapshot_decodes_control_mode_escapes_once() {
+        // `#{q:window_name}` prints a window named `a\101` as `a\\101`.
+        let windows = control_mode_record(&["@1", "0", r"a\\101", r"lay\ out", "1", "1"]);
+        let panes = control_mode_record(&[
+            "%1",
+            "@1",
+            "$1",
+            "1",
+            "0",
+            "0",
+            "80",
+            "24",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            r"/tmp/x\\101\011tab",
+            "zsh",
+        ]);
+        let snapshot = parse_snapshot("termy", &windows, &panes).expect("snapshot");
+        assert_eq!(snapshot.windows[0].name, r"a\101");
+        assert_eq!(snapshot.windows[0].layout, "lay out");
+        assert_eq!(
+            snapshot.windows[0].panes[0].current_path,
+            "/tmp/x\\101\ttab"
+        );
+    }
+
+    #[test]
+    fn parse_snapshot_keeps_going_when_a_field_is_not_utf8() {
+        // tmux prints a raw 0xff byte in a format as `\377`.
+        let windows = control_mode_record(&["@1", "0", r"a\377b", "layout", "1", "1"]);
+        let panes = control_mode_record(&[
+            "%1",
+            "@1",
+            "$1",
+            "1",
+            "0",
+            "0",
+            "80",
+            "24",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            "0",
+            r"/tmp/a\377b",
+            r"z\377sh",
+        ]);
+        let snapshot = parse_snapshot("termy", &windows, &panes).expect("snapshot");
+        assert_eq!(snapshot.windows[0].name, "a\u{fffd}b");
+        let pane = &snapshot.windows[0].panes[0];
+        // No directory has the replacement-character name, so the path is unknown.
+        assert_eq!(pane.current_path, "");
+        assert_eq!(pane.current_command, "z\u{fffd}sh");
+
+        // The same record with raw separators (a subprocess query) decodes alike.
+        let sep = SNAPSHOT_FIELD_SEP.to_string();
+        let raw_windows = windows.replace("\\037", &sep);
+        let raw_panes = panes.replace("\\037", &sep);
+        let raw = parse_snapshot("termy", &raw_windows, &raw_panes).expect("raw snapshot");
+        assert_eq!(raw.windows[0].name, "a\u{fffd}b");
+        assert_eq!(raw.windows[0].panes[0].current_path, "");
     }
 
     #[test]
