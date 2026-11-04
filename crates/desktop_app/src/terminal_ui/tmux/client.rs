@@ -364,7 +364,7 @@ impl TmuxClient {
     }
 
     pub fn refresh_snapshot(&self) -> Result<TmuxSnapshot> {
-        let windows_output = self.run_control_format_query_args(&[
+        let windows_command = Self::capture_command(&[
             "list-windows",
             "-t",
             self.session_name.as_str(),
@@ -373,8 +373,7 @@ impl TmuxClient {
             // so tabs/newlines inside names cannot corrupt record framing.
             WINDOW_SNAPSHOT_FORMAT,
         ])?;
-
-        let panes_output = self.run_control_format_query_args(&[
+        let panes_command = Self::capture_command(&[
             "list-panes",
             "-s",
             "-t",
@@ -382,6 +381,15 @@ impl TmuxClient {
             "-F",
             PANE_SNAPSHOT_FORMAT,
         ])?;
+
+        // Queue both queries before waiting for either, so a refresh waits
+        // for one control-mode round trip instead of two. tmux runs them in
+        // order, so they still describe the same moment as before.
+        let windows_rx = self.enqueue_waited_control_command(&windows_command);
+        let panes_rx = self.enqueue_waited_control_command(&panes_command);
+        let deadline = Instant::now() + CONTROL_CAPTURE_TIMEOUT;
+        let windows_output = Self::wait_format_query(&windows_command, windows_rx, deadline)?;
+        let panes_output = Self::wait_format_query(&panes_command, panes_rx, deadline)?;
 
         parse_snapshot(&self.session_name, &windows_output, &panes_output)
     }
@@ -850,19 +858,30 @@ impl TmuxClient {
         })
     }
 
-    /// Runs a `-F` format query and returns its output as tmux printed it.
+    /// Waits for a queued `-F` format query and returns its output as tmux
+    /// printed it.
     ///
     /// [`parse_snapshot`] decodes the escapes itself, in one pass: control mode
     /// escapes the field separators but not backslashes, so unescaping the
     /// whole output first and the fields again decoded `#{q:...}` escapes twice
     /// (a window named `a\101` became `aA`) and turned the `\377` of a
     /// non-UTF-8 path into a raw byte that failed the UTF-8 check.
-    fn run_control_format_query_args(&self, args: &[&str]) -> Result<String> {
-        let command = Self::capture_command(args)?;
-        let response = self
-            .send_control_command_wait_with_timeout(command.as_str(), CONTROL_CAPTURE_TIMEOUT)
-            .with_context(|| format!("tmux format query failed: {command}"))?;
-        Ok(response.output)
+    fn wait_format_query(
+        command: &str,
+        response_rx: Result<Receiver<ControlResponse>>,
+        deadline: Instant,
+    ) -> Result<String> {
+        response_rx
+            .and_then(|response_rx| {
+                Self::wait_control_response(
+                    command,
+                    &response_rx,
+                    deadline,
+                    CONTROL_CAPTURE_TIMEOUT,
+                )
+            })
+            .map(|response| response.output)
+            .with_context(|| format!("tmux format query failed: {command}"))
     }
 
     fn finish_capture(command: &str, response: Result<ControlCommandResult>) -> Result<String> {

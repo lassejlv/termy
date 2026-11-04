@@ -244,7 +244,7 @@ impl TerminalView {
                     runtime.title_refresh_deadline = None;
                     runtime.title_refresh_wakeup_scheduled = false;
                 }
-                if self.refresh_tmux_snapshot() {
+                if self.refresh_tmux_snapshot_if_changed() {
                     should_redraw = true;
                 }
             }
