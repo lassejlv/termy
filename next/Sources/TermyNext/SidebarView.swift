@@ -24,6 +24,8 @@ final class SidebarView: GlassPanel {
     private var hoverRow: Int?
     private var collapsed: Set<UUID> = []
     private var phase: CGFloat = 0
+    private lazy var loaderSpots = LoaderSpots(host: self)
+    private var drawnLoader = Preferences.shared.tabLoader
     private let footer = NSStackView()
     private lazy var addTabButton = IconButton(symbol: "plus.circle", pointSize: 12, help: "New Tab") { [weak self] in
         self?.navigator?.run(.newTab)
@@ -83,7 +85,7 @@ final class SidebarView: GlassPanel {
     func advanceSpinner() {
         guard Workspace.shared.sessions.contains(where: { $0.activity == .working }) else { return }
         phase = (phase - 24).truncatingRemainder(dividingBy: 360)
-        needsDisplay = true
+        if StatusIndicator.hostAnimatesWorking || drawnLoader != Preferences.shared.tabLoader { needsDisplay = true }
     }
 
     override func layout() {
@@ -165,6 +167,9 @@ final class SidebarView: GlassPanel {
     }
 
     override func drawContent(_ dirtyRect: NSRect) {
+        loaderSpots.begin()
+        defer { loaderSpots.end() }
+        drawnLoader = Preferences.shared.tabLoader
         let theme = AppConfig.shared.theme
         if rows.isEmpty { rebuildRows() }
         for (i, (row, frame)) in rows.enumerated() {
@@ -187,7 +192,7 @@ final class SidebarView: GlassPanel {
                     .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))?.tinted(theme.textTertiary)
                 chevron?.drawUpright(at: NSPoint(x: frame.maxX - 18, y: frame.midY - 5))
                 if !current, session.activity.urgency >= PaneActivity.working.urgency {
-                    StatusIndicator.draw(session.activity, in: NSRect(x: frame.maxX - 38, y: frame.midY - 5, width: 10, height: 10), theme: theme, phase: phase)
+                    StatusIndicator.draw(session.activity, in: NSRect(x: frame.maxX - 38, y: frame.midY - 5, width: 10, height: 10), theme: theme, phase: phase, spots: loaderSpots)
                 }
             case .tab(let tab, let index):
                 let selected = index == navigator?.session.selectedIndex
@@ -205,8 +210,8 @@ final class SidebarView: GlassPanel {
                     StatusIndicator.draw(tab.activity, in: NSRect(x: icon.maxX - 6, y: icon.minY - 3, width: 9, height: 9), theme: theme, phase: phase)
                 }
                 if working {
-                    StatusIndicator.drawDots(in: NSRect(x: frame.maxX - 10 - StatusIndicator.dotsWidth, y: frame.minY, width: StatusIndicator.dotsWidth, height: frame.height),
-                                             color: theme.textSecondary, phase: phase)
+                    StatusIndicator.drawWorking(in: NSRect(x: frame.maxX - 10 - StatusIndicator.dotsWidth, y: frame.minY, width: StatusIndicator.dotsWidth, height: frame.height),
+                                             color: theme.textSecondary, phase: phase, spots: loaderSpots)
                 }
                 let text = NSMutableAttributedString(string: tab.title, attributes: [
                     .font: NSFont.systemFont(ofSize: 12.5, weight: .medium),

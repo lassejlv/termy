@@ -22,6 +22,8 @@ final class TabStripView: GlassPanel {
     private var hoverIndex: Int?
     private var hoverClose = false
     private var phase: CGFloat = 0
+    private lazy var loaderSpots = LoaderSpots(host: self)
+    private var drawnLoader = Preferences.shared.tabLoader
     private var dragIndex: Int?
     private var dragStart: NSPoint = .zero
     private var dragOffset: CGFloat = 0
@@ -46,7 +48,7 @@ final class TabStripView: GlassPanel {
     func advanceSpinner() {
         guard navigator?.session.tabs.contains(where: { $0.activity == .working }) == true else { return }
         phase = (phase - 24).truncatingRemainder(dividingBy: 360)
-        needsDisplay = true
+        if StatusIndicator.hostAnimatesWorking || drawnLoader != Preferences.shared.tabLoader { needsDisplay = true }
     }
 
     func computeFrames() -> [NSRect] {
@@ -127,6 +129,9 @@ final class TabStripView: GlassPanel {
     }
 
     override func drawContent(_ dirtyRect: NSRect) {
+        loaderSpots.begin()
+        defer { loaderSpots.end() }
+        drawnLoader = Preferences.shared.tabLoader
         guard let navigator else { return }
         let theme = AppConfig.shared.theme
         let tabs = navigator.session.tabs
@@ -183,8 +188,8 @@ final class TabStripView: GlassPanel {
         let rect = NSRect(x: x, y: frame.midY - 8.5, width: max(0, textMaxX - x), height: 17)
         drawFaded(text, in: rect)
         if showsDots {
-            StatusIndicator.drawDots(in: NSRect(x: frame.maxX - 12 - StatusIndicator.dotsWidth, y: frame.minY, width: StatusIndicator.dotsWidth, height: frame.height),
-                                     color: theme.textSecondary, phase: phase)
+            StatusIndicator.drawWorking(in: NSRect(x: frame.maxX - 12 - StatusIndicator.dotsWidth, y: frame.minY, width: StatusIndicator.dotsWidth, height: frame.height),
+                                     color: theme.textSecondary, phase: phase, spots: loaderSpots)
         }
 
         if showsClose {

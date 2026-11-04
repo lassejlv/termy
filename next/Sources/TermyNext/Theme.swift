@@ -65,6 +65,23 @@ final class Preferences {
         get { defaults.object(forKey: "inheritsDirectory") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "inheritsDirectory"); changed() }
     }
+    /// What a working tab shows: Termy Next's three dots (the default) or
+    /// one of loading.dev's spinners.
+    var tabLoader: TabLoader {
+        get { TabLoader(rawValue: defaults.string(forKey: "tabLoader") ?? "") ?? .dots }
+        set { defaults.set(newValue.rawValue, forKey: "tabLoader") }
+    }
+    /// Copied text catches the light (`CopyShine`). On by default.
+    var copyShine: Bool {
+        get { defaults.object(forKey: "copyShine") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "copyShine") }
+    }
+    /// Turns Termy Next's own animations off, as the system's Reduce
+    /// Motion does. Off by default; the system setting still applies.
+    var reduceMotion: Bool {
+        get { defaults.bool(forKey: "reduceMotion") }
+        set { defaults.set(newValue, forKey: "reduceMotion") }
+    }
     /// ssh sends COLORTERM along (zsh and Add Remote Host), so programs on
     /// the server use 24-bit color. On by default.
     var sshSendsColor: Bool {

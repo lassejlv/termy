@@ -271,10 +271,10 @@ enum IconStack {
 /// Status marks: Rex's three-dot loader for working, a dot for the rest.
 @MainActor
 final class StatusIndicator {
-    static func draw(_ state: PaneActivity, in rect: NSRect, theme: Theme, phase: CGFloat) {
+    static func draw(_ state: PaneActivity, in rect: NSRect, theme: Theme, phase: CGFloat, spots: LoaderSpots? = nil) {
         switch state {
         case .working:
-            drawDots(in: rect, color: theme.textSecondary, phase: phase)
+            drawWorking(in: rect, color: theme.textSecondary, phase: phase, spots: spots)
         case .blocked, .done, .error:
             let color = state == .blocked ? theme.blocked : state == .done ? theme.done : theme.error
             color.setFill()
@@ -283,6 +283,21 @@ final class StatusIndicator {
             break
         }
     }
+
+    /// The working indicator picked in Settings, centered in `rect`: the
+    /// three dots by default (drawn here, ticked by the 15 Hz spinner timer),
+    /// or one of loading.dev's spinners, which `spots` shows as a live view.
+    /// Without `spots` a spinner is drawn as a still frame.
+    static func drawWorking(in rect: NSRect, color: NSColor, phase: CGFloat, spots: LoaderSpots? = nil) {
+        let loader = Preferences.shared.tabLoader
+        guard loader != .dots else { return drawDots(in: rect, color: color, phase: phase) }
+        if let spots { return spots.place(rect, color: color) }
+        LoaderDrawing.draw(loader, in: rect, size: min(12, rect.height), color: color, time: loader.duration * 0.3)
+    }
+
+    /// Whether working rows need redrawing each spinner tick: only the dots
+    /// are drawn by their host; other loaders animate on their own.
+    static var hostAnimatesWorking: Bool { Preferences.shared.tabLoader == .dots }
 
     /// Three dots pulsing left to right, one wave per second. `rect` is the
     /// space for the whole row; dots are centered in it.

@@ -157,10 +157,12 @@ class GlassPanel: NSView {
 }
 
 /// Shared timing for Termy Next's motion: quick, soft-landing curves, off
-/// when the user asks for reduced motion.
+/// when the user asks for reduced motion, in Settings or the system.
 @MainActor
 enum Motion {
-    static var reduced: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    static var reduced: Bool {
+        Preferences.shared.reduceMotion || NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
     /// Fast start, long gentle settle, close to a critically damped spring.
     static let curve = CAMediaTimingFunction(controlPoints: 0.2, 0.9, 0.25, 1)
     nonisolated static let standard: TimeInterval = 0.32

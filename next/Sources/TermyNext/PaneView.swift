@@ -528,6 +528,7 @@ final class PaneView: NSView, TerminalViewDelegate {
     }
 
     func terminalView(_ view: TerminalView, didCopy text: String) {
+        guard Preferences.shared.copyShine else { return }
         CopyShine.play(over: view.selectionRects, of: view)
     }
 

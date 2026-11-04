@@ -98,6 +98,9 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
     private let interfaceControl = NSSegmentedControl(labels: ["Liquid", "Classic"], trackingMode: .selectOne, target: nil, action: nil)
     private let tabPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let paneControl = NSSegmentedControl(labels: ["Comfortable", "Compact"], trackingMode: .selectOne, target: nil, action: nil)
+    private let loaderPicker = LoaderPicker(width: SettingsWindowController.groupWidth - 24)
+    private let copyShineSwitch = NSSwitch()
+    private let reduceMotionSwitch = NSSwitch()
 
     // Theme & Font
     private let fontPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -131,7 +134,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
     private let restartButton = NSButton(title: "Restart…", target: nil, action: nil)
 
     private var switches: [NSSwitch] {
-        [inheritSwitch, warnAlwaysSwitch, warnRunningSwitch, updateCheckbox, updateDownload, notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound,
+        [inheritSwitch, warnAlwaysSwitch, warnRunningSwitch, copyShineSwitch, reduceMotionSwitch, updateCheckbox, updateDownload, notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound,
          shellCheckbox, specCheckbox, arrowsCheckbox, sshColorCheckbox, hostCheckbox]
     }
 
@@ -309,6 +312,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         for line in separators { line.layer?.backgroundColor = theme.paneStroke.cgColor }
         for label in [updateStatus, configLabel, hostStatus, hostFolderLabel] { label.textColor = theme.textSecondary }
         themePicker.applyTheme(theme)
+        loaderPicker.applyTheme(theme)
     }
 
     // MARK: Panes
@@ -347,6 +351,15 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
                     .control("Tabs", tabPopup),
                     .control("Pane spacing", paneControl),
                 ], footer: "Liquid puts the window chrome and panes on Liquid Glass; Classic draws them solid. Compact drops the gaps and headers around panes."),
+                Section(header: "Tab Loader", rows: [
+                    .full(loaderPicker),
+                    .control("Spinners from loading.dev", button("Visit Site", #selector(openLoadingDev)),
+                             subtitle: noteLabel("By Jakub Krehel and Paul Faivret, MIT License")),
+                ], footer: "Shown at the end of a tab, and in the sidebar, while its program is working. Dots is Termy Next's own."),
+                Section(header: "Motion", rows: [
+                    .control("Shine when copying", copyShineSwitch),
+                    .control("Reduce motion", reduceMotionSwitch),
+                ], footer: "Reduce motion turns off sliding, scaling and the copy glint; panes and panels change in place. It's always on while Reduce Motion is on in System Settings › Accessibility › Display."),
             ]
         case .theme:
             sections = [
@@ -616,6 +629,11 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         tabPopup.addItems(withTitles: ["Above", "Left Side", "Right Side"])
         tabPopup.target = self
         tabPopup.action = #selector(tabStyleChanged)
+        loaderPicker.onPick = { loader in
+            Preferences.shared.tabLoader = loader
+        }
+        copyShineSwitch.action = #selector(motionChanged)
+        reduceMotionSwitch.action = #selector(motionChanged)
 
         shellCheckbox.action = #selector(shellPluginsChanged)
         arrowsCheckbox.action = #selector(arrowKeysChanged)
@@ -713,6 +731,9 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         interfaceControl.selectedSegment = prefs.interfaceStyle == .liquid ? 0 : 1
         tabPopup.selectItem(at: [TabStyle.above, .left, .right].firstIndex(of: prefs.tabStyle) ?? 0)
         paneControl.selectedSegment = prefs.paneStyle == .comfortable ? 0 : 1
+        loaderPicker.selected = prefs.tabLoader
+        copyShineSwitch.state = prefs.copyShine ? .on : .off
+        reduceMotionSwitch.state = prefs.reduceMotion ? .on : .off
         notifyCheckbox.state = prefs.notificationsEnabled ? .on : .off
         notifyBlocked.state = prefs.notifyWhenBlocked ? .on : .off
         notifyDone.state = prefs.notifyWhenDone ? .on : .off
@@ -849,6 +870,13 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
 
     @objc private func interfaceChanged() {
         Preferences.shared.interfaceStyle = interfaceControl.selectedSegment == 0 ? .liquid : .classic
+    }
+
+    @objc private func openLoadingDev() { NSWorkspace.shared.open(URL(string: "https://loading.dev")!) }
+
+    @objc private func motionChanged() {
+        Preferences.shared.copyShine = copyShineSwitch.state == .on
+        Preferences.shared.reduceMotion = reduceMotionSwitch.state == .on
     }
 
     @objc private func tabStyleChanged() {

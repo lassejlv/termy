@@ -10,6 +10,8 @@ final class ActivityView: NSView {
     private var rows: [(TerminalSessionGroup, TerminalTab, PaneView, NSRect)] = []
     private var hoverRow: Int?
     private var phase: CGFloat = 0
+    private lazy var loaderSpots = LoaderSpots(host: self)
+    private var drawnLoader = Preferences.shared.tabLoader
     private var isDismissing = false
 
     static let width: CGFloat = 300
@@ -69,7 +71,7 @@ final class ActivityView: NSView {
     func advanceSpinner() {
         guard rows.contains(where: { $0.2.activity == .working }) else { return }
         phase = (phase - 24).truncatingRemainder(dividingBy: 360)
-        needsDisplay = true
+        if StatusIndicator.hostAnimatesWorking || drawnLoader != Preferences.shared.tabLoader { needsDisplay = true }
     }
 
     override func layout() {
@@ -78,6 +80,9 @@ final class ActivityView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        loaderSpots.begin()
+        defer { loaderSpots.end() }
+        drawnLoader = Preferences.shared.tabLoader
         let theme = AppConfig.shared.theme
         NSAttributedString(string: "Activity", attributes: [
             .font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: theme.textSecondary,
@@ -109,7 +114,7 @@ final class ActivityView: NSView {
                 .font: NSFont.systemFont(ofSize: 11), .foregroundColor: color(for: pane.activity, theme: theme),
             ]).draw(with: NSRect(x: textX, y: frame.minY + 21, width: textWidth, height: 15),
                     options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
-            StatusIndicator.draw(pane.activity, in: NSRect(x: frame.maxX - 20, y: frame.midY - 6, width: 12, height: 12), theme: theme, phase: phase)
+            StatusIndicator.draw(pane.activity, in: NSRect(x: frame.maxX - 20, y: frame.midY - 6, width: 12, height: 12), theme: theme, phase: phase, spots: loaderSpots)
         }
     }
 
