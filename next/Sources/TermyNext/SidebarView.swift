@@ -27,17 +27,17 @@ final class SidebarView: GlassPanel {
     private lazy var loaderSpots = LoaderSpots(host: self)
     private var drawnLoader = Preferences.shared.tabLoader
     private let footer = NSStackView()
-    private lazy var addTabButton = IconButton(symbol: "plus.circle", pointSize: 12, help: "New Tab") { [weak self] in
+    private lazy var addTabButton = IconButton(symbol: "plus.circle", pointSize: 12, help: Command.newTab.help()) { [weak self] in
         self?.navigator?.run(.newTab)
     }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         let buttons = [
-            IconButton(symbol: "line.3.horizontal.decrease.circle", pointSize: 14, help: "Filter Sessions (⌘K)") { [weak self] in
+            IconButton(symbol: "line.3.horizontal.decrease.circle", pointSize: 14, help: Command.changeSession.help("Filter Sessions")) { [weak self] in
                 self?.navigator?.run(.changeSession)
             },
-            IconButton(symbol: "rectangle.stack.badge.plus", pointSize: 14, help: "New Session (⇧⌘N)") { [weak self] in
+            IconButton(symbol: "rectangle.stack.badge.plus", pointSize: 14, help: Command.newSession.help()) { [weak self] in
                 self?.navigator?.run(.newSession)
             },
             IconButton(symbol: "network.badge.shield.half.filled", pointSize: 14, help: "Add Remote Host…") { [weak self] in
@@ -230,7 +230,7 @@ final class SidebarView: GlassPanel {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        removeOwnTrackingAreas()
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 

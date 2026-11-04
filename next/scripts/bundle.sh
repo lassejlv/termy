@@ -88,6 +88,23 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+  <!-- macOS asks on behalf of Termy Next when a program in a pane wants
+       one of these; without a reason here it refuses without asking. -->
+  <key>NSCameraUsageDescription</key><string>A program in Termy Next wants to use the camera.</string>
+  <key>NSMicrophoneUsageDescription</key><string>A program in Termy Next wants to use the microphone.</string>
+  <key>NSAppleEventsUsageDescription</key><string>A program in Termy Next wants to control other apps.</string>
+  <key>NSBluetoothAlwaysUsageDescription</key><string>A program in Termy Next wants to use Bluetooth.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>A program in Termy Next wants to reach devices on your local network, such as SSH hosts.</string>
+  <key>NSContactsUsageDescription</key><string>A program in Termy Next wants to access your contacts.</string>
+  <key>NSCalendarsUsageDescription</key><string>A program in Termy Next wants to access your calendars.</string>
+  <key>NSCalendarsFullAccessUsageDescription</key><string>A program in Termy Next wants to access your calendars.</string>
+  <key>NSRemindersUsageDescription</key><string>A program in Termy Next wants to access your reminders.</string>
+  <key>NSRemindersFullAccessUsageDescription</key><string>A program in Termy Next wants to access your reminders.</string>
+  <key>NSPhotoLibraryUsageDescription</key><string>A program in Termy Next wants to access your photos.</string>
+  <key>NSLocationUsageDescription</key><string>A program in Termy Next wants to use your location.</string>
+  <key>NSLocationWhenInUseUsageDescription</key><string>A program in Termy Next wants to use your location.</string>
+  <key>NSSpeechRecognitionUsageDescription</key><string>A program in Termy Next wants to use speech recognition.</string>
+  <key>NSSystemAdministrationUsageDescription</key><string>A program in Termy Next wants to change system settings.</string>
 </dict>
 </plist>
 PLIST
@@ -99,6 +116,10 @@ if [[ -n "$update_feed" ]]; then
   "${plist[@]}" -c "Add :SUScheduledCheckInterval integer 21600"
 fi
 
+entitlements="$next_dir/Resources/TermyNext.entitlements"
 codesign --force --sign - "$app/Contents/Frameworks/Sparkle.framework" >/dev/null 2>&1 || true
 codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+# Again, outside in, with the privacy entitlements (see the file).
+codesign --force --sign - --entitlements "$entitlements" "$app/Contents/Helpers/termy-session-host" >/dev/null 2>&1 || true
+codesign --force --sign - --entitlements "$entitlements" "$app" >/dev/null 2>&1 || true
 echo "built $app ($version, $( [[ $universal -eq 1 ]] && echo universal || uname -m ))"

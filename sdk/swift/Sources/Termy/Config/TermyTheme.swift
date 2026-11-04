@@ -27,6 +27,13 @@ extension TermyConfig {
     public func themeSetting() throws(TermyError) -> String? {
         try TermyTheme.themeSetting(in: settingsSchemaJSON())
     }
+
+    /// The value root setting `key` has in this config, such as
+    /// `theme_mode`'s `system` or `theme_dark`'s theme id; Termy's default
+    /// when the file doesn't set it. Nil for a key Termy doesn't know.
+    public func settingValue(_ key: String) throws(TermyError) -> String? {
+        try TermyTheme.settingValue(key, in: settingsSchemaJSON())
+    }
 }
 
 extension TermyTheme {
@@ -48,6 +55,10 @@ extension TermyTheme {
     }
 
     private static func themeEntry(in json: Data) throws(TermyError) -> Schema.Setting? {
+        try entry("theme", in: json)
+    }
+
+    private static func entry(_ key: String, in json: Data) throws(TermyError) -> Schema.Setting? {
         let schema: Schema
         do {
             schema = try JSONDecoder().decode(Schema.self, from: json)
@@ -57,7 +68,7 @@ extension TermyTheme {
         return schema.sections.lazy
             .flatMap { $0.groups ?? [] }
             .flatMap(\.settings)
-            .first { $0.key == "theme" }
+            .first { $0.key == key }
     }
 
     static func parse(_ json: Data) throws(TermyError) -> [TermyTheme] {
@@ -66,6 +77,10 @@ extension TermyTheme {
                 id: choice.value, name: choice.label, isInstalled: choice.installed ?? true,
                 swatches: (choice.swatches ?? []).compactMap(TermyColor.init(hex:)))
         }
+    }
+
+    static func settingValue(_ key: String, in json: Data) throws(TermyError) -> String? {
+        try entry(key, in: json)?.value
     }
 
     static func themeSetting(in json: Data) throws(TermyError) -> String? {

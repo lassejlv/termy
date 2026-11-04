@@ -74,9 +74,12 @@ sparkle="$app/Contents/Frameworks/Sparkle.framework"
 "${sign[@]}" "$sparkle/Versions/B/Autoupdate"
 "${sign[@]}" "$sparkle/Versions/B/Updater.app"
 "${sign[@]}" "$sparkle"
-"${sign[@]}" "$app/Contents/Helpers/termy-session-host"
-"${sign[@]}" "$app/Contents/MacOS/TermyNext"
-"${sign[@]}" "$app"
+# Programs in panes count as Termy Next to macOS privacy controls; these let
+# them ask for the camera, microphone and so on (see the file).
+entitlements=(--entitlements "$next_dir/Resources/TermyNext.entitlements")
+"${sign[@]}" "${entitlements[@]}" "$app/Contents/Helpers/termy-session-host"
+"${sign[@]}" "${entitlements[@]}" "$app/Contents/MacOS/TermyNext"
+"${sign[@]}" "${entitlements[@]}" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 
 notarize_file() {

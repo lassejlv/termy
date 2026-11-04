@@ -6,6 +6,20 @@ enum TabStyle: String, CaseIterable { case above, left, right }
 enum PaneStyle: String, CaseIterable { case comfortable, compact }
 /// Classic draws solid chrome; Liquid puts every surface on Liquid Glass.
 enum InterfaceStyle: String, CaseIterable { case classic, liquid }
+/// Light or dark, for picking between `theme_light` and `theme_dark`:
+/// the Mac's appearance, or one Termy Next keeps to (⌃⌘T flips it).
+enum AppAppearance: String, CaseIterable {
+    case system, light, dark
+
+    /// What `NSApp.appearance` is set to; nil follows the Mac.
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: nil
+        case .light: NSAppearance(named: .aqua)
+        case .dark: NSAppearance(named: .darkAqua)
+        }
+    }
+}
 
 /// View settings that persist across launches, like Rex's Customize View menu.
 @MainActor
@@ -30,6 +44,11 @@ final class Preferences {
             return raw == "glass" ? .liquid : InterfaceStyle(rawValue: raw ?? "") ?? .liquid
         }
         set { defaults.set(newValue.rawValue, forKey: "interfaceStyle"); changed() }
+    }
+    /// Set through `AppDelegate.setAppearance`, which applies it.
+    var appearance: AppAppearance {
+        get { AppAppearance(rawValue: defaults.string(forKey: "appearance") ?? "") ?? .system }
+        set { defaults.set(newValue.rawValue, forKey: "appearance") }
     }
     var sidebarWidth: CGFloat {
         get { CGFloat(defaults.object(forKey: "sidebarWidth") as? Double ?? 240) }
@@ -209,8 +228,19 @@ final class AppConfig {
         tasks = (try? base.tasksJSON()).map(TaskSpec.decodeList) ?? []
     }
 
-    private var appearance: Appearance {
+    /// Light or dark, as the app shows it: the Mac's appearance unless
+    /// Termy Next keeps to one (`Preferences.appearance`).
+    var appearance: Appearance {
         NSApp?.effectiveAppearance.isDarkAqua == false ? .light : .dark
+    }
+
+    /// `theme_mode = system`: the theme follows light and dark, from
+    /// `theme_light` and `theme_dark`, instead of one `theme`.
+    var followsAppearance: Bool { (try? fileConfig.settingValue("theme_mode")) == "system" }
+
+    /// The theme `theme_light` or `theme_dark` names, or Termy's default.
+    func themeSetting(for appearance: Appearance) -> String? {
+        try? fileConfig.settingValue(appearance == .dark ? "theme_dark" : "theme_light")
     }
 
     /// The font size a pane zoomed by `zoom` points shows, within 6–72.

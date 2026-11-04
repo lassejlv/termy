@@ -29,7 +29,7 @@ final class IconButton: NSView {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        removeOwnTrackingAreas()
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
@@ -316,4 +316,13 @@ final class StatusIndicator {
 
     /// Width the three-dot loader needs.
     static let dotsWidth: CGFloat = 16.5
+}
+
+extension NSView {
+    /// Removes the tracking areas this view added, keeping the ones AppKit
+    /// adds for it, such as the tooltip manager's: removing those as well
+    /// stops `toolTip` from ever showing.
+    func removeOwnTrackingAreas() {
+        for area in trackingAreas where area.owner === self { removeTrackingArea(area) }
+    }
 }

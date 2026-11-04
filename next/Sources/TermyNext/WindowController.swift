@@ -102,19 +102,19 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     private var sidebarHidden = false
     private var lastTabStyle = Preferences.shared.tabStyle
 
-    private lazy var sessionButton = IconButton(symbol: "rectangle.stack", pointSize: 13, help: "Change Session (⌘K)") { [weak self] in
+    private lazy var sessionButton = IconButton(symbol: "rectangle.stack", pointSize: 13, help: Command.changeSession.help()) { [weak self] in
         self?.run(.changeSession)
     }
-    private lazy var sidebarButton = IconButton(symbol: IconButton.sidebarGlyph, pointSize: 13, help: "Toggle Sidebar (⌘/)") { [weak self] in
+    private lazy var sidebarButton = IconButton(symbol: IconButton.sidebarGlyph, pointSize: 13, help: Command.toggleSidebar.help()) { [weak self] in
         self?.run(.toggleSidebar)
     }
-    private lazy var activityButton = IconButton(symbol: "eye", pointSize: 13, help: "Show Activity (⌘.)") { [weak self] in
+    private lazy var activityButton = IconButton(symbol: "eye", pointSize: 13, help: Command.toggleActivity.help("Show Activity")) { [weak self] in
         self?.run(.toggleActivity)
     }
-    private lazy var paletteButton = IconButton(symbol: "command", pointSize: 13, help: "Command Palette (⇧⌘P)") { [weak self] in
+    private lazy var paletteButton = IconButton(symbol: "command", pointSize: 13, help: Command.commandPalette.help()) { [weak self] in
         self?.run(.commandPalette)
     }
-    private lazy var newTabButton = IconButton(symbol: "plus", pointSize: 14, help: "New Tab (⌘T)") { [weak self] in
+    private lazy var newTabButton = IconButton(symbol: "plus", pointSize: 14, help: Command.newTab.help()) { [weak self] in
         self?.run(.newTab)
     }
     private var chromeButtons: [IconButton] { [sessionButton, sidebarButton, activityButton, paletteButton, newTabButton] }
@@ -1159,6 +1159,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
                 animateRoot()
             }
         case .toggleActivity: toggleActivity()
+        case .toggleTheme: AppDelegate.shared.toggleTheme()
         case .tabsAbove: prefs.tabStyle = .above
         case .tabsLeft: sidebarHidden = false; prefs.tabStyle = .left
         case .tabsRight: sidebarHidden = false; prefs.tabStyle = .right

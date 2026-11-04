@@ -12,7 +12,7 @@ enum Command: String, CaseIterable {
     case floatPane, zoomPane, equalizePanes
     case focusLeft, focusRight, focusUp, focusDown, focusPreviousPane, focusNextPane
     case swapLeft, swapRight, swapUp, swapDown
-    case toggleSidebar, toggleActivity
+    case toggleSidebar, toggleActivity, toggleTheme
     case tabsAbove, tabsLeft, tabsRight, paneComfortable, paneCompact, interfaceLiquid, interfaceClassic
     case increaseFontSize, decreaseFontSize, resetFontSize
     case clearScrollback, insertPath, askForCommand, find, findNext, findPrevious
@@ -62,6 +62,7 @@ enum Command: String, CaseIterable {
         case .swapDown: "Move Pane Down"
         case .toggleSidebar: "Toggle Sidebar"
         case .toggleActivity: "Toggle Activity"
+        case .toggleTheme: "Switch Light/Dark Theme"
         case .tabsAbove: "Tab Style: Above"
         case .tabsLeft: "Tab Style: Left Side"
         case .tabsRight: "Tab Style: Right Side"
@@ -165,6 +166,7 @@ enum Command: String, CaseIterable {
         case .settings: return (",", .command)
         case .toggleSidebar: return ("/", .command)
         case .toggleActivity: return (".", .command)
+        case .toggleTheme: return ("t", [.command, .control])
         case .increaseFontSize: return ("+", .command)
         case .decreaseFontSize: return ("-", .command)
         case .resetFontSize: return ("0", .command)
@@ -199,6 +201,12 @@ enum Command: String, CaseIterable {
             String(UnicodeScalar(NSPageDownFunctionKey)!): "⇟",
         ]
         return s + (names[key] ?? key.uppercased())
+    }
+
+    /// A tooltip naming the action and its shortcut, e.g. "Split Right (⌘D)".
+    func help(_ text: String? = nil) -> String {
+        let name = text ?? (title.hasSuffix("…") ? String(title.dropLast()) : title)
+        return shortcutLabel.map { "\(name) (\($0))" } ?? name
     }
 
     func menuItem(title: String? = nil) -> NSMenuItem {

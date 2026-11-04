@@ -172,21 +172,46 @@ final class SplitContainerView: NSView {
         return tab.tree.dividers(in: bounds, gap: gap)
     }
 
+    /// How thick the area that grabs a divider is, whatever the gap: it
+    /// reaches past the gap into the panes' edges, so the 1 pt compact
+    /// hairline is as easy to grab as the comfortable gap.
+    static let dividerHitThickness: CGFloat = 12
+
+    /// The area that grabs `divider`: its gap, widened across its axis.
+    private func hitRect(_ divider: SplitTree<UUID>.Divider) -> NSRect {
+        let grow = max(0, (Self.dividerHitThickness - (divider.axis == .horizontal ? divider.frame.width : divider.frame.height)) / 2)
+        return divider.axis == .horizontal ? divider.frame.insetBy(dx: -grow, dy: 0) : divider.frame.insetBy(dx: 0, dy: -grow)
+    }
+
+    /// The divider under `point`; the nearest one where grab areas overlap.
+    private func divider(at point: NSPoint) -> SplitTree<UUID>.Divider? {
+        dividers.filter { hitRect($0).contains(point) }.min { a, b in
+            func distance(_ d: SplitTree<UUID>.Divider) -> CGFloat {
+                d.axis == .horizontal ? abs(point.x - d.frame.midX) : abs(point.y - d.frame.midY)
+            }
+            return distance(a) < distance(b)
+        }
+    }
+
     override func resetCursorRects() {
         for divider in dividers {
-            addCursorRect(divider.frame, cursor: divider.axis == .horizontal ? .resizeLeftRight : .resizeUpDown)
+            addCursorRect(hitRect(divider), cursor: divider.axis == .horizontal ? .resizeLeftRight : .resizeUpDown)
         }
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         let local = convert(point, from: superview)
-        if dividers.contains(where: { $0.frame.contains(local) }) { return self }
+        // Floating panes sit above the layout and keep their own clicks.
+        if let tab, tab.allPanes.contains(where: { $0.isFloating && !$0.isHidden && $0.frame.contains(local) }) {
+            return super.hitTest(point)
+        }
+        if divider(at: local) != nil { return self }
         return super.hitTest(point)
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        dragging = dividers.first { $0.frame.contains(point) }
+        dragging = divider(at: point)
         if event.clickCount == 2, let divider = dragging, let tab {
             tab.tree = tab.tree.settingRatio(0.5, at: divider.path)
             animateLayout()

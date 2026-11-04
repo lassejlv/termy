@@ -1,4 +1,5 @@
 import AppKit
+import Termy
 import TermyAppKit
 import TermyNextCore
 
@@ -14,6 +15,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // `swift run` starts an unbundled executable; make it a regular app.
         NSApp.setActivationPolicy(.regular)
+        applyAppearance()
         // Before the menu, which shows Check for Updates only when this build updates itself.
         Updates.shared.start()
         NSApp.mainMenu = buildMainMenu()
@@ -471,6 +473,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         NotificationCenter.default.post(name: Preferences.didChange, object: nil)
     }
 
+    // MARK: Light and dark
+
+    private var appearanceObservation: NSKeyValueObservation?
+    /// The light or dark theme last applied, so only a real change reloads.
+    private var shownAppearance: Appearance?
+
+    /// Puts `NSApp.appearance` in step with the preference, and follows the
+    /// Mac's light and dark changes when the config has a theme for each.
+    private func applyAppearance() {
+        NSApp.appearance = Preferences.shared.appearance.nsAppearance
+        shownAppearance = AppConfig.shared.appearance
+        guard appearanceObservation == nil else { return }
+        appearanceObservation = NSApp.observe(\.effectiveAppearance) { _, _ in
+            DispatchQueue.main.async { AppDelegate.shared.appearanceChanged() }
+        }
+    }
+
+    private func appearanceChanged() {
+        let now = AppConfig.shared.appearance
+        guard now != shownAppearance else { return }
+        shownAppearance = now
+        if AppConfig.shared.followsAppearance { reloadConfig() }
+    }
+
+    /// Keeps Termy Next light, dark, or following the Mac.
+    func setAppearance(_ appearance: AppAppearance) {
+        Preferences.shared.appearance = appearance
+        NSApp.appearance = appearance.nsAppearance
+        appearanceChanged()
+        NotificationCenter.default.post(name: Preferences.didChange, object: nil)
+    }
+
+    /// Whether the Mac itself is in Dark Mode, whatever Termy Next keeps to.
+    private var systemIsDark: Bool {
+        UserDefaults.standard.string(forKey: "AppleInterfaceStyle")?.lowercased() == "dark"
+    }
+
+    /// Turns separate light and dark themes on (`theme_mode = system`) or
+    /// off, keeping the theme on screen: on, it becomes the light or dark
+    /// one, whichever it looks like; off, it becomes the one `theme`.
+    func setSeparateThemes(_ on: Bool) {
+        let app = AppConfig.shared
+        guard on != app.followsAppearance else { return }
+        let current = app.renderConfig.activeTheme
+        do {
+            if on {
+                try app.set("theme_mode", to: "system")
+                if !current.isEmpty { try app.set(app.theme.isDark ? "theme_dark" : "theme_light", to: current) }
+            } else {
+                try app.set("theme_mode", to: nil)
+                if !current.isEmpty { try app.set("theme", to: current) }
+            }
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+        reloadConfig()
+        if on {
+            // Stay on the theme that was showing until the user switches.
+            let dark = app.theme.isDark
+            let shown = AppConfig.shared.appearance == .dark
+            if dark != shown { setAppearance(dark == systemIsDark ? .system : (dark ? .dark : .light)) }
+        } else if Preferences.shared.appearance != .system {
+            setAppearance(.system)
+        }
+    }
+
+    /// ⌃⌘T: switches between the light and dark theme, turning separate
+    /// themes on first if the config has only one. Switching back to the
+    /// Mac's own appearance follows the Mac again.
+    func toggleTheme() {
+        if !AppConfig.shared.followsAppearance { setSeparateThemes(true) }
+        let toDark = AppConfig.shared.appearance != .dark
+        setAppearance(toDark == systemIsDark ? .system : (toDark ? .dark : .light))
+    }
+
     @objc func openConfig() {
         AppConfig.shared.reload()
         // Plain text files open in the user's text editor.
@@ -536,6 +613,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if command == .settings { return showSettings() }
         if command == .restartSessionHost { return restartSessionHost() }
         if command == .checkForUpdates { return Updates.shared.checkForUpdates() }
+        if command == .toggleTheme { return toggleTheme() }
         // Close commands close the key window when it isn't a terminal window, such as Settings.
         if [.closePane, .closeTab, .closeWindow].contains(command), let key = NSApp.keyWindow,
            !controllers.contains(where: { $0.window === key }) {
@@ -566,7 +644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if command == .restartSessionHost {
             return Preferences.shared.usesSessionHost && SessionHost.shared.multiplexer != nil && !SessionHost.shared.isRestarting
         }
-        return keyController != nil || [.newWindow, .newSession, .newTab, .settings].contains(command)
+        return keyController != nil || [.newWindow, .newSession, .newTab, .settings, .toggleTheme].contains(command)
     }
 
     private func buildMainMenu() -> NSMenu {
@@ -618,6 +696,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 submenu("Pane Style", [c(.paneComfortable), c(.paneCompact)]),
                 submenu("Interface Style", [c(.interfaceClassic), c(.interfaceLiquid)]),
             ]),
+            c(.toggleTheme),
             sep(), c(.increaseFontSize), c(.decreaseFontSize), c(.resetFontSize), sep(),
             c(.toggleSidebar), c(.toggleActivity),
         ]))

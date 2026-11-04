@@ -107,6 +107,11 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
     private let sizeField = NSTextField()
     private let sizeStepper = NSStepper()
     private let themePicker = ThemePicker(width: SettingsWindowController.groupWidth - 24, height: 300)
+    private let separateThemesSwitch = NSSwitch()
+    private let appearanceControl = NSSegmentedControl(labels: ["Auto", "Light", "Dark"], trackingMode: .selectOne, target: nil, action: nil)
+    private let themeSlotControl = NSSegmentedControl(labels: ["Light", "Dark"], trackingMode: .selectOne, target: nil, action: nil)
+    /// Which of the two themes the picker sets; nil is the one showing.
+    private var themeSlot: Appearance?
     /// Every font family installed on this Mac, monospaced ones first;
     /// rebuilt when fonts are installed or removed.
     private var localFonts: (monospaced: [String], other: [String])?
@@ -134,7 +139,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
     private let restartButton = NSButton(title: "Restart…", target: nil, action: nil)
 
     private var switches: [NSSwitch] {
-        [inheritSwitch, warnAlwaysSwitch, warnRunningSwitch, copyShineSwitch, reduceMotionSwitch, updateCheckbox, updateDownload, notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound,
+        [separateThemesSwitch, inheritSwitch, warnAlwaysSwitch, warnRunningSwitch, copyShineSwitch, reduceMotionSwitch, updateCheckbox, updateDownload, notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound,
          shellCheckbox, specCheckbox, arrowsCheckbox, sshColorCheckbox, hostCheckbox]
     }
 
@@ -367,8 +372,12 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
                     .control("Font", fontPopup),
                     .control("Size", row([sizeField, sizeStepper, NSTextField(labelWithString: "pt")], spacing: 6)),
                 ], footer: "⌘+ and ⌘− zoom only the pane you're in; ⌘0 puts it back to this size."),
-                Section(header: "Theme", rows: [.full(themePicker)],
-                        footer: "Termy's theme library. Add your own as JSON files in ~/.config/termy-next/themes."),
+                Section(header: "Theme", rows: [
+                    .control("Separate light and dark themes", separateThemesSwitch),
+                    .control("Appearance", appearanceControl),
+                    .control("Choose the theme for", themeSlotControl),
+                    .full(themePicker),
+                ], footer: "With separate themes, Termy Next shows the light or dark one as your Mac does, or keeps to one: \(Command.toggleTheme.shortcutLabel ?? "") switches between them. Termy's theme library; add your own as JSON files in ~/.config/termy-next/themes."),
             ]
         case .notifications:
             sections = [
@@ -673,7 +682,17 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         fontPopup.target = self
         fontPopup.action = #selector(fontChanged)
         fontPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
-        themePicker.onPick = { theme in AppDelegate.shared.applySetting("theme", theme.id) }
+        themePicker.onPick = { [weak self] theme in
+            guard let self else { return }
+            let app = AppConfig.shared
+            guard app.followsAppearance else { return AppDelegate.shared.applySetting("theme", theme.id) }
+            AppDelegate.shared.applySetting((themeSlot ?? app.appearance) == .dark ? "theme_dark" : "theme_light", theme.id)
+        }
+        separateThemesSwitch.action = #selector(separateThemesChanged)
+        appearanceControl.target = self
+        appearanceControl.action = #selector(appearanceChanged)
+        themeSlotControl.target = self
+        themeSlotControl.action = #selector(themeSlotChanged)
 
         for label in [configLabel, hostFolderLabel, hostStatus] {
             label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -760,8 +779,16 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         refreshFontMenu(current: render.fontFamily)
         sizeField.doubleValue = Double(app.baseFontSize)
         sizeStepper.doubleValue = Double(app.baseFontSize)
+        let separate = app.followsAppearance
+        let slot = themeSlot ?? app.appearance
+        separateThemesSwitch.state = separate ? .on : .off
+        appearanceControl.selectedSegment = AppAppearance.allCases.firstIndex(of: prefs.appearance) ?? 0
+        appearanceControl.isEnabled = separate
+        themeSlotControl.selectedSegment = slot == .dark ? 1 : 0
+        themeSlotControl.isEnabled = separate
         if pane == .theme {
-            themePicker.update(themes: app.themes, current: app.themeSetting ?? render.activeTheme)
+            let current = separate ? app.themeSetting(for: slot) : app.themeSetting
+            themePicker.update(themes: app.themes, current: current ?? render.activeTheme)
         }
         configLabel.stringValue = (AppConfig.configURL.path as NSString).abbreviatingWithTildeInPath
         configLabel.toolTip = AppConfig.configURL.path
@@ -870,6 +897,21 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
 
     @objc private func interfaceChanged() {
         Preferences.shared.interfaceStyle = interfaceControl.selectedSegment == 0 ? .liquid : .classic
+    }
+
+    @objc private func separateThemesChanged() {
+        themeSlot = nil
+        AppDelegate.shared.setSeparateThemes(separateThemesSwitch.state == .on)
+    }
+
+    @objc private func appearanceChanged() {
+        themeSlot = nil
+        AppDelegate.shared.setAppearance(AppAppearance.allCases[max(0, appearanceControl.selectedSegment)])
+    }
+
+    @objc private func themeSlotChanged() {
+        themeSlot = themeSlotControl.selectedSegment == 1 ? .dark : .light
+        refresh()
     }
 
     @objc private func openLoadingDev() { NSWorkspace.shared.open(URL(string: "https://loading.dev")!) }

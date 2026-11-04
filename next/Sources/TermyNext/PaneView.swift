@@ -340,7 +340,7 @@ final class PaneView: NSView, TerminalViewDelegate {
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        removeOwnTrackingAreas()
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
     }
 
@@ -571,11 +571,11 @@ final class PaneHeaderView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         let specs: [(String, String, Action)] = [
-            ("rectangle.split.2x1", "Split Right (⌘D)", .splitRight),
-            ("rectangle.split.1x2", "Split Down (⇧⌘D)", .splitDown),
-            ("rectangle.on.rectangle", "Float Pane (⌥⌘↩)", .float),
-            ("arrow.up.left.and.arrow.down.right", "Zoom Pane (⇧⌘↩)", .zoom),
-            ("xmark", "Close Pane (⌘W)", .close),
+            ("rectangle.split.2x1", Command.splitRight.help(), .splitRight),
+            ("rectangle.split.1x2", Command.splitDown.help(), .splitDown),
+            ("rectangle.on.rectangle", Command.floatPane.help(), .float),
+            ("arrow.up.left.and.arrow.down.right", Command.zoomPane.help(), .zoom),
+            ("xmark", Command.closePane.help(), .close),
         ]
         for (symbol, help, action) in specs {
             let button = IconButton(symbol: symbol, pointSize: 11.5, help: help) { [weak self] in
