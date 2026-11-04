@@ -78,6 +78,11 @@ public final class TerminalView: NSView {
     /// default excludes `file` and `ftp`. Even when `file` is allowed, apps,
     /// packages, scripts and executables are revealed in Finder, not opened.
     public var allowedLinkSchemes: Set<String> = ["http", "https", "mailto"]
+    /// Open file paths printed in the text (`./src/main.rs`, `~/notes.md`,
+    /// absolute paths) with Command-click, whatever `allowedLinkSchemes`
+    /// says about `file`. Only paths that exist are links, relative ones
+    /// resolved against the shell's working directory.
+    public var opensFilePaths = true
     /// Play the system beep on BEL.
     public var audibleBell = true
     /// The pasteboard used for copy, paste and allowed OSC 52 writes.
@@ -95,6 +100,11 @@ public final class TerminalView: NSView {
     var markedText: String?
     var gesture = MouseGestureState()
     var cursorBlinkVisible = true
+    /// The link underlined under the pointer while Command is held.
+    var hoveredLink: LinkHit? {
+        didSet { hoveredLinkDidChange(from: oldValue) }
+    }
+    var linkUnderline: LinkUnderlineView?
     private var imageRevision: UInt64?
     private var decodedImages: [String: CGImage] = [:]
     private var blinkTimer: Timer?
@@ -347,6 +357,7 @@ public final class TerminalView: NSView {
     }
 
     private func frameDidChange(_ change: FrameChange) {
+        if let hovered = hoveredLink, linkMayHaveMoved(hovered.link, by: change) { hoveredLink = nil }
         switch change.damage {
         case .full:
             rebuildGlyphPlan(spans: nil)
@@ -372,6 +383,16 @@ public final class TerminalView: NSView {
             resetCursorBlink()
         }
         refreshImagesIfNeeded()
+    }
+
+    /// Whether output or scrolling may have changed the text under a link.
+    private func linkMayHaveMoved(_ link: TerminalLink, by change: FrameChange) -> Bool {
+        if change.resized || change.viewportChanged { return true }
+        switch change.damage {
+        case .full: return true
+        case .partial(let spans): return spans.contains { (link.start.row...link.end.row).contains($0.row) }
+        case .none: return false
+        }
     }
 
     func invalidateCursor(_ cursor: TerminalCursor) {
@@ -604,32 +625,123 @@ public final class TerminalView: NSView {
         case open(URL)
         /// Show the file in Finder instead of launching it.
         case reveal(URL)
+
+        var url: URL {
+            switch self {
+            case .open(let url), .reveal(let url): url
+            }
+        }
     }
 
-    /// What Command-clicking the cell would do, or nil when the link is blocked.
+    /// A link under the pointer that Command-click would open.
+    struct LinkHit: Equatable {
+        var link: TerminalLink
+        var action: LinkAction
+    }
+
+    /// What Command-clicking the cell would do, or nil when there is no link
+    /// or it is blocked.
     func linkAction(at position: GridPosition) -> LinkAction? {
-        guard let target = linkTarget(at: position),
-              allowedLinkSchemes.contains(where: { $0.lowercased() == target.scheme?.lowercased() }),
-              delegate?.terminalView(self, shouldOpen: target) ?? true
+        linkHit(at: position)?.action
+    }
+
+    /// The link under a cell, OSC 8 or found in the text, if it may be opened.
+    func linkHit(at position: GridPosition) -> LinkHit? {
+        guard let link = try? session.terminal.link(at: position),
+              let target = Self.url(fromUntrusted: link.uri)
         else { return nil }
-        return target.isFileURL && Self.isLaunchable(target) ? .reveal(target) : .open(target)
+        let scheme = target.scheme?.lowercased()
+        // A path found in the text shows exactly what opens; an OSC 8 target
+        // is hidden behind text the program chose, so it needs `file` allowed.
+        let isHyperlink = (try? session.terminal.hyperlink(at: position)) != nil
+        let allowed = allowedLinkSchemes.contains(where: { $0.lowercased() == scheme })
+            || (scheme == "file" && opensFilePaths && !isHyperlink)
+        guard allowed, delegate?.terminalView(self, shouldOpen: target) ?? true else { return nil }
+        let action: LinkAction = target.isFileURL && Self.isLaunchable(target) ? .reveal(target) : .open(target)
+        return LinkHit(link: link, action: action)
     }
 
     /// The parsed OSC 8 target under a cell, if it is a well-formed URL.
     func linkTarget(at position: GridPosition) -> URL? {
-        guard let link = try? session.terminal.hyperlink(at: position),
-              !link.uri.unicodeScalars.contains(where: { $0.value < 0x20 || (0x7F...0x9F).contains($0.value) })
+        guard let link = try? session.terminal.hyperlink(at: position) else { return nil }
+        return Self.url(fromUntrusted: link.uri)
+    }
+
+    private static func url(fromUntrusted uri: String) -> URL? {
+        guard !uri.unicodeScalars.contains(where: { $0.value < 0x20 || (0x7F...0x9F).contains($0.value) })
         else { return nil }
-        return URL(string: link.uri)
+        return URL(string: uri)
     }
 
     func openLink(at position: GridPosition) -> Bool {
-        switch linkAction(at: position) {
+        guard let action = linkAction(at: position) else { return false }
+        open(action)
+        return true
+    }
+
+    func open(_ action: LinkAction) {
+        switch action {
         case .open(let url): NSWorkspace.shared.open(url)
         case .reveal(let url): NSWorkspace.shared.activateFileViewerSelecting([url])
-        case nil: return false
         }
-        return true
+    }
+
+    /// Underlines the link under the pointer while Command is held, and
+    /// shows the pointing hand, as a cue that clicking opens it.
+    func updateHoveredLink(at position: GridPosition?, modifiers: NSEvent.ModifierFlags) {
+        guard let position, modifiers.contains(.command), !modifiers.contains(.option) else {
+            hoveredLink = nil
+            return
+        }
+        if let hoveredLink, hoveredLink.link.contains(position) { return }
+        hoveredLink = linkHit(at: position)
+    }
+
+    /// The cell under the pointer, or nil when it is outside the view.
+    func pointerPosition() -> GridPosition? {
+        guard let window else { return nil }
+        let point = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard bounds.contains(point) else { return nil }
+        let frame = session.frame
+        return renderer.position(at: point, cols: frame.cols, rows: frame.rows)
+    }
+
+    func hoveredLinkDidChange(from old: LinkHit?) {
+        guard old != hoveredLink else { return }
+        let rects = hoveredLink.map { underlineRects(for: $0.link) } ?? []
+        if rects.isEmpty {
+            linkUnderline?.removeFromSuperview()
+            linkUnderline = nil
+        } else {
+            let underline = linkUnderline ?? LinkUnderlineView(frame: bounds)
+            if linkUnderline == nil {
+                underline.autoresizingMask = [.width, .height]
+                addSubview(underline)
+                linkUnderline = underline
+            }
+            underline.frame = bounds
+            underline.color = renderer.color(renderConfig.foreground)
+            underline.rects = rects
+        }
+        if (old == nil) != (hoveredLink == nil) {
+            (hoveredLink == nil ? NSCursor.arrow : NSCursor.pointingHand).set()
+        }
+    }
+
+    /// One underline per row of the link, at the font's underline position.
+    private func underlineRects(for link: TerminalLink) -> [CGRect] {
+        let frame = session.frame
+        guard !frame.isEmpty else { return [] }
+        let first = max(0, link.start.row), last = min(frame.rows - 1, link.end.row)
+        guard first <= last else { return [] }
+        let baselineOffset = renderer.fonts.baselineOffset(cellHeight: renderer.cellHeight)
+        return (first...last).map { row in
+            let from = row == link.start.row ? link.start.col : 0
+            let to = row == link.end.row ? link.end.col : frame.cols - 1
+            let cell = renderer.cellRect(row: row, col: from, width: max(1, to - from + 1))
+            let y = (cell.minY + baselineOffset + max(renderer.fonts.underlinePosition, 1)).rounded()
+            return CGRect(x: cell.minX, y: y, width: cell.width, height: 1)
+        }
     }
 
     /// Extensions macOS opens by running something: apps, installers,
@@ -672,6 +784,23 @@ private final class DisplayLinkTarget: NSObject {
             return
         }
         view.displayLinkTick()
+    }
+}
+#endif
+
+#if os(macOS)
+/// Draws the underline of the link under the pointer above the terminal.
+final class LinkUnderlineView: NSView {
+    var color: CGColor = .white { didSet { needsDisplay = true } }
+    var rects: [CGRect] = [] { didSet { if rects != oldValue { needsDisplay = true } } }
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.setFillColor(color)
+        context.fill(rects)
     }
 }
 #endif

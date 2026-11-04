@@ -7,13 +7,13 @@ import Termy
 @Suite("Terminal view (CoreGraphics)")
 @MainActor
 struct TerminalViewTests {
-    private func makeView(feeding output: String = "") throws -> TerminalView {
+    private func makeView(feeding output: String = "", cols: UInt16 = 20) throws -> TerminalView {
         let config = try TermyConfig(contents: "padding_x = 4\npadding_y = 4\ncursor_blink = false\n")
         let render = try config.renderConfig(for: .dark)
         let session = try TerminalSession.display(
-            size: TerminalSize(cols: 20, rows: 5, cellWidth: render.cellWidth, cellHeight: render.cellHeight))
+            size: TerminalSize(cols: cols, rows: 5, cellWidth: render.cellWidth, cellHeight: render.cellHeight))
         let view = TerminalView(session: session, renderConfig: render, backend: .coreGraphics)
-        view.frame = NSRect(origin: .zero, size: view.size(cols: 20, rows: 5))
+        view.frame = NSRect(origin: .zero, size: view.size(cols: Int(cols), rows: 5))
         if !output.isEmpty { try session.feed(Data(output.utf8)) }
         return view
     }
@@ -366,6 +366,58 @@ struct TerminalViewTests {
         let veto = Delegate()
         veto.allowsLinks = false
         #expect(try action(for: web.absoluteString, delegate: veto) == nil)
+    }
+
+    @Test func urlsAndPathsInTextOpen() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("termy-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let notes = directory.appendingPathComponent("notes.txt")
+        let tool = directory.appendingPathComponent("tool")
+        FileManager.default.createFile(atPath: notes.path, contents: Data())
+        FileManager.default.createFile(atPath: tool.path, contents: Data("#!/bin/sh\n".utf8), attributes: [.posixPermissions: 0o755])
+
+        let view = try makeView(feeding: "https://example.com/docs \(notes.path) \(tool.path)", cols: 300)
+        let urlEnd = "https://example.com/docs".count
+        #expect(view.linkAction(at: GridPosition(row: 0, col: 3)) == .open(try #require(URL(string: "https://example.com/docs"))))
+        #expect(view.linkAction(at: GridPosition(row: 0, col: urlEnd)) == nil)
+
+        let notesAction = try #require(view.linkAction(at: GridPosition(row: 0, col: urlEnd + 3)))
+        guard case .open(let notesURL) = notesAction else { Issue.record("\(notesAction)"); return }
+        #expect(notesURL.isFileURL)
+        #expect(notesURL.resolvingSymlinksInPath().path == notes.resolvingSymlinksInPath().path)
+        // Executables are shown in Finder, not run.
+        let toolCol = urlEnd + 1 + notes.path.count + 3
+        guard case .reveal = view.linkAction(at: GridPosition(row: 0, col: toolCol)) else {
+            Issue.record("tool path should be revealed"); return
+        }
+
+        view.opensFilePaths = false
+        #expect(view.linkAction(at: GridPosition(row: 0, col: urlEnd + 3)) == nil)
+    }
+
+    @Test func commandHoverUnderlinesTheLink() throws {
+        let view = try makeView(feeding: "go https://example.com now", cols: 40)
+        let onLink = GridPosition(row: 0, col: 6)
+        view.updateHoveredLink(at: onLink, modifiers: [])
+        #expect(view.hoveredLink == nil)
+
+        view.updateHoveredLink(at: onLink, modifiers: .command)
+        let hovered = try #require(view.hoveredLink)
+        #expect(hovered.link.start == GridPosition(row: 0, col: 3))
+        #expect(hovered.link.end == GridPosition(row: 0, col: 21))
+        let underline = try #require(view.linkUnderline)
+        #expect(underline.superview === view)
+        #expect(underline.rects.count == 1)
+        #expect(underline.hitTest(NSPoint(x: 10, y: 10)) == nil)
+
+        view.updateHoveredLink(at: GridPosition(row: 0, col: 0), modifiers: .command)
+        #expect(view.hoveredLink == nil)
+        #expect(view.linkUnderline == nil)
+
+        view.updateHoveredLink(at: onLink, modifiers: .command)
+        view.updateHoveredLink(at: onLink, modifiers: [])
+        #expect(view.hoveredLink == nil)
     }
 
     @Test func launchableFilesAreRecognized() throws {

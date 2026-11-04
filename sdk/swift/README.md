@@ -6,7 +6,7 @@ Swift bindings for libtermy, the Termy terminal engine, built on its C ABI
 | Product | What it gives you |
 | --- | --- |
 | `Termy` | `Terminal`, `TerminalSession`, frames, input encoding, events, config, search, Kitty graphics and clipboard, tmux control mode. No UI dependency. |
-| `TermyAppKit` | `TerminalView` (AppKit) and `TermyTerminal` (SwiftUI): Metal rendering, keyboard with IME, mouse reporting, selection, scrollback, OSC 8 links, Kitty graphics. |
+| `TermyAppKit` | `TerminalView` (AppKit) and `TermyTerminal` (SwiftUI): Metal rendering, keyboard with IME, mouse reporting, selection, scrollback, links (OSC 8, URLs and file paths, ⌘-hover and ⌘-click), Kitty graphics. |
 
 Requires macOS 13+, Swift 6.2+ and a Rust toolchain to build libtermy.
 

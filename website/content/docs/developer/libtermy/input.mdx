@@ -134,8 +134,15 @@ That narrower behavior is different from searching a `Terminal`.
 
 `hyperlink_at(row, col)` / `termy_terminal_hyperlink_at` looks up OSC 8 hyperlinks
 at a **viewport** position. C reports whether a link was found separately from
-its status code; release a returned link with `termy_hyperlink_free`. Rust also
-exposes `link_at` for broader detected-link information.
+its status code; release a returned link with `termy_hyperlink_free`.
+
+`link_at(row, col)` / `termy_terminal_link_at` also finds URLs, domains and
+existing file paths in the text (relative paths resolve against the pane's
+working directory; paths come back as `file://` URLs), possibly wrapped across
+rows. OSC 8 links take priority. Release a returned link with
+`termy_link_free`. Path lookups touch the filesystem and session-host terminals
+ask the host, so call it on demand (a modifier hover or a click), not on every
+mouse move.
 
 Opening a link is a host action. Validate terminal-provided URL schemes against
 your allowed schemes before passing a target to the OS. A terminal-provided

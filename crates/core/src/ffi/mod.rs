@@ -372,6 +372,19 @@ pub struct TermyFfiHyperlink {
     pub uri: TermyFfiBytes,
 }
 
+/// A link under a viewport cell, OSC 8 or detected in the text (URLs, domains,
+/// file paths), possibly spanning soft-wrapped rows. Rows and columns are
+/// inclusive viewport cells, clipped to the viewport.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiLink {
+    pub start_row: usize,
+    pub start_col: usize,
+    pub end_row: usize,
+    pub end_col: usize,
+    pub uri: TermyFfiBytes,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermyFfiSearchMatch {
@@ -3982,6 +3995,62 @@ pub unsafe extern "C" fn termy_hyperlink_free(link: *mut TermyFfiHyperlink) -> T
     })
 }
 
+/// Look up the link under a viewport cell: an OSC 8 hyperlink, or a URL,
+/// domain or existing file path in the text (relative paths resolve against
+/// the pane's working directory). File paths become `file://` URLs. Sets
+/// `out_found` and, when found, fills `out_link`, whose `uri` must be released
+/// with `termy_link_free`. Path lookups touch the filesystem, and a session
+/// host terminal asks its host, so call it on demand (a modifier hover or a
+/// click), not on every mouse move.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_link_at(
+    terminal: *mut TermyFfiTerminal,
+    row: usize,
+    col: usize,
+    out_found: *mut bool,
+    out_link: *mut TermyFfiLink,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_found.is_null() || out_link.is_null() {
+            return TermyFfiStatus::Null;
+        }
+
+        let link = unsafe { (*terminal).terminal.link_at(row, col) };
+        unsafe {
+            if let Some(link) = link {
+                *out_found = true;
+                *out_link = TermyFfiLink {
+                    start_row: link.start_row,
+                    start_col: link.start_col,
+                    end_row: link.end_row,
+                    end_col: link.end_col,
+                    uri: ffi_bytes_from_string(link.target),
+                };
+            } else {
+                *out_found = false;
+                *out_link = TermyFfiLink::default();
+            }
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_link_free(link: *mut TermyFfiLink) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if link.is_null() {
+            return TermyFfiStatus::Null;
+        }
+
+        let link = unsafe { &mut *link };
+        if !link.uri.ptr.is_null() {
+            free_bytes(link.uri);
+        }
+        *link = TermyFfiLink::default();
+        TermyFfiStatus::Ok
+    })
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_take_damage(
     terminal: *mut TermyFfiTerminal,
@@ -5399,6 +5468,61 @@ mod tests {
         );
         assert!(!found);
         assert!(link.uri.ptr.is_null());
+
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn terminal_link_at_detects_plain_urls_and_paths() {
+        let size = TermyFfiSize {
+            cols: 40,
+            rows: 2,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        // Row 0: a plain URL; row 1: an absolute path that exists.
+        let command: &[u8] = b"printf 'see https://example.com/a ok\\r\\n/tmp x'";
+        let mut terminal = ptr::null_mut();
+
+        assert_eq!(
+            unsafe { termy_terminal_new(size, command.as_ptr(), command.len(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        let mut found = false;
+        let mut link = TermyFfiLink::default();
+        assert_eq!(
+            unsafe { termy_terminal_link_at(terminal, 0, 8, &mut found, &mut link) },
+            TermyFfiStatus::Ok
+        );
+        assert!(found);
+        assert_eq!((link.start_row, link.start_col), (0, 4));
+        assert_eq!((link.end_row, link.end_col), (0, 24));
+        let uri = unsafe { slice::from_raw_parts(link.uri.ptr, link.uri.len) };
+        assert_eq!(uri, b"https://example.com/a");
+        assert_eq!(unsafe { termy_link_free(&mut link) }, TermyFfiStatus::Ok);
+        assert!(link.uri.ptr.is_null());
+
+        assert_eq!(
+            unsafe { termy_terminal_link_at(terminal, 1, 2, &mut found, &mut link) },
+            TermyFfiStatus::Ok
+        );
+        assert!(found);
+        let uri = unsafe { slice::from_raw_parts(link.uri.ptr, link.uri.len) };
+        assert!(
+            uri.starts_with(b"file:///") && uri.ends_with(b"/tmp"),
+            "{}",
+            String::from_utf8_lossy(uri)
+        );
+        assert_eq!(unsafe { termy_link_free(&mut link) }, TermyFfiStatus::Ok);
+
+        assert_eq!(
+            unsafe { termy_terminal_link_at(terminal, 0, 1, &mut found, &mut link) },
+            TermyFfiStatus::Ok
+        );
+        assert!(!found);
 
         assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
     }

@@ -43,3 +43,24 @@ public struct Hyperlink: Hashable, Sendable {
     /// Untrusted terminal content. Validate the scheme before opening it.
     public var uri: String
 }
+
+/// A link at a viewport position: an OSC 8 hyperlink, or a URL, domain or
+/// existing file path found in the text. File paths are `file://` URLs.
+public struct TerminalLink: Hashable, Sendable {
+    /// Inclusive viewport cells, clipped to the viewport. A link wrapped
+    /// across rows starts and ends on different rows.
+    public var start: GridPosition
+    public var end: GridPosition
+    /// Untrusted terminal content. Validate the scheme before opening it.
+    public var uri: String
+
+    public init(start: GridPosition, end: GridPosition, uri: String) {
+        self.start = start
+        self.end = end
+        self.uri = uri
+    }
+
+    public func contains(_ position: GridPosition) -> Bool {
+        position >= start && position <= end
+    }
+}

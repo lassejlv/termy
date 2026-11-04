@@ -43,6 +43,21 @@ struct FeatureTests {
         #expect(try terminal.hyperlink(at: GridPosition(row: 0, col: 0)) == nil)
     }
 
+    @Test func linksFoundInText() throws {
+        let terminal = try displayTerminal(feeding: "open https://termy.sh/docs now")
+        let link = try #require(try terminal.link(at: GridPosition(row: 0, col: 10)))
+        #expect(link.uri == "https://termy.sh/docs")
+        #expect(link.start == GridPosition(row: 0, col: 5))
+        #expect(link.end == GridPosition(row: 0, col: 25))
+        #expect(link.contains(GridPosition(row: 0, col: 25)))
+        #expect(!link.contains(GridPosition(row: 0, col: 26)))
+        #expect(try terminal.link(at: GridPosition(row: 0, col: 0)) == nil)
+
+        let osc8 = try displayTerminal(
+            feeding: "see \u{1b}]8;;https://termy.sh\u{1b}\\termy\u{1b}]8;;\u{1b}\\ docs")
+        #expect(try osc8.link(at: GridPosition(row: 0, col: 5))?.uri == "https://termy.sh")
+    }
+
     @Test func glyphPlansCoverBoxDrawing() throws {
         let terminal = try displayTerminal(feeding: "┌─┐ a")
         let store = FrameStore()

@@ -34,6 +34,7 @@ checkout with `cargo doc -p termy_core --no-deps`.
 | Drain events and replies | `drain_events` with `TerminalReplyHost` | `termy_terminal_drain_events_with_clipboard` |
 | Search buffer | `search_with_options` | `termy_terminal_search_with_options` |
 | Find OSC 8 link | `hyperlink_at` | `termy_terminal_hyperlink_at` |
+| Find any link (OSC 8, URL, path) | `link_at` | `termy_terminal_link_at` |
 | Scroll viewport | `scroll_display`, `scroll_to_bottom` | `termy_terminal_scroll_display`, `termy_terminal_scroll_to_bottom` |
 | Change history limit | `set_scrollback_history` | `termy_terminal_set_scrollback_history` |
 | Clear history | `clear_scrollback` | `termy_terminal_clear_scrollback` |
@@ -61,6 +62,7 @@ the next call does not release the previous allocation for you.
 | `TermyFfiEventBatch` | `termy_event_batch_free` | Events and each event's payload |
 | `TermyFfiSearchBatch` | `termy_search_batch_free` | Matches and each match's line |
 | `TermyFfiHyperlink` | `termy_hyperlink_free` | URI bytes |
+| `TermyFfiLink` | `termy_link_free` | URI bytes |
 | `TermyFfiConfigDiagnosticBatch` | `termy_config_diagnostics_free` | Diagnostics and their messages |
 | `TermyFfiRenderConfig` | `termy_render_config_free` | Font-family and active-theme bytes |
 | `TermyFfiKittyGraphicsBatch` | `termy_kitty_graphics_batch_free` | Placements and their PNG buffers |

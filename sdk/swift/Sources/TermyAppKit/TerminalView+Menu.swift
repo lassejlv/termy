@@ -9,6 +9,11 @@ extension TerminalView: NSMenuItemValidation {
         window?.makeFirstResponder(self)
         let menu = NSMenu()
         switch linkAction(at: gridPosition(for: event)) {
+        case .open(let url) where url.isFileURL:
+            menu.addItem(menuItem("Open", #selector(openMenuLink(_:)), for: url))
+            menu.addItem(menuItem("Show in Finder", #selector(revealMenuLink(_:)), for: url))
+            menu.addItem(menuItem("Copy Path", #selector(copyMenuLink(_:)), for: url))
+            menu.addItem(.separator())
         case .open(let url):
             menu.addItem(menuItem("Open Link", #selector(openMenuLink(_:)), for: url))
             menu.addItem(menuItem("Copy Link", #selector(copyMenuLink(_:)), for: url))
@@ -50,6 +55,11 @@ extension TerminalView: NSMenuItemValidation {
         } else {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    @objc private func revealMenuLink(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? URL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     @objc private func copyMenuLink(_ sender: NSMenuItem) {

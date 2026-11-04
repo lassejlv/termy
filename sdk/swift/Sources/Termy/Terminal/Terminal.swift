@@ -399,6 +399,24 @@ public final class Terminal {
         return Hyperlink(startCol: link.start_col, endCol: link.end_col, uri: link.uri.copyString())
     }
 
+    /// The link at a viewport cell: an OSC 8 hyperlink, or a URL, domain or
+    /// existing file path in the text, which may wrap across rows. Relative
+    /// paths resolve against the shell's working directory. Path lookups touch
+    /// the filesystem and a session host terminal asks its host, so call this
+    /// on demand (a modifier hover, a click), not on every mouse move.
+    public func link(at position: GridPosition) throws(TermyError) -> TerminalLink? {
+        var found = false
+        var link = TermyFfiLink()
+        let status = termy_terminal_link_at(handle, position.row, position.col, &found, &link)
+        defer { termy_link_free(&link) }
+        try check(status, "termy_terminal_link_at")
+        guard found else { return nil }
+        return TerminalLink(
+            start: GridPosition(row: link.start_row, col: link.start_col),
+            end: GridPosition(row: link.end_row, col: link.end_col),
+            uri: link.uri.copyString())
+    }
+
     /// Changes whenever Kitty graphics placements change.
     public func kittyGraphicsRevision() throws(TermyError) -> UInt64 {
         var revision: UInt64 = 0

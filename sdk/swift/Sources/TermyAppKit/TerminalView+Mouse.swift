@@ -23,7 +23,15 @@ extension TerminalView {
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         let position = gridPosition(for: event)
-        if event.modifierFlags.contains(.command), openLink(at: position) { return }
+        if event.modifierFlags.contains(.command) {
+            let action = hoveredLink.flatMap { $0.link.contains(position) ? $0.action : nil }
+                ?? linkAction(at: position)
+            if let action {
+                hoveredLink = nil
+                open(action)
+                return
+            }
+        }
         if press(.left, at: position, event: event) { return }
         let granularity: TerminalSelection.Granularity = switch event.clickCount {
         case 2: .word
@@ -103,15 +111,28 @@ extension TerminalView {
 
     public override func updateTrackingAreas() {
         super.updateTrackingAreas()
-        trackingAreas.forEach(removeTrackingArea)
+        // Only this view's own area: AppKit's tooltip areas live here too.
+        for area in trackingAreas where area.owner === self { removeTrackingArea(area) }
         addTrackingArea(NSTrackingArea(
-            rect: bounds, options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect], owner: self))
+            rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self))
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        hoveredLink = nil
+        gesture.lastMove = nil
+    }
+
+    public override func flagsChanged(with event: NSEvent) {
+        updateHoveredLink(at: pointerPosition(), modifiers: event.modifierFlags)
+        super.flagsChanged(with: event)
     }
 
     public override func mouseMoved(with event: NSEvent) {
         let position = gridPosition(for: event)
         guard position != gesture.lastMove else { return }
         gesture.lastMove = position
+        updateHoveredLink(at: position, modifiers: event.modifierFlags)
         // Link text is chosen by the program; show where a link really goes.
         let target = linkTarget(at: position)?.absoluteString
         if toolTip != target { toolTip = target }
