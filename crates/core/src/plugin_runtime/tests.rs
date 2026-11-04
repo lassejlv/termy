@@ -1406,6 +1406,243 @@ fn plugin_secret_accounts_are_injective_and_legacy_migration_is_unambiguous() {
     );
 }
 
+/// A runtime whose catalog declares secret settings for `plugin_id`, without
+/// loading the plugin in Bun.
+fn runtime_with_secret_settings(
+    temp: &TempDir,
+    plugin_id: &str,
+    keys: &[&str],
+) -> (PluginRuntime, PathBuf) {
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    write_plugin(
+        &temp.path().join("plugins"),
+        plugin_id,
+        "Secrets",
+        "export default definePlugin({});",
+    );
+    let runtime = PluginRuntime::new(Some(&config_path));
+    declare_secret_settings(&runtime, plugin_id, keys);
+    (runtime, config_path)
+}
+
+fn declare_secret_settings(runtime: &PluginRuntime, plugin_id: &str, keys: &[&str]) {
+    runtime
+        .inner
+        .catalog
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .settings
+        .insert(
+            plugin_id.to_string(),
+            keys.iter()
+                .map(|key| PluginSetting::Secret {
+                    id: (*key).to_string(),
+                    title: (*key).to_string(),
+                    description: None,
+                    placeholder: None,
+                    max_length: default_setting_max_length(),
+                })
+                .collect(),
+        );
+}
+
+fn resolved_secret(runtime: &PluginRuntime, plugin_id: &str, key: &str) -> Option<Value> {
+    runtime
+        .resolved_plugin_settings(plugin_id)
+        .expect("resolve plugin settings")
+        .remove(key)
+}
+
+#[test]
+fn plugin_secrets_are_read_from_the_credential_store_once_until_they_change() {
+    let temp = TempDir::new().expect("temp dir");
+    let plugin = "secret-cache";
+    let (runtime, _) = runtime_with_secret_settings(&temp, plugin, &["token"]);
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("first".to_string()))
+        .expect("save secret");
+    let reads = test_plugin_secret_reads(plugin, "token");
+
+    for _ in 0..3 {
+        assert_eq!(
+            resolved_secret(&runtime, plugin, "token"),
+            Some(Value::String("first".to_string()))
+        );
+    }
+    let snapshot = runtime.plugin_settings_snapshot();
+    assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors);
+    assert!(snapshot.plugins[plugin][0].configured);
+    assert_eq!(
+        test_plugin_secret_reads(plugin, "token"),
+        reads + 1,
+        "repeated requests and the Settings snapshot share one credential-store read"
+    );
+
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("second".to_string()))
+        .expect("change secret");
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("second".to_string()))
+    );
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("second".to_string()))
+    );
+    assert_eq!(test_plugin_secret_reads(plugin, "token"), reads + 2);
+
+    runtime
+        .reset_plugin_setting(plugin, "token")
+        .expect("reset secret");
+    assert_eq!(resolved_secret(&runtime, plugin, "token"), None);
+    assert!(!runtime.plugin_settings_snapshot().plugins[plugin][0].configured);
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("third".to_string()))
+        .expect("save secret again");
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("third".to_string()))
+    );
+
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String(String::new()))
+        .expect("clear secret");
+    assert_eq!(resolved_secret(&runtime, plugin, "token"), None);
+}
+
+#[test]
+fn missing_plugin_secrets_are_remembered_until_saved() {
+    let temp = TempDir::new().expect("temp dir");
+    let plugin = "secret-negative";
+    let (runtime, _) = runtime_with_secret_settings(&temp, plugin, &["token"]);
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("lost".to_string()))
+        .expect("save secret");
+    // The settings file still lists the secret, but the credential store lost
+    // it (for example, the user removed it from their keychain).
+    TEST_PLUGIN_SECRETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&plugin_secret_account(plugin, "token"));
+
+    assert_eq!(resolved_secret(&runtime, plugin, "token"), None);
+    let reads = test_plugin_secret_reads(plugin, "token");
+    for _ in 0..3 {
+        assert_eq!(resolved_secret(&runtime, plugin, "token"), None);
+    }
+    assert!(!runtime.plugin_settings_snapshot().plugins[plugin][0].configured);
+    assert_eq!(
+        test_plugin_secret_reads(plugin, "token"),
+        reads,
+        "a missing secret is not looked up again on every request"
+    );
+
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("found".to_string()))
+        .expect("save secret again");
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("found".to_string()))
+    );
+}
+
+#[test]
+fn plugin_secret_changes_reach_other_runtimes() {
+    let temp = TempDir::new().expect("temp dir");
+    let plugin = "secret-shared";
+    let (terminal, config_path) = runtime_with_secret_settings(&temp, plugin, &["token"]);
+    // Settings and each terminal window have their own runtime.
+    let settings = PluginRuntime::new(Some(&config_path));
+    declare_secret_settings(&settings, plugin, &["token"]);
+
+    settings
+        .set_plugin_setting(plugin, "token", Value::String("first".to_string()))
+        .expect("save secret");
+    assert_eq!(
+        resolved_secret(&terminal, plugin, "token"),
+        Some(Value::String("first".to_string()))
+    );
+    settings
+        .set_plugin_setting(plugin, "token", Value::String("second".to_string()))
+        .expect("change secret");
+    assert_eq!(
+        resolved_secret(&terminal, plugin, "token"),
+        Some(Value::String("second".to_string())),
+        "a secret changed in another runtime must not be served from the cache"
+    );
+    settings
+        .reset_plugin_setting(plugin, "token")
+        .expect("reset secret");
+    assert_eq!(resolved_secret(&terminal, plugin, "token"), None);
+}
+
+#[test]
+fn managing_a_plugin_drops_its_cached_secrets() {
+    let temp = TempDir::new().expect("temp dir");
+    let plugin = "secret-managed";
+    let (runtime, _) = runtime_with_secret_settings(&temp, plugin, &["token"]);
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("kept".to_string()))
+        .expect("save secret");
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("kept".to_string()))
+    );
+    let reads = test_plugin_secret_reads(plugin, "token");
+
+    runtime
+        .set_plugin_enabled(plugin, false)
+        .expect("disable plugin");
+    assert!(
+        runtime
+            .inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .is_empty(),
+        "a disabled plugin's secrets leave memory"
+    );
+    runtime
+        .set_plugin_enabled(plugin, true)
+        .expect("enable plugin");
+    declare_secret_settings(&runtime, plugin, &["token"]);
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("kept".to_string()))
+    );
+    assert_eq!(test_plugin_secret_reads(plugin, "token"), reads + 1);
+
+    runtime.uninstall_plugin(plugin).expect("uninstall plugin");
+    assert!(
+        !TEST_PLUGIN_SECRETS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&plugin_secret_account(plugin, "token"))
+    );
+    assert!(
+        runtime
+            .inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .is_empty()
+    );
+    write_plugin(
+        &temp.path().join("plugins"),
+        plugin,
+        "Secrets",
+        "export default definePlugin({});",
+    );
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        None,
+        "a reinstalled plugin doesn't see the uninstalled plugin's secret"
+    );
+}
+
 #[test]
 fn plugin_command_placements_default_and_validate() {
     if !bun_is_available() {

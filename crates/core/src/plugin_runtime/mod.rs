@@ -83,9 +83,37 @@ struct PluginRuntimeInner {
     plugins_dir: Option<PathBuf>,
     refresh: Mutex<()>,
     settings: Mutex<()>,
+    /// Secret settings already read from the OS credential store. Lock it
+    /// only briefly and never across credential-store calls; it may be taken
+    /// while `settings` is held, never the other way round.
+    secrets: Mutex<PluginSecretCache>,
     lifecycle_generations: Mutex<BTreeMap<String, u64>>,
     catalog: RwLock<PluginCatalog>,
     host: Mutex<PluginHostState>,
+}
+
+/// Plugin secrets resolved from the OS credential store, so plugin requests
+/// (every picker keystroke, view action and event) don't each read the
+/// keychain: that is slow on macOS and can show an unlock prompt on Linux.
+///
+/// Each entry remembers the `secretRevision` of the plugin's settings file it
+/// was read under and is used only while the file still has that revision.
+/// Every secret change writes a new revision, so a secret changed by another
+/// `PluginRuntime` (Settings and each terminal window have their own) or by
+/// another process is read again on the next request. Changes made through
+/// this runtime, and managing or reloading a plugin, also drop the entries
+/// right away. `None` values record that the credential store had no secret,
+/// so a missing secret isn't looked up on every request either.
+///
+/// Deliberately not `Debug`: the values are secrets.
+#[derive(Default)]
+struct PluginSecretCache {
+    entries: BTreeMap<(String, String), CachedPluginSecret>,
+}
+
+struct CachedPluginSecret {
+    revision: Option<String>,
+    value: Option<String>,
 }
 
 #[derive(Default)]
@@ -248,6 +276,10 @@ struct PluginSettingsFile {
     values: BTreeMap<String, Value>,
     #[serde(default)]
     secret_keys: BTreeSet<String>,
+    /// Changes whenever a secret is saved or cleared, so every runtime and
+    /// process knows its cached secrets for this plugin are out of date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_revision: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -1030,6 +1062,7 @@ impl PluginRuntime {
                 plugins_dir,
                 refresh: Mutex::new(()),
                 settings: Mutex::new(()),
+                secrets: Mutex::new(PluginSecretCache::default()),
                 lifecycle_generations: Mutex::new(BTreeMap::new()),
                 catalog: RwLock::new(PluginCatalog::default()),
                 host: Mutex::new(PluginHostState::default()),
@@ -1286,9 +1319,13 @@ impl PluginRuntime {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let stored = self.read_plugin_settings_file(id)?;
-            for key in stored.secret_keys {
-                delete_plugin_secret(id, &key)?;
-            }
+            let deleted = stored
+                .secret_keys
+                .iter()
+                .try_for_each(|key| delete_plugin_secret(id, key));
+            // Some secrets may be gone even when a later one failed.
+            self.forget_plugin_secrets(id);
+            deleted?;
         }
         fs::remove_dir_all(&root)
             .map_err(|error| format!("Failed to uninstall plugin `{id}`: {error}"))?;
@@ -1334,6 +1371,7 @@ impl PluginRuntime {
 
     fn invalidate_after_management(&self, plugin_id: &str) {
         self.bump_plugin_lifecycle(plugin_id);
+        self.forget_plugin_secrets(plugin_id);
         self.inner
             .host
             .lock()
@@ -1380,6 +1418,9 @@ impl PluginRuntime {
             .collect::<BTreeSet<_>>();
         if changed.is_empty() {
             return;
+        }
+        for plugin_id in &changed {
+            self.forget_plugin_secrets(plugin_id);
         }
         let mut generations = self
             .inner
@@ -1432,27 +1473,34 @@ impl PluginRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .settings
             .clone();
-        let _settings = self
-            .inner
-            .settings
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut snapshot = PluginSettingsSnapshot::default();
-        for (plugin_id, settings) in definitions {
-            let stored = match self.read_plugin_settings_file(&plugin_id) {
-                Ok(stored) => stored,
-                Err(error) => {
-                    snapshot.errors.push(error);
-                    PluginSettingsFile::default()
-                }
-            };
+        let stored_settings = {
+            let _settings = self
+                .inner
+                .settings
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            definitions
+                .keys()
+                .map(
+                    |plugin_id| match self.read_plugin_settings_file(plugin_id) {
+                        Ok(stored) => stored,
+                        Err(error) => {
+                            snapshot.errors.push(error);
+                            PluginSettingsFile::default()
+                        }
+                    },
+                )
+                .collect::<Vec<_>>()
+        };
+        for ((plugin_id, settings), stored) in definitions.into_iter().zip(stored_settings) {
             let mut states = Vec::with_capacity(settings.len());
             for definition in settings {
                 let (value, configured) = if let PluginSetting::Secret { id, .. } = &definition {
                     if !stored.secret_keys.contains(id) {
                         (None, false)
                     } else {
-                        match read_plugin_secret(&plugin_id, id) {
+                        match self.plugin_secret(&plugin_id, id, &stored) {
                             Ok(value) => (None, value.is_some()),
                             Err(error) => {
                                 snapshot.errors.push(error);
@@ -1500,13 +1548,20 @@ impl PluginRuntime {
                 let secret = value
                     .as_str()
                     .expect("validated secret setting must be a string");
+                let saved = if secret.is_empty() {
+                    delete_plugin_secret(plugin_id, key)
+                } else {
+                    write_plugin_secret(plugin_id, key, secret)
+                };
+                // Forget the old value even if the store failed part way.
+                self.forget_plugin_secret(plugin_id, key);
+                saved?;
                 if secret.is_empty() {
-                    delete_plugin_secret(plugin_id, key)?;
                     stored.secret_keys.remove(key);
                 } else {
-                    write_plugin_secret(plugin_id, key, secret)?;
                     stored.secret_keys.insert(key.to_string());
                 }
+                stored.secret_revision = Some(new_secret_revision());
             }
             _ if definition.default_value().as_ref() == Some(&value) => {
                 stored.values.remove(key);
@@ -1528,8 +1583,11 @@ impl PluginRuntime {
         let mut stored = self.read_plugin_settings_file(plugin_id)?;
         stored.values.remove(key);
         if matches!(definition, PluginSetting::Secret { .. }) {
-            delete_plugin_secret(plugin_id, key)?;
+            let deleted = delete_plugin_secret(plugin_id, key);
+            self.forget_plugin_secret(plugin_id, key);
+            deleted?;
             stored.secret_keys.remove(key);
+            stored.secret_revision = Some(new_secret_revision());
         }
         self.write_plugin_settings_file(plugin_id, &stored)
     }
@@ -1563,18 +1621,23 @@ impl PluginRuntime {
             .get(plugin_id)
             .cloned()
             .unwrap_or_default();
-        let _settings = self
-            .inner
-            .settings
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let stored = self.read_plugin_settings_file(plugin_id)?;
+        // Only the settings file is read under the lock: secrets come from
+        // the cache or the credential store after it is released, so a slow
+        // keychain or an unlock prompt doesn't block other plugin requests.
+        let stored = {
+            let _settings = self
+                .inner
+                .settings
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.read_plugin_settings_file(plugin_id)?
+        };
         let mut values = BTreeMap::new();
         for definition in definitions {
             let value = match &definition {
-                PluginSetting::Secret { id, .. } if stored.secret_keys.contains(id) => {
-                    read_plugin_secret(plugin_id, id)?.map(Value::String)
-                }
+                PluginSetting::Secret { id, .. } if stored.secret_keys.contains(id) => self
+                    .plugin_secret(plugin_id, id, &stored)?
+                    .map(Value::String),
                 PluginSetting::Secret { .. } => None,
                 _ => stored
                     .values
@@ -1588,6 +1651,80 @@ impl PluginRuntime {
             }
         }
         Ok(values)
+    }
+
+    /// Returns the secret setting `key`, which `stored` (the plugin's settings
+    /// file) lists as saved, from the cache or else the credential store.
+    /// Must be called without the settings lock held.
+    fn plugin_secret(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        stored: &PluginSettingsFile,
+    ) -> Result<Option<String>, String> {
+        let revision = stored.secret_revision.as_deref();
+        if let Some(cached) = self
+            .inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .get(&(plugin_id.to_string(), key.to_string()))
+            .filter(|cached| cached.revision.as_deref() == revision)
+        {
+            return Ok(cached.value.clone());
+        }
+        let value = match read_current_plugin_secret(plugin_id, key)? {
+            Some(secret) => Some(secret),
+            None if can_migrate_legacy_plugin_secret(plugin_id, key) => {
+                // Moving a legacy entry writes to the credential store, so it
+                // runs under the settings lock like every other secret write
+                // and can't overwrite a secret saved in the meantime. This
+                // happens once: afterwards the secret, or its absence, is
+                // cached.
+                let _settings = self
+                    .inner
+                    .settings
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                read_plugin_secret(plugin_id, key)?
+            }
+            None => None,
+        };
+        // Kept under the revision read before the credential store was, so a
+        // secret saved meanwhile (which writes a new revision) is read again
+        // next time instead of this possibly older value being kept.
+        self.inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .insert(
+                (plugin_id.to_string(), key.to_string()),
+                CachedPluginSecret {
+                    revision: revision.map(str::to_string),
+                    value: value.clone(),
+                },
+            );
+        Ok(value)
+    }
+
+    fn forget_plugin_secret(&self, plugin_id: &str, key: &str) {
+        self.inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .remove(&(plugin_id.to_string(), key.to_string()));
+    }
+
+    fn forget_plugin_secrets(&self, plugin_id: &str) {
+        self.inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .retain(|(cached_plugin_id, _), _| cached_plugin_id != plugin_id);
     }
 
     fn plugin_settings_file_path(&self, plugin_id: &str) -> Result<PathBuf, String> {
@@ -4342,40 +4479,57 @@ fn legacy_plugin_secret_entry(plugin_id: &str, key: &str) -> Result<keyring::Ent
     .map_err(|error| format!("Failed to access the credential store: {error}"))
 }
 
+/// Reads the secret from its current credential-store entry only. It never
+/// writes, so it's safe without the settings lock.
 #[cfg(not(test))]
-fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
+fn read_current_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
     match plugin_secret_entry(plugin_id, key)?.get_password() {
         Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) if !can_migrate_legacy_plugin_secret(plugin_id, key) => {
-            Ok(None)
-        }
-        Err(keyring::Error::NoEntry) => {
-            let legacy = legacy_plugin_secret_entry(plugin_id, key)?;
-            let secret = match legacy.get_password() {
-                Ok(secret) => secret,
-                Err(keyring::Error::NoEntry) => return Ok(None),
-                Err(error) => {
-                    return Err(format!(
-                        "Failed to read legacy secret setting `{plugin_id}.{key}`: {error}"
-                    ));
-                }
-            };
-            plugin_secret_entry(plugin_id, key)?
-                .set_password(&secret)
-                .map_err(|error| {
-                    format!("Failed to migrate secret setting `{plugin_id}.{key}`: {error}")
-                })?;
-            match legacy.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(Some(secret)),
-                Err(error) => Err(format!(
-                    "Failed to clear legacy secret setting `{plugin_id}.{key}` after migration: {error}"
-                )),
-            }
-        }
+        Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(format!(
             "Failed to read secret setting `{plugin_id}.{key}`: {error}"
         )),
     }
+}
+
+/// Reads the secret, moving it from its legacy credential-store entry if
+/// needed. Moving it writes to the store, so call this with the settings
+/// lock held.
+#[cfg(not(test))]
+fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
+    if let Some(secret) = read_current_plugin_secret(plugin_id, key)? {
+        return Ok(Some(secret));
+    }
+    if !can_migrate_legacy_plugin_secret(plugin_id, key) {
+        return Ok(None);
+    }
+    let legacy = legacy_plugin_secret_entry(plugin_id, key)?;
+    let secret = match legacy.get_password() {
+        Ok(secret) => secret,
+        Err(keyring::Error::NoEntry) => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read legacy secret setting `{plugin_id}.{key}`: {error}"
+            ));
+        }
+    };
+    plugin_secret_entry(plugin_id, key)?
+        .set_password(&secret)
+        .map_err(|error| {
+            format!("Failed to migrate secret setting `{plugin_id}.{key}`: {error}")
+        })?;
+    match legacy.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(Some(secret)),
+        Err(error) => Err(format!(
+            "Failed to clear legacy secret setting `{plugin_id}.{key}` after migration: {error}"
+        )),
+    }
+}
+
+fn new_secret_revision() -> String {
+    let mut random = [0_u8; 8];
+    OsRng.fill_bytes(&mut random);
+    hex_digest(&random)
 }
 
 #[cfg(not(test))]
@@ -4419,13 +4573,50 @@ fn delete_plugin_secret(plugin_id: &str, key: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Stands in for the OS credential store in tests, keyed by account.
 #[cfg(test)]
 static TEST_PLUGIN_SECRETS: std::sync::LazyLock<Mutex<BTreeMap<String, String>>> =
     std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
+/// How often each account was read from the test credential store.
+#[cfg(test)]
+static TEST_PLUGIN_SECRET_READS: std::sync::LazyLock<Mutex<BTreeMap<String, usize>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+#[cfg(test)]
+fn record_test_plugin_secret_read(plugin_id: &str, key: &str) {
+    *TEST_PLUGIN_SECRET_READS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(plugin_secret_account(plugin_id, key))
+        .or_default() += 1;
+}
+
+#[cfg(test)]
+fn test_plugin_secret_reads(plugin_id: &str, key: &str) -> usize {
+    TEST_PLUGIN_SECRET_READS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&plugin_secret_account(plugin_id, key))
+        .copied()
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+#[allow(clippy::unnecessary_wraps)]
+fn read_current_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
+    record_test_plugin_secret_read(plugin_id, key);
+    Ok(TEST_PLUGIN_SECRETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&plugin_secret_account(plugin_id, key))
+        .cloned())
+}
+
 #[cfg(test)]
 #[allow(clippy::unnecessary_wraps)]
 fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
+    record_test_plugin_secret_read(plugin_id, key);
     let mut secrets = TEST_PLUGIN_SECRETS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

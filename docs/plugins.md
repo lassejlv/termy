@@ -273,7 +273,7 @@ export default definePlugin({
 });
 ```
 
-Supported types are `toggle`, `text`, `select`, and `secret`. Text and secret settings accept `placeholder` and `maxLength`; toggles accept a boolean default; selects require fixed options and may choose a default. Ordinary overrides live in the plugin's managed data directory. Secret values are masked in the UI and stored through the operating-system credential store, never in `settings.json`. Changes apply to the next command invocation without restarting the Worker, and uninstalling the plugin removes its settings and secrets.
+Supported types are `toggle`, `text`, `select`, and `secret`. Text and secret settings accept `placeholder` and `maxLength`; toggles accept a boolean default; selects require fixed options and may choose a default. Ordinary overrides live in the plugin's managed data directory. Secret values are masked in the UI and stored through the operating-system credential store, never in `settings.json`. Termy reads each secret from the credential store once and keeps it in memory, so plugin requests don't each touch the keychain; it reads it again after the secret changes in Settings or the plugin is updated, disabled, or reloaded. If you edit or remove a secret directly in the credential store, restart Termy. Changes apply to the next command invocation without restarting the Worker, and uninstalling the plugin removes its settings and secrets.
 
 ## Context
 
