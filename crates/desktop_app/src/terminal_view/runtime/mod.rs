@@ -102,6 +102,10 @@ pub(super) struct TmuxRuntime {
     pub(super) resize_wakeup_scheduled: bool,
     pub(super) title_refresh_deadline: Option<Instant>,
     pub(super) title_refresh_wakeup_scheduled: bool,
+    /// The snapshot the tabs were last built from, and the cell size they
+    /// were sized with. Event-driven refreshes that fetch the same state
+    /// again leave the tabs alone.
+    pub(super) applied_snapshot: Option<(TmuxSnapshot, Option<Size<Pixels>>)>,
 }
 
 impl TmuxRuntime {
@@ -131,6 +135,7 @@ impl TmuxRuntime {
             resize_wakeup_scheduled: false,
             title_refresh_deadline: None,
             title_refresh_wakeup_scheduled: false,
+            applied_snapshot: None,
         }
     }
 }

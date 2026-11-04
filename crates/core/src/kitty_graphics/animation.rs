@@ -9,6 +9,7 @@ impl KittyGraphicsState {
         &mut self,
         command: &KittyGraphicsCommand,
         patch: Option<crate::terminal_engine::media::GraphicsImage>,
+        viewport: Viewport,
     ) -> Result<u32, String> {
         let id = self
             .resolve_image_id(command)
@@ -66,7 +67,7 @@ impl KittyGraphicsState {
         }
         let bytes = animation.byte_len();
         let evictions = self
-            .quota_evictions_for_replacement(id, bytes)
+            .quota_evictions_for_replacement(id, bytes, viewport)
             .ok_or("ENOSPC:animation storage quota exceeded")?;
         for evicted in evictions {
             self.remove_image(evicted);

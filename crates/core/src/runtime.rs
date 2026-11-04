@@ -8,7 +8,9 @@ use crate::kitty_graphics::KittyGraphicsRenderPlacement;
 use crate::locale::{Utf8LocaleOverridePlan, preferred_utf8_locale, utf8_locale_override_plan};
 use crate::mouse_protocol::TerminalMouseMode;
 use crate::path_env::normalized_path_env;
-use crate::protocol::{TerminalClipboardLocation, TerminalQueryColors, TerminalReplyHost};
+use crate::protocol::{
+    TerminalClipboardLocation, TerminalProtocolReplies, TerminalQueryColors, TerminalReplyHost,
+};
 use crate::search::{TermySearchMatch, TermySearchOptions, TermySharedSearchMatch};
 use crate::shell_integration::ProgressState;
 use flume::Sender;
@@ -995,7 +997,18 @@ impl Terminal {
     /// terminal's output (which already answered): queries are parsed and
     /// change no state, and replies are dropped.
     pub fn set_protocol_replies_enabled(&self, enabled: bool) {
-        self.backend.set_protocol_replies_enabled(enabled);
+        self.set_protocol_replies(if enabled {
+            TerminalProtocolReplies::All
+        } else {
+            TerminalProtocolReplies::None
+        });
+    }
+
+    /// Choose which protocol replies a display terminal sends; see
+    /// [`TerminalProtocolReplies`]. Terminals with their own PTY answer
+    /// every query.
+    pub fn set_protocol_replies(&self, replies: TerminalProtocolReplies) {
+        self.backend.set_protocol_replies(replies);
     }
 
     /// The engine's full state; see `terminal_engine::Engine::encode_snapshot`.

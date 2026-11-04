@@ -539,6 +539,112 @@ fn clipboard_osc_has_its_own_larger_limit() {
     assert!(parser.discarded);
 }
 
+/// Feed `ESC ] head`, split after `split` bytes, then `body` bytes and BEL;
+/// the OSC it delivers, if any.
+fn osc_with_body(parser: &mut Parser, head: &[u8], split: usize, body: usize) -> Option<usize> {
+    let mut recorder = Recorder::default();
+    parser.advance(&mut recorder, b"\x1b]");
+    parser.advance(&mut recorder, &head[..split]);
+    parser.advance(&mut recorder, &head[split..]);
+    for chunk in vec![b'A'; body].chunks(3000) {
+        parser.advance(&mut recorder, chunk);
+    }
+    parser.advance(&mut recorder, b"\x07OK");
+    assert!(printed(&recorder.events).ends_with("OK"));
+    recorder.events.iter().find_map(|event| match event {
+        Event::Osc(bytes) => {
+            assert!(bytes.starts_with(head));
+            Some(bytes.len())
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn only_osc_1337_file_transfers_use_the_apc_limit() {
+    let body = MAX_STRING_BYTES * 2;
+    let cases: [(&[u8], bool); 9] = [
+        (b"1337;File=inline=1:", true),
+        (b"1337;FilePart=", true),
+        (b"1337;MultipartFile=inline=1", true),
+        // Shell integration marks and other OSC 1337 commands keep the
+        // generic limit, though they share the first bytes.
+        (b"133;A;", false),
+        (b"133;D;0;", false),
+        (b"1338;", false),
+        (b"1337;SetUserVar=name=", false),
+        (b"1337;FileEnd", false),
+        (b"1337;Fil", false),
+    ];
+    for (head, large) in cases {
+        for split in 0..=head.len() {
+            let mut parser = Parser::with_apc_limit(MAX_APC_BYTES);
+            let delivered = osc_with_body(&mut parser, head, split, body);
+            assert_eq!(
+                delivered,
+                large.then_some(head.len() + body),
+                "{:?} split at {split}",
+                String::from_utf8_lossy(head)
+            );
+            // Within the generic limit every one is delivered.
+            let small = MAX_STRING_BYTES - head.len();
+            let delivered = osc_with_body(&mut parser, head, split, small);
+            assert_eq!(delivered, Some(MAX_STRING_BYTES));
+        }
+    }
+
+    // File transfers are still bounded by the APC limit.
+    let mut parser = Parser::with_apc_limit(MAX_STRING_BYTES * 2);
+    assert_eq!(
+        osc_with_body(&mut parser, b"1337;File=:", 4, MAX_STRING_BYTES * 2),
+        None
+    );
+    assert_eq!(
+        osc_with_body(&mut parser, b"1337;File=:", 4, MAX_STRING_BYTES),
+        Some(MAX_STRING_BYTES + 11)
+    );
+}
+
+#[test]
+fn a_configured_string_limit_bounds_osc_133_but_not_file_transfers() {
+    let mut parser = Parser::with_apc_limit(MAX_APC_BYTES);
+    parser.set_string_limits(16, 16);
+    // A stale prefix from an earlier string selects nothing.
+    assert_eq!(
+        osc_with_body(&mut parser, b"1337;File=:", 0, 100),
+        Some(111)
+    );
+    for split in 0..=6 {
+        assert_eq!(osc_with_body(&mut parser, b"133;A;", split, 100), None);
+        assert_eq!(osc_with_body(&mut parser, b"133;A;", split, 10), Some(16));
+    }
+    // A prefix of a file transfer that ends early is held to the generic
+    // limit, though it was provisionally allowed more.
+    let mut parser = Parser::with_apc_limit(MAX_APC_BYTES);
+    parser.set_string_limits(4, 4);
+    assert_eq!(osc_with_body(&mut parser, b"1337;Fil", 0, 0), None);
+    for split in 0..=10 {
+        assert_eq!(
+            osc_with_body(&mut parser, b"1337;File=", split, 100),
+            Some(110)
+        );
+    }
+}
+
+#[test]
+fn scanner_tracks_file_transfer_limits_without_allocating_payloads() {
+    for (head, discarded) in [(b"1337;File=:".as_slice(), false), (b"133;A;", true)] {
+        let mut parser = Parser::scanner(MAX_APC_BYTES);
+        let mut recorder = Recorder::default();
+        parser.advance(&mut recorder, b"\x1b]");
+        parser.advance(&mut recorder, &head[..3]);
+        parser.advance(&mut recorder, &head[3..]);
+        parser.advance(&mut recorder, &vec![b'A'; MAX_STRING_BYTES * 2]);
+        assert_eq!(parser.discarded, discarded);
+        assert_eq!(parser.string.capacity(), 0);
+    }
+}
+
 #[test]
 fn large_apc_storage_is_released_after_completion_or_interruption() {
     for ending in [b"\x1b\\".as_slice(), b"\x18", b"\x1a", b"\x1b[2J", b"\x1bc"] {

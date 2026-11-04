@@ -20,6 +20,7 @@ checkout with `cargo doc -p termy_core --no-deps`.
 | Deliver process output | `feed_output` | `termy_terminal_feed_output` |
 | Deliver output, return replies in order | `feed_output_with_replies` | `termy_terminal_feed_output_with_replies` |
 | Mirror another terminal without replying | `set_protocol_replies_enabled(false)` | `termy_terminal_set_protocol_replies_enabled` |
+| Draw a multiplexer pane, replying only to what it passes through | `set_protocol_replies(TerminalProtocolReplies::Passthrough)` | No C equivalent |
 | Save full terminal state | `encode_snapshot` | `termy_terminal_snapshot_encode` |
 | Restore full terminal state | `restore_snapshot` | `termy_terminal_snapshot_decode`, `termy_terminal_snapshot_restore` |
 | Send input to owned PTY | `write` | `termy_terminal_write` |

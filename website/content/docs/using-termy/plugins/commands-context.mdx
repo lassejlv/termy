@@ -134,6 +134,10 @@ Ordinary overrides live in the plugin data directory. Secrets are masked and sto
 through the operating-system credential store instead of `settings.json`. Changes
 apply to the next invocation without restarting the Worker.
 
+Termy reads each secret from the credential store once and keeps it in memory, so
+commands, pickers, and events don't each ask the keychain. If you edit or remove a
+secret directly in your keychain instead of in Settings, restart Termy.
+
 ## Return actions
 
 A command, lifecycle handler, or native-view action handler can return one action,

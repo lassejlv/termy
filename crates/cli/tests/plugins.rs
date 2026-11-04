@@ -49,6 +49,19 @@ fn init_add_and_dev_sync_a_managed_local_copy() {
         "plugin add failed: {}",
         String::from_utf8_lossy(&installed.stderr)
     );
+    assert!(
+        String::from_utf8_lossy(&installed.stderr)
+            .contains(termy_core::plugin_runtime::PLUGIN_FULL_ACCESS_WARNING),
+        "a local install must still say plugins get full access"
+    );
+    let help = Command::new(cli)
+        .args(["plugin", "add", "--help"])
+        .output()
+        .expect("run plugin add --help");
+    assert!(
+        String::from_utf8_lossy(&help.stdout)
+            .contains(termy_core::plugin_runtime::PLUGIN_FULL_ACCESS_WARNING)
+    );
 
     let managed = config_home.join("termy/plugins/my-plugin");
     assert!(managed.join("plugin.json").is_file());

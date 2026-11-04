@@ -2,6 +2,8 @@
 
 Termy plugins add commands to the command palette with a small `plugin.json` manifest and a plain TypeScript entrypoint. A plugin does not need a package or handwritten build step: put both files in its plugin directory and export one `definePlugin(...)` value from the TypeScript source.
 
+> **Plugins run with your full user permissions: they can read and write your files, run programs and use the network. Only install plugins you trust.** Capabilities in `plugin.json` only decide which Termy APIs a plugin can call; they are not a sandbox. Termy shows this warning in **Settings → Plugins**, when installing from a folder there, and in the CLI before `termy plugin add`, `update`, and `dev`.
+
 ## Requirements
 
 Plugins run in an external [Bun](https://bun.sh/) host. Install Bun before opening the command palette with plugins present, or set `TERMY_BUN_PATH` to the absolute path of a Bun executable.
@@ -41,7 +43,7 @@ termy plugin uninstall my-plugin
 
 `termy plugin dev ./my-plugin` installs or updates the managed local copy, then watches the development directory recursively. Source changes are debounced, source-tree validated, and swapped into the managed directory atomically. A validation or copy failure leaves the managed copy untouched; Bun load errors appear in Termy when the command palette refreshes. Pressing Ctrl+C stops watching but leaves the plugin installed. Dev mode ignores `.git` and `node_modules`, preserves enabled state and plugin storage, and refuses to overwrite a GitHub-tracked installation.
 
-GitHub installation never clones the repository, runs package scripts, installs dependencies, or evaluates source during installation. Plugins are still trusted code when the command palette loads them through Bun, so the CLI shows a warning and requires confirmation; automation must pass `--yes` explicitly.
+GitHub installation never clones the repository, runs package scripts, installs dependencies, or evaluates source during installation. Once Termy loads a plugin through Bun, it has your full user access, so the CLI prints the full-access warning before every install or update. GitHub installs and updates also ask for confirmation, which automation must skip with `--yes` explicitly. Installing a local folder or running `termy plugin dev` prints the warning without prompting.
 
 You can also manage the directory manually:
 
@@ -93,14 +95,15 @@ Every plugin directory contains a `plugin.json` manifest:
 | `name` | yes | Human-readable plugin name shown by Termy. |
 | `version` | no | Version shown in Settings when the plugin is managed there. |
 | `main` | no | TypeScript entrypoint relative to the plugin directory. Defaults to `plugin.ts`. |
-| `capabilities` | no | Termy host APIs the plugin opts into. Supports `storage` and `native-ui`; omitted means `[]`. |
+| `capabilities` | no | Termy API access the plugin opts into. Supports `storage` and `native-ui`; omitted means `[]`. Not a sandbox: see below. |
 
 Use lowercase letters, numbers, and hyphens for IDs so saved references remain stable when a display name changes. `main` must resolve to a regular file inside the plugin directory; out-of-root paths and symlinks are rejected.
 
 `storage` enables `context.storage` and `context.paths`. `native-ui` enables
 declared views and `view.open`. Unknown or duplicate values are rejected. These
-declarations gate Termy APIs; they do not sandbox the trusted Bun process or its
-normal file, network, and process access.
+declarations only gate Termy's own APIs. They are not a sandbox: every plugin can
+still import any Bun or Node built-in, such as `node:fs`, `node:child_process`, and
+`node:net`, and read and write your files, run programs, and use the network.
 
 ## Minimal plugin
 
@@ -273,7 +276,7 @@ export default definePlugin({
 });
 ```
 
-Supported types are `toggle`, `text`, `select`, and `secret`. Text and secret settings accept `placeholder` and `maxLength`; toggles accept a boolean default; selects require fixed options and may choose a default. Ordinary overrides live in the plugin's managed data directory. Secret values are masked in the UI and stored through the operating-system credential store, never in `settings.json`. Changes apply to the next command invocation without restarting the Worker, and uninstalling the plugin removes its settings and secrets.
+Supported types are `toggle`, `text`, `select`, and `secret`. Text and secret settings accept `placeholder` and `maxLength`; toggles accept a boolean default; selects require fixed options and may choose a default. Ordinary overrides live in the plugin's managed data directory. Secret values are masked in the UI and stored through the operating-system credential store, never in `settings.json`. Termy reads each secret from the credential store once and keeps it in memory, so plugin requests don't each touch the keychain; it reads it again after the secret changes in Settings or the plugin is updated, disabled, or reloaded. If you edit or remove a secret directly in the credential store, restart Termy. Changes apply to the next command invocation without restarting the Worker, and uninstalling the plugin removes its settings and secrets.
 
 ## Context
 
@@ -574,9 +577,13 @@ already running when its plugin changed, was disabled, or was removed.
 
 Plugin loading and command execution have timeouts. A thrown error or timeout is contained to that plugin Worker and reported in Termy, while other plugins and the terminal keep running. A subprocess started by plugin code can outlive its Worker, so plugins that spawn processes must stop them themselves when cancellation matters. Plugins share the persistent host transport; if that transport exits, Termy discards it and rebuilds the host and Workers on the next plugin refresh instead of taking down the app. Fix a failed plugin and reopen the palette to load it again.
 
+A plugin that fails validation before loading, such as a symlinked or invalidly named plugin directory, an invalid `.termy-disabled` marker, or a source tree with a symlink or over the size limits, is skipped and reported in Termy and in Settings; the other plugins still load. When more than 32 plugins are enabled, Termy loads the first 32 in ID order and reports the rest. Likewise, a plugin whose commands would take the catalog past 512 commands is left out, in ID order, while the others load.
+
 ## Security and v1 limits
 
-Plugins are trusted local code. Worker isolation, import validation, and timeouts improve reliability, but they are not a security sandbox: after loading, a plugin runs through Bun with your user account's access to files, network, and processes. Only install plugins whose source you trust.
+Plugins run with your full user permissions: they can read and write your files, run programs and use the network. Only install plugins you trust.
+
+Termy does not sandbox plugins. Manifest capabilities only decide which Termy APIs a plugin can call, and Worker isolation, import validation, and timeouts improve reliability, not security: after loading, a plugin runs through Bun with your user account's access to files, network, and processes. Read a plugin's source before installing it.
 
 The v1 runtime supports command-palette commands, native JSX views, lifecycle events, and user-configured keybindings. It does not provide arbitrary native UI access, build hooks, package imports, or automatic package installation. Bun is launched with dependency installation and environment-file loading disabled; local relative TypeScript imports are bundled from the plugin directory, while Bun and Node built-ins remain available at runtime.
 

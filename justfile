@@ -158,12 +158,14 @@ test-tmux-integration:
       "termy|integration|tmux_split_integration|managed_nonpersistent_drop_kills_session"
       "termy|integration|tmux_split_integration|managed_persistent_drop_keeps_session_but_removes_client"
       "termy|integration|tmux_split_integration|repeated_reconnect_does_not_increase_client_count"
+      "termy|integration|tmux_split_integration|tmux_snapshot_decodes_escaped_names_once_and_survives_non_utf8_paths"
+      "termy|integration|tmux_split_integration|tmux_pane_queries_get_one_answer"
       "termy_core|lib||tmux_control_core::session::tests::launches_and_drives_control_mode"
       "termy_core|integration|tmux_control_ffi|ffi_control_open_poll_send_close"
       "termy|bin|termy|terminal_view::working_dir_tests::new_tmux_tab_inherits_live_pane_cwd_with_foreground_app"
     )
-    if (( ${#tmux_tests[@]} != 11 )); then
-      echo "Tmux integration configuration error: expected 11 tests, got ${#tmux_tests[@]}" >&2
+    if (( ${#tmux_tests[@]} != 13 )); then
+      echo "Tmux integration configuration error: expected 13 tests, got ${#tmux_tests[@]}" >&2
       exit 1
     fi
     unique_count=$(

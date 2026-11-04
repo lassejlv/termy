@@ -12,8 +12,8 @@ use percent_encoding::{NON_ALPHANUMERIC, percent_decode_str, utf8_percent_encode
 use serde::Deserialize;
 use tempfile::TempDir;
 use termy_core::plugin_runtime::{
-    MAX_PLUGIN_SOURCE_BYTES, MAX_PLUGIN_SOURCE_FILES, PluginRuntime, PluginSourceMetadata,
-    valid_plugin_id, validate_plugin_capabilities,
+    MAX_PLUGIN_SOURCE_BYTES, MAX_PLUGIN_SOURCE_FILES, PLUGIN_FULL_ACCESS_WARNING, PluginRuntime,
+    PluginSourceMetadata, valid_plugin_id, validate_plugin_capabilities,
 };
 
 use crate::PluginCommand;
@@ -61,6 +61,9 @@ fn add(
         return Err("--ref and --path can only be used with a GitHub source".to_string());
     }
 
+    // Local installs have never asked for confirmation, and scripts rely on
+    // that, so this only prints the warning.
+    eprintln!("{PLUGIN_FULL_ACCESS_WARNING}");
     let installed = plugin_runtime()?.install_from_directory(Path::new(source))?;
     println!(
         "Installed {} ({}) at {}",
@@ -123,6 +126,7 @@ fn dev(path: &Path) -> Result<(), String> {
         )
     })?;
     let runtime = plugin_runtime()?;
+    eprintln!("{PLUGIN_FULL_ACCESS_WARNING}");
     let installed = runtime.sync_from_directory(&source)?;
     println!(
         "Synced {} ({}) to {}",
@@ -511,11 +515,8 @@ fn plugin_runtime() -> Result<PluginRuntime, String> {
 }
 
 fn print_trusted_code_warning(candidate: &PluginCandidate, source: &GitHubSource, revision: &str) {
-    eprintln!("WARNING: Termy plugins are trusted code.");
-    eprintln!(
-        "`{}` can run arbitrary Bun code with your user permissions.",
-        candidate.name
-    );
+    eprintln!("{PLUGIN_FULL_ACCESS_WARNING}");
+    eprintln!("Plugin: {} ({})", candidate.name, candidate.id);
     eprintln!(
         "Source: {}{} @ {}",
         source.repository_url(),

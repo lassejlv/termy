@@ -1,9 +1,6 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::io::Write;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InstallShell {
     Zsh,
@@ -166,7 +163,7 @@ fn configure_install_cli_shell_path_for_home(
     })?;
     let install_dir = install_dir.to_string_lossy().into_owned();
     let shell = install_cli_shell(configured_shell)?;
-    let profile_path = home_dir.join(install_cli_profile_relative_path(shell));
+    let profile_path = install_cli_profile_path(shell, home_dir);
     let block = install_cli_profile_block(shell, &install_dir);
     let profile_updated = ensure_install_cli_profile_block(&profile_path, &block)?;
     let session_command = install_cli_session_command(shell, &install_dir);
@@ -237,18 +234,34 @@ fn parse_install_cli_shell(shell: &str) -> Option<InstallShell> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn install_cli_profile_relative_path(shell: InstallShell) -> &'static str {
+fn install_cli_profile_path(shell: InstallShell, home_dir: &Path) -> PathBuf {
     match shell {
-        InstallShell::Zsh => ".zshrc",
-        InstallShell::Bash => {
-            if cfg!(target_os = "macos") {
-                ".bash_profile"
-            } else {
-                ".bashrc"
-            }
-        }
-        InstallShell::Fish => ".config/fish/config.fish",
+        InstallShell::Zsh => home_dir.join(".zshrc"),
+        // Termy starts bash as a login shell on macOS and as a non-login
+        // interactive shell on Linux (see `login_shell_args`).
+        InstallShell::Bash if cfg!(target_os = "macos") => bash_login_profile_path(home_dir),
+        InstallShell::Bash => home_dir.join(".bashrc"),
+        InstallShell::Fish => home_dir.join(".config").join("fish").join("config.fish"),
     }
+}
+
+/// The startup file a bash login shell reads in `home_dir`.
+///
+/// Bash reads only the first of `~/.bash_profile`, `~/.bash_login` and
+/// `~/.profile` that exists, so the block goes into that one. Creating
+/// `~/.bash_profile` next to an existing `~/.profile` would stop bash from
+/// reading `~/.profile` and drop the user's environment from every tab, so
+/// it is only created when none of the three exists.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn bash_login_profile_path(home_dir: &Path) -> PathBuf {
+    const LOGIN_FILES: [&str; 3] = [".bash_profile", ".bash_login", ".profile"];
+
+    // `exists` follows symlinks: bash skips a dangling link like a missing file.
+    LOGIN_FILES
+        .iter()
+        .map(|name| home_dir.join(name))
+        .find(|path| path.exists())
+        .unwrap_or_else(|| home_dir.join(LOGIN_FILES[0]))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -282,12 +295,21 @@ fn install_cli_session_command(shell: InstallShell, install_dir: &str) -> String
     }
 }
 
+/// Appends `block` to the profile unless its marker is already there.
+///
+/// The block is only ever appended, so the profile is opened in append mode
+/// and extended in place instead of being rewritten through a temp file and a
+/// rename. That keeps everything the user set on the file: its mode (a 0600
+/// `.zshrc` stays 0600), owner, ACLs, extended attributes and hard links. No
+/// sibling path such as `.zshrc.tmp` is created, truncated or followed.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn ensure_install_cli_profile_block(profile_path: &Path, block: &str) -> Result<bool, String> {
+    use std::io::{Read, Write};
+
     const START: &str = "# >>> termy cli path >>>";
 
     // Update the file a symlinked profile points at (stow, chezmoi,
-    // home-manager): renaming over the link would replace it.
+    // home-manager), creating the parent of a dangling link's target first.
     let profile_path = &resolve_profile_symlinks(profile_path);
     if let Some(parent) = profile_path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -299,53 +321,48 @@ fn ensure_install_cli_profile_block(profile_path: &Path, block: &str) -> Result<
         })?;
     }
 
-    let existing = match std::fs::read_to_string(profile_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => {
-            return Err(format!(
-                "Failed to read shell config {}: {}",
+    // A missing profile is created with the default (umask) permissions.
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(profile_path)
+        .map_err(|error| {
+            format!(
+                "Failed to open shell config {}: {}",
                 profile_path.display(),
                 error
-            ));
-        }
-    };
+            )
+        })?;
 
-    let Some(updated) = append_install_cli_profile_block_if_missing(&existing, START, block) else {
-        return Ok(false);
-    };
-
-    let temp_path = profile_path.with_extension("tmp");
-    {
-        let mut temp_file = std::fs::File::create(&temp_path).map_err(|error| {
-            format!(
-                "Failed to write shell config {}: {}",
-                profile_path.display(),
-                error
-            )
-        })?;
-        temp_file.write_all(updated.as_bytes()).map_err(|error| {
-            format!(
-                "Failed to write shell config {}: {}",
-                profile_path.display(),
-                error
-            )
-        })?;
-        temp_file.sync_all().map_err(|error| {
-            format!(
-                "Failed to write shell config {}: {}",
-                profile_path.display(),
-                error
-            )
-        })?;
-    }
-    std::fs::rename(&temp_path, profile_path).map_err(|error| {
+    let mut existing = Vec::new();
+    file.read_to_end(&mut existing).map_err(|error| {
         format!(
-            "Failed to write shell config {}: {}",
+            "Failed to read shell config {}: {}",
             profile_path.display(),
             error
         )
     })?;
+
+    let Some(addition) =
+        install_cli_profile_block_addition(&String::from_utf8_lossy(&existing), START, block)
+    else {
+        return Ok(false);
+    };
+
+    let written = file
+        .write_all(addition.as_bytes())
+        .and_then(|()| file.sync_all());
+    if let Err(error) = written {
+        // Drop a partly written block, so the profile is not left with an
+        // unterminated `case` that a later install would also skip.
+        let _ = file.set_len(existing.len() as u64);
+        return Err(format!(
+            "Failed to write shell config {}: {}",
+            profile_path.display(),
+            error
+        ));
+    }
     Ok(true)
 }
 
@@ -369,25 +386,23 @@ fn resolve_profile_symlinks(path: &Path) -> PathBuf {
     path
 }
 
+/// The text to append to a profile holding `existing` so that it ends with
+/// `block`, or `None` when the block's `marker` is already there.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn append_install_cli_profile_block_if_missing(
-    existing: &str,
-    marker: &str,
-    block: &str,
-) -> Option<String> {
+fn install_cli_profile_block_addition(existing: &str, marker: &str, block: &str) -> Option<String> {
     if existing.contains(marker) {
         return None;
     }
 
-    let mut updated = existing.to_string();
-    if !updated.is_empty() && !updated.ends_with('\n') {
-        updated.push('\n');
+    let mut addition = String::new();
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        addition.push('\n');
     }
-    updated.push_str(block);
-    if !updated.ends_with('\n') {
-        updated.push('\n');
+    addition.push_str(block);
+    if !addition.ends_with('\n') {
+        addition.push('\n');
     }
-    Some(updated)
+    Some(addition)
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -933,412 +948,4 @@ fn cli_binary_candidates(exe_dir: &Path) -> Vec<PathBuf> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn install_cli_parse_shell_detects_supported_shells() {
-        assert_eq!(parse_install_cli_shell("/bin/zsh"), Some(InstallShell::Zsh));
-        assert_eq!(
-            parse_install_cli_shell("\"/bin/bash\""),
-            Some(InstallShell::Bash)
-        );
-        assert_eq!(
-            parse_install_cli_shell("/opt/homebrew/bin/fish"),
-            Some(InstallShell::Fish)
-        );
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn install_cli_resolve_shell_uses_source_order() {
-        assert_eq!(
-            resolve_install_cli_shell(Some("/bin/fish"), Some("/bin/zsh")).unwrap(),
-            InstallShell::Fish
-        );
-        assert_eq!(
-            resolve_install_cli_shell(Some("   "), Some("/bin/zsh")).unwrap(),
-            InstallShell::Zsh
-        );
-        assert_eq!(
-            resolve_install_cli_shell(None, Some("/bin/bash")).unwrap(),
-            InstallShell::Bash
-        );
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn install_cli_resolve_shell_errors_for_unsupported_configured_shell() {
-        let error = resolve_install_cli_shell(Some("/bin/tcsh"), Some("/bin/zsh")).unwrap_err();
-        assert!(error.contains("Unsupported shell '/bin/tcsh'"));
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn install_cli_resolve_shell_defaults_when_sources_missing() {
-        let shell = resolve_install_cli_shell(None, None).unwrap();
-        #[cfg(target_os = "macos")]
-        assert_eq!(shell, InstallShell::Zsh);
-        #[cfg(target_os = "linux")]
-        assert_eq!(shell, InstallShell::Bash);
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn install_cli_profile_relative_paths_match_shell() {
-        assert_eq!(
-            install_cli_profile_relative_path(InstallShell::Zsh),
-            ".zshrc"
-        );
-        assert_eq!(
-            install_cli_profile_relative_path(InstallShell::Fish),
-            ".config/fish/config.fish"
-        );
-        #[cfg(target_os = "macos")]
-        assert_eq!(
-            install_cli_profile_relative_path(InstallShell::Bash),
-            ".bash_profile"
-        );
-        #[cfg(target_os = "linux")]
-        assert_eq!(
-            install_cli_profile_relative_path(InstallShell::Bash),
-            ".bashrc"
-        );
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn install_cli_profile_append_is_idempotent() {
-        let marker = "# >>> termy cli path >>>";
-        let block = install_cli_profile_block(InstallShell::Zsh, "/tmp/bin");
-        let once = append_install_cli_profile_block_if_missing("", marker, &block).unwrap();
-        assert!(once.contains(marker));
-        assert!(append_install_cli_profile_block_if_missing(&once, marker, &block).is_none());
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn install_cli_profile_blocks_include_guarded_path_logic() {
-        let sh_block = install_cli_profile_block(InstallShell::Bash, "/tmp/bin");
-        assert!(sh_block.contains("case \":$PATH:\" in"));
-        assert!(sh_block.contains("export PATH=\"$TERMY_CLI_PATH:$PATH\""));
-
-        let fish_block = install_cli_profile_block(InstallShell::Fish, "/tmp/bin");
-        assert!(fish_block.contains("if not contains -- $termy_cli_path $PATH"));
-        assert!(fish_block.contains("set -gx PATH $termy_cli_path $PATH"));
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn install_cli_session_commands_match_shell_syntax() {
-        let sh_command = install_cli_session_command(InstallShell::Zsh, "/tmp/my bin");
-        assert!(sh_command.contains("TERMY_CLI_PATH='/tmp/my bin'"));
-        assert!(sh_command.contains("case \":$PATH:\" in"));
-
-        let fish_command = install_cli_session_command(InstallShell::Fish, "/tmp/my bin");
-        assert!(fish_command.contains("set -l termy_cli_path \"/tmp/my bin\""));
-        assert!(fish_command.contains("if not contains -- $termy_cli_path $PATH"));
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn install_cli_shell_value_escaping_handles_quotes() {
-        assert_eq!(single_quote_shell_value("a'b"), "'a'\\''b'");
-        assert_eq!(double_quote_fish_value("a\"b$c"), "\"a\\\"b\\$c\"");
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn install_cli_source_path_is_absolutized_for_relative_paths() {
-        let rel = Path::new("target/debug/termy-cli");
-        let abs = absolute_install_cli_source_path(rel).unwrap();
-        assert!(abs.is_absolute());
-        assert!(abs.ends_with(rel));
-    }
-
-    #[test]
-    fn cli_binary_candidates_are_relative_to_the_executable_only() {
-        let exe_suffix = std::env::consts::EXE_SUFFIX;
-        let root = std::env::temp_dir().join("termy-cli-candidates");
-
-        let installed = root.join("Termy.app").join("Contents").join("MacOS");
-        assert_eq!(
-            cli_binary_candidates(&installed),
-            vec![installed.join(format!("termy-cli{exe_suffix}"))]
-        );
-
-        let debug = root.join("target").join("debug");
-        let candidates = cli_binary_candidates(&debug);
-        assert_eq!(
-            candidates,
-            vec![
-                debug.join(format!("termy-cli{exe_suffix}")),
-                root.join("target")
-                    .join("release")
-                    .join(format!("termy-cli{exe_suffix}")),
-            ]
-        );
-        assert!(candidates.iter().all(|path| path.starts_with(&root)));
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn profile_update_writes_through_a_symlinked_profile() {
-        let home = TempDir::new().expect("home");
-        let dotfiles = home.path().join("dotfiles");
-        std::fs::create_dir_all(&dotfiles).expect("dotfiles");
-        let target = dotfiles.join("zshrc");
-        std::fs::write(&target, "export EDITOR=vi\n").expect("write target");
-        let profile = home.path().join(".zshrc");
-        std::os::unix::fs::symlink(Path::new("dotfiles").join("zshrc"), &profile).expect("symlink");
-
-        let block = install_cli_profile_block(InstallShell::Zsh, "/tmp/bin");
-        assert!(ensure_install_cli_profile_block(&profile, &block).expect("update profile"));
-
-        assert!(
-            std::fs::symlink_metadata(&profile)
-                .expect("profile metadata")
-                .file_type()
-                .is_symlink()
-        );
-        let contents = std::fs::read_to_string(&target).expect("read target");
-        assert!(contents.starts_with("export EDITOR=vi\n"));
-        assert!(contents.contains("# >>> termy cli path >>>"));
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn profile_update_creates_the_target_of_a_dangling_symlink() {
-        let home = TempDir::new().expect("home");
-        let target = home.path().join("dotfiles").join("zshrc");
-        let profile = home.path().join(".zshrc");
-        std::os::unix::fs::symlink(&target, &profile).expect("symlink");
-
-        let block = install_cli_profile_block(InstallShell::Zsh, "/tmp/bin");
-        assert!(ensure_install_cli_profile_block(&profile, &block).expect("update profile"));
-
-        assert!(
-            std::fs::read_to_string(&target)
-                .expect("read target")
-                .contains("# >>> termy cli path >>>")
-        );
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn unix_install_target_prefers_home_local_bin() {
-        let home = Path::new("/tmp/termy-home");
-        let (target, using_fallback) = resolve_install_cli_target_for_unix(Some(home));
-        assert_eq!(target, home.join(".local").join("bin").join("termy"));
-        assert!(!using_fallback);
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn unix_install_target_uses_system_fallback_without_home() {
-        let (target, using_fallback) = resolve_install_cli_target_for_unix(None);
-        assert_eq!(target, PathBuf::from("/usr/local/bin/termy"));
-        assert!(using_fallback);
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn explicit_source_install_stays_inside_supplied_home() {
-        let temp = TempDir::new().unwrap();
-        let source = temp.path().join("bundle").join("termy-cli");
-        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
-        std::fs::write(&source, b"cli").unwrap();
-        let home = temp.path().join("home");
-
-        let result = install_cli_from_source_for_home(&source, &home, Some("/bin/zsh"))
-            .expect("isolated install should succeed");
-
-        assert_eq!(result.install_path, home.join(".local/bin/termy"));
-        assert_eq!(std::fs::read_link(&result.install_path).unwrap(), source);
-        assert!(home.join(".zshrc").is_file());
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_install_target_uses_local_app_data() {
-        let base = Path::new("C:/Users/Test/AppData/Local");
-        let target = resolve_install_cli_target_for_windows(Some(base)).unwrap();
-        assert_eq!(target, base.join("Termy").join("bin").join("termy.exe"));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_install_target_missing_app_data_returns_none() {
-        assert!(resolve_install_cli_target_for_windows(None).is_none());
-    }
-
-    #[test]
-    fn windows_user_path_append_preserves_existing_value() {
-        assert_eq!(
-            windows_path_value_with_dir(Some(r"%USERPROFILE%\bin;C:\tools;"), r"C:\Termy\bin"),
-            Some(r"%USERPROFILE%\bin;C:\tools;C:\Termy\bin".to_string())
-        );
-        assert_eq!(
-            windows_path_value_with_dir(None, r"C:\Termy\bin"),
-            Some(r"C:\Termy\bin".to_string())
-        );
-        assert_eq!(
-            windows_path_value_with_dir(Some(""), r"C:\Termy\bin"),
-            Some(r"C:\Termy\bin".to_string())
-        );
-    }
-
-    #[test]
-    fn windows_user_path_append_dedupes_case_insensitively() {
-        for existing in [
-            r"C:\tools;c:\termy\BIN",
-            r"C:\Termy\bin\;C:\tools",
-            r#""C:\Termy\bin";C:\tools"#,
-            "C:/Termy/bin",
-        ] {
-            assert_eq!(
-                windows_path_value_with_dir(Some(existing), r"C:\Termy\bin"),
-                None,
-                "{existing}"
-            );
-        }
-    }
-
-    #[test]
-    fn windows_user_path_entries_match_after_env_expansion() {
-        let variable = std::env::vars().find(|(name, value)| {
-            !name.is_empty()
-                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                && value.chars().next().is_some_and(char::is_alphanumeric)
-                && !value.contains('%')
-        });
-        if let Some((name, value)) = variable {
-            assert_eq!(
-                expand_percent_env_vars(&format!("%{name}%\\bin")),
-                format!("{value}\\bin")
-            );
-            assert!(windows_path_entry_matches(&format!("%{name}%"), &value));
-        }
-        assert_eq!(
-            expand_percent_env_vars("%TERMY_SURELY_UNSET_VAR%\\bin"),
-            "%TERMY_SURELY_UNSET_VAR%\\bin"
-        );
-        assert_eq!(expand_percent_env_vars("100%"), "100%");
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_cli_copy_refreshes_only_when_bundled_cli_changes() {
-        let temp = TempDir::new().unwrap();
-        let source = temp.path().join("termy-cli.exe");
-        let target = temp.path().join("bin").join("termy.exe");
-        std::fs::write(&source, b"cli v1").unwrap();
-
-        install_windows_cli_copy(&source, &target).unwrap();
-        assert!(windows_cli_copy_is_current(&source, &target));
-        assert_eq!(std::fs::read(&target).unwrap(), b"cli v1");
-
-        std::fs::write(&source, b"cli v2 is longer").unwrap();
-        assert!(!windows_cli_copy_is_current(&source, &target));
-        install_windows_cli_copy(&source, &target).unwrap();
-        assert_eq!(std::fs::read(&target).unwrap(), b"cli v2 is longer");
-        assert!(!target.with_extension("exe.old").exists());
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_app_candidates_start_with_the_install_marker() {
-        let temp = TempDir::new().unwrap();
-        let app = temp.path().join("Termy").join("termy.exe");
-        std::fs::write(
-            temp.path().join(WINDOWS_APP_PATH_MARKER),
-            format!("{}\r\n", app.display()),
-        )
-        .unwrap();
-
-        let candidates = windows_app_binary_candidates(temp.path());
-        assert_eq!(candidates.first(), Some(&app));
-    }
-
-    #[test]
-    fn managed_target_binary_exists_detects_existing_file() {
-        let temp = TempDir::new().unwrap();
-        let file = temp.path().join("termy");
-        std::fs::write(&file, b"test").unwrap();
-        assert!(managed_target_binary_exists(&file));
-    }
-
-    #[test]
-    fn managed_target_binary_exists_reports_missing_path() {
-        let temp = TempDir::new().unwrap();
-        let missing = temp.path().join("missing");
-        assert!(!managed_target_binary_exists(&missing));
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn managed_target_binary_exists_treats_broken_symlink_as_missing() {
-        use std::os::unix::fs::symlink;
-
-        let temp = TempDir::new().unwrap();
-        let broken_link = temp.path().join("termy");
-        symlink(temp.path().join("does-not-exist"), &broken_link).unwrap();
-        assert!(!managed_target_binary_exists(&broken_link));
-    }
-
-    #[test]
-    fn managed_target_dir_in_path_requires_parent_directory() {
-        let temp = TempDir::new().unwrap();
-        let bin_dir = temp.path().join("bin");
-        let other_dir = temp.path().join("other");
-        std::fs::create_dir_all(&bin_dir).unwrap();
-        std::fs::create_dir_all(&other_dir).unwrap();
-
-        let target = bin_dir.join(format!("termy{}", std::env::consts::EXE_SUFFIX));
-        let path_env = std::env::join_paths([bin_dir.as_path()]).unwrap();
-        assert!(managed_target_dir_in_path(
-            &target,
-            Some(path_env.as_os_str())
-        ));
-
-        let other_path_env = std::env::join_paths([other_dir.as_path()]).unwrap();
-        assert!(!managed_target_dir_in_path(
-            &target,
-            Some(other_path_env.as_os_str())
-        ));
-        assert!(!managed_target_dir_in_path(&target, None));
-    }
-
-    #[test]
-    fn managed_target_dir_in_path_matches_after_canonicalization() {
-        let temp = TempDir::new().unwrap();
-        let bin_dir = temp.path().join("bin");
-        std::fs::create_dir_all(&bin_dir).unwrap();
-
-        let target = bin_dir.join(format!("termy{}", std::env::consts::EXE_SUFFIX));
-        let normalized_via_parent = bin_dir.join("..").join("bin");
-        let path_env = std::env::join_paths([normalized_via_parent]).unwrap();
-
-        assert!(managed_target_dir_in_path(
-            &target,
-            Some(path_env.as_os_str())
-        ));
-    }
-
-    #[test]
-    fn path_exists_or_symlink_detects_existing_file() {
-        let temp = TempDir::new().unwrap();
-        let file = temp.path().join("termy");
-        std::fs::write(&file, b"test").unwrap();
-        assert!(path_exists_or_symlink(&file));
-    }
-
-    #[test]
-    fn path_exists_or_symlink_reports_missing_path() {
-        let temp = TempDir::new().unwrap();
-        let missing = temp.path().join("missing");
-        assert!(!path_exists_or_symlink(&missing));
-    }
-}
+mod tests;

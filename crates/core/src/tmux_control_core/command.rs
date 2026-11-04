@@ -46,17 +46,37 @@ pub fn next_control_completion_token() -> String {
     format!("{CONTROL_COMPLETION_TOKEN_PREFIX}{id}")
 }
 
-pub fn command_with_completion_token(command: &str, completion_token: &str) -> String {
-    format!(
-        "{command} ; display-message -p {}",
-        quote_tmux_arg(completion_token)
-    )
+/// The bytes written to tmux for one control request: the caller's command
+/// line, then a separate line that prints `completion_token`.
+///
+/// The token is never appended to the command with `;`. tmux parses every
+/// control-mode line on its own and gives each command its own `%begin`/`%end`
+/// block, so nothing in the caller's text can stop the token line from running:
+/// not a `#` comment (including an unquoted `#{...}`), not an unterminated quote
+/// that tmux closes at the end of the line, not a parse error, and not a failing
+/// command that abandons the rest of its `;` list (all verified against tmux
+/// 3.4). A blank command is left out instead of being sent as an empty line,
+/// which would detach the control client.
+///
+/// `command` must not contain line breaks or NUL (see
+/// [`validate_tmux_control_arg`]); each request must be exactly these lines.
+pub fn control_request_lines(command: &str, completion_token: &str) -> String {
+    let token_line = control_completion_command(completion_token);
+    if command.trim().is_empty() {
+        format!("{token_line}\n")
+    } else {
+        format!("{command}\n{token_line}\n")
+    }
+}
+
+/// The control-mode command whose block holds only `completion_token`.
+pub fn control_completion_command(completion_token: &str) -> String {
+    format!("display-message -p {}", quote_tmux_arg(completion_token))
 }
 
 /// True when `output` is exactly a completion-token line from some request.
-/// A request that failed fast on an error can leave its token behind (a failing
-/// command nested in `if-shell` doesn't stop the outer list), and that stray
-/// block must not be mistaken for output of the next request.
+/// A token block that no longer belongs to a tracked request must not be
+/// mistaken for output of the next request.
 pub fn is_control_completion_token(output: &str) -> bool {
     output
         .strip_prefix(CONTROL_COMPLETION_TOKEN_PREFIX)
@@ -167,6 +187,47 @@ mod tests {
         ));
         assert!(!is_control_completion_token("__termy_cmd_done_12\nmore"));
         assert!(!is_control_completion_token("ok"));
+    }
+
+    #[test]
+    fn completion_command_prints_only_the_token() {
+        let token = next_control_completion_token();
+        // The token needs no quoting, so tmux prints it verbatim as the only
+        // output line of the completion block.
+        assert_eq!(
+            control_completion_command(&token),
+            format!("display-message -p {token}")
+        );
+        assert!(is_control_completion_token(&token));
+    }
+
+    #[test]
+    fn control_request_puts_completion_token_on_its_own_line() {
+        let token = "__termy_cmd_done_7";
+        // A trailing tmux comment or an unterminated quote consumes the rest
+        // of its line, so the token must never share the command's line.
+        for command in [
+            "display-message -p hi # note",
+            "display-message -p #{pane_id}",
+            "display-message -p 'unterminated",
+            "select-pane -t %999 ; display-message -p never-runs",
+        ] {
+            assert_eq!(
+                control_request_lines(command, token),
+                format!("{command}\ndisplay-message -p {token}\n")
+            );
+        }
+    }
+
+    #[test]
+    fn control_request_never_sends_an_empty_line() {
+        // An empty control-mode line detaches the client.
+        for command in ["", "   "] {
+            assert_eq!(
+                control_request_lines(command, "__termy_cmd_done_8"),
+                "display-message -p __termy_cmd_done_8\n"
+            );
+        }
     }
 
     #[test]

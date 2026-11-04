@@ -27,6 +27,45 @@ fn snapshot_preferred_cwd(snapshot: &TmuxSnapshot) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// Takes the pane `state` names out of `existing_panes`, moved to its new
+/// geometry with its terminal and render caches.
+fn reuse_tmux_pane(
+    existing_panes: &mut std::collections::HashMap<String, TerminalPane>,
+    state: &TmuxPaneState,
+) -> Option<TerminalPane> {
+    let mut pane = existing_panes.remove(&state.id)?;
+    pane.update_from_tmux_state(state);
+    Some(pane)
+}
+
+/// Whether `tabs` already show `snapshot`: it equals the one last applied,
+/// at the same cell size, and every window still has a tab with the same
+/// panes (nothing local replaced them since).
+fn tmux_snapshot_already_applied(
+    applied: Option<&(TmuxSnapshot, Option<Size<Pixels>>)>,
+    snapshot: &TmuxSnapshot,
+    cell_size: Option<Size<Pixels>>,
+    tabs: &[TerminalTab],
+) -> bool {
+    let Some((applied, applied_cell_size)) = applied else {
+        return false;
+    };
+    applied == snapshot
+        && *applied_cell_size == cell_size
+        && tabs.len() == snapshot.windows.len()
+        && snapshot.windows.iter().all(|window| {
+            tabs.iter().any(|tab| {
+                tab.window_id == window.id
+                    && tab.panes.len() == window.panes.len()
+                    && tab
+                        .panes
+                        .iter()
+                        .zip(&window.panes)
+                        .all(|(pane, state)| pane.id == state.id)
+            })
+        })
+}
+
 impl TmuxRuntime {
     fn merged_preferred_cwd(existing: Option<&str>, snapshot: &TmuxSnapshot) -> Option<String> {
         snapshot_preferred_cwd(snapshot).or_else(|| existing.map(ToOwned::to_owned))
@@ -84,12 +123,12 @@ impl TerminalView {
         }
     }
 
-    /// Capture every pane of `snapshot` that `existing_terminals` does not
+    /// Capture every pane of `snapshot` that `existing_panes` does not
     /// already hold, in one batch (see `TmuxClient::capture_panes`).
     fn capture_new_panes(
         tmux_client: &TmuxClient,
         snapshot: &TmuxSnapshot,
-        existing_terminals: &std::collections::HashMap<String, Terminal>,
+        existing_panes: &std::collections::HashMap<String, TerminalPane>,
         options: TerminalOptions,
     ) -> std::collections::HashMap<String, anyhow::Result<Vec<u8>>> {
         // Always rebuild panes from full tmux history and let terminal content
@@ -102,7 +141,7 @@ impl TerminalView {
             .windows
             .iter()
             .flat_map(|window| &window.panes)
-            .filter(|pane| !existing_terminals.contains_key(&pane.id))
+            .filter(|pane| !existing_panes.contains_key(&pane.id))
             .map(|pane| {
                 (
                     pane.id.as_str(),
@@ -190,12 +229,15 @@ impl TerminalView {
             .iter()
             .map(|tab| (tab.window_id.clone(), tab.pinned))
             .collect::<std::collections::HashMap<_, _>>();
-        let mut existing_terminals = std::collections::HashMap::<String, Terminal>::new();
+        // Panes tmux still has keep their render caches: rebuilding them from
+        // scratch made the next frame reshape every row and re-upload every
+        // kitty image, after each keystroke's title refresh.
+        let mut existing_panes = std::collections::HashMap::<String, TerminalPane>::new();
         let old_tabs = std::mem::take(&mut self.session.tabs);
         if reuse_existing_terminals {
             for mut tab in old_tabs {
                 for pane in tab.panes.drain(..) {
-                    existing_terminals.insert(pane.id, pane.terminal);
+                    existing_panes.insert(pane.id.clone(), pane);
                 }
             }
         }
@@ -213,36 +255,35 @@ impl TerminalView {
         let mut captures = Self::capture_new_panes(
             &self.tmux_runtime().client,
             &snapshot,
-            &existing_terminals,
+            &existing_panes,
             hydration_options,
         );
+        let cell_size = self.cached_cell_size_for_font_size(self.font_size);
         for window in &snapshot.windows {
             let mut panes = Vec::new();
             for pane_state in &window.panes {
-                let (terminal, degraded, hydration_error) =
-                    if let Some(existing) = existing_terminals.remove(&pane_state.id) {
-                        (existing, false, None)
-                    } else {
-                        let capture = captures.remove(&pane_state.id).unwrap_or_else(|| {
-                            Err(anyhow::anyhow!("pane {} appears twice", pane_state.id))
-                        });
-                        let (terminal, hydration_error) = Self::hydrate_pane_terminal(
-                            capture,
-                            pane_state,
-                            hydration_options,
-                            self.cached_cell_size_for_font_size(self.font_size),
-                        );
-                        (terminal, hydration_error.is_some(), hydration_error)
-                    };
+                let pane = if let Some(existing) = reuse_tmux_pane(&mut existing_panes, pane_state)
+                {
+                    existing
+                } else {
+                    let capture = captures.remove(&pane_state.id).unwrap_or_else(|| {
+                        Err(anyhow::anyhow!("pane {} appears twice", pane_state.id))
+                    });
+                    let (terminal, hydration_error) = Self::hydrate_pane_terminal(
+                        capture,
+                        pane_state,
+                        hydration_options,
+                        cell_size,
+                    );
+                    let degraded = hydration_error.is_some();
+                    if let Some(hydration_error) = hydration_error {
+                        hydration_failures.push(format!("{} ({hydration_error})", pane_state.id));
+                    }
+                    TerminalPane::from_tmux_state(pane_state, terminal, degraded)
+                };
 
-                if let Some(hydration_error) = hydration_error {
-                    hydration_failures.push(format!("{} ({hydration_error})", pane_state.id));
-                }
-
-                let next_size = Self::terminal_size_for_pane_state(
-                    pane_state,
-                    self.cached_cell_size_for_font_size(self.font_size),
-                );
+                let next_size = Self::terminal_size_for_pane_state(pane_state, cell_size);
+                let terminal = pane.terminal();
                 let current_size = terminal.size();
                 if current_size.cols != next_size.cols
                     || current_size.rows != next_size.rows
@@ -251,9 +292,7 @@ impl TerminalView {
                 {
                     terminal.resize(next_size);
                 }
-                panes.push(TerminalPane::from_tmux_state(
-                    pane_state, terminal, degraded,
-                ));
+                panes.push(pane);
             }
 
             let tab_id = previous_ids
@@ -346,14 +385,44 @@ impl TerminalView {
         if let Some(message) = tmux_hydration_warning_message(&hydration_failures) {
             crate::ui::toast::warning(message);
         }
+        if self.runtime_uses_tmux() {
+            self.tmux_runtime_mut().applied_snapshot = Some((snapshot, cell_size));
+        }
     }
 
     pub(in crate::terminal_view) fn apply_tmux_snapshot(&mut self, snapshot: TmuxSnapshot) {
         self.apply_tmux_snapshot_inner(snapshot, true);
     }
 
+    fn tmux_snapshot_is_applied(&self, snapshot: &TmuxSnapshot) -> bool {
+        tmux_snapshot_already_applied(
+            self.tmux_runtime().applied_snapshot.as_ref(),
+            snapshot,
+            self.cached_cell_size_for_font_size(self.font_size),
+            &self.session.tabs,
+        )
+    }
+
     pub(in crate::terminal_view) fn refresh_tmux_snapshot(&mut self) -> bool {
         match self.tmux_runtime().client.refresh_snapshot() {
+            Ok(snapshot) => {
+                self.apply_tmux_snapshot(snapshot);
+                true
+            }
+            Err(error) => {
+                crate::ui::toast::error(format!("tmux sync failed: {error}"));
+                false
+            }
+        }
+    }
+
+    /// The refresh tmux notifications and output ask for. Output in the
+    /// active pane schedules one after every keystroke, and most find
+    /// nothing new: those leave the tabs as they are. Returns whether the
+    /// tabs changed.
+    pub(in crate::terminal_view) fn refresh_tmux_snapshot_if_changed(&mut self) -> bool {
+        match self.tmux_runtime().client.refresh_snapshot() {
+            Ok(snapshot) if self.tmux_snapshot_is_applied(&snapshot) => false,
             Ok(snapshot) => {
                 self.apply_tmux_snapshot(snapshot);
                 true
@@ -501,6 +570,129 @@ mod tests {
             current_path: path.to_string(),
             current_command: String::new(),
         }
+    }
+
+    fn one_window_snapshot(panes: Vec<TmuxPaneState>) -> TmuxSnapshot {
+        TmuxSnapshot {
+            session_name: "one".to_string(),
+            session_id: Some("$1".to_string()),
+            windows: vec![TmuxWindowState {
+                id: "@1".to_string(),
+                name: "one".to_string(),
+                index: 0,
+                layout: "layout".to_string(),
+                is_active: true,
+                active_pane_id: panes.first().map(|pane| pane.id.clone()),
+                automatic_rename: true,
+                panes,
+            }],
+        }
+    }
+
+    fn tmux_pane(state: &TmuxPaneState) -> TerminalPane {
+        let size = TerminalView::terminal_size_for_pane_state(state, None);
+        TerminalPane::from_tmux_state(
+            state,
+            Terminal::new_tmux(size, TerminalOptions::default()),
+            false,
+        )
+    }
+
+    #[test]
+    fn kept_tmux_pane_keeps_its_render_cache_and_takes_the_new_geometry() {
+        let before = pane_state(80, 24);
+        let mut pane = tmux_pane(&before);
+        pane.render_cache.borrow_mut().cols = 80;
+        pane.render_cache.borrow_mut().persisted_buffer = Some((7, None));
+        pane.last_alternate_screen.set(true);
+        pane.pane_zoom_steps = 2;
+        pane.degraded = true;
+        let mut existing = std::collections::HashMap::from([(before.id, pane)]);
+
+        let gone = pane_state_with_path("%9", "/", true);
+        assert!(reuse_tmux_pane(&mut existing, &gone).is_none());
+
+        let mut after = pane_state(40, 24);
+        after.left = 41;
+        after.mouse_mode.sgr = true;
+        let pane = reuse_tmux_pane(&mut existing, &after).expect("tmux still has %1");
+        assert!(existing.is_empty());
+        assert_eq!(
+            (pane.left, pane.top, pane.width, pane.height),
+            (41, 0, 40, 24)
+        );
+        assert_eq!(pane.tmux_mouse_mode, Some(after.mouse_mode));
+        assert!(!pane.degraded);
+        let cache = pane.render_cache.borrow();
+        assert_eq!(cache.cols, 80);
+        assert_eq!(cache.persisted_buffer, Some((7, None)));
+        assert!(pane.last_alternate_screen.get());
+        assert_eq!(pane.pane_zoom_steps, 2);
+        assert_eq!(pane.cached_element_ids.pane.as_ref(), "pane-%1");
+    }
+
+    #[test]
+    fn unchanged_tmux_snapshot_is_recognized_as_applied() {
+        let state = pane_state(80, 24);
+        let snapshot = one_window_snapshot(vec![state.clone()]);
+        let tabs = vec![TerminalTab::from_tmux_window(
+            1,
+            &snapshot.windows[0],
+            vec![tmux_pane(&state)],
+        )];
+        let cell_size = Some(Size {
+            width: px(9.0),
+            height: px(18.0),
+        });
+        let applied = (snapshot.clone(), cell_size);
+        assert!(tmux_snapshot_already_applied(
+            Some(&applied),
+            &snapshot,
+            cell_size,
+            &tabs
+        ));
+
+        // Nothing applied yet, a new font size, or new tmux state.
+        assert!(!tmux_snapshot_already_applied(
+            None, &snapshot, cell_size, &tabs
+        ));
+        let larger = Some(Size {
+            width: px(10.0),
+            height: px(20.0),
+        });
+        assert!(!tmux_snapshot_already_applied(
+            Some(&applied),
+            &snapshot,
+            larger,
+            &tabs
+        ));
+        let mut command_started = snapshot.clone();
+        command_started.windows[0].panes[0].current_command = "vim".to_string();
+        assert!(!tmux_snapshot_already_applied(
+            Some(&applied),
+            &command_started,
+            cell_size,
+            &tabs
+        ));
+        // The tabs no longer show it.
+        assert!(!tmux_snapshot_already_applied(
+            Some(&applied),
+            &snapshot,
+            cell_size,
+            &[]
+        ));
+        let other_pane = pane_state_with_path("%2", "/", true);
+        let other_tabs = vec![TerminalTab::from_tmux_window(
+            1,
+            &snapshot.windows[0],
+            vec![tmux_pane(&other_pane)],
+        )];
+        assert!(!tmux_snapshot_already_applied(
+            Some(&applied),
+            &snapshot,
+            cell_size,
+            &other_tabs
+        ));
     }
 
     #[test]

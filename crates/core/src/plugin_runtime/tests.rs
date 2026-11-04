@@ -1406,6 +1406,243 @@ fn plugin_secret_accounts_are_injective_and_legacy_migration_is_unambiguous() {
     );
 }
 
+/// A runtime whose catalog declares secret settings for `plugin_id`, without
+/// loading the plugin in Bun.
+fn runtime_with_secret_settings(
+    temp: &TempDir,
+    plugin_id: &str,
+    keys: &[&str],
+) -> (PluginRuntime, PathBuf) {
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    write_plugin(
+        &temp.path().join("plugins"),
+        plugin_id,
+        "Secrets",
+        "export default definePlugin({});",
+    );
+    let runtime = PluginRuntime::new(Some(&config_path));
+    declare_secret_settings(&runtime, plugin_id, keys);
+    (runtime, config_path)
+}
+
+fn declare_secret_settings(runtime: &PluginRuntime, plugin_id: &str, keys: &[&str]) {
+    runtime
+        .inner
+        .catalog
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .settings
+        .insert(
+            plugin_id.to_string(),
+            keys.iter()
+                .map(|key| PluginSetting::Secret {
+                    id: (*key).to_string(),
+                    title: (*key).to_string(),
+                    description: None,
+                    placeholder: None,
+                    max_length: default_setting_max_length(),
+                })
+                .collect(),
+        );
+}
+
+fn resolved_secret(runtime: &PluginRuntime, plugin_id: &str, key: &str) -> Option<Value> {
+    runtime
+        .resolved_plugin_settings(plugin_id)
+        .expect("resolve plugin settings")
+        .remove(key)
+}
+
+#[test]
+fn plugin_secrets_are_read_from_the_credential_store_once_until_they_change() {
+    let temp = TempDir::new().expect("temp dir");
+    let plugin = "secret-cache";
+    let (runtime, _) = runtime_with_secret_settings(&temp, plugin, &["token"]);
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("first".to_string()))
+        .expect("save secret");
+    let reads = test_plugin_secret_reads(plugin, "token");
+
+    for _ in 0..3 {
+        assert_eq!(
+            resolved_secret(&runtime, plugin, "token"),
+            Some(Value::String("first".to_string()))
+        );
+    }
+    let snapshot = runtime.plugin_settings_snapshot();
+    assert!(snapshot.errors.is_empty(), "errors: {:?}", snapshot.errors);
+    assert!(snapshot.plugins[plugin][0].configured);
+    assert_eq!(
+        test_plugin_secret_reads(plugin, "token"),
+        reads + 1,
+        "repeated requests and the Settings snapshot share one credential-store read"
+    );
+
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("second".to_string()))
+        .expect("change secret");
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("second".to_string()))
+    );
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("second".to_string()))
+    );
+    assert_eq!(test_plugin_secret_reads(plugin, "token"), reads + 2);
+
+    runtime
+        .reset_plugin_setting(plugin, "token")
+        .expect("reset secret");
+    assert_eq!(resolved_secret(&runtime, plugin, "token"), None);
+    assert!(!runtime.plugin_settings_snapshot().plugins[plugin][0].configured);
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("third".to_string()))
+        .expect("save secret again");
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("third".to_string()))
+    );
+
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String(String::new()))
+        .expect("clear secret");
+    assert_eq!(resolved_secret(&runtime, plugin, "token"), None);
+}
+
+#[test]
+fn missing_plugin_secrets_are_remembered_until_saved() {
+    let temp = TempDir::new().expect("temp dir");
+    let plugin = "secret-negative";
+    let (runtime, _) = runtime_with_secret_settings(&temp, plugin, &["token"]);
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("lost".to_string()))
+        .expect("save secret");
+    // The settings file still lists the secret, but the credential store lost
+    // it (for example, the user removed it from their keychain).
+    TEST_PLUGIN_SECRETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&plugin_secret_account(plugin, "token"));
+
+    assert_eq!(resolved_secret(&runtime, plugin, "token"), None);
+    let reads = test_plugin_secret_reads(plugin, "token");
+    for _ in 0..3 {
+        assert_eq!(resolved_secret(&runtime, plugin, "token"), None);
+    }
+    assert!(!runtime.plugin_settings_snapshot().plugins[plugin][0].configured);
+    assert_eq!(
+        test_plugin_secret_reads(plugin, "token"),
+        reads,
+        "a missing secret is not looked up again on every request"
+    );
+
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("found".to_string()))
+        .expect("save secret again");
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("found".to_string()))
+    );
+}
+
+#[test]
+fn plugin_secret_changes_reach_other_runtimes() {
+    let temp = TempDir::new().expect("temp dir");
+    let plugin = "secret-shared";
+    let (terminal, config_path) = runtime_with_secret_settings(&temp, plugin, &["token"]);
+    // Settings and each terminal window have their own runtime.
+    let settings = PluginRuntime::new(Some(&config_path));
+    declare_secret_settings(&settings, plugin, &["token"]);
+
+    settings
+        .set_plugin_setting(plugin, "token", Value::String("first".to_string()))
+        .expect("save secret");
+    assert_eq!(
+        resolved_secret(&terminal, plugin, "token"),
+        Some(Value::String("first".to_string()))
+    );
+    settings
+        .set_plugin_setting(plugin, "token", Value::String("second".to_string()))
+        .expect("change secret");
+    assert_eq!(
+        resolved_secret(&terminal, plugin, "token"),
+        Some(Value::String("second".to_string())),
+        "a secret changed in another runtime must not be served from the cache"
+    );
+    settings
+        .reset_plugin_setting(plugin, "token")
+        .expect("reset secret");
+    assert_eq!(resolved_secret(&terminal, plugin, "token"), None);
+}
+
+#[test]
+fn managing_a_plugin_drops_its_cached_secrets() {
+    let temp = TempDir::new().expect("temp dir");
+    let plugin = "secret-managed";
+    let (runtime, _) = runtime_with_secret_settings(&temp, plugin, &["token"]);
+    runtime
+        .set_plugin_setting(plugin, "token", Value::String("kept".to_string()))
+        .expect("save secret");
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("kept".to_string()))
+    );
+    let reads = test_plugin_secret_reads(plugin, "token");
+
+    runtime
+        .set_plugin_enabled(plugin, false)
+        .expect("disable plugin");
+    assert!(
+        runtime
+            .inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .is_empty(),
+        "a disabled plugin's secrets leave memory"
+    );
+    runtime
+        .set_plugin_enabled(plugin, true)
+        .expect("enable plugin");
+    declare_secret_settings(&runtime, plugin, &["token"]);
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(Value::String("kept".to_string()))
+    );
+    assert_eq!(test_plugin_secret_reads(plugin, "token"), reads + 1);
+
+    runtime.uninstall_plugin(plugin).expect("uninstall plugin");
+    assert!(
+        !TEST_PLUGIN_SECRETS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&plugin_secret_account(plugin, "token"))
+    );
+    assert!(
+        runtime
+            .inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .is_empty()
+    );
+    write_plugin(
+        &temp.path().join("plugins"),
+        plugin,
+        "Secrets",
+        "export default definePlugin({});",
+    );
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        None,
+        "a reinstalled plugin doesn't see the uninstalled plugin's secret"
+    );
+}
+
 #[test]
 fn plugin_command_placements_default_and_validate() {
     if !bun_is_available() {
@@ -1495,8 +1732,13 @@ fn invalid_disabled_marker_is_reported_and_not_loaded() {
             .as_deref()
             .is_some_and(|error| error.contains("invalid .termy-disabled marker"))
     );
-    let error = discover_plugins(&plugins).expect_err("invalid marker must block loading");
-    assert!(error.contains("invalid .termy-disabled marker"));
+    let discovered = discover_plugins(&plugins).expect("discover plugins");
+    assert!(
+        discovered.sources.is_empty(),
+        "invalid marker must block loading"
+    );
+    assert_eq!(discovered.errors.len(), 1);
+    assert!(discovered.errors[0].contains("invalid .termy-disabled marker"));
 }
 
 #[cfg(unix)]
@@ -1516,8 +1758,14 @@ fn discovery_rejects_symlinked_plugin_sources() {
     fs::write(&outside, "export const value = 1;").expect("write symlink target");
     symlink(&outside, plugin_dir.join("helper.ts")).expect("create source symlink");
 
-    let error = discover_plugins(&plugins).expect_err("symlink must be rejected");
-    assert!(error.contains("symlink"), "unexpected error: {error}");
+    let discovered = discover_plugins(&plugins).expect("discover plugins");
+    assert!(discovered.sources.is_empty(), "symlink must be rejected");
+    assert_eq!(discovered.errors.len(), 1);
+    assert!(
+        discovered.errors[0].contains("symlink"),
+        "unexpected errors: {:?}",
+        discovered.errors
+    );
 }
 
 #[cfg(unix)]
@@ -1537,8 +1785,168 @@ fn discovery_rejects_symlinked_plugin_roots() {
     fs::create_dir_all(&plugins).expect("create plugins directory");
     symlink(external, plugins.join("linked")).expect("create plugin root symlink");
 
-    let error = discover_plugins(&plugins).expect_err("plugin root symlink must be rejected");
-    assert!(error.contains("symlink"), "unexpected error: {error}");
+    let discovered = discover_plugins(&plugins).expect("discover plugins");
+    assert!(
+        discovered.sources.is_empty(),
+        "plugin root symlink must be rejected"
+    );
+    assert_eq!(discovered.errors.len(), 1);
+    assert!(
+        discovered.errors[0].contains("symlink"),
+        "unexpected errors: {:?}",
+        discovered.errors
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn discovery_skips_only_the_broken_plugins() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new().expect("temp dir");
+    let plugins = temp.path().join("plugins");
+    for id in ["good-a", "good-z"] {
+        write_plugin(&plugins, id, id, "export default { commands: [] };");
+    }
+    let external = write_plugin(
+        &temp.path().join("external-plugins"),
+        "linked-root",
+        "Linked root",
+        "export default { commands: [] };",
+    );
+    symlink(external, plugins.join("linked-root")).expect("create plugin root symlink");
+    write_plugin(
+        &plugins,
+        "Bad_Name",
+        "Bad name",
+        "export default { commands: [] };",
+    );
+    let linked_file = write_plugin(
+        &plugins,
+        "linked-file",
+        "Linked file",
+        "export default { commands: [] };",
+    );
+    let outside = temp.path().join("outside.ts");
+    fs::write(&outside, "export const value = 1;").expect("write symlink target");
+    symlink(&outside, linked_file.join("helper.ts")).expect("create source symlink");
+    let bad_marker = write_plugin(
+        &plugins,
+        "bad-marker",
+        "Bad marker",
+        "export default { commands: [] };",
+    );
+    symlink(&outside, bad_marker.join(DISABLED_MARKER)).expect("create marker symlink");
+    let oversized = write_plugin(
+        &plugins,
+        "oversized",
+        "Oversized",
+        "export default { commands: [] };",
+    );
+    fs::File::create(oversized.join("blob.bin"))
+        .and_then(|file| file.set_len(MAX_PLUGIN_SOURCE_BYTES + 1))
+        .expect("create oversized file");
+
+    let discovered = discover_plugins(&plugins).expect("one broken plugin must not fail discovery");
+    assert_eq!(
+        discovered
+            .sources
+            .iter()
+            .map(|source| source.id.as_str())
+            .collect::<Vec<_>>(),
+        ["good-a", "good-z"]
+    );
+    let errors = &discovered.errors;
+    assert_eq!(errors.len(), 5, "errors: {errors:?}");
+    for expected in [
+        "Invalid plugin directory ID `Bad_Name`",
+        "invalid .termy-disabled marker",
+        "unsupported file or symlink",
+        "cannot be a symlink",
+        "16 MiB source-tree limit",
+    ] {
+        assert!(
+            errors.iter().any(|error| error.contains(expected)),
+            "missing `{expected}` in {errors:?}"
+        );
+    }
+
+    // Settings reports every plugin discovery skipped, with the same message.
+    let inventory = inventory_plugins(&plugins).expect("inventory plugins");
+    let mut reported = inventory.errors.clone();
+    for plugin in &inventory.plugins {
+        let skipped = !discovered
+            .sources
+            .iter()
+            .any(|source| source.id == plugin.id);
+        assert_eq!(
+            plugin.error.is_some(),
+            skipped,
+            "inventory disagrees with discovery about `{}`: {:?}",
+            plugin.id,
+            plugin.error
+        );
+        reported.extend(plugin.error.clone());
+    }
+    reported.sort();
+    let mut expected = errors.clone();
+    expected.sort();
+    assert_eq!(reported, expected);
+}
+
+#[cfg(unix)]
+#[test]
+fn refresh_loads_good_plugins_beside_a_broken_one() {
+    use std::os::unix::fs::symlink;
+
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugins = temp.path().join("plugins");
+    write_plugin(
+        &plugins,
+        "good",
+        "Good",
+        r#"export default definePlugin({
+  commands: [{ id: "hello", title: "Hello", run() {} }],
+});"#,
+    );
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.errors.is_empty(), "errors: {:?}", refresh.errors);
+
+    // Breaking another plugin leaves the loaded sources unchanged, yet the
+    // refresh must still notice and report it.
+    let broken = write_plugin(
+        &plugins,
+        "broken",
+        "Broken",
+        "export default definePlugin({ commands: [] });",
+    );
+    let outside = temp.path().join("outside.ts");
+    fs::write(&outside, "export const value = 1;").expect("write symlink target");
+    symlink(&outside, broken.join("helper.ts")).expect("create source symlink");
+
+    for _ in 0..2 {
+        let refresh = runtime.refresh_if_changed();
+        assert_eq!(refresh.errors.len(), 1, "errors: {:?}", refresh.errors);
+        assert!(
+            refresh.errors[0].contains("unsupported file or symlink"),
+            "errors: {:?}",
+            refresh.errors
+        );
+        assert_eq!(
+            runtime
+                .commands()
+                .iter()
+                .map(PluginCommand::qualified_id)
+                .collect::<Vec<_>>(),
+            ["good.hello"]
+        );
+    }
 }
 
 #[test]
@@ -1606,6 +2014,159 @@ fn protocol_handshake_honors_its_absolute_deadline() {
 }
 
 #[test]
+fn catalog_validation_tells_apart_plugins_whose_qualified_ids_match() {
+    let command = |plugin_id: &str, id: &str| -> PluginCommand {
+        serde_json::from_value(json!({
+            "pluginId": plugin_id,
+            "pluginName": plugin_id,
+            "id": id,
+            "title": id,
+        }))
+        .expect("decode command")
+    };
+    let view = |plugin_id: &str, id: &str| -> PluginViewDescriptor {
+        serde_json::from_value(json!({
+            "pluginId": plugin_id,
+            "pluginName": plugin_id,
+            "id": id,
+            "title": id,
+        }))
+        .expect("decode view")
+    };
+
+    let commands = [
+        command("git", "tools.status"),
+        command("git.tools", "status"),
+    ];
+    assert_eq!(commands[0].qualified_id(), commands[1].qualified_id());
+    validate_commands(&commands).expect("different plugins' commands are distinct");
+    validate_views(&[view("git", "tools.panel"), view("git.tools", "panel")])
+        .expect("different plugins' views are distinct");
+
+    let error = validate_commands(&[command("git", "status"), command("git", "status")])
+        .expect_err("a plugin can't repeat a command ID");
+    assert!(error.contains("Duplicate plugin command"), "{error}");
+    let error = validate_views(&[view("git", "panel"), view("git", "panel")])
+        .expect_err("a plugin can't repeat a view ID");
+    assert!(error.contains("Duplicate plugin view"), "{error}");
+}
+
+#[test]
+fn refresh_loads_plugins_whose_qualified_ids_collide() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugins = temp.path().join("plugins");
+    for (plugin_id, command_id, view_id) in [
+        ("git", "tools.status", "tools.panel"),
+        ("git.tools", "status", "panel"),
+    ] {
+        let plugin_dir = write_plugin(
+            &plugins,
+            plugin_id,
+            plugin_id,
+            &format!(
+                r#"export default definePlugin({{
+  commands: [{{
+    id: "{command_id}",
+    title: "Status",
+    run() {{ return {{ type: "toast", level: "info", message: "from {plugin_id}" }}; }},
+  }}],
+  views: {{
+    "{view_id}": {{
+      title: "Panel",
+      render() {{ return TermyUI.createElement(TermyUI.EmptyState, {{ title: "{plugin_id}" }}); }},
+    }},
+  }},
+}});"#
+            ),
+        );
+        fs::write(
+            plugin_dir.join("plugin.json"),
+            format!(
+                r#"{{"apiVersion":1,"id":"{plugin_id}","name":"{plugin_id}","capabilities":["native-ui"]}}"#
+            ),
+        )
+        .expect("declare native UI capability");
+    }
+
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.errors.is_empty(), "errors: {:?}", refresh.errors);
+    assert_eq!(runtime.commands().len(), 2);
+    assert_eq!(runtime.views().len(), 2);
+    for (plugin_id, command_id, view_id) in [
+        ("git", "tools.status", "tools.panel"),
+        ("git.tools", "status", "panel"),
+    ] {
+        let (command, revision) = runtime
+            .command_with_revision(plugin_id, command_id)
+            .expect("command is registered");
+        assert_eq!(command.qualified_id(), "git.tools.status");
+        let actions = runtime
+            .invoke(
+                plugin_id,
+                command_id,
+                &revision,
+                BTreeMap::new(),
+                test_plugin_context(),
+            )
+            .expect("invoke command");
+        assert_eq!(
+            actions,
+            [PluginAction::Toast {
+                level: PluginToastLevel::Info,
+                message: format!("from {plugin_id}"),
+            }]
+        );
+        let (view, _) = runtime
+            .view_with_revision(plugin_id, view_id)
+            .expect("view is registered");
+        assert_eq!(view.plugin_name, plugin_id);
+    }
+}
+
+#[test]
+fn refresh_leaves_out_only_plugins_past_the_catalog_command_limit() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugins = temp.path().join("plugins");
+    for (plugin_id, count) in [("a-many", 300), ("b-many", 300), ("c-few", 1)] {
+        write_plugin(
+            &plugins,
+            plugin_id,
+            plugin_id,
+            &format!(
+                r#"export default definePlugin({{
+  commands: Array.from({{ length: {count} }}, (_, index) => ({{
+    id: `command-${{index}}`,
+    title: `Command ${{index}}`,
+    run() {{}},
+  }})),
+}});"#
+            ),
+        );
+    }
+
+    let runtime = PluginRuntime::new(Some(&config_path));
+    for _ in 0..2 {
+        let refresh = runtime.refresh_if_changed();
+        assert_eq!(refresh.errors, [plugin_command_limit_error("b-many")]);
+        let commands = runtime.commands();
+        assert_eq!(commands.len(), 301);
+        assert!(commands.iter().all(|command| command.plugin_id != "b-many"));
+        assert!(commands.iter().any(|command| command.plugin_id == "c-few"));
+    }
+}
+
+#[test]
 fn discovery_caps_plugin_count_before_starting_workers() {
     let temp = TempDir::new().expect("temp dir");
     let plugins = temp.path().join("plugins");
@@ -1618,8 +2179,31 @@ fn discovery_caps_plugin_count_before_starting_workers() {
         );
     }
 
-    let error = discover_plugins(&plugins).expect_err("plugin count must be capped");
-    assert!(error.contains("maximum is 32"), "unexpected error: {error}");
+    let discovered = discover_plugins(&plugins).expect("discover plugins");
+    assert_eq!(discovered.sources.len(), MAX_INSTALLED_PLUGINS);
+    assert!(
+        discovered
+            .sources
+            .iter()
+            .all(|source| source.id != format!("plugin-{MAX_INSTALLED_PLUGINS:02}")),
+        "the plugin past the limit, in ID order, must be left out"
+    );
+    assert_eq!(
+        discovered.errors,
+        [plugin_limit_error(&format!(
+            "plugin-{MAX_INSTALLED_PLUGINS:02}"
+        ))]
+    );
+    assert!(discovered.errors[0].contains("maximum is 32"));
+
+    let inventory = inventory_plugins(&plugins).expect("inventory plugins");
+    assert!(
+        inventory
+            .plugins
+            .iter()
+            .all(|plugin| plugin.error.is_none())
+    );
+    assert_eq!(inventory.errors, discovered.errors);
 }
 
 #[test]

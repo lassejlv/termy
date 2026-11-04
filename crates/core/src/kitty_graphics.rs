@@ -41,6 +41,7 @@ const MAX_CONTROL_FIELDS: usize = 64;
 const MAX_DIMENSION: u32 = 32_768;
 const MAX_PIXELS: u64 = (MAX_IMAGE_BYTES / 4) as u64;
 const MAX_PLACEMENTS: usize = 4_096;
+const MAX_IMAGES: usize = 4_096;
 
 /// Decodes payloads as leniently as kitty does: padding is optional and the
 /// unused bits of a final symbol are ignored. chafa encodes every chunk on its
@@ -178,6 +179,27 @@ enum ResolvedOrigin {
     Viewport { row: i64, col: i64 },
 }
 
+/// The screen a command runs on and where its rows are: the program's
+/// viewport, whose images quota eviction spares while it can.
+#[derive(Clone, Copy, Debug)]
+struct Viewport {
+    screen: KittyGraphicsScreen,
+    history_size: usize,
+    rows: u16,
+    cols: u16,
+}
+
+impl Viewport {
+    fn new(screen: KittyGraphicsScreen, history_size: usize, size: TerminalSize) -> Self {
+        Self {
+            screen,
+            history_size,
+            rows: size.rows,
+            cols: size.cols,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PendingUpload {
     command: KittyGraphicsCommand,
@@ -282,9 +304,14 @@ pub struct KittyGraphicsApplyResult {
 #[derive(Default)]
 pub struct KittyGraphicsState {
     images: HashMap<u32, StoredImage>,
-    placements: Vec<Placement>,
+    // Oldest first: the cap evicts from the front, and `Q=0` selects an
+    // image's oldest placement.
+    placements: VecDeque<Placement>,
     // Maintained on insertion/removal so ordinary text feeds never scan images.
     virtual_placements: [usize; 2],
+    // Likewise, so evicting a placement only looks for orphans when some
+    // placement is relative.
+    relative_placements: usize,
     insertion_order: VecDeque<u32>,
     pending: Option<PendingUpload>,
     next_anonymous_id: u32,
@@ -375,6 +402,7 @@ impl KittyGraphicsState {
     ) -> KittyGraphicsApplyResult {
         let (cursor_col, cursor_row) = cursor;
         self.viewport_rows = size.rows;
+        let viewport = Viewport::new(screen, history_size, size);
         log::debug!(
             "kitty graphics command: a={:?} i={:?} p={:?} q={:?} m={:?} f={:?} t={:?} s={:?} v={:?} c={:?} r={:?} payload={}B cursor=({cursor_col},{cursor_row}) screen={screen:?}",
             command.char_value('a'),
@@ -422,7 +450,7 @@ impl KittyGraphicsState {
             // says. A reply the client doesn't read lands at its prompt.
             let mut result = if matches!(command.char_value('d'), Some('f' | 'F')) {
                 self.pending = None;
-                match self.edit_animation(&command, None) {
+                match self.edit_animation(&command, None, viewport) {
                     Ok(_) => self.success(&command, true, None, screen),
                     Err(error) => self.failure(&command, &error),
                 }
@@ -440,7 +468,7 @@ impl KittyGraphicsState {
             return result;
         }
         if matches!(action, 'a' | 'c') {
-            return match self.edit_animation(&command, None) {
+            return match self.edit_animation(&command, None, viewport) {
                 Ok(id) => {
                     if command.u32_value('I').is_some() {
                         command.control.push(('i', id.to_string()));
@@ -757,6 +785,7 @@ impl KittyGraphicsState {
         let changed = !self.placements.is_empty() || self.pending.is_some();
         self.placements.clear();
         self.virtual_placements = [0; 2];
+        self.relative_placements = 0;
         self.pending = None;
         self.release_unplaced_anonymous_images();
         changed
@@ -1005,6 +1034,7 @@ impl KittyGraphicsState {
             screen,
         } = prepared;
         self.viewport_rows = size.rows;
+        let viewport = Viewport::new(screen, history_size, size);
         let (image, width, height) = match image {
             Ok(image) => image,
             Err(error) => return self.failure(&command, &error),
@@ -1020,7 +1050,7 @@ impl KittyGraphicsState {
         }
 
         if command.char_value('a') == Some('f') {
-            return match self.edit_animation(&command, Some(image)) {
+            return match self.edit_animation(&command, Some(image), viewport) {
                 Ok(id) => {
                     if command.u32_value('I').is_some() {
                         command.control.push(('i', id.to_string()));
@@ -1055,7 +1085,8 @@ impl KittyGraphicsState {
             animation: None,
         };
         let byte_len = image.byte_len();
-        let Some(evictions) = self.quota_evictions_for_replacement(image_id, byte_len) else {
+        let Some(evictions) = self.quota_evictions_for_replacement(image_id, byte_len, viewport)
+        else {
             return self.failure(&command, "ENOSPC:image storage quota exceeded");
         };
         let staged = if command.char_value('a') == Some('T') {
@@ -1164,167 +1195,6 @@ impl KittyGraphicsState {
         Ok(advance)
     }
 
-    fn placement_for_image(
-        &self,
-        image: &StoredImage,
-        image_id: u32,
-        command: &KittyGraphicsCommand,
-        cursor: (usize, usize),
-        history_size: usize,
-        size: TerminalSize,
-        screen: KittyGraphicsScreen,
-    ) -> Result<(Placement, Option<(u32, u32)>), String> {
-        let (cursor_col, cursor_row) = cursor;
-        let source_x = command.u32_value('x').unwrap_or(0).min(image.width);
-        let source_y = command.u32_value('y').unwrap_or(0).min(image.height);
-        let source_width = command
-            .u32_value('w')
-            .filter(|value| *value > 0)
-            .unwrap_or(image.width.saturating_sub(source_x))
-            .min(image.width.saturating_sub(source_x));
-        let source_height = command
-            .u32_value('h')
-            .filter(|value| *value > 0)
-            .unwrap_or(image.height.saturating_sub(source_y))
-            .min(image.height.saturating_sub(source_y));
-        if source_width == 0 || source_height == 0 {
-            return Err("EINVAL:empty source rectangle".into());
-        }
-
-        let cell_width = size.cell_width.max(1.0);
-        let cell_height = size.cell_height.max(1.0);
-        let display_cols = command.u32_value('c').filter(|value| *value > 0);
-        let display_rows = command.u32_value('r').filter(|value| *value > 0);
-        let virtual_placement = command.u32_value('U').unwrap_or(0) == 1;
-        let x_offset = (if virtual_placement {
-            0
-        } else {
-            command.u32_value('X').unwrap_or(0)
-        })
-        .min((cell_width.ceil() as u32).saturating_sub(1));
-        let y_offset = (if virtual_placement {
-            0
-        } else {
-            command.u32_value('Y').unwrap_or(0)
-        })
-        .min((cell_height.ceil() as u32).saturating_sub(1));
-        let mut placed_source_width = source_width;
-        if display_cols.is_none()
-            && display_rows.is_none()
-            && !virtual_placement
-            && command.value('P').is_none()
-        {
-            let available = (usize::from(size.cols).saturating_sub(cursor_col) as f32 * cell_width
-                - x_offset as f32)
-                .max(1.0);
-            placed_source_width = source_width.min(available.floor() as u32);
-        }
-        let (width, height) = crate::terminal_engine::media::graphics_display_layout(
-            placed_source_width,
-            source_height,
-            display_cols,
-            display_rows,
-            (cell_width, cell_height),
-            (x_offset, y_offset),
-            virtual_placement,
-        )
-        .placement_size;
-        let occupied_cols = occupied_cells(display_cols, width + x_offset as f32, cell_width);
-        let occupied_rows = occupied_cells(display_rows, height + y_offset as f32, cell_height);
-        let placement_id = command.u32_value('p').unwrap_or(0);
-        let virtual_placement = command.u32_value('U').unwrap_or(0) == 1;
-        let relative_parent = command.u32_value('P').filter(|id| *id > 0);
-        if virtual_placement && relative_parent.is_some() {
-            return Err("EINVAL:a virtual placement cannot be relative".into());
-        }
-        let location = if virtual_placement {
-            PlacementLocation::Virtual
-        } else if let Some(parent_image_id) = relative_parent {
-            let parent_placement_id = command.u32_value('Q').unwrap_or(0);
-            self.validate_relative_parent(
-                screen,
-                image_id,
-                placement_id,
-                parent_image_id,
-                parent_placement_id,
-            )?;
-            PlacementLocation::Relative {
-                parent_image_id,
-                parent_placement_id,
-                horizontal_offset: command.i32_value('H').unwrap_or(0),
-                vertical_offset: command.i32_value('V').unwrap_or(0),
-            }
-        } else {
-            PlacementLocation::Direct {
-                anchor_line: i64::try_from(history_size)
-                    .unwrap_or(i64::MAX)
-                    .saturating_add(i64::try_from(cursor_row).unwrap_or(i64::MAX)),
-                col: cursor_col,
-            }
-        };
-        let placement = Placement {
-            placement_serial: self.next_placement_serial.wrapping_add(1).max(1),
-            screen,
-            image_id,
-            placement_id,
-            location,
-            source_x,
-            source_y,
-            source_width: placed_source_width,
-            source_height,
-            display_cols,
-            display_rows,
-            occupied_cols,
-            occupied_rows,
-            clip_top_rows: 0,
-            clip_bottom_rows: 0,
-            x_offset,
-            y_offset,
-            z_index: command.i32_value('z').unwrap_or(0),
-        };
-        let advances_cursor = !virtual_placement && relative_parent.is_none();
-        let advance = (advances_cursor && command.u32_value('C').unwrap_or(0) == 0)
-            .then_some((occupied_cols, occupied_rows));
-        Ok((placement, advance))
-    }
-
-    fn retain_placements(&mut self, mut keep: impl FnMut(&Placement) -> bool) {
-        let counts = &mut self.virtual_placements;
-        self.placements.retain(|placement| {
-            if keep(placement) {
-                return true;
-            }
-            if matches!(placement.location, PlacementLocation::Virtual) {
-                counts[placement.screen.index()] -= 1;
-            }
-            false
-        });
-    }
-
-    fn commit_placement(&mut self, placement: Placement) {
-        if placement.placement_id != 0 {
-            self.retain_placements(|existing| {
-                existing.screen != placement.screen
-                    || existing.image_id != placement.image_id
-                    || existing.placement_id != placement.placement_id
-            });
-        }
-        self.next_placement_serial = placement.placement_serial;
-        if matches!(placement.location, PlacementLocation::Virtual) {
-            self.virtual_placements[placement.screen.index()] += 1;
-        }
-        self.placements.push(placement);
-        if self.placements.len() > MAX_PLACEMENTS {
-            let overflow = self.placements.len() - MAX_PLACEMENTS;
-            for removed in self.placements.drain(..overflow) {
-                if matches!(removed.location, PlacementLocation::Virtual) {
-                    self.virtual_placements[removed.screen.index()] -= 1;
-                }
-            }
-            self.remove_orphaned_relative_placements();
-        }
-    }
-
     fn resolve_image_id(&self, command: &KittyGraphicsCommand) -> Option<u32> {
         command.u32_value('i').or_else(|| {
             let number = command.u32_value('I')?;
@@ -1356,7 +1226,18 @@ impl KittyGraphicsState {
         id
     }
 
-    fn quota_evictions_for_replacement(&self, image_id: u32, new_bytes: usize) -> Option<Vec<u32>> {
+    /// Images to remove, with their placements, so that `image_id` can hold
+    /// `new_bytes`; `None` when even that is not enough. Like kitty, the
+    /// oldest images go first, never `image_id` itself, but images nothing
+    /// shows go before placed ones, and those placed in `viewport` go last.
+    /// Placements in scrollback, or on the other screen, would otherwise keep
+    /// their images until every later upload failed.
+    fn quota_evictions_for_replacement(
+        &self,
+        image_id: u32,
+        new_bytes: usize,
+        viewport: Viewport,
+    ) -> Option<Vec<u32>> {
         let old_bytes = self
             .images
             .get(&image_id)
@@ -1366,7 +1247,10 @@ impl KittyGraphicsState {
             .saturating_sub(old_bytes)
             .saturating_add(new_bytes);
         let mut image_count = self.images.len() + usize::from(!self.images.contains_key(&image_id));
-        if stored_bytes <= MAX_IMAGE_BYTES && image_count <= 4096 {
+        let fits = |stored_bytes, image_count| {
+            stored_bytes <= MAX_IMAGE_BYTES && image_count <= MAX_IMAGES
+        };
+        if fits(stored_bytes, image_count) {
             return Some(Vec::new());
         }
 
@@ -1375,24 +1259,53 @@ impl KittyGraphicsState {
             .iter()
             .map(|placement| placement.image_id)
             .collect::<HashSet<_>>();
+        let visible = self.images_in_viewport(viewport);
+        let tier = |id: &u32| usize::from(placed.contains(id)) + usize::from(visible.contains(id));
         let mut evictions = Vec::new();
-        for candidate in self
-            .insertion_order
-            .iter()
-            .copied()
-            .filter(|candidate| *candidate != image_id && !placed.contains(candidate))
-        {
-            if stored_bytes <= MAX_IMAGE_BYTES && image_count <= 4096 {
-                break;
+        for wanted in 0..=2 {
+            for candidate in self
+                .insertion_order
+                .iter()
+                .filter(|candidate| **candidate != image_id && tier(candidate) == wanted)
+            {
+                if fits(stored_bytes, image_count) {
+                    return Some(evictions);
+                }
+                let Some(image) = self.images.get(candidate) else {
+                    continue;
+                };
+                stored_bytes = stored_bytes.saturating_sub(image.byte_len());
+                image_count = image_count.saturating_sub(1);
+                evictions.push(*candidate);
             }
-            let Some(image) = self.images.get(&candidate) else {
-                continue;
-            };
-            stored_bytes = stored_bytes.saturating_sub(image.byte_len());
-            image_count = image_count.saturating_sub(1);
-            evictions.push(candidate);
         }
-        (stored_bytes <= MAX_IMAGE_BYTES && image_count <= 4096).then_some(evictions)
+        fits(stored_bytes, image_count).then_some(evictions)
+    }
+
+    /// Images with a placement on `viewport`'s rows: its screen's live
+    /// rows, below the history. The store does not track placeholder cells
+    /// outside deletion commands, so a virtual placement, and one relative
+    /// to it, counts as visible. The rows a user has scrolled back to are
+    /// not known here, and the other screen is not showing, so placements
+    /// there get no protection.
+    fn images_in_viewport(&self, viewport: Viewport) -> HashSet<u32> {
+        let top = i64::try_from(viewport.history_size).unwrap_or(i64::MAX);
+        let bottom = top.saturating_add(i64::from(viewport.rows));
+        let mut origins = placement::OriginResolver::new(&self.placements, &[]);
+        self.placements
+            .iter()
+            .filter(|placement| placement.screen == viewport.screen)
+            .filter(|placement| match origins.resolve(placement) {
+                Some(ResolvedOrigin::Buffer { anchor_line, col }) => {
+                    anchor_line < bottom
+                        && anchor_line.saturating_add(i64::from(placement.occupied_rows)) > top
+                        && col < i64::from(viewport.cols)
+                        && col.saturating_add(i64::from(placement.occupied_cols)) > 0
+                }
+                Some(ResolvedOrigin::Viewport { .. }) | None => true,
+            })
+            .map(|placement| placement.image_id)
+            .collect()
     }
 
     fn remove_image(&mut self, image_id: u32) {

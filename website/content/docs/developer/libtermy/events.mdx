@@ -108,6 +108,17 @@ create the replica with `termy_terminal_snapshot_decode`; feeding both the same
 bytes afterwards leaves them in the same state. See
 [snapshots](/docs/developer/libtermy/engine#snapshots) for what a snapshot holds.
 
+### Multiplexer panes
+
+A display terminal that draws a tmux control-mode pane sees the program's
+queries in `%output` after tmux has answered the ones it understands: device
+attributes, cursor and status reports, XTVERSION, colors and sizes. Call
+`set_protocol_replies(TerminalProtocolReplies::Passthrough)` (Rust only) so the
+terminal answers only what tmux leaves unanswered: kitty graphics, the kitty
+keyboard flags, clipboard reads and writes (OSC 52 and OSC 5522) and the kitty
+clipboard's paste-event mode. Send those replies to the pane yourself, for
+example with `send-keys -H`.
+
 ## Kitty OSC 5522 clipboard
 
 Kitty clipboard requests can read and write arbitrary MIME formats. The host

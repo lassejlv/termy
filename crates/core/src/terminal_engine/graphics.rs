@@ -407,7 +407,7 @@ impl State {
         screen: KittyGraphicsScreen,
     ) {
         if let Some(reply) = result.response {
-            self.reply(&reply);
+            self.passthrough_reply(&reply);
         }
         if result.changed {
             self.graphics.changed();
@@ -837,14 +837,131 @@ mod tests {
         );
     }
 
+    /// A synchronized update holding `uploads`, CPR replies around them.
+    fn synchronized_uploads(uploads: &[&[u8]]) -> Vec<u8> {
+        let mut input = b"\x1b[?2026hbefore\x1b[6n".to_vec();
+        for upload in uploads {
+            input.extend_from_slice(upload);
+            input.extend_from_slice(b"after\x1b[6n");
+        }
+        input.extend_from_slice(b"\x1b[?2026l");
+        input
+    }
+
     #[test]
-    fn synchronized_updates_apply_uploads_atomically() {
-        let mut engine = Engine::new(Size { cols: 20, rows: 4 }, Options::default());
-        let input = b"\x1b[?2026h\x1b_Ga=T,f=32,s=1,v=1,i=7,q=2;AQID/w==\x1b\\after\x1b[?2026l";
-        assert_eq!(engine.feed_deferring_uploads(input), input.len());
-        assert!(engine.take_deferred_upload().is_none());
+    fn synchronized_updates_defer_uploads_like_other_output() {
+        let upload = b"\x1b_Ga=T,f=32,s=1,v=1,i=7,c=2,r=1;AQID/w==\x1b\\".as_slice();
+        let chunked = b"\x1b_Ga=T,f=32,s=1,v=1,i=7,c=2,r=1,m=1;AQID\x1b\\\x1b_Gm=0;/w==\x1b\\";
+        for upload in [upload, chunked.as_slice()] {
+            let batch = synchronized_uploads(&[upload]);
+            let input = [batch.as_slice(), b"tail\x1b[6n"].concat();
+            let size = Size { cols: 20, rows: 4 };
+            let mut expected = Engine::new(size, Options::default());
+            expected.feed(&input);
+
+            let mut engine = Engine::new(size, Options::default());
+            // The whole update is taken, then applied up to the upload.
+            let consumed = engine.feed_deferring_uploads(&input);
+            assert_eq!(consumed, batch.len());
+            let deferred = engine.take_deferred_upload().expect("upload is deferred");
+            assert!(engine.graphics_placements().is_empty());
+            assert_eq!(row_text(&engine, 0), "before");
+            assert!(engine.modes().synchronized_update, "the update is not done");
+            let mut replies = drain(&mut engine);
+            assert_eq!(replies, b"\x1b[1;7R");
+
+            // Committing the image applies the rest of the update after it.
+            engine.commit_upload(deferred.prepare());
+            assert!(engine.take_deferred_upload().is_none());
+            assert!(!engine.modes().synchronized_update);
+            assert_eq!(engine.graphics_placements().len(), 1);
+            assert_eq!(row_text(&engine, 0), "before  after");
+            assert_eq!(
+                engine.feed_deferring_uploads(&input[consumed..]),
+                input.len() - consumed
+            );
+            replies.extend(drain(&mut engine));
+            assert_eq!(replies, drain(&mut expected));
+            assert_eq!(row_text(&engine, 0), row_text(&expected, 0));
+            assert_eq!(engine.cursor(), expected.cursor());
+            assert_eq!(
+                engine.graphics_placements().len(),
+                expected.graphics_placements().len()
+            );
+        }
+    }
+
+    #[test]
+    fn each_upload_in_a_synchronized_update_is_deferred_in_turn() {
+        let first = b"\x1b_Ga=T,f=32,s=1,v=1,i=7,q=2;AQID/w==\x1b\\".as_slice();
+        let second = b"\x1b_Ga=T,f=32,s=1,v=1,i=8,q=2;AQID/w==\x1b\\".as_slice();
+        let input = synchronized_uploads(&[first, second]);
+        let size = Size { cols: 40, rows: 4 };
+        let mut expected = Engine::new(size, Options::default());
+        expected.feed(&input);
+
+        let mut engine = Engine::new(size, Options::default());
+        assert_eq!(engine.feed_deferring_uploads(&input), input.len());
+        let mut placed = Vec::new();
+        while let Some(upload) = engine.take_deferred_upload() {
+            placed.push(engine.graphics_placements().len());
+            engine.commit_upload(upload.prepare());
+        }
+        assert_eq!(placed, [0, 1], "each upload stopped the replay");
+        assert_eq!(row_text(&engine, 0), row_text(&expected, 0));
+        assert_eq!(row_text(&engine, 0), "before after after");
+        assert_eq!(drain(&mut engine), drain(&mut expected));
+        assert_eq!(engine.graphics_placements().len(), 2);
+    }
+
+    #[test]
+    fn a_stopped_synchronized_replay_finishes_before_later_output() {
+        let upload = b"\x1b_Ga=T,f=32,s=1,v=1,i=7,q=2;AQID/w==\x1b\\".as_slice();
+        let batch = synchronized_uploads(&[upload]);
+        let size = Size { cols: 20, rows: 4 };
+        let mut expected = Engine::new(size, Options::default());
+        expected.feed(&[batch.as_slice(), b"tail"].concat());
+
+        // Nobody took the upload: the next feed decodes it inline first.
+        let mut engine = Engine::new(size, Options::default());
+        engine.feed_deferring_uploads(&batch);
+        engine.feed(b"tail");
+        assert_eq!(row_text(&engine, 0), row_text(&expected, 0));
+        assert_eq!(row_text(&engine, 0), "before aftertail");
+
+        // A watchdog leaves a replay whose upload is being decoded to the
+        // feeder, whose commit finishes it.
+        let mut engine = Engine::new(size, Options::default());
+        engine.feed_deferring_uploads(&batch);
+        let upload = engine.take_deferred_upload().unwrap();
+        assert!(!engine.stop_synchronized_update());
+        assert_eq!(row_text(&engine, 0), "before");
+        engine.commit_upload(upload.prepare());
+        assert_eq!(row_text(&engine, 0), "before after");
+        assert!(!engine.stop_synchronized_update());
+
+        // Otherwise it finishes the replay itself.
+        let mut engine = Engine::new(size, Options::default());
+        engine.feed_deferring_uploads(&batch);
+        assert!(engine.stop_synchronized_update());
+        assert_eq!(row_text(&engine, 0), "before after");
         assert_eq!(engine.graphics_placements().len(), 1);
-        assert_eq!(row_text(&engine, 0), " after");
+    }
+
+    #[test]
+    fn a_snapshot_keeps_the_rest_of_a_stopped_synchronized_replay() {
+        let upload = b"\x1b_Ga=T,f=32,s=1,v=1,i=7,q=2;AQID/w==\x1b\\".as_slice();
+        let batch = synchronized_uploads(&[upload]);
+        let mut engine = Engine::new(Size { cols: 20, rows: 4 }, Options::default());
+        engine.feed_deferring_uploads(&batch);
+        let snapshot = engine.encode_snapshot();
+        let mut decoded = Engine::decode_snapshot(&snapshot).unwrap();
+        assert!(decoded.modes().synchronized_update);
+        assert_eq!(row_text(&decoded, 0), "before");
+        // The rest is due at once; the upload in flight is not in it.
+        decoded.feed(b"");
+        assert!(!decoded.modes().synchronized_update);
+        assert_eq!(row_text(&decoded, 0), "beforeafter");
     }
 
     #[test]
@@ -984,6 +1101,37 @@ mod tests {
         assert_eq!(placements[0].occupied_rows, 2);
         // Text continues right of the image.
         assert_eq!(engine.cursor().col, 9);
+    }
+
+    #[test]
+    fn osc_1337_file_transfers_but_not_shell_marks_pass_the_string_limit() {
+        let options = Options {
+            max_string_bytes: 16,
+            ..Options::default()
+        };
+        let stream = osc_file(
+            "inline=1;width=2",
+            &inline_file(::image::ImageFormat::Png, 4, 4),
+        );
+        let mark = format!("\x1b]133;A;{}\x07", "x".repeat(32));
+        // Split inside the selecting prefix, and across a snapshot there.
+        for split in [3, 6, 9, 15] {
+            let mut engine = Engine::new(Size { cols: 20, rows: 6 }, options);
+            engine.feed(&stream[..split]);
+            let mut engine = Engine::decode_snapshot(&engine.encode_snapshot()).unwrap();
+            engine.feed(&stream[split..]);
+            assert_eq!(engine.graphics_placements().len(), 1, "split at {split}");
+        }
+        // A shell mark keeps the generic limit.
+        let mut engine = Engine::new(Size { cols: 20, rows: 6 }, options);
+        let marks = |engine: &mut Engine, bytes: &[u8]| {
+            engine.feed(bytes);
+            std::iter::from_fn(|| engine.pop_event())
+                .filter(|event| matches!(event, crate::terminal_engine::Event::ShellIntegration(_)))
+                .count()
+        };
+        assert_eq!(marks(&mut engine, b"\x1b]133;A\x07"), 1);
+        assert_eq!(marks(&mut engine, mark.as_bytes()), 0);
     }
 
     #[test]

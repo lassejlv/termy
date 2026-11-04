@@ -75,6 +75,7 @@ mod inline_input;
 mod inspector;
 mod interaction;
 mod kitty_images;
+mod link_preview;
 #[cfg(target_os = "macos")]
 mod macos_file_drop;
 #[cfg(target_os = "macos")]
@@ -4071,6 +4072,11 @@ impl TerminalView {
             // Session-attached runtime keeps its explicit launch target across config reloads.
             // Only update the binary path used for external tmux command invocations.
             self.tmux_runtime_mut().config.binary = config.tmux_binary.trim().to_string();
+        }
+        if self.runtime_uses_tmux() {
+            // Tab titles derive from the snapshot with settings that may have
+            // changed: the next refresh applies it even if tmux reports the same.
+            self.tmux_runtime_mut().applied_snapshot = None;
         }
         self.font_family = effective_font_family;
         self.ui_font_family = config.ui_font_family.into();

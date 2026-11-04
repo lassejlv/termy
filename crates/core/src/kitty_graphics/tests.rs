@@ -1,7 +1,7 @@
 use super::*;
 use std::io::Write as _;
 
-fn size() -> TerminalSize {
+pub(super) fn size() -> TerminalSize {
     TerminalSize {
         cols: 80,
         rows: 24,
@@ -10,14 +10,14 @@ fn size() -> TerminalSize {
     }
 }
 
-fn command(control: &str, payload: &[u8]) -> KittyGraphicsCommand {
+pub(super) fn command(control: &str, payload: &[u8]) -> KittyGraphicsCommand {
     KittyGraphicsCommand::parse(
         [control.as_bytes(), b";", BASE64.encode(payload).as_bytes()].concat(),
         false,
     )
 }
 
-fn one_pixel_png() -> Vec<u8> {
+pub(super) fn one_pixel_png() -> Vec<u8> {
     let mut png = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut png, 1, 1);
@@ -610,17 +610,17 @@ fn file_swapped_for_a_pseudo_file_link_after_open_is_rejected() {
     // Kept open so no later file can reuse its inode.
     let file = std::fs::File::open(&path).unwrap();
     let opened = file.metadata().unwrap();
-    assert!(upload::opened_file_is_allowed(&path, &opened));
+    assert!(upload::opened_file_is_allowed(&path, &opened).is_some());
 
     // A link to a pseudo-file, or to any file but the opened one, fails.
     std::fs::remove_file(&path).unwrap();
     std::os::unix::fs::symlink("/proc/self/status", &path).unwrap();
-    assert!(!upload::opened_file_is_allowed(&path, &opened));
+    assert!(upload::opened_file_is_allowed(&path, &opened).is_none());
     let other = dir.path().join("other.png");
     std::fs::write(&other, one_pixel_png()).unwrap();
     std::fs::remove_file(&path).unwrap();
     std::os::unix::fs::symlink(&other, &path).unwrap();
-    assert!(!upload::opened_file_is_allowed(&path, &opened));
+    assert!(upload::opened_file_is_allowed(&path, &opened).is_none());
 }
 
 #[test]
@@ -646,6 +646,259 @@ fn reads_and_removes_safe_temporary_file_transfers() {
     assert!(result.changed);
     assert!(!path.exists());
     assert_eq!(state.render_placements(0, 0, 24, 80).len(), 1);
+}
+
+const LOCAL_MEDIUM_REPLY: &str = "\x1b_Gi=21;EBADF:failed to read image file\x1b\\";
+const LOCAL_OK: &str = "\x1b_Gi=21;OK\x1b\\";
+
+/// Upload `name` through medium `t` with extra `controls`, answering as i=21.
+fn local_upload(medium: char, controls: &str, name: &[u8]) -> KittyGraphicsApplyResult {
+    let mut state = KittyGraphicsState::default();
+    state.apply(
+        command(&format!("a=t,t={medium},i=21{controls}"), name),
+        0,
+        0,
+        0,
+        size(),
+    )
+}
+
+fn path_bytes(path: &std::path::Path) -> &[u8] {
+    path.to_str().unwrap().as_bytes()
+}
+
+#[test]
+fn local_file_failures_share_one_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let pixel = dir.path().join("pixel.rgba");
+    std::fs::write(&pixel, [1, 2, 3, 255]).unwrap();
+    let large = dir.path().join("large.png");
+    // Sparse, so the oversized file costs no disk space.
+    std::fs::File::create(&large)
+        .unwrap()
+        .set_len(MAX_IMAGE_BYTES as u64 + 1)
+        .unwrap();
+    let missing = dir.path().join("missing.png");
+    let raw = ",f=32,s=1,v=1";
+
+    for medium in ['f', 't'] {
+        // Missing, oversized, a directory, not an image, an offset past the
+        // end and too little data are all indistinguishable to the client.
+        for (controls, path) in [
+            (",f=100", &missing),
+            (",f=100", &large),
+            (",f=100", &dir.path().to_path_buf()),
+            (",f=100", &pixel),
+            (&format!("{raw},O=5") as &str, &pixel),
+            (",f=32,s=2,v=1", &pixel),
+        ] {
+            let result = local_upload(medium, controls, path_bytes(path));
+            assert_eq!(
+                reply(&result),
+                LOCAL_MEDIUM_REPLY,
+                "{medium} {controls} {path:?}"
+            );
+        }
+        assert_eq!(
+            reply(&local_upload(medium, raw, path_bytes(&pixel))),
+            LOCAL_OK
+        );
+    }
+    // Malformed controls reveal nothing local and keep their own reply.
+    assert!(reply(&local_upload('f', ",f=32", path_bytes(&missing))).contains("EINVAL:"));
+    assert!(reply(&local_upload('f', ",f=8", path_bytes(&missing))).contains("EINVAL:"));
+}
+
+#[cfg(unix)]
+#[test]
+fn local_file_fifo_is_refused_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("tty-graphics-protocol-fifo");
+    let name = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: A NUL-terminated path and a plain mode.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    for medium in ['f', 't'] {
+        let sender = sender.clone();
+        let fifo = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(reply(&local_upload(medium, ",f=100", path_bytes(&fifo))));
+        });
+        let reply = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("reading a FIFO blocked the upload");
+        assert_eq!(reply, LOCAL_MEDIUM_REPLY);
+    }
+    assert!(fifo.exists());
+}
+
+/// A temporary directory that is not below any root `t=t` may delete from.
+#[cfg(unix)]
+fn non_temporary_dir() -> Option<tempfile::TempDir> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = tempfile::Builder::new()
+        .prefix("tty-graphics-protocol-test-")
+        .tempdir_in(exe.parent()?)
+        .ok()?;
+    let probe = dir.path().join("tty-graphics-protocol-probe");
+    std::fs::write(&probe, b"").ok()?;
+    (!temporary_path_can_be_removed(&probe)).then_some(dir)
+}
+
+#[cfg(unix)]
+#[test]
+fn temporary_file_transfer_through_a_symlink_removes_only_the_file_it_read() {
+    let raw = ",f=32,s=1,v=1";
+    let temp = tempfile::tempdir().unwrap();
+
+    // A marked link to a file outside the temporary directories is read, but
+    // neither the link nor its target is deleted.
+    if let Some(outside) = non_temporary_dir() {
+        let target = outside.path().join("tty-graphics-protocol-victim");
+        std::fs::write(&target, [1, 2, 3, 255]).unwrap();
+        let link = temp.path().join("tty-graphics-protocol-link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(reply(&local_upload('t', raw, path_bytes(&link))), LOCAL_OK);
+        assert!(target.exists());
+        assert!(link.symlink_metadata().is_ok());
+    }
+
+    // A marked link to an unmarked temporary file deletes nothing either.
+    let target = temp.path().join("victim");
+    std::fs::write(&target, [1, 2, 3, 255]).unwrap();
+    let link = temp.path().join("tty-graphics-protocol-unmarked");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_eq!(reply(&local_upload('t', raw, path_bytes(&link))), LOCAL_OK);
+    assert!(target.exists());
+    assert!(link.symlink_metadata().is_ok());
+
+    // A link to an eligible temporary file removes that file, which is the
+    // one that was read, and never just the link in front of it.
+    let target = temp.path().join("tty-graphics-protocol-real");
+    std::fs::write(&target, [1, 2, 3, 255]).unwrap();
+    let link = temp.path().join("tty-graphics-protocol-alias");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_eq!(reply(&local_upload('t', raw, path_bytes(&link))), LOCAL_OK);
+    assert!(!target.exists());
+    assert!(link.symlink_metadata().is_ok());
+
+    // A failed upload consumes nothing.
+    let target = temp.path().join("tty-graphics-protocol-short");
+    std::fs::write(&target, [1, 2, 3]).unwrap();
+    assert_eq!(
+        reply(&local_upload('t', raw, path_bytes(&target))),
+        LOCAL_MEDIUM_REPLY
+    );
+    assert!(target.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn temporary_file_replaced_after_reading_is_not_removed() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("tty-graphics-protocol-swapped");
+    std::fs::write(&path, [1, 2, 3, 255]).unwrap();
+    // Kept open so the replacement cannot reuse its inode.
+    let read = std::fs::File::open(&path).unwrap();
+    let opened = read.metadata().unwrap();
+    let canonical = path.canonicalize().unwrap();
+    // The read file is replaced by a different one, then by a symlink.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, [1, 2, 3, 255]).unwrap();
+    upload::remove_opened_file(&canonical, &opened);
+    assert!(path.exists());
+    let other = temp.path().join("other");
+    std::fs::write(&other, b"").unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(&other, &path).unwrap();
+    upload::remove_opened_file(&canonical, &opened);
+    assert!(path.symlink_metadata().is_ok());
+    assert!(other.exists());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn shared_memory_is_unlinked_only_after_a_successful_upload() {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    struct Cleanup<'a>(&'a str);
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            crate::terminal_engine::media::unlink_graphics_shared_memory(self.0.as_bytes());
+        }
+    }
+
+    let name = format!("/termy-kitty-upload-{}", std::process::id());
+    let c_name = std::ffi::CString::new(name.as_str()).unwrap();
+    let exists = || {
+        // SAFETY: Read-only open of a NUL-terminated name without creation.
+        let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0) };
+        if fd >= 0 {
+            // SAFETY: shm_open returned a new owned descriptor.
+            drop(unsafe { std::fs::File::from_raw_fd(fd) });
+        }
+        fd >= 0
+    };
+    // SAFETY: A unique name, read/write + create/exclusive flags and mode 0600.
+    let fd = unsafe {
+        libc::shm_open(
+            c_name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+            0o600,
+        )
+    };
+    assert!(fd >= 0);
+    let _cleanup = Cleanup(&name);
+    // SAFETY: The new descriptor is owned by this test.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    // SAFETY: Size our own object; Darwin rounds it up and zero-fills it.
+    assert_eq!(unsafe { libc::ftruncate(file.as_raw_fd(), 4) }, 0);
+    #[cfg(target_os = "linux")]
+    (&file).write_all(&[1, 2, 3, 255]).unwrap();
+
+    // Too little data, an offset past the end and a missing name all fail
+    // alike and leave the object in place.
+    for (controls, shm_name) in [
+        (",f=32,s=2,v=1", name.as_str()),
+        (",f=32,s=1,v=1,O=8", name.as_str()),
+        (",f=32,s=1,v=1", "/termy-kitty-upload-missing"),
+    ] {
+        let result = local_upload('s', controls, shm_name.as_bytes());
+        assert_eq!(reply(&result), LOCAL_MEDIUM_REPLY, "{controls} {shm_name}");
+        assert!(exists());
+    }
+    let result = local_upload('s', ",f=32,s=1,v=1,S=4", name.as_bytes());
+    assert_eq!(reply(&result), LOCAL_OK);
+    assert!(!exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn shared_memory_fifo_is_refused_without_blocking() {
+    let name = format!("termy-kitty-fifo-{}", std::process::id());
+    let path = std::path::Path::new("/dev/shm").join(&name);
+    let Ok(c_path) = std::ffi::CString::new(path.to_str().unwrap()) else {
+        return;
+    };
+    // SAFETY: A NUL-terminated path and a plain mode.
+    if unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) } != 0 {
+        return; // No writable /dev/shm here.
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let shm_name = format!("/{name}");
+    std::thread::spawn(move || {
+        let _ = sender.send(reply(&local_upload(
+            's',
+            ",f=32,s=1,v=1",
+            shm_name.as_bytes(),
+        )));
+    });
+    let result = receiver.recv_timeout(std::time::Duration::from_secs(10));
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        result.expect("opening a FIFO blocked the upload"),
+        LOCAL_MEDIUM_REPLY
+    );
 }
 
 #[test]
@@ -1035,4 +1288,174 @@ fn compositions_write_into_unshared_frames_in_place() {
     assert!(reply(&result).contains("EINVAL"));
     assert!(state.images[&2].animation.is_none());
     assert_eq!(state.images[&2].image.rgba().unwrap(), &[1; 4]);
+}
+
+/// Whether every placement's image is stored, every relative placement's
+/// parent exists and the stored bytes are counted right.
+pub(super) fn placements_are_consistent(state: &KittyGraphicsState) -> bool {
+    let placements = state.placements.iter().all(|placement| {
+        state.images.contains_key(&placement.image_id)
+            && match placement.location {
+                PlacementLocation::Relative {
+                    parent_image_id,
+                    parent_placement_id,
+                    ..
+                } => state
+                    .placement_by_key(placement.screen, parent_image_id, parent_placement_id)
+                    .is_some(),
+                _ => true,
+            }
+    });
+    let stored: usize = state.images.values().map(StoredImage::byte_len).sum();
+    let relative = state
+        .placements
+        .iter()
+        .filter(|placement| matches!(placement.location, PlacementLocation::Relative { .. }))
+        .count();
+    let virtual_on = |screen: KittyGraphicsScreen| {
+        state
+            .placements
+            .iter()
+            .filter(|placement| {
+                placement.screen == screen
+                    && matches!(placement.location, PlacementLocation::Virtual)
+            })
+            .count()
+    };
+    placements
+        && state.stored_bytes == stored
+        && state.relative_placements == relative
+        && [KittyGraphicsScreen::Primary, KittyGraphicsScreen::Alternate]
+            .into_iter()
+            .all(|screen| state.virtual_placements[screen.index()] == virtual_on(screen))
+}
+
+fn placed(state: &KittyGraphicsState, image_id: u32) -> bool {
+    state
+        .placements
+        .iter()
+        .any(|placement| placement.image_id == image_id)
+}
+
+#[test]
+fn placed_images_make_room_oldest_first_sparing_the_viewport() {
+    let pixel = [1, 2, 3, 255];
+    let mut state = KittyGraphicsState::default();
+    let upload = |state: &mut KittyGraphicsState, id: u32, history_size: usize| {
+        let control = format!("a=T,f=32,s=1,v=1,i={id},p=1,c=1,r=1");
+        state.apply(command(&control, &pixel), 0, 0, history_size, size())
+    };
+    // Image 1 far back in history, image 2 on the rows the program will be
+    // drawing on, and enough others to fill the image count.
+    upload(&mut state, 1, 0);
+    upload(&mut state, 2, 5000);
+    upload(&mut state, 3, 100);
+    // Copies of image 3, placed below it: each upload costs a scan of every
+    // placement, which is slow for this many in a debug build.
+    let (image, placement) = (state.images[&3].clone(), state.placements[2].clone());
+    for id in 4..MAX_IMAGES as u32 {
+        state.stored_bytes += image.byte_len();
+        state.images.insert(id, image.clone());
+        state.insertion_order.push_back(id);
+        state.next_placement_serial += 1;
+        state.placements.push_back(Placement {
+            placement_serial: state.next_placement_serial,
+            image_id: id,
+            location: PlacementLocation::Direct {
+                anchor_line: 100 + i64::from(id),
+                col: 0,
+            },
+            ..placement.clone()
+        });
+    }
+    assert!(placements_are_consistent(&state));
+    // The last is shown relative to image 1's placement.
+    let last = MAX_IMAGES as u32;
+    let control = format!("a=t,f=32,s=1,v=1,i={last},q=2");
+    state.apply(command(&control, &pixel), 0, 0, 0, size());
+    let control = format!("a=p,i={last},p=1,P=1,Q=1,c=1,r=1,q=2");
+    state.apply(command(&control, &[]), 0, 0, 0, size());
+    assert_eq!(state.images.len(), MAX_IMAGES);
+    assert!(placed(&state, last));
+
+    // The oldest image goes, with its placement and the one relative to it.
+    let result = upload(&mut state, 5000, 5000);
+    assert_eq!(reply(&result), "\x1b_Gi=5000,p=1;OK\x1b\\");
+    assert!(result.changed);
+    assert!(!state.images.contains_key(&1));
+    assert!(!placed(&state, 1));
+    assert!(state.images.contains_key(&last));
+    assert!(!placed(&state, last));
+    assert!(placements_are_consistent(&state));
+
+    // Unplaced images still go first.
+    upload(&mut state, 5001, 5000);
+    assert!(!state.images.contains_key(&last));
+    assert!(state.images.contains_key(&2));
+    assert!(state.images.contains_key(&3));
+
+    // Image 2 is older than image 3, but on screen.
+    upload(&mut state, 5002, 5000);
+    assert!(state.images.contains_key(&2));
+    assert!(!state.images.contains_key(&3));
+    assert!(state.images.contains_key(&4));
+    assert_eq!(state.images.len(), MAX_IMAGES);
+    assert!(placements_are_consistent(&state));
+    let rendered = state.render_placements(5000, 0, 24, 80);
+    assert!(rendered.iter().any(|placement| placement.image_id == 2));
+    assert!(rendered.iter().any(|placement| placement.image_id == 5002));
+}
+
+/// Zero pixels for a `width`×`height` RGBA upload, compressed so payloads
+/// that fill the byte quota stay cheap to send.
+fn blank_pixels(width: u32, height: u32) -> Vec<u8> {
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder
+        .write_all(&vec![0; width as usize * height as usize * 4])
+        .unwrap();
+    encoder.finish().unwrap()
+}
+
+#[test]
+fn the_byte_quota_evicts_placed_images_but_never_the_one_replaced() {
+    // Three 40 MiB images fill most of the 128 MiB quota.
+    let (width, height) = (4096, 2560);
+    let image = blank_pixels(width, height);
+    let control =
+        |id: u32, height: u32| format!("a=T,f=32,s={width},v={height},o=z,i={id},c=1,r=1");
+    let mut state = KittyGraphicsState::default();
+    for (id, history_size) in [(1, 0), (2, 100), (3, 200)] {
+        let upload = command(&control(id, height), &image);
+        let result = state.apply(upload, 0, 0, history_size, size());
+        assert_eq!(reply(&result), format!("\x1b_Gi={id};OK\x1b\\"));
+    }
+
+    // Replacing the oldest with a larger image evicts the next oldest.
+    let taller = height + 768;
+    let taller_image = blank_pixels(width, taller);
+    let upload = command(&control(1, taller), &taller_image);
+    let result = state.apply(upload, 0, 0, 300, size());
+    assert_eq!(reply(&result), "\x1b_Gi=1;OK\x1b\\");
+    assert_eq!(state.images[&1].height, taller);
+    assert!(placed(&state, 1));
+    assert!(!state.images.contains_key(&2));
+    assert!(placed(&state, 3));
+    assert!(placements_are_consistent(&state));
+
+    // A new upload evicts image 3; image 1 is now the oldest.
+    let upload = command(&control(4, height), &image);
+    state.apply(upload, 0, 0, 400, size());
+    assert!(!state.images.contains_key(&3));
+    assert_eq!(state.insertion_order, [1, 4]);
+
+    // A frame that grows an animation past the quota evicts the others,
+    // sparing the animated image though it is the oldest.
+    let frame = format!("a=f,i=1,f=32,s={width},v={taller},o=z");
+    let result = state.apply(command(&frame, &taller_image), 0, 0, 500, size());
+    assert_eq!(reply(&result), "\x1b_Gi=1;OK\x1b\\");
+    assert!(state.images[&1].animation.is_some());
+    assert!(!state.images.contains_key(&4));
+    assert!(placed(&state, 1));
+    assert!(state.stored_bytes <= MAX_IMAGE_BYTES);
+    assert!(placements_are_consistent(&state));
 }

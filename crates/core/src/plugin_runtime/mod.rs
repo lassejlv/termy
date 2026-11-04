@@ -54,6 +54,13 @@ const MAX_VIEW_PARAMS_BYTES: usize = 64 * 1024;
 const MAX_LAUNCH_ARGS: usize = 128;
 const MAX_LAUNCH_TEXT_LENGTH: usize = 4_096;
 const PLUGIN_CAPABILITIES: [&str; 2] = ["storage", "native-ui"];
+/// What every place that installs or manages plugins tells the user.
+/// Plugins can use every Bun and Node API (files, subprocesses, network);
+/// manifest capabilities only decide which Termy APIs they get, so they are
+/// not a sandbox.
+pub const PLUGIN_FULL_ACCESS_WARNING: &str = "Plugins run with your full user permissions: \
+they can read and write your files, run programs and use the network. Only install plugins \
+you trust.";
 pub const MAX_INSTALLED_PLUGINS: usize = 32;
 pub const MAX_PLUGIN_SOURCE_BYTES: u64 = 16 * 1024 * 1024;
 pub const MAX_PLUGIN_SOURCE_FILES: usize = 4_096;
@@ -83,9 +90,37 @@ struct PluginRuntimeInner {
     plugins_dir: Option<PathBuf>,
     refresh: Mutex<()>,
     settings: Mutex<()>,
+    /// Secret settings already read from the OS credential store. Lock it
+    /// only briefly and never across credential-store calls; it may be taken
+    /// while `settings` is held, never the other way round.
+    secrets: Mutex<PluginSecretCache>,
     lifecycle_generations: Mutex<BTreeMap<String, u64>>,
     catalog: RwLock<PluginCatalog>,
     host: Mutex<PluginHostState>,
+}
+
+/// Plugin secrets resolved from the OS credential store, so plugin requests
+/// (every picker keystroke, view action and event) don't each read the
+/// keychain: that is slow on macOS and can show an unlock prompt on Linux.
+///
+/// Each entry remembers the `secretRevision` of the plugin's settings file it
+/// was read under and is used only while the file still has that revision.
+/// Every secret change writes a new revision, so a secret changed by another
+/// `PluginRuntime` (Settings and each terminal window have their own) or by
+/// another process is read again on the next request. Changes made through
+/// this runtime, and managing or reloading a plugin, also drop the entries
+/// right away. `None` values record that the credential store had no secret,
+/// so a missing secret isn't looked up on every request either.
+///
+/// Deliberately not `Debug`: the values are secrets.
+#[derive(Default)]
+struct PluginSecretCache {
+    entries: BTreeMap<(String, String), CachedPluginSecret>,
+}
+
+struct CachedPluginSecret {
+    revision: Option<String>,
+    value: Option<String>,
 }
 
 #[derive(Default)]
@@ -248,6 +283,10 @@ struct PluginSettingsFile {
     values: BTreeMap<String, Value>,
     #[serde(default)]
     secret_keys: BTreeSet<String>,
+    /// Changes whenever a secret is saved or cleared, so every runtime and
+    /// process knows its cached secrets for this plugin are out of date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secret_revision: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -301,6 +340,9 @@ impl PluginCommandWhen {
 }
 
 impl PluginCommand {
+    /// `<plugin-id>.<command-id>`, for display. Two plugins can share one,
+    /// since both IDs may contain dots, so commands are identified by the two
+    /// IDs together.
     pub fn qualified_id(&self) -> String {
         format!("{}.{}", self.plugin_id, self.id)
     }
@@ -1027,6 +1069,7 @@ impl PluginRuntime {
                 plugins_dir,
                 refresh: Mutex::new(()),
                 settings: Mutex::new(()),
+                secrets: Mutex::new(PluginSecretCache::default()),
                 lifecycle_generations: Mutex::new(BTreeMap::new()),
                 catalog: RwLock::new(PluginCatalog::default()),
                 host: Mutex::new(PluginHostState::default()),
@@ -1283,9 +1326,13 @@ impl PluginRuntime {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let stored = self.read_plugin_settings_file(id)?;
-            for key in stored.secret_keys {
-                delete_plugin_secret(id, &key)?;
-            }
+            let deleted = stored
+                .secret_keys
+                .iter()
+                .try_for_each(|key| delete_plugin_secret(id, key));
+            // Some secrets may be gone even when a later one failed.
+            self.forget_plugin_secrets(id);
+            deleted?;
         }
         fs::remove_dir_all(&root)
             .map_err(|error| format!("Failed to uninstall plugin `{id}`: {error}"))?;
@@ -1331,6 +1378,7 @@ impl PluginRuntime {
 
     fn invalidate_after_management(&self, plugin_id: &str) {
         self.bump_plugin_lifecycle(plugin_id);
+        self.forget_plugin_secrets(plugin_id);
         self.inner
             .host
             .lock()
@@ -1377,6 +1425,9 @@ impl PluginRuntime {
             .collect::<BTreeSet<_>>();
         if changed.is_empty() {
             return;
+        }
+        for plugin_id in &changed {
+            self.forget_plugin_secrets(plugin_id);
         }
         let mut generations = self
             .inner
@@ -1429,27 +1480,34 @@ impl PluginRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .settings
             .clone();
-        let _settings = self
-            .inner
-            .settings
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut snapshot = PluginSettingsSnapshot::default();
-        for (plugin_id, settings) in definitions {
-            let stored = match self.read_plugin_settings_file(&plugin_id) {
-                Ok(stored) => stored,
-                Err(error) => {
-                    snapshot.errors.push(error);
-                    PluginSettingsFile::default()
-                }
-            };
+        let stored_settings = {
+            let _settings = self
+                .inner
+                .settings
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            definitions
+                .keys()
+                .map(
+                    |plugin_id| match self.read_plugin_settings_file(plugin_id) {
+                        Ok(stored) => stored,
+                        Err(error) => {
+                            snapshot.errors.push(error);
+                            PluginSettingsFile::default()
+                        }
+                    },
+                )
+                .collect::<Vec<_>>()
+        };
+        for ((plugin_id, settings), stored) in definitions.into_iter().zip(stored_settings) {
             let mut states = Vec::with_capacity(settings.len());
             for definition in settings {
                 let (value, configured) = if let PluginSetting::Secret { id, .. } = &definition {
                     if !stored.secret_keys.contains(id) {
                         (None, false)
                     } else {
-                        match read_plugin_secret(&plugin_id, id) {
+                        match self.plugin_secret(&plugin_id, id, &stored) {
                             Ok(value) => (None, value.is_some()),
                             Err(error) => {
                                 snapshot.errors.push(error);
@@ -1497,13 +1555,20 @@ impl PluginRuntime {
                 let secret = value
                     .as_str()
                     .expect("validated secret setting must be a string");
+                let saved = if secret.is_empty() {
+                    delete_plugin_secret(plugin_id, key)
+                } else {
+                    write_plugin_secret(plugin_id, key, secret)
+                };
+                // Forget the old value even if the store failed part way.
+                self.forget_plugin_secret(plugin_id, key);
+                saved?;
                 if secret.is_empty() {
-                    delete_plugin_secret(plugin_id, key)?;
                     stored.secret_keys.remove(key);
                 } else {
-                    write_plugin_secret(plugin_id, key, secret)?;
                     stored.secret_keys.insert(key.to_string());
                 }
+                stored.secret_revision = Some(new_secret_revision());
             }
             _ if definition.default_value().as_ref() == Some(&value) => {
                 stored.values.remove(key);
@@ -1525,8 +1590,11 @@ impl PluginRuntime {
         let mut stored = self.read_plugin_settings_file(plugin_id)?;
         stored.values.remove(key);
         if matches!(definition, PluginSetting::Secret { .. }) {
-            delete_plugin_secret(plugin_id, key)?;
+            let deleted = delete_plugin_secret(plugin_id, key);
+            self.forget_plugin_secret(plugin_id, key);
+            deleted?;
             stored.secret_keys.remove(key);
+            stored.secret_revision = Some(new_secret_revision());
         }
         self.write_plugin_settings_file(plugin_id, &stored)
     }
@@ -1560,18 +1628,23 @@ impl PluginRuntime {
             .get(plugin_id)
             .cloned()
             .unwrap_or_default();
-        let _settings = self
-            .inner
-            .settings
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let stored = self.read_plugin_settings_file(plugin_id)?;
+        // Only the settings file is read under the lock: secrets come from
+        // the cache or the credential store after it is released, so a slow
+        // keychain or an unlock prompt doesn't block other plugin requests.
+        let stored = {
+            let _settings = self
+                .inner
+                .settings
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.read_plugin_settings_file(plugin_id)?
+        };
         let mut values = BTreeMap::new();
         for definition in definitions {
             let value = match &definition {
-                PluginSetting::Secret { id, .. } if stored.secret_keys.contains(id) => {
-                    read_plugin_secret(plugin_id, id)?.map(Value::String)
-                }
+                PluginSetting::Secret { id, .. } if stored.secret_keys.contains(id) => self
+                    .plugin_secret(plugin_id, id, &stored)?
+                    .map(Value::String),
                 PluginSetting::Secret { .. } => None,
                 _ => stored
                     .values
@@ -1585,6 +1658,80 @@ impl PluginRuntime {
             }
         }
         Ok(values)
+    }
+
+    /// Returns the secret setting `key`, which `stored` (the plugin's settings
+    /// file) lists as saved, from the cache or else the credential store.
+    /// Must be called without the settings lock held.
+    fn plugin_secret(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        stored: &PluginSettingsFile,
+    ) -> Result<Option<String>, String> {
+        let revision = stored.secret_revision.as_deref();
+        if let Some(cached) = self
+            .inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .get(&(plugin_id.to_string(), key.to_string()))
+            .filter(|cached| cached.revision.as_deref() == revision)
+        {
+            return Ok(cached.value.clone());
+        }
+        let value = match read_current_plugin_secret(plugin_id, key)? {
+            Some(secret) => Some(secret),
+            None if can_migrate_legacy_plugin_secret(plugin_id, key) => {
+                // Moving a legacy entry writes to the credential store, so it
+                // runs under the settings lock like every other secret write
+                // and can't overwrite a secret saved in the meantime. This
+                // happens once: afterwards the secret, or its absence, is
+                // cached.
+                let _settings = self
+                    .inner
+                    .settings
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                read_plugin_secret(plugin_id, key)?
+            }
+            None => None,
+        };
+        // Kept under the revision read before the credential store was, so a
+        // secret saved meanwhile (which writes a new revision) is read again
+        // next time instead of this possibly older value being kept.
+        self.inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .insert(
+                (plugin_id.to_string(), key.to_string()),
+                CachedPluginSecret {
+                    revision: revision.map(str::to_string),
+                    value: value.clone(),
+                },
+            );
+        Ok(value)
+    }
+
+    fn forget_plugin_secret(&self, plugin_id: &str, key: &str) {
+        self.inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .remove(&(plugin_id.to_string(), key.to_string()));
+    }
+
+    fn forget_plugin_secrets(&self, plugin_id: &str) {
+        self.inner
+            .secrets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entries
+            .retain(|(cached_plugin_id, _), _| cached_plugin_id != plugin_id);
     }
 
     fn plugin_settings_file_path(&self, plugin_id: &str) -> Result<PathBuf, String> {
@@ -1817,7 +1964,12 @@ impl PluginRuntime {
                     .catalog
                     .write()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                catalog.fingerprint = Some(discovered.fingerprint);
+                // Like load errors below, skipped plugins are reported again on
+                // every refresh until they are fixed.
+                catalog.fingerprint = discovered
+                    .errors
+                    .is_empty()
+                    .then_some(discovered.fingerprint);
                 catalog.commands.clear();
                 catalog.events.clear();
                 catalog.views.clear();
@@ -1835,7 +1987,7 @@ impl PluginRuntime {
             }
             return Ok(PluginRefresh {
                 changed: previous_fingerprint.is_some() || had_commands,
-                errors: Vec::new(),
+                errors: discovered.errors,
             });
         }
 
@@ -1880,7 +2032,8 @@ impl PluginRuntime {
                 return Err(error.into_message());
             }
         };
-        let mut errors = load_result.errors;
+        let mut errors = discovered.errors;
+        errors.extend(load_result.errors);
         let source_revisions = discovered
             .sources
             .iter()
@@ -1892,7 +2045,11 @@ impl PluginRuntime {
         let mut views = Vec::new();
         let mut settings = BTreeMap::new();
         let mut revisions = BTreeMap::new();
-        for loaded in load_result.plugins {
+        // Plugins are admitted in ID order, so when the catalog-wide command
+        // limit leaves one out it is always the same one.
+        let mut loaded_plugins = load_result.plugins;
+        loaded_plugins.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
+        for loaded in loaded_plugins {
             let Some(revision) = source_revisions.get(loaded.plugin_id.as_str()) else {
                 errors.push(format!(
                     "{}: runtime returned an unknown plugin",
@@ -1930,6 +2087,10 @@ impl PluginRuntime {
             }
             if let Err(error) = validate_commands(&plugin_commands) {
                 errors.push(format!("{}: {error}", loaded.plugin_id));
+                continue;
+            }
+            if commands.len() + plugin_commands.len() > MAX_PLUGIN_COMMANDS {
+                errors.push(plugin_command_limit_error(&loaded.plugin_id));
                 continue;
             }
             let plugin_events = match serde_json::from_value::<Vec<PluginEventSubscriptionDescriptor>>(
@@ -2013,8 +2174,9 @@ impl PluginRuntime {
             settings.insert(loaded.plugin_id.clone(), plugin_settings);
             revisions.insert(loaded.plugin_id, (*revision).to_string());
         }
-        validate_commands(&commands)?;
-        validate_views(&views)?;
+        // No catalog-wide check is needed: commands and views are identified
+        // by plugin ID and their own ID together, each plugin's were checked
+        // for duplicates above, and no two plugins share an ID.
         let mut catalog = self
             .inner
             .catalog
@@ -3099,6 +3261,8 @@ impl Drop for HostConnection {
 #[derive(Debug)]
 struct DiscoveredPlugins {
     sources: Vec<PluginSource>,
+    /// Entries and enabled plugins left out of `sources`, one message each.
+    errors: Vec<String>,
     fingerprint: [u8; 32],
 }
 
@@ -3190,44 +3354,15 @@ fn read_source_metadata(root: &Path) -> Result<Option<PluginSourceMetadata>, Str
 }
 
 fn inventory_plugins(plugins_dir: &Path) -> Result<PluginInventory, String> {
-    fs::create_dir_all(plugins_dir).map_err(|error| {
-        format!(
-            "Failed to create plugin directory {}: {error}",
-            plugins_dir.display()
-        )
-    })?;
-    let mut entries = fs::read_dir(plugins_dir)
-        .map_err(|error| format!("Failed to read {}: {error}", plugins_dir.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Failed to inspect {}: {error}", plugins_dir.display()))?;
-    entries.sort_by_key(|entry| entry.file_name());
-
-    let mut inventory = PluginInventory::default();
-    for entry in entries {
-        let id = entry.file_name().to_string_lossy().into_owned();
-        if id.starts_with('.') {
-            continue;
-        }
-        let root = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("Failed to inspect {}: {error}", root.display()))?;
-        if file_type.is_symlink() {
-            inventory.errors.push(format!(
-                "Plugin source cannot be a symlink: {}",
-                root.display()
-            ));
-            continue;
-        }
-        if !file_type.is_dir() || !root.join("plugin.json").is_file() {
-            continue;
-        }
-        if !valid_id(&id) {
-            inventory
-                .errors
-                .push(format!("Invalid plugin directory ID `{id}`"));
-            continue;
-        }
+    let scan = scan_plugin_directory(plugins_dir)?;
+    let mut inventory = PluginInventory {
+        plugins: Vec::new(),
+        errors: scan.errors,
+    };
+    // Mirrors `discover_plugins`, so a plugin discovery leaves out shows why
+    // here instead of looking installed and fine.
+    let mut loadable = 0;
+    for (id, root) in scan.roots {
         let enabled = match plugin_is_enabled(&root, &id) {
             Ok(enabled) => enabled,
             Err(error) => {
@@ -3243,19 +3378,31 @@ fn inventory_plugins(plugins_dir: &Path) -> Result<PluginInventory, String> {
                 continue;
             }
         };
+        let load_error = plugin_tree_entries(&root).err();
+        if enabled && load_error.is_none() {
+            // An error on the plugin marks it invalid and blocks managing it,
+            // but the limit isn't this plugin's fault, so it is listed with
+            // the directory's errors instead.
+            if loadable == MAX_INSTALLED_PLUGINS {
+                inventory.errors.push(plugin_limit_error(&id));
+            } else {
+                loadable += 1;
+            }
+        }
         match validated_plugin_manifest(&root, &id) {
-            Ok((manifest, _)) => match read_source_metadata(&root) {
-                Ok(source) => inventory.plugins.push(installed_plugin_from_manifest(
-                    manifest, root, enabled, source, None,
-                )),
-                Err(error) => inventory.plugins.push(installed_plugin_from_manifest(
+            Ok((manifest, _)) => {
+                let (source, source_error) = match read_source_metadata(&root) {
+                    Ok(source) => (source, None),
+                    Err(error) => (None, Some(error)),
+                };
+                inventory.plugins.push(installed_plugin_from_manifest(
                     manifest,
                     root,
                     enabled,
-                    None,
-                    Some(error),
-                )),
-            },
+                    source,
+                    load_error.or(source_error),
+                ));
+            }
             Err(error) => inventory.plugins.push(InstalledPlugin {
                 id: id.clone(),
                 name: id,
@@ -3422,72 +3569,121 @@ fn normalized_relative_plugin_path(path: &str) -> Option<String> {
     (!components.is_empty()).then(|| components.join("/"))
 }
 
-fn discover_plugins(plugins_dir: &Path) -> Result<DiscoveredPlugins, String> {
-    if !plugins_dir.exists() {
-        fs::create_dir_all(plugins_dir).map_err(|error| {
-            format!(
-                "Failed to create plugin directory {}: {error}",
-                plugins_dir.display()
-            )
-        })?;
-    }
+/// Plugin directories found directly under the plugins directory.
+struct PluginDirectoryScan {
+    /// Plugin IDs and roots, sorted by ID.
+    roots: Vec<(String, PathBuf)>,
+    /// Entries skipped because they can't be a plugin, such as a symlink or a
+    /// directory whose name isn't a valid plugin ID.
+    errors: Vec<String>,
+}
+
+/// Lists the plugin directories under `plugins_dir` for both discovery and
+/// inventory, so the two judge every entry alike. Only failing to read the
+/// directory itself fails the scan; a bad entry is reported and skipped so it
+/// doesn't take the other plugins down with it.
+fn scan_plugin_directory(plugins_dir: &Path) -> Result<PluginDirectoryScan, String> {
+    fs::create_dir_all(plugins_dir).map_err(|error| {
+        format!(
+            "Failed to create plugin directory {}: {error}",
+            plugins_dir.display()
+        )
+    })?;
     let mut entries = fs::read_dir(plugins_dir)
         .map_err(|error| format!("Failed to read {}: {error}", plugins_dir.display()))?
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to inspect {}: {error}", plugins_dir.display()))?;
     entries.sort_by_key(|entry| entry.file_name());
 
-    let mut candidates = Vec::new();
+    let mut scan = PluginDirectoryScan {
+        roots: Vec::new(),
+        errors: Vec::new(),
+    };
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') {
             continue;
         }
         let root = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("Failed to inspect {}: {error}", root.display()))?;
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                scan.errors
+                    .push(format!("Failed to inspect {}: {error}", root.display()));
+                continue;
+            }
+        };
         if file_type.is_symlink() {
-            return Err(format!(
+            scan.errors.push(format!(
                 "Plugin source cannot be a symlink: {}",
                 root.display()
             ));
+            continue;
         }
         if !file_type.is_dir() || !root.join("plugin.json").is_file() {
             continue;
         }
-        let id = name;
-        if !valid_id(&id) {
-            return Err(format!(
-                "Invalid plugin path ID `{id}`; use lowercase letters, numbers, dots, underscores, or hyphens"
+        if !valid_id(&name) {
+            scan.errors.push(format!(
+                "Invalid plugin directory ID `{name}`; use lowercase letters, numbers, dots, underscores, or hyphens"
             ));
-        }
-        if !plugin_is_enabled(&root, &id)? {
             continue;
         }
-        candidates.push((id, root));
+        scan.roots.push((name, root));
     }
-    candidates.sort_by(|left, right| left.0.cmp(&right.0));
-    if candidates.len() > MAX_INSTALLED_PLUGINS {
-        return Err(format!(
-            "Plugin directory contains {} plugins; maximum is {MAX_INSTALLED_PLUGINS}",
-            candidates.len()
-        ));
+    Ok(scan)
+}
+
+fn plugin_limit_error(id: &str) -> String {
+    format!("Plugin `{id}` was not loaded; the maximum is {MAX_INSTALLED_PLUGINS} enabled plugins")
+}
+
+/// Finds the enabled plugins to load. A plugin that fails its checks (a bad
+/// disabled marker, a symlink or oversized source tree, or one past the
+/// enabled-plugin limit, taken in ID order) is left out and reported in
+/// `errors`, and the others still load.
+fn discover_plugins(plugins_dir: &Path) -> Result<DiscoveredPlugins, String> {
+    let PluginDirectoryScan { roots, mut errors } = scan_plugin_directory(plugins_dir)?;
+    let mut candidates = Vec::new();
+    for (id, root) in roots {
+        match plugin_is_enabled(&root, &id) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        }
+        let entries = match plugin_tree_entries(&root) {
+            Ok(entries) => entries,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
+        if candidates.len() == MAX_INSTALLED_PLUGINS {
+            errors.push(plugin_limit_error(&id));
+            continue;
+        }
+        candidates.push((id, root, entries));
     }
 
-    let mut seen = HashSet::new();
     let mut hasher = Sha256::new();
     let mut sources = Vec::with_capacity(candidates.len());
-    for (id, root) in candidates {
-        if !seen.insert(id.clone()) {
-            return Err(format!("Duplicate plugin ID `{id}`"));
-        }
+    'plugins: for (id, root, entries) in candidates {
         let mut source_hasher = Sha256::new();
         source_hasher.update(BUNDLE_CACHE_FORMAT);
-        for entry in plugin_tree_entries(&root)? {
+        for entry in entries {
+            let digest = match plugin_file_digest(&entry) {
+                Ok(digest) => digest,
+                Err(error) => {
+                    errors.push(error);
+                    continue 'plugins;
+                }
+            };
             source_hasher.update(entry.relative_path.as_bytes());
             source_hasher.update([0]);
-            source_hasher.update(plugin_file_digest(&entry)?);
+            source_hasher.update(digest);
             source_hasher.update([0]);
         }
         let source_hash = source_hasher.finalize();
@@ -3503,8 +3699,16 @@ fn discover_plugins(plugins_dir: &Path) -> Result<DiscoveredPlugins, String> {
             cache_key,
         });
     }
+    // A plugin that newly fails its checks must change the fingerprint even
+    // when the plugins that load are unchanged, or the refresh would skip
+    // reporting it.
+    for error in &errors {
+        hasher.update([1]);
+        hasher.update(error.as_bytes());
+    }
     Ok(DiscoveredPlugins {
         sources,
+        errors,
         fingerprint: hasher.finalize().into(),
     })
 }
@@ -3935,6 +4139,8 @@ fn validate_commands(commands: &[PluginCommand]) -> Result<(), String> {
             commands.len()
         ));
     }
+    // Keyed by both IDs: `git` + `tools.status` and `git.tools` + `status`
+    // share a qualified ID but are different commands.
     let mut command_ids = HashSet::new();
     for command in commands {
         if !valid_id(&command.plugin_id) || !valid_id(&command.id) {
@@ -3943,7 +4149,7 @@ fn validate_commands(commands: &[PluginCommand]) -> Result<(), String> {
                 command.qualified_id()
             ));
         }
-        if !command_ids.insert(command.qualified_id()) {
+        if !command_ids.insert((command.plugin_id.as_str(), command.id.as_str())) {
             return Err(format!(
                 "Duplicate plugin command `{}`",
                 command.qualified_id()
@@ -4064,6 +4270,12 @@ fn validate_commands(commands: &[PluginCommand]) -> Result<(), String> {
     Ok(())
 }
 
+fn plugin_command_limit_error(plugin_id: &str) -> String {
+    format!(
+        "{plugin_id}: not loaded; the plugin catalog would exceed {MAX_PLUGIN_COMMANDS} commands"
+    )
+}
+
 fn validate_event_subscriptions(
     subscriptions: &[PluginEventSubscriptionDescriptor],
 ) -> Result<(), String> {
@@ -4094,9 +4306,11 @@ fn validate_views(views: &[PluginViewDescriptor]) -> Result<(), String> {
                 view.plugin_id, view.id
             ));
         }
-        let qualified_id = format!("{}.{}", view.plugin_id, view.id);
-        if !ids.insert(qualified_id.clone()) {
-            return Err(format!("Duplicate plugin view `{qualified_id}`"));
+        if !ids.insert((view.plugin_id.as_str(), view.id.as_str())) {
+            return Err(format!(
+                "Duplicate plugin view `{}.{}`",
+                view.plugin_id, view.id
+            ));
         }
         let count = counts.entry(&view.plugin_id).or_default();
         *count += 1;
@@ -4272,40 +4486,57 @@ fn legacy_plugin_secret_entry(plugin_id: &str, key: &str) -> Result<keyring::Ent
     .map_err(|error| format!("Failed to access the credential store: {error}"))
 }
 
+/// Reads the secret from its current credential-store entry only. It never
+/// writes, so it's safe without the settings lock.
 #[cfg(not(test))]
-fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
+fn read_current_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
     match plugin_secret_entry(plugin_id, key)?.get_password() {
         Ok(secret) => Ok(Some(secret)),
-        Err(keyring::Error::NoEntry) if !can_migrate_legacy_plugin_secret(plugin_id, key) => {
-            Ok(None)
-        }
-        Err(keyring::Error::NoEntry) => {
-            let legacy = legacy_plugin_secret_entry(plugin_id, key)?;
-            let secret = match legacy.get_password() {
-                Ok(secret) => secret,
-                Err(keyring::Error::NoEntry) => return Ok(None),
-                Err(error) => {
-                    return Err(format!(
-                        "Failed to read legacy secret setting `{plugin_id}.{key}`: {error}"
-                    ));
-                }
-            };
-            plugin_secret_entry(plugin_id, key)?
-                .set_password(&secret)
-                .map_err(|error| {
-                    format!("Failed to migrate secret setting `{plugin_id}.{key}`: {error}")
-                })?;
-            match legacy.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(Some(secret)),
-                Err(error) => Err(format!(
-                    "Failed to clear legacy secret setting `{plugin_id}.{key}` after migration: {error}"
-                )),
-            }
-        }
+        Err(keyring::Error::NoEntry) => Ok(None),
         Err(error) => Err(format!(
             "Failed to read secret setting `{plugin_id}.{key}`: {error}"
         )),
     }
+}
+
+/// Reads the secret, moving it from its legacy credential-store entry if
+/// needed. Moving it writes to the store, so call this with the settings
+/// lock held.
+#[cfg(not(test))]
+fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
+    if let Some(secret) = read_current_plugin_secret(plugin_id, key)? {
+        return Ok(Some(secret));
+    }
+    if !can_migrate_legacy_plugin_secret(plugin_id, key) {
+        return Ok(None);
+    }
+    let legacy = legacy_plugin_secret_entry(plugin_id, key)?;
+    let secret = match legacy.get_password() {
+        Ok(secret) => secret,
+        Err(keyring::Error::NoEntry) => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read legacy secret setting `{plugin_id}.{key}`: {error}"
+            ));
+        }
+    };
+    plugin_secret_entry(plugin_id, key)?
+        .set_password(&secret)
+        .map_err(|error| {
+            format!("Failed to migrate secret setting `{plugin_id}.{key}`: {error}")
+        })?;
+    match legacy.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(Some(secret)),
+        Err(error) => Err(format!(
+            "Failed to clear legacy secret setting `{plugin_id}.{key}` after migration: {error}"
+        )),
+    }
+}
+
+fn new_secret_revision() -> String {
+    let mut random = [0_u8; 8];
+    OsRng.fill_bytes(&mut random);
+    hex_digest(&random)
 }
 
 #[cfg(not(test))]
@@ -4349,13 +4580,50 @@ fn delete_plugin_secret(plugin_id: &str, key: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Stands in for the OS credential store in tests, keyed by account.
 #[cfg(test)]
 static TEST_PLUGIN_SECRETS: std::sync::LazyLock<Mutex<BTreeMap<String, String>>> =
     std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
 
+/// How often each account was read from the test credential store.
+#[cfg(test)]
+static TEST_PLUGIN_SECRET_READS: std::sync::LazyLock<Mutex<BTreeMap<String, usize>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+#[cfg(test)]
+fn record_test_plugin_secret_read(plugin_id: &str, key: &str) {
+    *TEST_PLUGIN_SECRET_READS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .entry(plugin_secret_account(plugin_id, key))
+        .or_default() += 1;
+}
+
+#[cfg(test)]
+fn test_plugin_secret_reads(plugin_id: &str, key: &str) -> usize {
+    TEST_PLUGIN_SECRET_READS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&plugin_secret_account(plugin_id, key))
+        .copied()
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+#[allow(clippy::unnecessary_wraps)]
+fn read_current_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
+    record_test_plugin_secret_read(plugin_id, key);
+    Ok(TEST_PLUGIN_SECRETS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&plugin_secret_account(plugin_id, key))
+        .cloned())
+}
+
 #[cfg(test)]
 #[allow(clippy::unnecessary_wraps)]
 fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
+    record_test_plugin_secret_read(plugin_id, key);
     let mut secrets = TEST_PLUGIN_SECRETS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

@@ -1795,31 +1795,12 @@ impl TerminalView {
         let link = self.hovered_link.as_ref()?;
         let overlay_style = self.overlay_style();
 
-        let url = &link.target;
-        let display_url = if let Some(path) = url.strip_prefix("file:///") {
-            let path = format!("/{path}");
-            let path = path.replace("%20", " ");
-            #[cfg(unix)]
-            let path = if let Some(home) = dirs::home_dir() {
-                let home_str = home.to_string_lossy();
-                if let Some(rel) = path.strip_prefix(home_str.as_ref()) {
-                    format!("~{rel}")
-                } else {
-                    path
-                }
-            } else {
-                path
-            };
-            if path.len() > 80 {
-                format!("…{}", &path[path.len() - 79..])
-            } else {
-                path
-            }
-        } else if url.len() > 80 {
-            format!("{}…", &url[..79])
-        } else {
-            url.clone()
-        };
+        #[cfg(unix)]
+        let home = dirs::home_dir();
+        #[cfg(not(unix))]
+        let home: Option<std::path::PathBuf> = None;
+        let home = home.as_ref().map(|home| home.to_string_lossy());
+        let display_url = super::link_preview::link_preview_label(&link.target, home.as_deref());
 
         Some(crate::ui::motion::fade_in(
             div()

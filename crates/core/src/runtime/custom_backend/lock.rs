@@ -254,7 +254,9 @@ impl Shared {
         if state.engine.generation() != before_generation {
             state.generation = state.generation.wrapping_add(1);
         }
-        if let Some(upload) = state.engine.take_deferred_upload() {
+        // A synchronized update can hold several uploads: committing one
+        // replays the update up to the next.
+        while let Some(upload) = state.engine.take_deferred_upload() {
             drop(state);
             let prepared = upload.prepare();
             state = self.feeder_state();
@@ -297,11 +299,12 @@ impl Shared {
             let mut state = self.feeder_state();
             let (mut slice_replies, consumed) = state.feed(&rest[..rest.len().min(slice)], hydrate);
             rest = &rest[consumed..];
-            if let Some(upload) = state.engine.take_deferred_upload() {
+            while let Some(upload) = state.engine.take_deferred_upload() {
                 // Decode the image (base64, zlib, PNG, file reads) unlocked.
                 // Output has one feeder at a time (the PTY reader, or the
                 // host for display terminals), so the upload still lands
-                // between the bytes around it.
+                // between the bytes around it. Committing an upload from a
+                // synchronized update replays it up to its next upload.
                 drop(state);
                 let prepared = upload.prepare();
                 state = self.feeder_state();

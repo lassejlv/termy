@@ -55,7 +55,13 @@ impl State {
             enabled.map_or(0, |enabled| if enabled { 1 } else { 2 })
         };
         let prefix = if private { "?" } else { "" };
-        self.reply(format!("\x1b[{prefix}{mode};{status}$y").as_bytes());
+        let reply = format!("\x1b[{prefix}{mode};{status}$y");
+        if private && mode == 5522 {
+            // The kitty clipboard's paste-event mode lives only here.
+            self.passthrough_reply(reply.as_bytes());
+        } else {
+            self.reply(reply.as_bytes());
+        }
     }
 
     pub(super) fn device_control_query(&mut self, bytes: &[u8]) {

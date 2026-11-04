@@ -169,6 +169,59 @@ fn normalize_paste_line_endings(input: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     std::borrow::Cow::Owned(normalized)
 }
 
+const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
+const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
+
+/// Removes every byte that can start a control sequence from a bracketed
+/// paste payload: ESC, and the C1 CSI introducer (U+009B, or a lone 0x9B
+/// byte in non-UTF-8 input) that some programs accept in place of `ESC [`.
+///
+/// Both bracketed-paste markers begin with one of those, so no marker can
+/// reach the program, neither a whole one nor one rebuilt from fragments.
+/// Stripping only the markers is not enough: removing the inner marker of
+/// `ESC[20 ESC[201~ 1~` joins its neighbours into a fresh `ESC[201~`, which
+/// ends the paste early and runs whatever follows without the user pressing
+/// Enter. xterm drops ESC from pastes by default too (its
+/// `disallowedPasteControls`), as do the paste encoders of the engine FFI
+/// and wasm hosts. Inside the bracket the program takes the payload as
+/// literal text, so a pasted ESC has no legitimate use there. Other bytes,
+/// tab, CR and ^C included, are kept as they are.
+fn sanitize_bracketed_paste_payload(input: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    // 0x9B is also a UTF-8 continuation byte (`ě` is C4 9B), so this check
+    // only skips work; the loop below keeps those characters intact.
+    if !input.iter().any(|&byte| byte == 0x1b || byte == 0x9b) {
+        return std::borrow::Cow::Borrowed(input);
+    }
+
+    let mut sanitized = Vec::with_capacity(input.len());
+    let mut buffer = [0; 4];
+    for chunk in input.utf8_chunks() {
+        for character in chunk.valid().chars() {
+            if !matches!(character, '\x1b' | '\u{9b}') {
+                sanitized.extend_from_slice(character.encode_utf8(&mut buffer).as_bytes());
+            }
+        }
+        sanitized.extend(chunk.invalid().iter().filter(|&&byte| byte != 0x9b));
+    }
+    std::borrow::Cow::Owned(sanitized)
+}
+
+/// Frames a paste for a program that enabled bracketed paste mode, after
+/// [`sanitize_bracketed_paste_payload`] has made sure the payload cannot
+/// end the bracket itself.
+fn framed_bracketed_paste_input(input: &[u8]) -> Vec<u8> {
+    let payload = sanitize_bracketed_paste_payload(input);
+
+    // Send one framed payload so start/content/end ordering is atomic and
+    // tmux can pick an efficient high-volume path for large pastes.
+    let mut framed =
+        Vec::with_capacity(BRACKETED_PASTE_START.len() + payload.len() + BRACKETED_PASTE_END.len());
+    framed.extend_from_slice(BRACKETED_PASTE_START);
+    framed.extend_from_slice(&payload);
+    framed.extend_from_slice(BRACKETED_PASTE_END);
+    framed
+}
+
 /// The full image path of a running process, used to find a pane's shell.
 #[cfg(target_os = "windows")]
 fn windows_process_image_path(pid: u32) -> Option<String> {
@@ -841,59 +894,6 @@ impl TerminalView {
         self.write_terminal_input_to_pane(pane_id.as_str(), input, cx);
     }
 
-    fn sanitize_bracketed_paste_input(input: &[u8]) -> Option<Vec<u8>> {
-        const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
-        const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
-
-        let mut sanitized: Option<Vec<u8>> = None;
-        let mut index = 0;
-        while index < input.len() {
-            let remaining = &input[index..];
-            let marker_len = if remaining.starts_with(BRACKETED_PASTE_END) {
-                Some(BRACKETED_PASTE_END.len())
-            } else if remaining.starts_with(BRACKETED_PASTE_START) {
-                Some(BRACKETED_PASTE_START.len())
-            } else {
-                None
-            };
-
-            if let Some(marker_len) = marker_len {
-                if sanitized.is_none() {
-                    let mut buffer = Vec::with_capacity(input.len());
-                    buffer.extend_from_slice(&input[..index]);
-                    sanitized = Some(buffer);
-                }
-                index += marker_len;
-                continue;
-            }
-
-            if let Some(buffer) = sanitized.as_mut() {
-                buffer.push(input[index]);
-            }
-            index += 1;
-        }
-
-        sanitized
-    }
-
-    fn framed_bracketed_paste_input(input: &[u8]) -> Vec<u8> {
-        const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
-        const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
-
-        let sanitized = Self::sanitize_bracketed_paste_input(input);
-        let payload = sanitized.as_deref().unwrap_or(input);
-
-        // Send one framed payload so start/content/end ordering is atomic and
-        // tmux can pick an efficient high-volume path for large pastes.
-        let mut framed = Vec::with_capacity(
-            BRACKETED_PASTE_START.len() + payload.len() + BRACKETED_PASTE_END.len(),
-        );
-        framed.extend_from_slice(BRACKETED_PASTE_START);
-        framed.extend_from_slice(payload);
-        framed.extend_from_slice(BRACKETED_PASTE_END);
-        framed
-    }
-
     pub(in super::super) fn write_terminal_paste_input(
         &mut self,
         input: &[u8],
@@ -910,7 +910,7 @@ impl TerminalView {
             .active_terminal()
             .is_some_and(|terminal| terminal.bracketed_paste_mode());
         let wrote_input = if bracketed_paste {
-            let framed = Self::framed_bracketed_paste_input(input);
+            let framed = framed_bracketed_paste_input(input);
             self.send_owned_input_to_active_pane(framed)
         } else {
             self.send_input_to_active_pane(input)

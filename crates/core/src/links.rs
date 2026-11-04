@@ -628,6 +628,11 @@ fn canonicalize_path_to_file_url_uncached(token: &str) -> Option<String> {
     }
 
     let path = expand_tilde_path(raw_path).unwrap_or_else(|| PathBuf::from(raw_path));
+    // Hovering text runs this on the UI thread, so a path the program printed
+    // must not make the OS mount a network share.
+    if reaches_network_mount(&path) {
+        return None;
+    }
     let canonical = std::fs::canonicalize(path).ok()?;
     let canonical = canonical.to_string_lossy().replace('\\', "/");
     if !canonical.starts_with('/') {
@@ -635,6 +640,43 @@ fn canonicalize_path_to_file_url_uncached(token: &str) -> Option<String> {
     }
 
     Some(format!("file:///{}", canonical.trim_start_matches('/')))
+}
+
+/// Whether looking `path` up would go through an automounter that reaches the
+/// network: `/net/<host>/...` (autofs `-hosts` on macOS and Linux) and
+/// `/Network/...` (macOS). Decided from the text alone, after `.` and `..`
+/// are folded, and ignoring case because macOS volumes usually do.
+#[cfg(unix)]
+fn reaches_network_mount(path: &Path) -> bool {
+    use std::borrow::Cow;
+    use std::path::Component;
+
+    let absolute = if path.is_absolute() {
+        Cow::Borrowed(path)
+    } else {
+        // `../` climbs from the process's directory, possibly up to `/`.
+        match std::env::current_dir() {
+            Ok(dir) => Cow::Owned(dir.join(path)),
+            Err(_) => return true,
+        }
+    };
+
+    let mut names = Vec::new();
+    for component in absolute.components() {
+        match component {
+            Component::Normal(name) => names.push(name),
+            Component::ParentDir => {
+                names.pop();
+            }
+            Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
+        }
+    }
+    names
+        .first()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.eq_ignore_ascii_case("net") || name.eq_ignore_ascii_case("Network")
+        })
 }
 
 #[cfg(any(unix, windows))]
@@ -658,6 +700,15 @@ fn canonicalize_path_to_file_url_uncached(token: &str) -> Option<String> {
     }
 
     let path = expand_tilde_path(raw_path).unwrap_or_else(|| PathBuf::from(raw_path));
+    // Hovering text runs this on the UI thread, and opening `\\server\...`
+    // connects to that server (sending the user's NTLM credentials), so a path
+    // the program printed that starts with two separators is never looked up.
+    // A share keeps its link, built from the text, and connects only when
+    // clicked; device paths (`\\?\`, `\\.\`) are not links.
+    if starts_with_two_separators(&path.to_string_lossy()) {
+        return unc_file_url(&path.to_string_lossy());
+    }
+
     // Relative paths without a pane directory resolve against the process's
     // one. A rooted path with no drive (`/usr/lib`) is MSYS or WSL output that
     // names another filesystem, so it is not a local link.
@@ -700,6 +751,27 @@ fn canonicalize_path_to_file_url_uncached(token: &str) -> Option<String> {
 #[cfg(not(any(unix, windows)))]
 fn canonicalize_path_to_file_url_uncached(_: &str) -> Option<String> {
     None
+}
+
+/// `\\` or `//`, in any mix: the start of a UNC or device path on Windows.
+#[cfg(any(windows, test))]
+fn starts_with_two_separators(path: &str) -> bool {
+    let mut chars = path.chars();
+    let is_separator = |c: Option<char>| matches!(c, Some('\\' | '/'));
+    is_separator(chars.next()) && is_separator(chars.next())
+}
+
+/// `file://server/share/...` for a `\\server\share\...` path (either
+/// separator), built from the text without touching the network. `None` for
+/// anything else that starts with two separators, such as `\\?\` and `\\.\`
+/// device paths.
+#[cfg(any(windows, test))]
+fn unc_file_url(path: &str) -> Option<String> {
+    let path = path.replace('/', "\\");
+    if !is_unc_path(&path) {
+        return None;
+    }
+    Some(format!("file://{}", path[2..].replace('\\', "/")))
 }
 
 fn has_windows_drive_prefix(path: &str) -> bool {
@@ -1222,6 +1294,136 @@ mod tests {
         assert_eq!(
             super::link_token_in_line(&line, 3),
             Some((1, 13, r".\src\main.rs".to_string()))
+        );
+    }
+
+    #[test]
+    fn unc_paths_become_file_urls_from_their_text() {
+        assert!(super::starts_with_two_separators(r"\\server\share"));
+        assert!(super::starts_with_two_separators("//server/share"));
+        assert!(super::starts_with_two_separators(r"/\server\share"));
+        assert!(!super::starts_with_two_separators(r"\server\share"));
+        assert!(!super::starts_with_two_separators(r"C:\dir"));
+
+        for path in [
+            r"\\attacker.invalid\share\dir\x.txt",
+            "//attacker.invalid/share/dir/x.txt",
+            r"\\attacker.invalid/share\dir/x.txt",
+        ] {
+            assert_eq!(
+                super::unc_file_url(path).as_deref(),
+                Some("file://attacker.invalid/share/dir/x.txt"),
+                "{path}"
+            );
+        }
+        for path in [
+            r"\\?\UNC\attacker.invalid\share\x.txt",
+            "//?/UNC/attacker.invalid/share/x.txt",
+            r"\\.\UNC\attacker.invalid\share\x.txt",
+            "//./pipe/name",
+            r"\\\attacker.invalid\share\x.txt",
+            r"\\attacker.invalid",
+        ] {
+            assert_eq!(super::unc_file_url(path), None, "{path}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_network_paths_are_not_looked_up_on_hover() {
+        // `.invalid` never resolves, so a filesystem lookup would fail (after
+        // an SMB timeout) and drop the link; getting one back proves none ran.
+        for token in [
+            r"\\attacker.invalid\share\x.txt",
+            r"\\attacker.invalid\share\x.txt:12:3",
+            r"\\attacker.invalid\share\x.txt(12,3)",
+            "//attacker.invalid/share/x.txt",
+            r"/\attacker.invalid\share\x.txt",
+            "file:////attacker.invalid/share/x.txt",
+        ] {
+            assert_eq!(
+                classify_link_token(token).as_deref(),
+                Some("file://attacker.invalid/share/x.txt"),
+                "{token}"
+            );
+        }
+        for token in [
+            r"\\?\UNC\attacker.invalid\share\x.txt",
+            "//?/UNC/attacker.invalid/share/x.txt",
+            "//./UNC/attacker.invalid/share/x.txt",
+            "//./pipe/name",
+            "file://attacker.invalid/share/x.txt",
+            "file://///attacker.invalid/share/x.txt",
+        ] {
+            assert_eq!(classify_link_token(token), None, "{token}");
+        }
+
+        // An OSC 7 directory on a share is not looked up either.
+        let share = PathBuf::from(r"\\attacker.invalid\share");
+        assert_eq!(
+            classify_link_token_in(r".\x.txt", Some(&share)).as_deref(),
+            Some("file://attacker.invalid/share/./x.txt")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_network_mounts_are_detected_from_the_path_text() {
+        use std::path::Path;
+
+        for path in [
+            "/net/attacker.invalid/share/x.txt",
+            "/Network/Servers/attacker.invalid/x.txt",
+            "//net/attacker.invalid/x.txt",
+            "/./net/attacker.invalid/x.txt",
+            "/tmp/../net/attacker.invalid/x.txt",
+            "/../../net/attacker.invalid/x.txt",
+            "/NET/attacker.invalid/x.txt",
+            "/network/attacker.invalid/x.txt",
+            "/net",
+        ] {
+            assert!(super::reaches_network_mount(Path::new(path)), "{path}");
+        }
+
+        // Enough `..` to climb from any process directory to `/`.
+        let climb = format!("{}net/attacker.invalid/x.txt", "../".repeat(64));
+        assert!(super::reaches_network_mount(Path::new(&climb)));
+
+        for path in [
+            "/tmp/net/x.txt",
+            "/netx/x.txt",
+            "/network-tools/x.txt",
+            "/net/../tmp/x.txt",
+            "/",
+        ] {
+            assert!(!super::reaches_network_mount(Path::new(path)), "{path}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_network_mounts_are_not_links() {
+        let climb = format!("{}net/attacker.invalid/x.txt", "../".repeat(64));
+        for token in [
+            "/net/attacker.invalid/share/x.txt",
+            "/net/attacker.invalid/share/x.txt:12:3",
+            "/Network/Servers/attacker.invalid/x.txt",
+            "//net/attacker.invalid/x.txt",
+            "file:///net/attacker.invalid/x.txt",
+            "file://localhost/net/attacker.invalid/x.txt",
+            "~/../../../../../../../../../../net/attacker.invalid/x.txt",
+            climb.as_str(),
+        ] {
+            assert_eq!(classify_link_token(token), None, "{token}");
+        }
+
+        // A program-reported OSC 7 directory under `/net` is not looked up.
+        let base = PathBuf::from("/net/attacker.invalid/share");
+        assert_eq!(classify_link_token_in("./x.txt", Some(&base)), None);
+        let base = PathBuf::from("/tmp");
+        assert_eq!(
+            classify_link_token_in("../net/attacker.invalid/x.txt", Some(&base)),
+            None
         );
     }
 

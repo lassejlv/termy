@@ -113,6 +113,19 @@ impl TerminalPane {
             cached_element_ids,
         }
     }
+
+    /// Moves a pane that is still in tmux to its new geometry, keeping its
+    /// terminal, render caches (cells, shaped rows, kitty textures) and
+    /// element ids, so the next frame repaints only what changed.
+    fn update_from_tmux_state(&mut self, state: &TmuxPaneState) {
+        self.left = state.left;
+        self.top = state.top;
+        self.width = state.width;
+        self.height = state.height;
+        self.tmux_mouse_mode = Some(state.mouse_mode);
+        // As before, a pane that tmux still has is no longer degraded.
+        self.degraded = false;
+    }
 }
 
 impl TerminalTab {

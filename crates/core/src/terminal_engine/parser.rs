@@ -4,8 +4,9 @@
 //! reusable buffer and are delivered only after a complete terminator. The
 //! generic string limit is 64 KiB. Kitty graphics APCs and OSC 52 clipboard
 //! writes, chosen by their first bytes, get their own larger bounds. OSC 1337
-//! inline images share the APC bound; the 3-byte prefix that selects it also
-//! covers OSC 133, whose small prompt marks never approach it.
+//! file transfers (`File=`, `MultipartFile=` and `FilePart=`) share the APC
+//! bound; every other OSC 1337 command, and OSC 133 shell integration, keeps
+//! the generic one.
 
 const MAX_PARAMS: usize = 32;
 const MAX_SUBPARAMS: usize = 8;
@@ -14,6 +15,11 @@ pub(super) const MAX_STRING_BYTES: usize = 64 * 1024;
 pub(super) const MAX_APC_BYTES: usize = 256 * 1024 * 1024;
 // Base64 for about 6 MiB of copied text, enough for large editor yanks.
 pub(super) const MAX_CLIPBOARD_OSC_BYTES: usize = 8 * 1024 * 1024;
+/// OSC 1337 commands that carry whole files and so get the APC bound.
+const FILE_TRANSFER_OSCS: [&[u8]; 3] = [b"1337;File=", b"1337;FilePart=", b"1337;MultipartFile="];
+/// Enough leading bytes to tell every string with a larger bound apart: the
+/// longest is `1337;MultipartFile=`.
+const PREFIX_BYTES: usize = FILE_TRANSFER_OSCS[2].len();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Param {
@@ -180,6 +186,12 @@ pub(super) trait Handler {
     fn pause_requested(&self) -> bool {
         false
     }
+
+    /// Like `pause_requested`, for [`Parser::advance_replay`], which checks
+    /// it only after string terminators and other state-machine bytes.
+    fn replay_pause_requested(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -218,7 +230,7 @@ pub(super) struct Parser {
     clipboard_limit: usize,
     // The current string's first bytes select its limit, even for scanners
     // that do not collect it. Bytes past `string_len` are stale.
-    prefix: [u8; 3],
+    prefix: [u8; PREFIX_BYTES],
     utf8_value: u32,
     utf8_remaining: u8,
     utf8_min: u8,
@@ -242,7 +254,7 @@ impl Default for Parser {
             apc_limit: MAX_STRING_BYTES,
             string_limit: MAX_STRING_BYTES,
             clipboard_limit: MAX_CLIPBOARD_OSC_BYTES,
-            prefix: [0; 3],
+            prefix: [0; PREFIX_BYTES],
             utf8_value: 0,
             utf8_remaining: 0,
             utf8_min: 0x80,
@@ -301,7 +313,14 @@ impl Parser {
     }
 
     pub(super) fn advance(&mut self, handler: &mut impl Handler, bytes: &[u8]) -> usize {
-        self.advance_impl::<true>(handler, bytes)
+        self.advance_impl::<true, false>(handler, bytes)
+    }
+
+    /// Replay a synchronized batch as [`Self::advance_uninterrupted`] does,
+    /// but stop where the handler asks with `replay_pause_requested`: after a
+    /// completed string, such as an image upload to decode.
+    pub(super) fn advance_replay(&mut self, handler: &mut impl Handler, bytes: &[u8]) -> usize {
+        self.advance_impl::<false, true>(handler, bytes)
     }
 
     /// Replay an already bounded synchronized batch without pausing on nested
@@ -311,10 +330,10 @@ impl Parser {
         handler: &mut impl Handler,
         bytes: &[u8],
     ) -> usize {
-        self.advance_impl::<false>(handler, bytes)
+        self.advance_impl::<false, false>(handler, bytes)
     }
 
-    fn advance_impl<const PAUSABLE: bool>(
+    fn advance_impl<const PAUSABLE: bool, const REPLAY_PAUSABLE: bool>(
         &mut self,
         handler: &mut impl Handler,
         bytes: &[u8],
@@ -433,7 +452,9 @@ impl Parser {
 
             self.advance_byte(handler, bytes[offset]);
             offset += 1;
-            if PAUSABLE && handler.pause_requested() {
+            if (PAUSABLE && handler.pause_requested())
+                || (REPLAY_PAUSABLE && handler.replay_pause_requested())
+            {
                 break;
             }
         }
@@ -674,14 +695,7 @@ impl Parser {
             let count = missing.len().min(bytes.len());
             missing[..count].copy_from_slice(&bytes[..count]);
         }
-        // Until the prefix is complete the string is far below every limit,
-        // so stale prefix bytes cannot affect the check.
-        let limit = match kind {
-            StringKind::Apc if self.prefix[0] == b'G' => self.apc_limit,
-            StringKind::Osc if self.prefix == *b"52;" => self.clipboard_limit,
-            StringKind::Osc if self.prefix == *b"133" => self.apc_limit,
-            _ => self.string_limit,
-        };
+        let limit = self.limit(kind, self.string_len + bytes.len(), true);
         if bytes.len() > limit.saturating_sub(self.string_len) {
             self.discarded = true;
             self.clear_string();
@@ -701,6 +715,23 @@ impl Parser {
             self.string.reserve_exact(capacity - self.string.len());
         }
         self.string.extend_from_slice(bytes);
+    }
+
+    /// The limit selected by the first `len` bytes of the current string.
+    /// While they may still grow into a selecting prefix (`open`), the larger
+    /// limit applies; so a prefix split across reads, or one longer than a
+    /// tiny configured limit, is not dropped before it is complete. Once it
+    /// is complete the whole string so far is checked against the right
+    /// limit, and `finish_string` checks a string that ended before then.
+    fn limit(&self, kind: StringKind, len: usize, open: bool) -> usize {
+        let seen = &self.prefix[..len.min(PREFIX_BYTES)];
+        let selects = |form: &[u8]| seen.starts_with(form) || (open && form.starts_with(seen));
+        match kind {
+            StringKind::Apc if selects(b"G") => self.apc_limit,
+            StringKind::Osc if selects(b"52;") => self.clipboard_limit,
+            StringKind::Osc if FILE_TRANSFER_OSCS.into_iter().any(selects) => self.apc_limit,
+            _ => self.string_limit,
+        }
     }
 
     // Keep allocation cleanup and string dispatch out of the ordinary CSI
@@ -728,7 +759,10 @@ impl Parser {
         let oversized_status = kind == StringKind::Osc
             && self.string.starts_with(b"7501;")
             && self.string_wire_len > 4092;
-        if !self.discarded && !oversized_status {
+        // A string shorter than a selecting prefix was only provisionally
+        // allowed the larger limit.
+        let oversized = self.string_len > self.limit(kind, self.string_len, false);
+        if !self.discarded && !oversized_status && !oversized {
             match kind {
                 StringKind::Osc => handler.osc_owned(&mut self.string, bell),
                 StringKind::Dcs => handler.dcs(&self.string),
@@ -814,6 +848,8 @@ impl Parser {
         writer.usize(self.string_len);
         writer.usize(self.string_wire_len);
         writer.bytes(&self.string);
+        // The format keeps three prefix bytes. A decoded parser that collects
+        // strings recovers the rest from its payload; see `read_snapshot`.
         writer.u8(self.prefix[0]);
         writer.u8(self.prefix[1]);
         writer.u8(self.prefix[2]);
@@ -890,7 +926,15 @@ impl Parser {
         {
             return Err(Corrupt("parser string"));
         }
-        parser.prefix = [reader.u8()?, reader.u8()?, reader.u8()?];
+        parser.prefix[..3].copy_from_slice(&[reader.u8()?, reader.u8()?, reader.u8()?]);
+        if parser.collect_strings {
+            let seen = parser.string.len().min(PREFIX_BYTES);
+            parser.prefix[..seen].copy_from_slice(&parser.string[..seen]);
+        }
+        // A scanner keeps no payload, so past three bytes its prefix is lost
+        // and the string keeps the generic limit. That only decides whether
+        // an ESC inside an oversized string ends it, which no well-formed
+        // file transfer contains.
         parser.utf8_value =
             u32::try_from(reader.varint()?).map_err(|_| Corrupt("parser scalar"))?;
         parser.utf8_remaining = reader.u8()?;

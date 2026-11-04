@@ -56,14 +56,22 @@ pub fn capture_pane_range_args<'a>(
 }
 
 pub fn parse_exit_reason(line: &[u8]) -> Option<String> {
-    std::str::from_utf8(line)
-        .ok()
-        .and_then(|value| value.strip_prefix("%exit"))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+    // The reason can name a session, and tmux does not promise UTF-8 there;
+    // decode lossily rather than dropping it.
+    let reason = String::from_utf8_lossy(line.strip_prefix(b"%exit")?);
+    let reason = reason.trim();
+    (!reason.is_empty()).then(|| reason.to_string())
 }
 
+/// Parse a live `%output`/`%extended-output` line into its pane id and the
+/// bytes the pane's program wrote.
+///
+/// The bytes are kept as written, apart from the legacy `ESC k` title
+/// sequence. In particular a bare LF stays a bare LF: tmux forwards what the
+/// pane's tty emitted (with ONLCR on, that is already CRLF), and a program that
+/// turns ONLCR off (`stty -onlcr`, curses in `nonl` mode) uses LF to move the
+/// cursor down in the same column (verified against tmux 3.4). Only capture
+/// output, whose rows are joined by bare LF, needs [`sanitize_tmux_payload`].
 pub fn parse_output_notification(line: &[u8]) -> Option<(String, Vec<u8>)> {
     if let Some(rest) = line.strip_prefix(b"%output ") {
         let split = rest.iter().position(|byte| *byte == b' ')?;
@@ -71,7 +79,7 @@ pub fn parse_output_notification(line: &[u8]) -> Option<(String, Vec<u8>)> {
         let payload = &rest[split + 1..];
         return Some((
             pane_id,
-            sanitize_tmux_payload(unescape_tmux_payload(payload)),
+            strip_legacy_title_sequences(unescape_tmux_payload(payload)),
         ));
     }
 
@@ -86,7 +94,7 @@ pub fn parse_output_notification(line: &[u8]) -> Option<(String, Vec<u8>)> {
         }
         return Some((
             pane_id,
-            sanitize_tmux_payload(unescape_tmux_payload(payload)),
+            strip_legacy_title_sequences(unescape_tmux_payload(payload)),
         ));
     }
 
@@ -123,7 +131,11 @@ pub(crate) fn parse_subscription_changed(
     line: &[u8],
 ) -> Option<(String, String, String, String, String)> {
     let rest = line.strip_prefix(b"%subscription-changed ")?;
-    let text = std::str::from_utf8(rest).ok()?;
+    // tmux writes the subscribed format's value raw, without escaping: a
+    // `#{pane_current_path}` subscription for a directory named `a\xffb`
+    // arrives as `... : /tmp/a<0xff>b` (verified against tmux 3.4). Decode
+    // lossily so the change is still delivered instead of silently dropped.
+    let text = String::from_utf8_lossy(rest);
     let mut fields = text.split(' ');
     let name = fields.next()?;
     let session = fields.next()?;
@@ -191,6 +203,10 @@ fn normalize_capture_payload(input: Vec<u8>) -> Vec<u8> {
     output
 }
 
+/// Normalize unescaped `capture-pane` output for feeding to a terminal: the
+/// captured rows are joined by bare LF, so each becomes CRLF to start the next
+/// row at column 0. Not for live `%output` data (see
+/// [`parse_output_notification`]).
 pub fn sanitize_tmux_payload(input: Vec<u8>) -> Vec<u8> {
     strip_legacy_title_sequences(normalize_capture_payload(input))
 }
@@ -227,7 +243,8 @@ pub fn strip_legacy_title_sequences(input: Vec<u8>) -> Vec<u8> {
 mod tests {
     use super::{
         capture_full_pane_args, capture_pane_range_args, parse_output_notification,
-        parse_subscription_changed, strip_legacy_title_sequences, unescape_tmux_payload,
+        parse_subscription_changed, sanitize_tmux_payload, strip_legacy_title_sequences,
+        unescape_tmux_payload,
     };
 
     #[test]
@@ -364,17 +381,39 @@ mod tests {
 
     #[test]
     fn parse_output_handles_standard_output_line() {
-        let (pane, bytes) = parse_output_notification(b"%output %3 hi\\012").expect("output");
+        let (pane, bytes) = parse_output_notification(b"%output %3 hi\\015\\012").expect("output");
         assert_eq!(pane, "%3");
         assert_eq!(bytes, b"hi\r\n");
     }
 
     #[test]
-    fn parse_output_preserves_crlf_without_double_insert() {
+    fn parse_output_keeps_bare_lf_and_crlf_as_written() {
+        // What tmux 3.4 sends for `stty -onlcr; printf 'raw:a\nb'`: the LF
+        // means "cursor down, same column" and must not gain a CR.
+        let (_, bytes) = parse_output_notification(b"%output %0 raw:a\\012b").expect("output");
+        assert_eq!(bytes, b"raw:a\nb");
+
         let (pane, bytes) =
             parse_output_notification(b"%output %5 hi\\015\\012there\\012").expect("output");
         assert_eq!(pane, "%5");
-        assert_eq!(bytes, b"hi\r\nthere\r\n");
+        assert_eq!(bytes, b"hi\r\nthere\n");
+
+        let (pane, bytes) =
+            parse_output_notification(b"%extended-output %6 0 : a\\012\\033kt\\033\\134b")
+                .expect("extended output");
+        assert_eq!(pane, "%6");
+        assert_eq!(bytes, b"a\nb");
+    }
+
+    #[test]
+    fn capture_payload_rows_become_crlf_without_double_insert() {
+        // Capture rows come back joined by bare LF; hydration needs CRLF so
+        // each row starts at column 0.
+        let captured = unescape_tmux_payload(b"row-1\nrow-2\r\n\\033[1mrow-3\\033kt\\033\\134");
+        assert_eq!(
+            sanitize_tmux_payload(captured),
+            b"row-1\r\nrow-2\r\n\x1b[1mrow-3"
+        );
     }
 
     #[test]

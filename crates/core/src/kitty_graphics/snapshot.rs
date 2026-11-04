@@ -433,10 +433,7 @@ impl KittyGraphicsState {
             if !state.images.contains_key(&placement.image_id) {
                 return Err(Corrupt("graphics placement"));
             }
-            if matches!(placement.location, PlacementLocation::Virtual) {
-                state.virtual_placements[placement.screen.index()] += 1;
-            }
-            state.placements.push(placement);
+            state.push_placement(placement);
         }
         if reader.bool()? {
             let command = read_command(reader)?;

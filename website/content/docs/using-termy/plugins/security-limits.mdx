@@ -3,19 +3,28 @@ title: Security and limits
 description: Understand plugin trust, import rules, isolation, reloads, and boundaries.
 ---
 
-Plugins are trusted Bun code, not sandboxed extensions. A handler can use async
-functions, `fetch`, `Bun.*`, Node-compatible standard-library APIs, files,
-subprocesses, network requests, and local relative TypeScript imports.
-
 <Callout type="warn">
-  Worker isolation protects Termy from many crashes and timeouts, but it does not
-  protect your account from a malicious plugin. Read the source before installing.
+  Plugins run with your full user permissions: they can read and write your
+  files, run programs and use the network. Only install plugins you trust.
 </Callout>
 
-Manifest capabilities gate Termy-owned APIs, not operating-system access. A plugin
-needs `storage` for `context.storage` and `context.paths`, and `native-ui` for views
-and `view.open`, but those declarations do not restrict Bun, Node built-ins,
-subprocesses, files, or the network.
+Termy does not sandbox plugins. A handler can use async functions, `fetch`,
+`Bun.*`, every Node built-in (including `node:fs`, `node:child_process`, and
+`node:net`), files, subprocesses, network requests, and local relative TypeScript
+imports, all with your user account's access.
+
+Worker isolation protects Termy from many crashes and timeouts, but it does not
+protect your account from a malicious plugin. Read the source before installing.
+Termy shows the warning above in **Settings → Plugins**, when you install from a
+folder there, and in the CLI before `termy plugin add`, `update`, and `dev`.
+
+## Capabilities are not a sandbox
+
+Manifest capabilities are Termy API access, not operating-system permissions. A
+plugin needs `storage` for `context.storage` and `context.paths`, and `native-ui`
+for views and `view.open`. A plugin without any capabilities can still read and
+write your files, run programs, and use the network: capabilities do not restrict
+Bun, Node built-ins, subprocesses, files, or the network.
 
 ## Imports and source validation
 
@@ -55,11 +64,16 @@ from 100 to 30,000 milliseconds.
 | --- | --- |
 | Installed plugins | 32 |
 | Source tree | 4,096 files and 16 MiB total |
-| Definitions | 512 commands, 64 settings, and 32 views per plugin |
+| Definitions | 512 commands, 64 settings, and 32 views per plugin; 512 commands across all plugins |
 | Command input | 16 inputs per command and 128 options per select or pick result |
 | Returned actions | 32 per invocation |
 | View params | 64 KiB JSON object |
 | Structured launch | 128 args and 4,096 characters per program/arg |
+
+A plugin that breaks a source rule or limit is skipped and reported, and the other
+plugins still load. When more than 32 plugins are enabled, Termy loads the first 32
+in ID order, and a plugin whose commands would take the catalog past 512 is left out
+the same way.
 
 Small persistent storage has separate limits documented under
 [Lifecycle and storage](/docs/using-termy/plugins/lifecycle-storage#store-json-values).

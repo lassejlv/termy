@@ -111,6 +111,55 @@ fn display_routes_cursor_and_clipboard_queries() {
 }
 
 #[test]
+fn passthrough_replies_answer_only_what_a_multiplexer_leaves_unanswered() {
+    #[derive(Default)]
+    struct Host {
+        replies: Vec<u8>,
+    }
+    impl TerminalReplyHost for Host {
+        fn load_clipboard(&mut self, _: TerminalClipboardTarget) -> Option<String> {
+            Some("hello".to_owned())
+        }
+        fn protocol_reply(&mut self, bytes: &[u8]) {
+            self.replies.extend_from_slice(bytes);
+        }
+    }
+    // tmux answers the first row itself; nobody answers the second in a
+    // plain tmux client. The last row passes through to this terminal.
+    let queries: &[u8] = b"\x1b[c\x1b[>c\x1b[6n\x1b[5n\x1b[>q\x1b[18t\x1b]11;?\x1b\\\
+        \x1b[?6n\x1b[?2004$p\x1b[4$p\x1bP$qm\x1b\\\x1bP+q544e\x1b\\\x1bZ\x1b]7501;?\x1b\\\
+        \x1b[?u\x1b[?5522$p\x1b_Ga=q,i=7,s=1,v=1,f=24;AAAA\x1b\\\x1b]52;c;?\x1b\\";
+    let passthrough = b"\x1b[?0u\x1b[?5522;2$y\x1b_Gi=7;OK\x1b\\\x1b]52;c;aGVsbG8=\x1b\\";
+
+    let terminal = display(20, 4);
+    terminal.set_protocol_replies(crate::TerminalProtocolReplies::Passthrough);
+    terminal.feed_output(queries);
+    let mut host = Host::default();
+    terminal.drain_events(&mut host);
+    assert_eq!(host.replies, passthrough);
+
+    // A restored snapshot's engine keeps the host's choice.
+    let snapshot = terminal.encode_snapshot();
+    terminal.restore_snapshot(&snapshot).unwrap();
+    terminal.feed_output(b"\x1b[c\x1b[?u");
+    let mut host = Host::default();
+    terminal.drain_events(&mut host);
+    assert_eq!(host.replies, b"\x1b[?0u");
+
+    // Back to answering everything, and to nothing for a replica.
+    terminal.set_protocol_replies(crate::TerminalProtocolReplies::All);
+    terminal.feed_output(b"\x1b[5n\x1b[?u");
+    let mut host = Host::default();
+    terminal.drain_events(&mut host);
+    assert_eq!(host.replies, b"\x1b[0n\x1b[?0u");
+    terminal.set_protocol_replies(crate::TerminalProtocolReplies::None);
+    terminal.feed_output(queries);
+    let mut host = Host::default();
+    terminal.drain_events(&mut host);
+    assert!(host.replies.is_empty());
+}
+
+#[test]
 fn image_uploads_decoded_outside_the_lock_keep_stream_order() {
     struct Host {
         replies: Vec<u8>,
@@ -134,6 +183,41 @@ fn image_uploads_decoded_outside_the_lock_keep_stream_order() {
     // The one-cell image leaves the cursor right after it, as in kitty.
     assert_eq!(host.replies, b"\x1b[1;3R\x1b_Gi=5;OK\x1b\\\x1b[1;4R");
     assert_eq!(terminal.kitty_graphics_placements().len(), 1);
+}
+
+#[test]
+fn uploads_in_a_synchronized_update_decode_outside_the_lock_in_stream_order() {
+    struct Host {
+        replies: Vec<u8>,
+    }
+    impl TerminalReplyHost for Host {
+        fn load_clipboard(&mut self, _: TerminalClipboardTarget) -> Option<String> {
+            None
+        }
+        fn protocol_reply(&mut self, bytes: &[u8]) {
+            self.replies.extend_from_slice(bytes);
+        }
+    }
+    let batch = b"\x1b[?2026hhi\x1b[6n\x1b_Ga=T,f=32,s=1,v=1,i=5;AQID/w==\x1b\\\x1b[6n\
+        \x1b_Ga=T,f=32,s=1,v=1,i=6;AQID/w==\x1b\\\x1b[6n\x1b[?2026l";
+    // One display slice, and (behind cursor-home padding) the sliced path.
+    let padded = [b"\x1b[H".repeat(2 * PARSE_BATCH).as_slice(), batch].concat();
+    for input in [batch.as_slice(), &padded] {
+        let terminal = display(20, 4);
+        terminal.feed_output(input);
+        let mut host = Host {
+            replies: Vec::new(),
+        };
+        terminal.drain_events(&mut host);
+        // Each upload is committed, and the update replayed past it, before
+        // the next: nothing is left for a later feed.
+        assert_eq!(
+            host.replies,
+            b"\x1b[1;3R\x1b_Gi=5;OK\x1b\\\x1b[1;4R\x1b_Gi=6;OK\x1b\\\x1b[1;5R"
+        );
+        assert_eq!(terminal.kitty_graphics_placements().len(), 2);
+        assert!(!terminal.shared.state().engine.modes().synchronized_update);
+    }
 }
 
 #[test]

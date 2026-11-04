@@ -55,6 +55,10 @@ by native, display-only, tmux and persistent Termy sessions.
   an engine and to its decoded copy and compare canonical encodings.
 - `sync.rs` buffers synchronized output with a 2 MiB limit and a 150 ms timeout.
   A syntax-aware marker scanner preserves ordering across fragmented strings.
+  A deferring feed replays a committed update up to each completed image
+  upload, so the runtime decodes it off the engine lock as it does outside an
+  update; committing the image resumes the replay, and the mode stays set
+  until the update is applied. Watchdog, exit and hydration commits stay inline.
 - `graphics.rs` applies image commands and ordered scroll/clear effects inside
   the same parser commits as text. Upload chunks do not scan the viewport for
   Unicode placeholders; visual mutations invalidate placeholder placement state.

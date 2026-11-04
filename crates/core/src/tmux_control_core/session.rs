@@ -156,9 +156,30 @@ mod tests {
         let output = session.send_command("display-message -p termy-ok");
         assert!(output.is_ok(), "send_command failed: {output:?}");
 
-        // A failing command makes tmux skip the rest of the `;` list (including
-        // the completion token); it must fail fast and leave the channel usable.
-        let failed = session.send_command("select-pane -t %999");
+        // Text that consumes the rest of its line must not hide the completion
+        // token: a trailing comment, an unquoted `#{...}` (also a comment), an
+        // unterminated quote (closed at the end of the line), and a line that
+        // is nothing but a comment.
+        let output = session
+            .send_command("display-message -p termy-commented # note ; display-message -p x")
+            .expect("command ending in a comment must complete");
+        assert_eq!(output.trim_end(), "termy-commented");
+        session
+            .send_command("display-message -p #{pane_id}")
+            .expect("unquoted format is a comment, the command still completes");
+        let output = session
+            .send_command("display-message -p 'termy-open ; display-message -p x")
+            .expect("unterminated quote must complete");
+        assert_eq!(output.trim_end(), "termy-open ; display-message -p x");
+        let output = session
+            .send_command("# only a comment")
+            .expect("comment-only command must complete");
+        assert_eq!(output, "");
+
+        // A failing command makes tmux skip the rest of its `;` list; the
+        // completion token is on its own line, so the request still completes,
+        // with the error, and the channel stays usable.
+        let failed = session.send_command("select-pane -t %999 ; display-message -p x");
         let error = failed.expect_err("select-pane on a missing pane should fail");
         assert!(
             error.message.contains("can't find pane"),
@@ -198,9 +219,114 @@ mod tests {
                 })
         );
 
+        // Live output keeps a bare LF: with ONLCR off it means "cursor down,
+        // same column", and tmux forwards it unchanged.
+        session
+            .send_command(r#"send-keys -l 'stty -onlcr; printf "termy-lf:a\\nb\\n"; stty onlcr'"#)
+            .expect("type onlcr-off printf");
+        session.send_command("send-keys Enter").expect("send-keys");
+        let mut live = Vec::new();
+        for _ in 0..40 {
+            for notification in session.poll() {
+                if let TmuxNotification::Output { bytes, .. } = notification {
+                    live.extend_from_slice(&bytes);
+                }
+            }
+            if live.windows(12).any(|w| w == b"termy-lf:a\nb") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            live.windows(12).any(|w| w == b"termy-lf:a\nb"),
+            "bare LF was rewritten: {:?}",
+            String::from_utf8_lossy(&live)
+        );
+
+        // Non-UTF-8 bytes must not end control mode. For a directory named with
+        // a raw 0xff byte, tmux octal-escapes the byte in formats but writes it
+        // raw in `%subscription-changed`; `show-buffer` prints stored bytes raw
+        // inside its %begin/%end block (to a UTF-8 client).
+        let raw_dir_prefix = format!("/tmp/termy-ctrl-{}-", std::process::id());
+        let raw_dir = {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = raw_dir_prefix.clone().into_bytes();
+            bytes.extend_from_slice(b"a\xffb");
+            std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes))
+        };
+        // APFS (macOS) refuses names that are not valid UTF-8, so the
+        // directory half of this check only runs where the filesystem allows it.
+        let raw_dir_created = match std::fs::create_dir_all(&raw_dir) {
+            Ok(()) => true,
+            Err(error) if error.raw_os_error() == Some(libc::EILSEQ) => false,
+            Err(error) => panic!("create non-utf8 directory: {error}"),
+        };
+        if raw_dir_created {
+            session
+                .send_command("refresh-client -B 'termy_path:%*:#{pane_current_path}'")
+                .expect("subscribe to pane path");
+            session
+                .send_command(&format!(
+                    r#"send-keys -l 'cd "$(printf "{raw_dir_prefix}a\\377b")"'"#
+                ))
+                .expect("type cd into non-utf8 directory");
+            session.send_command("send-keys Enter").expect("send-keys");
+            let mut path = String::new();
+            let mut subscription = None;
+            for _ in 0..80 {
+                for notification in session.poll() {
+                    if let TmuxNotification::SubscriptionChanged { name, value, .. } = notification
+                        && name == "termy_path"
+                        && value.ends_with("a\u{fffd}b")
+                    {
+                        subscription = Some(value);
+                    }
+                }
+                path = session
+                    .send_command("display-message -p '#{q:pane_current_path}'")
+                    .expect("query pane path");
+                if path.contains(r"a\377b") && subscription.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert!(path.contains(r"a\377b"), "{path:?}");
+            assert!(
+                subscription.is_some(),
+                "non-utf8 subscription value was dropped"
+            );
+        }
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let status = Command::new("tmux")
+                .args(["-L", &socket, "set-buffer", "-b", "termy-raw"])
+                .arg(std::ffi::OsStr::from_bytes(b"b\xffb"))
+                .status()
+                .expect("run tmux set-buffer");
+            assert!(status.success(), "tmux set-buffer failed: {status}");
+        }
+        // tmux prints the byte raw to a UTF-8 client and as `_` otherwise; the
+        // client is UTF-8 when this test runs under a UTF-8 locale.
+        let buffer = session
+            .send_command("show-buffer -b termy-raw")
+            .expect("show-buffer with a non-utf8 byte must complete");
+        assert!(
+            matches!(buffer.trim_end(), "b\u{fffd}b" | "b_b"),
+            "{buffer:?}"
+        );
+        let output = session
+            .send_command("display-message -p termy-after-raw-bytes")
+            .expect("channel must stay usable after non-utf8 output");
+        assert_eq!(output.trim_end(), "termy-after-raw-bytes");
+        assert!(
+            session.fatal_exit().is_none(),
+            "non-utf8 output ended control mode"
+        );
+
         drop(session);
         let _ = Command::new("tmux")
             .args(["-L", &socket, "kill-server"])
             .output();
+        let _ = std::fs::remove_dir(&raw_dir);
     }
 }

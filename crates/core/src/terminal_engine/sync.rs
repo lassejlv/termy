@@ -24,6 +24,10 @@ pub(super) struct SynchronizedUpdate {
     deadline: Option<Instant>,
     started: Option<Instant>,
     saved_mode: Option<bool>,
+    /// A committed update whose replay stopped at an image upload, so it
+    /// could be decoded without the engine lock: its bytes and how many of
+    /// them have been applied.
+    replay: Option<(Vec<u8>, usize)>,
 }
 
 impl Default for SynchronizedUpdate {
@@ -34,6 +38,7 @@ impl Default for SynchronizedUpdate {
             deadline: None,
             started: None,
             saved_mode: None,
+            replay: None,
         }
     }
 }
@@ -46,6 +51,12 @@ pub(super) struct Buffered {
 impl SynchronizedUpdate {
     pub(super) fn deadline(&self) -> Option<Instant> {
         self.deadline
+    }
+
+    /// Neither buffering an update nor partway through replaying one.
+    #[inline]
+    pub(super) fn idle(&self) -> bool {
+        self.deadline.is_none() && self.replay.is_none()
     }
 
     pub(super) fn begin(&mut self, now: Instant, saved_mode: Option<bool>) {
@@ -92,13 +103,62 @@ impl SynchronizedUpdate {
         bytes.shrink_to(RETAINED_SYNC_BYTES);
         self.bytes = bytes;
     }
+
+    /// Stop buffering and hold the bytes for [`Self::replay_rest`]. False
+    /// when no update is pending.
+    pub(super) fn begin_replay(&mut self) -> bool {
+        debug_assert!(self.replay.is_none());
+        let Some(bytes) = self.take_buffer() else {
+            return false;
+        };
+        self.replay = Some((bytes, 0));
+        true
+    }
+
+    pub(super) fn replaying(&self) -> bool {
+        self.replay.is_some()
+    }
+
+    /// The bytes of the update being replayed that are not applied yet.
+    pub(super) fn replay_rest(&self) -> &[u8] {
+        self.replay
+            .as_ref()
+            .map_or(&[], |(bytes, applied)| &bytes[*applied..])
+    }
+
+    pub(super) fn replayed(&mut self, consumed: usize) {
+        if let Some((_, applied)) = &mut self.replay {
+            *applied += consumed;
+        }
+    }
+
+    pub(super) fn finish_replay(&mut self) {
+        if let Some((bytes, _)) = self.replay.take() {
+            self.recycle_buffer(bytes);
+        }
+    }
 }
 
 impl SynchronizedUpdate {
     /// A pending update: its buffered bytes, marker scanner and the time
     /// left before it must commit. Timing is relative, so the decoded
     /// update commits no later than the original would have.
+    ///
+    /// The unapplied rest of a paused replay is written as an update that is
+    /// already due, so the decoded engine applies it at its next feed. The
+    /// upload the replay stopped at is being decoded outside the engine, and
+    /// is left out like any upload in flight.
     pub(super) fn write_snapshot(&self, writer: &mut super::snapshot::Writer) {
+        if self.replay.is_some() {
+            debug_assert!(self.deadline.is_none());
+            writer.bool(true);
+            writer.bytes(self.replay_rest());
+            self.scanner.write_snapshot(writer);
+            writer.option_bool(self.saved_mode);
+            writer.varint(0);
+            writer.varint(0);
+            return;
+        }
         let Some(deadline) = self.deadline else {
             writer.bool(false);
             return;

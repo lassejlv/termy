@@ -544,6 +544,15 @@ async function handleLoad(plugins: PluginSource[]): Promise<unknown> {
       && result.views
       && result.settings
     ) {
+      // Plugins arrive in ID order, so the limit always leaves out the same
+      // plugins and the others still load.
+      if (commandCount + result.commands.length > MAX_PLUGIN_COMMANDS) {
+        if (!result.reused) terminateRecord(result.record);
+        errors.push(
+          `${result.source.id}: not loaded; the plugin catalog would exceed ${MAX_PLUGIN_COMMANDS} commands`,
+        );
+        continue;
+      }
       nextRecords.set(result.source.id, result.record);
       commandCount += result.commands.length;
       pluginsResult.push({
@@ -556,14 +565,6 @@ async function handleLoad(plugins: PluginSource[]): Promise<unknown> {
     } else {
       errors.push(`${result.source.id}: ${result.error || "failed to load"}`);
     }
-  }
-  if (commandCount > MAX_PLUGIN_COMMANDS) {
-    for (const result of loaded) {
-      if (result.record && !result.reused) terminateRecord(result.record);
-    }
-    throw new Error(
-      `Plugin catalog has ${commandCount} commands; maximum is ${MAX_PLUGIN_COMMANDS}`,
-    );
   }
   for (const [pluginId, record] of records) {
     if (nextRecords.get(pluginId) !== record) terminateRecord(record);
