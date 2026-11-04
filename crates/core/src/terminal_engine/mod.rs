@@ -159,7 +159,9 @@ impl Engine {
     /// completes, without decoding it, and returns the bytes consumed. The
     /// caller decodes [`Self::take_deferred_upload`] (e.g. without holding a
     /// lock), passes the result to [`Self::commit_upload`], then feeds the
-    /// rest. Uploads inside a synchronized update are still applied inline.
+    /// rest. A synchronized update this feed commits is replayed the same
+    /// way: its replay stops after each upload, and `commit_upload` resumes
+    /// it, so the batch is still applied in order before any later output.
     ///
     /// It also stops right after a clipboard request (OSC 52 query or kitty
     /// OSC 5522 packet): replies drained then answer output before the
@@ -183,7 +185,17 @@ impl Engine {
         self.state.take_deferred_upload()
     }
 
+    /// Commit a decoded [`Self::take_deferred_upload`]. When the upload
+    /// paused a synchronized update's replay, the replay continues and may
+    /// stop at its next upload, so check `take_deferred_upload` again.
     pub(crate) fn commit_upload(&mut self, prepared: KittyPreparedUpload) {
+        self.commit_upload_now(prepared);
+        if self.synchronized_update.replaying() {
+            self.replay_synchronized_update(true);
+        }
+    }
+
+    fn commit_upload_now(&mut self, prepared: KittyPreparedUpload) {
         // The caller may have read history while the upload decoded, and the
         // placement's cursor advance can scroll (and evict) history.
         self.state.grid.release_history_read_cache();
@@ -215,7 +227,7 @@ impl Engine {
         // Most feeds are one parse pass with nothing deferred or buffered.
         if bytes.len() <= PARSE_CHUNK
             && !self.state.has_deferred_upload()
-            && self.synchronized_update_deadline().is_none()
+            && self.synchronized_update.idle()
         {
             self.state.reset_animation_work();
             self.state.grid.prepare_output(bytes.len());
@@ -246,7 +258,7 @@ impl Engine {
             || !self.parser.at_ground()
             || self.state.has_deferred_upload()
             || self.state.modes.synchronized_update
-            || self.synchronized_update_deadline().is_some()
+            || !self.synchronized_update.idle()
             || !self.state.print_ascii_cell(byte)
         {
             return false;
@@ -297,23 +309,28 @@ impl Engine {
         if self.state.has_deferred_upload()
             && let Some(upload) = self.state.take_deferred_upload()
         {
-            self.commit_upload(upload.prepare());
+            self.commit_upload_now(upload.prepare());
+        }
+        // The rest of a replay that stopped at an upload precedes new output.
+        if self.synchronized_update.replaying() && !self.replay_synchronized_update(defer_uploads) {
+            return 0;
         }
         self.state.reset_animation_work();
         self.state.grid.prepare_output(bytes.len());
         if self
             .synchronized_update_deadline()
             .is_some_and(|deadline| deadline <= now())
+            && !self.commit_synchronized_update(defer_uploads)
         {
-            self.stop_synchronized_update();
+            return 0;
         }
         let mut offset = 0;
         while offset < bytes.len() {
             if self.synchronized_update_deadline().is_some() {
                 let buffered = self.synchronized_update.push(&bytes[offset..], now());
                 offset += buffered.consumed;
-                if buffered.commit {
-                    self.stop_synchronized_update();
+                if buffered.commit && !self.commit_synchronized_update(defer_uploads) {
+                    break;
                 }
             } else {
                 let end = offset.saturating_add(PARSE_CHUNK).min(bytes.len());
@@ -337,19 +354,68 @@ impl Engine {
 
     /// Commit pending output atomically through the existing parser and grid.
     /// Returns false when there is no pending batch (including stale watchdogs).
+    ///
+    /// A replay that [`Self::feed_deferring_uploads`] stopped at an upload is
+    /// finished here, decoding the upload inline, unless its feeder took the
+    /// upload to decode: then that feeder's `commit_upload` finishes it, so
+    /// the image still lands before the bytes after it.
     pub fn stop_synchronized_update(&mut self) -> bool {
         self.state.grid.release_history_read_cache();
-        let Some(bytes) = self.synchronized_update.take_buffer() else {
+        if self.synchronized_update.replaying() {
+            let Some(upload) = self.state.take_deferred_upload() else {
+                return false;
+            };
+            self.commit_upload_now(upload.prepare());
+            return self.replay_synchronized_update(false);
+        }
+        if !self.synchronized_update.begin_replay() {
             return false;
-        };
-        for chunk in bytes.chunks(PARSE_CHUNK) {
-            self.parser.advance_uninterrupted(&mut self.state, chunk);
+        }
+        self.replay_synchronized_update(false)
+    }
+
+    /// Apply the buffered update, as `stop_synchronized_update` does, from a
+    /// feed. Returns false when the replay stopped at an upload to decode.
+    fn commit_synchronized_update(&mut self, defer_uploads: bool) -> bool {
+        self.state.grid.release_history_read_cache();
+        !self.synchronized_update.begin_replay() || self.replay_synchronized_update(defer_uploads)
+    }
+
+    /// Apply the rest of a committed update, in bounded segments. Deferring,
+    /// a completed upload stops it as it stops `feed_deferring_uploads`, so
+    /// the image decodes off the engine lock instead of under it; returns
+    /// false then, with the update still in progress. The mode stays set
+    /// until the update is applied, so the runtime does not request a frame
+    /// of a half-applied update.
+    fn replay_synchronized_update(&mut self, defer_uploads: bool) -> bool {
+        loop {
+            let rest = self.synchronized_update.replay_rest();
+            if rest.is_empty() {
+                break;
+            }
+            let chunk = &rest[..rest.len().min(PARSE_CHUNK)];
+            let consumed = if defer_uploads {
+                self.state.set_defer_uploads(true);
+                let consumed = self.parser.advance_replay(&mut self.state, chunk);
+                self.state.set_defer_uploads(false);
+                // Only uploads stop a replay; clipboard requests in it
+                // answer in order, as before.
+                self.state.clipboard_pause = false;
+                consumed
+            } else {
+                self.parser.advance_uninterrupted(&mut self.state, chunk)
+            };
             self.state.grid.flush_pending_clear();
             self.state.flush_graphics_effects();
+            self.synchronized_update.replayed(consumed);
+            if self.state.has_deferred_upload() {
+                self.generation = self.generation.wrapping_add(1);
+                return false;
+            }
         }
+        self.synchronized_update.finish_replay();
         self.state.modes.synchronized_update = false;
         self.state.flush_graphics_effects();
-        self.synchronized_update.recycle_buffer(bytes);
         self.generation = self.generation.wrapping_add(1);
         true
     }

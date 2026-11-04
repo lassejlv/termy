@@ -186,6 +186,12 @@ pub(super) trait Handler {
     fn pause_requested(&self) -> bool {
         false
     }
+
+    /// Like `pause_requested`, for [`Parser::advance_replay`], which checks
+    /// it only after string terminators and other state-machine bytes.
+    fn replay_pause_requested(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -307,7 +313,14 @@ impl Parser {
     }
 
     pub(super) fn advance(&mut self, handler: &mut impl Handler, bytes: &[u8]) -> usize {
-        self.advance_impl::<true>(handler, bytes)
+        self.advance_impl::<true, false>(handler, bytes)
+    }
+
+    /// Replay a synchronized batch as [`Self::advance_uninterrupted`] does,
+    /// but stop where the handler asks with `replay_pause_requested`: after a
+    /// completed string, such as an image upload to decode.
+    pub(super) fn advance_replay(&mut self, handler: &mut impl Handler, bytes: &[u8]) -> usize {
+        self.advance_impl::<false, true>(handler, bytes)
     }
 
     /// Replay an already bounded synchronized batch without pausing on nested
@@ -317,10 +330,10 @@ impl Parser {
         handler: &mut impl Handler,
         bytes: &[u8],
     ) -> usize {
-        self.advance_impl::<false>(handler, bytes)
+        self.advance_impl::<false, false>(handler, bytes)
     }
 
-    fn advance_impl<const PAUSABLE: bool>(
+    fn advance_impl<const PAUSABLE: bool, const REPLAY_PAUSABLE: bool>(
         &mut self,
         handler: &mut impl Handler,
         bytes: &[u8],
@@ -439,7 +452,9 @@ impl Parser {
 
             self.advance_byte(handler, bytes[offset]);
             offset += 1;
-            if PAUSABLE && handler.pause_requested() {
+            if (PAUSABLE && handler.pause_requested())
+                || (REPLAY_PAUSABLE && handler.replay_pause_requested())
+            {
                 break;
             }
         }

@@ -630,6 +630,10 @@ impl Handler for State {
             || self.clipboard_pause
     }
 
+    fn replay_pause_requested(&self) -> bool {
+        self.has_deferred_upload()
+    }
+
     fn print(&mut self, character: char) {
         self.grid.flush_pending_clear();
         let character = if self.charsets[self.active_charset] {

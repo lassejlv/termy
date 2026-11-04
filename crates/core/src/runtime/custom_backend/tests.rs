@@ -137,6 +137,41 @@ fn image_uploads_decoded_outside_the_lock_keep_stream_order() {
 }
 
 #[test]
+fn uploads_in_a_synchronized_update_decode_outside_the_lock_in_stream_order() {
+    struct Host {
+        replies: Vec<u8>,
+    }
+    impl TerminalReplyHost for Host {
+        fn load_clipboard(&mut self, _: TerminalClipboardTarget) -> Option<String> {
+            None
+        }
+        fn protocol_reply(&mut self, bytes: &[u8]) {
+            self.replies.extend_from_slice(bytes);
+        }
+    }
+    let batch = b"\x1b[?2026hhi\x1b[6n\x1b_Ga=T,f=32,s=1,v=1,i=5;AQID/w==\x1b\\\x1b[6n\
+        \x1b_Ga=T,f=32,s=1,v=1,i=6;AQID/w==\x1b\\\x1b[6n\x1b[?2026l";
+    // One display slice, and (behind cursor-home padding) the sliced path.
+    let padded = [b"\x1b[H".repeat(2 * PARSE_BATCH).as_slice(), batch].concat();
+    for input in [batch.as_slice(), &padded] {
+        let terminal = display(20, 4);
+        terminal.feed_output(input);
+        let mut host = Host {
+            replies: Vec::new(),
+        };
+        terminal.drain_events(&mut host);
+        // Each upload is committed, and the update replayed past it, before
+        // the next: nothing is left for a later feed.
+        assert_eq!(
+            host.replies,
+            b"\x1b[1;3R\x1b_Gi=5;OK\x1b\\\x1b[1;4R\x1b_Gi=6;OK\x1b\\\x1b[1;5R"
+        );
+        assert_eq!(terminal.kitty_graphics_placements().len(), 2);
+        assert!(!terminal.shared.state().engine.modes().synchronized_update);
+    }
+}
+
+#[test]
 fn clipboard_reply_echoes_only_known_selection_targets() {
     struct Host {
         replies: Vec<u8>,
