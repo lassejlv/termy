@@ -254,16 +254,48 @@ mod tests {
             bytes.extend_from_slice(b"a\xffb");
             std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes))
         };
-        std::fs::create_dir_all(&raw_dir).expect("create non-utf8 directory");
-        session
-            .send_command("refresh-client -B 'termy_path:%*:#{pane_current_path}'")
-            .expect("subscribe to pane path");
-        session
-            .send_command(&format!(
-                r#"send-keys -l 'cd "$(printf "{raw_dir_prefix}a\\377b")"'"#
-            ))
-            .expect("type cd into non-utf8 directory");
-        session.send_command("send-keys Enter").expect("send-keys");
+        // APFS (macOS) refuses names that are not valid UTF-8, so the
+        // directory half of this check only runs where the filesystem allows it.
+        let raw_dir_created = match std::fs::create_dir_all(&raw_dir) {
+            Ok(()) => true,
+            Err(error) if error.raw_os_error() == Some(libc::EILSEQ) => false,
+            Err(error) => panic!("create non-utf8 directory: {error}"),
+        };
+        if raw_dir_created {
+            session
+                .send_command("refresh-client -B 'termy_path:%*:#{pane_current_path}'")
+                .expect("subscribe to pane path");
+            session
+                .send_command(&format!(
+                    r#"send-keys -l 'cd "$(printf "{raw_dir_prefix}a\\377b")"'"#
+                ))
+                .expect("type cd into non-utf8 directory");
+            session.send_command("send-keys Enter").expect("send-keys");
+            let mut path = String::new();
+            let mut subscription = None;
+            for _ in 0..80 {
+                for notification in session.poll() {
+                    if let TmuxNotification::SubscriptionChanged { name, value, .. } = notification
+                        && name == "termy_path"
+                        && value.ends_with("a\u{fffd}b")
+                    {
+                        subscription = Some(value);
+                    }
+                }
+                path = session
+                    .send_command("display-message -p '#{q:pane_current_path}'")
+                    .expect("query pane path");
+                if path.contains(r"a\377b") && subscription.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert!(path.contains(r"a\377b"), "{path:?}");
+            assert!(
+                subscription.is_some(),
+                "non-utf8 subscription value was dropped"
+            );
+        }
         {
             use std::os::unix::ffi::OsStrExt;
             let status = Command::new("tmux")
@@ -273,30 +305,6 @@ mod tests {
                 .expect("run tmux set-buffer");
             assert!(status.success(), "tmux set-buffer failed: {status}");
         }
-        let mut path = String::new();
-        let mut subscription = None;
-        for _ in 0..80 {
-            for notification in session.poll() {
-                if let TmuxNotification::SubscriptionChanged { name, value, .. } = notification
-                    && name == "termy_path"
-                    && value.ends_with("a\u{fffd}b")
-                {
-                    subscription = Some(value);
-                }
-            }
-            path = session
-                .send_command("display-message -p '#{q:pane_current_path}'")
-                .expect("query pane path");
-            if path.contains(r"a\377b") && subscription.is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        assert!(path.contains(r"a\377b"), "{path:?}");
-        assert!(
-            subscription.is_some(),
-            "non-utf8 subscription value was dropped"
-        );
         // tmux prints the byte raw to a UTF-8 client and as `_` otherwise; the
         // client is UTF-8 when this test runs under a UTF-8 locale.
         let buffer = session
