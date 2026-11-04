@@ -1,7 +1,7 @@
 use super::*;
 use std::io::Write as _;
 
-fn size() -> TerminalSize {
+pub(super) fn size() -> TerminalSize {
     TerminalSize {
         cols: 80,
         rows: 24,
@@ -10,14 +10,14 @@ fn size() -> TerminalSize {
     }
 }
 
-fn command(control: &str, payload: &[u8]) -> KittyGraphicsCommand {
+pub(super) fn command(control: &str, payload: &[u8]) -> KittyGraphicsCommand {
     KittyGraphicsCommand::parse(
         [control.as_bytes(), b";", BASE64.encode(payload).as_bytes()].concat(),
         false,
     )
 }
 
-fn one_pixel_png() -> Vec<u8> {
+pub(super) fn one_pixel_png() -> Vec<u8> {
     let mut png = Vec::new();
     {
         let mut encoder = png::Encoder::new(&mut png, 1, 1);
@@ -1292,7 +1292,7 @@ fn compositions_write_into_unshared_frames_in_place() {
 
 /// Whether every placement's image is stored, every relative placement's
 /// parent exists and the stored bytes are counted right.
-fn placements_are_consistent(state: &KittyGraphicsState) -> bool {
+pub(super) fn placements_are_consistent(state: &KittyGraphicsState) -> bool {
     let placements = state.placements.iter().all(|placement| {
         state.images.contains_key(&placement.image_id)
             && match placement.location {
@@ -1307,7 +1307,27 @@ fn placements_are_consistent(state: &KittyGraphicsState) -> bool {
             }
     });
     let stored: usize = state.images.values().map(StoredImage::byte_len).sum();
-    placements && state.stored_bytes == stored
+    let relative = state
+        .placements
+        .iter()
+        .filter(|placement| matches!(placement.location, PlacementLocation::Relative { .. }))
+        .count();
+    let virtual_on = |screen: KittyGraphicsScreen| {
+        state
+            .placements
+            .iter()
+            .filter(|placement| {
+                placement.screen == screen
+                    && matches!(placement.location, PlacementLocation::Virtual)
+            })
+            .count()
+    };
+    placements
+        && state.stored_bytes == stored
+        && state.relative_placements == relative
+        && [KittyGraphicsScreen::Primary, KittyGraphicsScreen::Alternate]
+            .into_iter()
+            .all(|screen| state.virtual_placements[screen.index()] == virtual_on(screen))
 }
 
 fn placed(state: &KittyGraphicsState, image_id: u32) -> bool {
@@ -1338,7 +1358,7 @@ fn placed_images_make_room_oldest_first_sparing_the_viewport() {
         state.images.insert(id, image.clone());
         state.insertion_order.push_back(id);
         state.next_placement_serial += 1;
-        state.placements.push(Placement {
+        state.placements.push_back(Placement {
             placement_serial: state.next_placement_serial,
             image_id: id,
             location: PlacementLocation::Direct {
