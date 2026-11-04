@@ -14,7 +14,7 @@ pub use geometry::{
     GraphicsDisplayLayout, GraphicsRowSpan, graphics_display_layout, graphics_display_size,
 };
 pub use image::GraphicsImage;
-pub use shared_memory::read_graphics_shared_memory;
+pub use shared_memory::{read_graphics_shared_memory, unlink_graphics_shared_memory};
 
 /// Decode a PNG this module encoded: 8-bit RGBA of exactly `width` x `height`.
 pub(crate) fn decode_rgba_png(png: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {

@@ -1,4 +1,6 @@
-/// Read a bounded Kitty shared-memory transfer, releasing the named object.
+/// Read a bounded Kitty shared-memory transfer. The object is left in place:
+/// the caller releases it with [`unlink_graphics_shared_memory`] once the
+/// transfer proved valid, so a failed read never removes a named object.
 pub fn read_graphics_shared_memory(
     name: &[u8],
     offset: u64,
@@ -8,15 +10,20 @@ pub fn read_graphics_shared_memory(
     platform::read(name, offset, size, limit)
 }
 
+/// Release a shared-memory object whose transfer succeeded. POSIX objects are
+/// unlinked; Windows named mappings disappear with their last handle.
+pub fn unlink_graphics_shared_memory(name: &[u8]) {
+    platform::unlink(name);
+}
+
 #[cfg(unix)]
 mod platform {
     use std::{ffi::CString, fs::File, os::fd::FromRawFd};
 
-    struct SharedObject(CString);
-    impl Drop for SharedObject {
-        fn drop(&mut self) {
+    pub(super) fn unlink(name: &[u8]) {
+        if let Ok(name) = CString::new(name) {
             // SAFETY: The owned CString remains valid throughout this call.
-            unsafe { libc::shm_unlink(self.0.as_ptr()) };
+            unsafe { libc::shm_unlink(name.as_ptr()) };
         }
     }
 
@@ -27,18 +34,29 @@ mod platform {
         limit: usize,
     ) -> Result<Vec<u8>, String> {
         let name = CString::new(name).map_err(|_| "EINVAL:invalid shared-memory name")?;
+        // Linux objects are plain files in a world-writable /dev/shm, where
+        // anyone can create a FIFO; glibc and musl pass O_NONBLOCK through to
+        // open(2) so such a name cannot stall the parser thread.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        let flags = libc::O_RDONLY | libc::O_NONBLOCK;
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let flags = libc::O_RDONLY;
         // SAFETY: A NUL-terminated name, read-only access, and no O_CREAT.
-        let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) };
+        let fd = unsafe { libc::shm_open(name.as_ptr(), flags, 0) };
         if fd < 0 {
             return Err("ENOENT:unable to open shared-memory object".into());
         }
         // SAFETY: shm_open returned a new owned descriptor.
         let file = unsafe { File::from_raw_fd(fd) };
-        let _object = SharedObject(name);
-        let object_len = file
+        let metadata = file
             .metadata()
-            .map_err(|_| "EIO:unable to inspect shared-memory object")?
-            .len();
+            .map_err(|_| "EIO:unable to inspect shared-memory object")?;
+        // Darwin shared-memory descriptors do not report as regular files.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        if !metadata.is_file() {
+            return Err("EINVAL:shared-memory object is not a regular file".into());
+        }
+        let object_len = metadata.len();
         let available = object_len
             .checked_sub(offset)
             .ok_or("EINVAL:shared-memory offset is out of bounds")?;
@@ -143,8 +161,25 @@ mod platform {
         use super::*;
         use std::os::fd::AsRawFd;
 
+        struct SharedObject(CString);
+        impl Drop for SharedObject {
+            fn drop(&mut self) {
+                unlink(self.0.as_bytes());
+            }
+        }
+
+        fn exists(name: &CString) -> bool {
+            // SAFETY: Read-only open of a NUL-terminated name without creation.
+            let fd = unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) };
+            if fd >= 0 {
+                // SAFETY: shm_open returned a new owned descriptor.
+                drop(unsafe { File::from_raw_fd(fd) });
+            }
+            fd >= 0
+        }
+
         #[test]
-        fn kitty_shared_memory_reads_an_unaligned_range_and_unlinks_it() {
+        fn kitty_shared_memory_reads_an_unaligned_range_and_leaves_unlinking_to_the_caller() {
             let name = CString::new(format!("/termy-kitty-{}", std::process::id())).unwrap();
             // SAFETY: A unique name, read/write + create/exclusive flags and mode 0600.
             let fd = unsafe {
@@ -179,12 +214,17 @@ mod platform {
                 std::slice::from_raw_parts_mut(mapping.0.cast::<u8>(), 8)
                     .copy_from_slice(&[9, 1, 2, 3, 255, 8, 7, 6]);
             }
+            // A failed read must not destroy an object the client merely named.
+            assert!(read(name.as_bytes(), 9, None, 16).is_err());
+            assert!(read(name.as_bytes(), 0, None, 4).is_err());
+            assert!(exists(&name));
             assert_eq!(
                 read(name.as_bytes(), 1, Some(4), 16).unwrap(),
                 [1, 2, 3, 255]
             );
-            // SAFETY: Read-only open without creation; read must have unlinked it.
-            assert!(unsafe { libc::shm_open(name.as_ptr(), libc::O_RDONLY, 0) } < 0);
+            assert!(exists(&name));
+            unlink(name.as_bytes());
+            assert!(!exists(&name));
         }
 
         #[test]
@@ -245,6 +285,8 @@ mod platform {
             }
         }
     }
+    /// Named mappings have no name to remove; closing the handle suffices.
+    pub(super) fn unlink(_: &[u8]) {}
     pub(super) fn read(
         name: &[u8],
         offset: u64,
@@ -311,6 +353,7 @@ mod platform {
 
 #[cfg(not(any(unix, windows)))]
 mod platform {
+    pub(super) fn unlink(_: &[u8]) {}
     pub(super) fn read(_: &[u8], _: u64, _: Option<u64>, _: usize) -> Result<Vec<u8>, String> {
         Err("ENOTSUP:shared-memory transport unavailable on this platform".into())
     }

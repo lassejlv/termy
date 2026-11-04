@@ -610,17 +610,17 @@ fn file_swapped_for_a_pseudo_file_link_after_open_is_rejected() {
     // Kept open so no later file can reuse its inode.
     let file = std::fs::File::open(&path).unwrap();
     let opened = file.metadata().unwrap();
-    assert!(upload::opened_file_is_allowed(&path, &opened));
+    assert!(upload::opened_file_is_allowed(&path, &opened).is_some());
 
     // A link to a pseudo-file, or to any file but the opened one, fails.
     std::fs::remove_file(&path).unwrap();
     std::os::unix::fs::symlink("/proc/self/status", &path).unwrap();
-    assert!(!upload::opened_file_is_allowed(&path, &opened));
+    assert!(upload::opened_file_is_allowed(&path, &opened).is_none());
     let other = dir.path().join("other.png");
     std::fs::write(&other, one_pixel_png()).unwrap();
     std::fs::remove_file(&path).unwrap();
     std::os::unix::fs::symlink(&other, &path).unwrap();
-    assert!(!upload::opened_file_is_allowed(&path, &opened));
+    assert!(upload::opened_file_is_allowed(&path, &opened).is_none());
 }
 
 #[test]
@@ -646,6 +646,259 @@ fn reads_and_removes_safe_temporary_file_transfers() {
     assert!(result.changed);
     assert!(!path.exists());
     assert_eq!(state.render_placements(0, 0, 24, 80).len(), 1);
+}
+
+const LOCAL_MEDIUM_REPLY: &str = "\x1b_Gi=21;EBADF:failed to read image file\x1b\\";
+const LOCAL_OK: &str = "\x1b_Gi=21;OK\x1b\\";
+
+/// Upload `name` through medium `t` with extra `controls`, answering as i=21.
+fn local_upload(medium: char, controls: &str, name: &[u8]) -> KittyGraphicsApplyResult {
+    let mut state = KittyGraphicsState::default();
+    state.apply(
+        command(&format!("a=t,t={medium},i=21{controls}"), name),
+        0,
+        0,
+        0,
+        size(),
+    )
+}
+
+fn path_bytes(path: &std::path::Path) -> &[u8] {
+    path.to_str().unwrap().as_bytes()
+}
+
+#[test]
+fn local_file_failures_share_one_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let pixel = dir.path().join("pixel.rgba");
+    std::fs::write(&pixel, [1, 2, 3, 255]).unwrap();
+    let large = dir.path().join("large.png");
+    // Sparse, so the oversized file costs no disk space.
+    std::fs::File::create(&large)
+        .unwrap()
+        .set_len(MAX_IMAGE_BYTES as u64 + 1)
+        .unwrap();
+    let missing = dir.path().join("missing.png");
+    let raw = ",f=32,s=1,v=1";
+
+    for medium in ['f', 't'] {
+        // Missing, oversized, a directory, not an image, an offset past the
+        // end and too little data are all indistinguishable to the client.
+        for (controls, path) in [
+            (",f=100", &missing),
+            (",f=100", &large),
+            (",f=100", &dir.path().to_path_buf()),
+            (",f=100", &pixel),
+            (&format!("{raw},O=5") as &str, &pixel),
+            (",f=32,s=2,v=1", &pixel),
+        ] {
+            let result = local_upload(medium, controls, path_bytes(path));
+            assert_eq!(
+                reply(&result),
+                LOCAL_MEDIUM_REPLY,
+                "{medium} {controls} {path:?}"
+            );
+        }
+        assert_eq!(
+            reply(&local_upload(medium, raw, path_bytes(&pixel))),
+            LOCAL_OK
+        );
+    }
+    // Malformed controls reveal nothing local and keep their own reply.
+    assert!(reply(&local_upload('f', ",f=32", path_bytes(&missing))).contains("EINVAL:"));
+    assert!(reply(&local_upload('f', ",f=8", path_bytes(&missing))).contains("EINVAL:"));
+}
+
+#[cfg(unix)]
+#[test]
+fn local_file_fifo_is_refused_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("tty-graphics-protocol-fifo");
+    let name = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+    // SAFETY: A NUL-terminated path and a plain mode.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    for medium in ['f', 't'] {
+        let sender = sender.clone();
+        let fifo = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(reply(&local_upload(medium, ",f=100", path_bytes(&fifo))));
+        });
+        let reply = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("reading a FIFO blocked the upload");
+        assert_eq!(reply, LOCAL_MEDIUM_REPLY);
+    }
+    assert!(fifo.exists());
+}
+
+/// A temporary directory that is not below any root `t=t` may delete from.
+#[cfg(unix)]
+fn non_temporary_dir() -> Option<tempfile::TempDir> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = tempfile::Builder::new()
+        .prefix("tty-graphics-protocol-test-")
+        .tempdir_in(exe.parent()?)
+        .ok()?;
+    let probe = dir.path().join("tty-graphics-protocol-probe");
+    std::fs::write(&probe, b"").ok()?;
+    (!temporary_path_can_be_removed(&probe)).then_some(dir)
+}
+
+#[cfg(unix)]
+#[test]
+fn temporary_file_transfer_through_a_symlink_removes_only_the_file_it_read() {
+    let raw = ",f=32,s=1,v=1";
+    let temp = tempfile::tempdir().unwrap();
+
+    // A marked link to a file outside the temporary directories is read, but
+    // neither the link nor its target is deleted.
+    if let Some(outside) = non_temporary_dir() {
+        let target = outside.path().join("tty-graphics-protocol-victim");
+        std::fs::write(&target, [1, 2, 3, 255]).unwrap();
+        let link = temp.path().join("tty-graphics-protocol-link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(reply(&local_upload('t', raw, path_bytes(&link))), LOCAL_OK);
+        assert!(target.exists());
+        assert!(link.symlink_metadata().is_ok());
+    }
+
+    // A marked link to an unmarked temporary file deletes nothing either.
+    let target = temp.path().join("victim");
+    std::fs::write(&target, [1, 2, 3, 255]).unwrap();
+    let link = temp.path().join("tty-graphics-protocol-unmarked");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_eq!(reply(&local_upload('t', raw, path_bytes(&link))), LOCAL_OK);
+    assert!(target.exists());
+    assert!(link.symlink_metadata().is_ok());
+
+    // A link to an eligible temporary file removes that file, which is the
+    // one that was read, and never just the link in front of it.
+    let target = temp.path().join("tty-graphics-protocol-real");
+    std::fs::write(&target, [1, 2, 3, 255]).unwrap();
+    let link = temp.path().join("tty-graphics-protocol-alias");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    assert_eq!(reply(&local_upload('t', raw, path_bytes(&link))), LOCAL_OK);
+    assert!(!target.exists());
+    assert!(link.symlink_metadata().is_ok());
+
+    // A failed upload consumes nothing.
+    let target = temp.path().join("tty-graphics-protocol-short");
+    std::fs::write(&target, [1, 2, 3]).unwrap();
+    assert_eq!(
+        reply(&local_upload('t', raw, path_bytes(&target))),
+        LOCAL_MEDIUM_REPLY
+    );
+    assert!(target.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn temporary_file_replaced_after_reading_is_not_removed() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("tty-graphics-protocol-swapped");
+    std::fs::write(&path, [1, 2, 3, 255]).unwrap();
+    // Kept open so the replacement cannot reuse its inode.
+    let read = std::fs::File::open(&path).unwrap();
+    let opened = read.metadata().unwrap();
+    let canonical = path.canonicalize().unwrap();
+    // The read file is replaced by a different one, then by a symlink.
+    std::fs::remove_file(&path).unwrap();
+    std::fs::write(&path, [1, 2, 3, 255]).unwrap();
+    upload::remove_opened_file(&canonical, &opened);
+    assert!(path.exists());
+    let other = temp.path().join("other");
+    std::fs::write(&other, b"").unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(&other, &path).unwrap();
+    upload::remove_opened_file(&canonical, &opened);
+    assert!(path.symlink_metadata().is_ok());
+    assert!(other.exists());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn shared_memory_is_unlinked_only_after_a_successful_upload() {
+    use std::os::fd::{AsRawFd, FromRawFd};
+
+    struct Cleanup<'a>(&'a str);
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            crate::terminal_engine::media::unlink_graphics_shared_memory(self.0.as_bytes());
+        }
+    }
+
+    let name = format!("/termy-kitty-upload-{}", std::process::id());
+    let c_name = std::ffi::CString::new(name.as_str()).unwrap();
+    let exists = || {
+        // SAFETY: Read-only open of a NUL-terminated name without creation.
+        let fd = unsafe { libc::shm_open(c_name.as_ptr(), libc::O_RDONLY, 0) };
+        if fd >= 0 {
+            // SAFETY: shm_open returned a new owned descriptor.
+            drop(unsafe { std::fs::File::from_raw_fd(fd) });
+        }
+        fd >= 0
+    };
+    // SAFETY: A unique name, read/write + create/exclusive flags and mode 0600.
+    let fd = unsafe {
+        libc::shm_open(
+            c_name.as_ptr(),
+            libc::O_RDWR | libc::O_CREAT | libc::O_EXCL,
+            0o600,
+        )
+    };
+    assert!(fd >= 0);
+    let _cleanup = Cleanup(&name);
+    // SAFETY: The new descriptor is owned by this test.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    // SAFETY: Size our own object; Darwin rounds it up and zero-fills it.
+    assert_eq!(unsafe { libc::ftruncate(file.as_raw_fd(), 4) }, 0);
+    #[cfg(target_os = "linux")]
+    (&file).write_all(&[1, 2, 3, 255]).unwrap();
+
+    // Too little data, an offset past the end and a missing name all fail
+    // alike and leave the object in place.
+    for (controls, shm_name) in [
+        (",f=32,s=2,v=1", name.as_str()),
+        (",f=32,s=1,v=1,O=8", name.as_str()),
+        (",f=32,s=1,v=1", "/termy-kitty-upload-missing"),
+    ] {
+        let result = local_upload('s', controls, shm_name.as_bytes());
+        assert_eq!(reply(&result), LOCAL_MEDIUM_REPLY, "{controls} {shm_name}");
+        assert!(exists());
+    }
+    let result = local_upload('s', ",f=32,s=1,v=1,S=4", name.as_bytes());
+    assert_eq!(reply(&result), LOCAL_OK);
+    assert!(!exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn shared_memory_fifo_is_refused_without_blocking() {
+    let name = format!("termy-kitty-fifo-{}", std::process::id());
+    let path = std::path::Path::new("/dev/shm").join(&name);
+    let Ok(c_path) = std::ffi::CString::new(path.to_str().unwrap()) else {
+        return;
+    };
+    // SAFETY: A NUL-terminated path and a plain mode.
+    if unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) } != 0 {
+        return; // No writable /dev/shm here.
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let shm_name = format!("/{name}");
+    std::thread::spawn(move || {
+        let _ = sender.send(reply(&local_upload(
+            's',
+            ",f=32,s=1,v=1",
+            shm_name.as_bytes(),
+        )));
+    });
+    let result = receiver.recv_timeout(std::time::Duration::from_secs(10));
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        result.expect("opening a FIFO blocked the upload"),
+        LOCAL_MEDIUM_REPLY
+    );
 }
 
 #[test]
