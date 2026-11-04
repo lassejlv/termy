@@ -163,7 +163,7 @@ fn configure_install_cli_shell_path_for_home(
     })?;
     let install_dir = install_dir.to_string_lossy().into_owned();
     let shell = install_cli_shell(configured_shell)?;
-    let profile_path = home_dir.join(install_cli_profile_relative_path(shell));
+    let profile_path = install_cli_profile_path(shell, home_dir);
     let block = install_cli_profile_block(shell, &install_dir);
     let profile_updated = ensure_install_cli_profile_block(&profile_path, &block)?;
     let session_command = install_cli_session_command(shell, &install_dir);
@@ -234,18 +234,34 @@ fn parse_install_cli_shell(shell: &str) -> Option<InstallShell> {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-fn install_cli_profile_relative_path(shell: InstallShell) -> &'static str {
+fn install_cli_profile_path(shell: InstallShell, home_dir: &Path) -> PathBuf {
     match shell {
-        InstallShell::Zsh => ".zshrc",
-        InstallShell::Bash => {
-            if cfg!(target_os = "macos") {
-                ".bash_profile"
-            } else {
-                ".bashrc"
-            }
-        }
-        InstallShell::Fish => ".config/fish/config.fish",
+        InstallShell::Zsh => home_dir.join(".zshrc"),
+        // Termy starts bash as a login shell on macOS and as a non-login
+        // interactive shell on Linux (see `login_shell_args`).
+        InstallShell::Bash if cfg!(target_os = "macos") => bash_login_profile_path(home_dir),
+        InstallShell::Bash => home_dir.join(".bashrc"),
+        InstallShell::Fish => home_dir.join(".config").join("fish").join("config.fish"),
     }
+}
+
+/// The startup file a bash login shell reads in `home_dir`.
+///
+/// Bash reads only the first of `~/.bash_profile`, `~/.bash_login` and
+/// `~/.profile` that exists, so the block goes into that one. Creating
+/// `~/.bash_profile` next to an existing `~/.profile` would stop bash from
+/// reading `~/.profile` and drop the user's environment from every tab, so
+/// it is only created when none of the three exists.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn bash_login_profile_path(home_dir: &Path) -> PathBuf {
+    const LOGIN_FILES: [&str; 3] = [".bash_profile", ".bash_login", ".profile"];
+
+    // `exists` follows symlinks: bash skips a dangling link like a missing file.
+    LOGIN_FILES
+        .iter()
+        .map(|name| home_dir.join(name))
+        .find(|path| path.exists())
+        .unwrap_or_else(|| home_dir.join(LOGIN_FILES[0]))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -988,25 +1004,89 @@ mod tests {
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn install_cli_profile_relative_paths_match_shell() {
+    fn install_cli_profile_paths_match_shell() {
+        let home = TempDir::new().expect("home");
+        let home = home.path();
         assert_eq!(
-            install_cli_profile_relative_path(InstallShell::Zsh),
-            ".zshrc"
+            install_cli_profile_path(InstallShell::Zsh, home),
+            home.join(".zshrc")
         );
         assert_eq!(
-            install_cli_profile_relative_path(InstallShell::Fish),
-            ".config/fish/config.fish"
+            install_cli_profile_path(InstallShell::Fish, home),
+            home.join(".config/fish/config.fish")
         );
         #[cfg(target_os = "macos")]
         assert_eq!(
-            install_cli_profile_relative_path(InstallShell::Bash),
-            ".bash_profile"
+            install_cli_profile_path(InstallShell::Bash, home),
+            home.join(".bash_profile")
+        );
+        // Linux bash keeps `.bashrc` even when a login file exists.
+        std::fs::write(home.join(".profile"), "").expect("write .profile");
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            install_cli_profile_path(InstallShell::Bash, home),
+            home.join(".profile")
         );
         #[cfg(target_os = "linux")]
         assert_eq!(
-            install_cli_profile_relative_path(InstallShell::Bash),
-            ".bashrc"
+            install_cli_profile_path(InstallShell::Bash, home),
+            home.join(".bashrc")
         );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn bash_login_profile_creates_bash_profile_only_when_none_exists() {
+        let home = TempDir::new().expect("home");
+        assert_eq!(
+            bash_login_profile_path(home.path()),
+            home.path().join(".bash_profile")
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn bash_login_profile_follows_bash_lookup_order() {
+        let home = TempDir::new().expect("home");
+        let home = home.path();
+
+        std::fs::write(home.join(".profile"), "export A=1\n").expect("write .profile");
+        assert_eq!(bash_login_profile_path(home), home.join(".profile"));
+
+        std::fs::write(home.join(".bash_login"), "").expect("write .bash_login");
+        assert_eq!(bash_login_profile_path(home), home.join(".bash_login"));
+
+        std::fs::write(home.join(".bash_profile"), "").expect("write .bash_profile");
+        assert_eq!(bash_login_profile_path(home), home.join(".bash_profile"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn bash_login_profile_skips_a_dangling_bash_profile_link() {
+        let home = TempDir::new().expect("home");
+        let home = home.path();
+        std::os::unix::fs::symlink(home.join("missing"), home.join(".bash_profile"))
+            .expect("symlink");
+        std::fs::write(home.join(".profile"), "export A=1\n").expect("write .profile");
+
+        assert_eq!(bash_login_profile_path(home), home.join(".profile"));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn bash_login_profile_update_does_not_shadow_profile() {
+        let home = TempDir::new().expect("home");
+        let home = home.path();
+        std::fs::write(home.join(".profile"), "export A=1\n").expect("write .profile");
+
+        let profile = bash_login_profile_path(home);
+        let block = install_cli_profile_block(InstallShell::Bash, "/tmp/bin");
+        assert!(ensure_install_cli_profile_block(&profile, &block).expect("update profile"));
+
+        assert!(!home.join(".bash_profile").exists());
+        let contents = std::fs::read_to_string(home.join(".profile")).expect("read .profile");
+        assert!(contents.starts_with("export A=1\n"));
+        assert!(contents.contains("# >>> termy cli path >>>"));
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
