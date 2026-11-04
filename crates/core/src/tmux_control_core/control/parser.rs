@@ -145,14 +145,14 @@ fn parse_control_block_tag(
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::command::split_control_completion_token;
+    use super::super::super::command::{control_request_lines, next_control_completion_token};
+    use super::super::super::types::TmuxControlError;
     use super::super::super::types::{TmuxControlErrorKind, TmuxNotification};
-    use super::super::channel::{
-        ActiveControlCommand, PendingCommand, TrackedPendingCommand, append_command_output_chunk,
-        claim_pending_for_command_begin, complete_pending_command, map_command_completion_response,
-    };
+    use super::super::channel::{ControlCommandResult, ControlCommandTracker, PendingCommand};
     use super::{ControlStateEvent, ControlStateMachine};
     use std::time::Duration;
+
+    type Response = Result<ControlCommandResult, TmuxControlError>;
 
     fn expect_command_complete(event: ControlStateEvent) -> (bool, String) {
         match event {
@@ -161,193 +161,253 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unsolicited_command_block_does_not_consume_next_tracked_pending_request() {
-        let mut sm = ControlStateMachine::default();
-        let (pending_tx, pending_rx) = flume::bounded::<PendingCommand>(1);
-
-        assert_eq!(
-            sm.on_line(b"%begin 1 1 0").expect("startup begin"),
-            ControlStateEvent::CommandBegin
-        );
-        let mut active_command = match claim_pending_for_command_begin(&pending_rx).expect("claim")
-        {
-            Some(pending) => Some(ActiveControlCommand::Tracked(TrackedPendingCommand {
-                pending,
-                output: String::new(),
-            })),
-            None => Some(ActiveControlCommand::Untracked),
-        };
-        assert!(matches!(
-            active_command,
-            Some(ActiveControlCommand::Untracked)
-        ));
-        assert_eq!(
-            sm.on_line(b"startup noise").expect("startup payload"),
-            ControlStateEvent::None
-        );
-        expect_command_complete(sm.on_line(b"%end 1 1 0").expect("startup end"));
-        match active_command
-            .take()
-            .expect("startup block should be active")
-        {
-            ActiveControlCommand::Tracked(_) => {
-                panic!("unsolicited block must stay untracked")
+    /// Feeds tmux output lines through the parser and the request tracker,
+    /// the way the worker's reader thread does.
+    fn feed(
+        sm: &mut ControlStateMachine,
+        tracker: &mut ControlCommandTracker,
+        pending_rx: &flume::Receiver<PendingCommand>,
+        lines: &[&str],
+    ) {
+        for line in lines {
+            match sm.on_line(line.as_bytes()).expect("parse line") {
+                ControlStateEvent::CommandBegin => {
+                    tracker.on_block_begin(pending_rx).expect("block begin");
+                }
+                ControlStateEvent::CommandComplete { is_error, output } => {
+                    tracker
+                        .on_block_complete(is_error, output)
+                        .expect("block complete");
+                }
+                _ => {}
             }
-            ActiveControlCommand::Untracked => {}
         }
+    }
 
+    fn queue_pending(
+        pending_tx: &flume::Sender<PendingCommand>,
+        command: &str,
+        token: &str,
+    ) -> (flume::Receiver<Response>, flume::Receiver<()>) {
         let (response_tx, response_rx) = flume::bounded(1);
         let (completion_tx, completion_rx) = flume::bounded(1);
         pending_tx
             .send(PendingCommand {
-                command: "list-windows".to_string(),
-                completion_token: "tok-list-windows".to_string(),
+                command: command.to_string(),
+                completion_token: token.to_string(),
                 response_tx: Some(response_tx),
                 completion_tx,
             })
             .expect("queue pending request");
+        (response_rx, completion_rx)
+    }
 
-        assert_eq!(
-            sm.on_line(b"%begin 2 2 0").expect("command begin"),
-            ControlStateEvent::CommandBegin
+    #[test]
+    fn unsolicited_command_block_does_not_consume_next_tracked_pending_request() {
+        let mut sm = ControlStateMachine::default();
+        let mut tracker = ControlCommandTracker::default();
+        let (pending_tx, pending_rx) = flume::bounded::<PendingCommand>(1);
+
+        // A startup block before any request is consumed untracked.
+        feed(
+            &mut sm,
+            &mut tracker,
+            &pending_rx,
+            &["%begin 1 1 0", "startup noise", "%end 1 1 0"],
         );
-        active_command = match claim_pending_for_command_begin(&pending_rx).expect("claim") {
-            Some(pending) => Some(ActiveControlCommand::Tracked(TrackedPendingCommand {
-                pending,
-                output: String::new(),
-            })),
-            None => Some(ActiveControlCommand::Untracked),
-        };
-        assert!(matches!(
-            active_command,
-            Some(ActiveControlCommand::Tracked(_))
-        ));
-        assert_eq!(
-            sm.on_line(b"ok").expect("command output"),
-            ControlStateEvent::None
+
+        let (response_rx, completion_rx) =
+            queue_pending(&pending_tx, "list-windows", "__termy_cmd_done_1");
+        feed(
+            &mut sm,
+            &mut tracker,
+            &pending_rx,
+            &[
+                "%begin 2 2 0",
+                "ok",
+                "%end 2 2 0",
+                "%begin 2 3 0",
+                "__termy_cmd_done_1",
+                "%end 2 3 0",
+            ],
         );
-        let (is_error, output) = expect_command_complete(sm.on_line(b"%end 2 2 0").expect("end"));
-        let mut tracked = match active_command.take().expect("tracked command") {
-            ActiveControlCommand::Tracked(tracked) => tracked,
-            ActiveControlCommand::Untracked => panic!("tracked request became untracked"),
-        };
-        append_command_output_chunk(&mut tracked.output, output.as_str());
-        let response =
-            map_command_completion_response(&tracked.pending.command, is_error, tracked.output);
-        complete_pending_command(tracked.pending, response);
 
         assert!(
             completion_rx
                 .recv_timeout(Duration::from_millis(50))
                 .is_ok()
         );
-        let result = response_rx
+        let completion = response_rx
             .recv_timeout(Duration::from_millis(50))
-            .expect("response sent");
-        let completion = result.expect("tracked command should succeed");
+            .expect("response sent")
+            .expect("tracked command should succeed");
         assert_eq!(completion.output, "ok");
     }
 
     #[test]
     fn tracked_command_spanning_multiple_blocks_completes_only_after_token_block() {
         let mut sm = ControlStateMachine::default();
+        let mut tracker = ControlCommandTracker::default();
         let (pending_tx, pending_rx) = flume::bounded::<PendingCommand>(1);
 
-        let completion_token = "__termy_cmd_done_multi".to_string();
-        let (response_tx, response_rx) = flume::bounded(1);
-        let (completion_tx, completion_rx) = flume::bounded(1);
-        pending_tx
-            .send(PendingCommand {
-                command: "cmd1 ; cmd2".to_string(),
-                completion_token: completion_token.clone(),
-                response_tx: Some(response_tx),
-                completion_tx,
-            })
-            .expect("queue pending request");
-
-        assert_eq!(
-            sm.on_line(b"%begin 20 1 0").expect("begin 1"),
-            ControlStateEvent::CommandBegin
+        let token = next_control_completion_token();
+        let (response_rx, completion_rx) = queue_pending(&pending_tx, "cmd1 ; cmd2", &token);
+        feed(
+            &mut sm,
+            &mut tracker,
+            &pending_rx,
+            &[
+                "%begin 20 1 0",
+                "first block payload",
+                "%end 20 1 0",
+                "%begin 20 2 0",
+                "second block payload",
+                "%end 20 2 0",
+            ],
         );
-        let mut active_command = match claim_pending_for_command_begin(&pending_rx).expect("claim")
-        {
-            Some(pending) => Some(ActiveControlCommand::Tracked(TrackedPendingCommand {
-                pending,
-                output: String::new(),
-            })),
-            None => Some(ActiveControlCommand::Untracked),
-        };
-        assert!(matches!(
-            active_command,
-            Some(ActiveControlCommand::Tracked(_))
-        ));
-
-        assert_eq!(
-            sm.on_line(b"first block payload").expect("payload 1"),
-            ControlStateEvent::None
-        );
-        let (is_error_1, output_1) =
-            expect_command_complete(sm.on_line(b"%end 20 1 0").expect("end 1"));
-        assert!(!is_error_1);
-        let tracked = match active_command
-            .as_mut()
-            .expect("tracked command should remain active")
-        {
-            ActiveControlCommand::Tracked(tracked) => tracked,
-            ActiveControlCommand::Untracked => panic!("tracked request became untracked"),
-        };
-        assert!(
-            split_control_completion_token(&output_1, completion_token.as_str()).is_none(),
-            "command should stay active until completion token is observed",
-        );
-        append_command_output_chunk(&mut tracked.output, output_1.as_str());
         assert!(
             completion_rx
                 .recv_timeout(Duration::from_millis(50))
-                .is_err()
+                .is_err(),
+            "command should stay active until its token block is observed",
         );
 
-        assert_eq!(
-            sm.on_line(b"%begin 20 2 0").expect("begin 2"),
-            ControlStateEvent::CommandBegin
+        feed(
+            &mut sm,
+            &mut tracker,
+            &pending_rx,
+            &["%begin 20 3 0", token.as_str(), "%end 20 3 0"],
         );
-        assert_eq!(
-            sm.on_line(b"second block payload").expect("payload 2"),
-            ControlStateEvent::None
-        );
-        assert_eq!(
-            sm.on_line(completion_token.as_bytes())
-                .expect("token payload"),
-            ControlStateEvent::None
-        );
-        let (is_error_2, output_2) =
-            expect_command_complete(sm.on_line(b"%end 20 2 0").expect("end 2"));
-        assert!(!is_error_2);
-
-        let mut tracked = match active_command.take().expect("active command") {
-            ActiveControlCommand::Tracked(tracked) => tracked,
-            ActiveControlCommand::Untracked => panic!("tracked request became untracked"),
-        };
-        let output_chunk = split_control_completion_token(&output_2, completion_token.as_str())
-            .expect("token should be present in final block output");
-        append_command_output_chunk(&mut tracked.output, output_chunk.as_str());
-        let response =
-            map_command_completion_response(&tracked.pending.command, false, tracked.output);
-        complete_pending_command(tracked.pending, response);
-
         assert!(
             completion_rx
                 .recv_timeout(Duration::from_millis(50))
                 .is_ok()
         );
-        let result = response_rx
+        let completion = response_rx
             .recv_timeout(Duration::from_millis(50))
-            .expect("response sent");
-        let completion = result.expect("tracked command should succeed");
+            .expect("response sent")
+            .expect("tracked command should succeed");
         assert_eq!(
             completion.output,
             "first block payload\nsecond block payload"
+        );
+    }
+
+    #[test]
+    fn command_ending_in_comment_completes_on_its_own_token_line() {
+        // What tmux 3.4 emits for the lines written for a command whose tail
+        // is a comment: the comment swallows `; display-message -p skipped`,
+        // but the token sits on its own line and still gets its own block.
+        let mut sm = ControlStateMachine::default();
+        let mut tracker = ControlCommandTracker::default();
+        let (pending_tx, pending_rx) = flume::bounded::<PendingCommand>(1);
+
+        let token = next_control_completion_token();
+        let command = "display-message -p A # note ; display-message -p skipped";
+        assert_eq!(
+            control_request_lines(command, &token).lines().count(),
+            2,
+            "token must not share the command's line"
+        );
+        let (response_rx, _completion_rx) = queue_pending(&pending_tx, command, &token);
+        feed(
+            &mut sm,
+            &mut tracker,
+            &pending_rx,
+            &[
+                "%begin 3 1 1",
+                "A",
+                "%end 3 1 1",
+                "%begin 3 2 1",
+                token.as_str(),
+                "%end 3 2 1",
+            ],
+        );
+        let completion = response_rx
+            .recv_timeout(Duration::from_millis(50))
+            .expect("response sent")
+            .expect("commented command should succeed");
+        assert_eq!(completion.output, "A");
+    }
+
+    #[test]
+    fn error_block_fails_request_with_error_output_only() {
+        let mut sm = ControlStateMachine::default();
+        let mut tracker = ControlCommandTracker::default();
+        let (pending_tx, pending_rx) = flume::bounded::<PendingCommand>(1);
+
+        let token = next_control_completion_token();
+        let (response_rx, completion_rx) = queue_pending(
+            &pending_tx,
+            "display-message -p before ; select-pane -t %999",
+            &token,
+        );
+        feed(
+            &mut sm,
+            &mut tracker,
+            &pending_rx,
+            &[
+                "%begin 4 1 1",
+                "before",
+                "%end 4 1 1",
+                "%begin 4 2 1",
+                "can't find pane: %999",
+                "%error 4 2 1",
+            ],
+        );
+        assert!(
+            completion_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
+            "an error block alone must not complete the request"
+        );
+        feed(
+            &mut sm,
+            &mut tracker,
+            &pending_rx,
+            &["%begin 4 3 1", token.as_str(), "%end 4 3 1"],
+        );
+        let error = response_rx
+            .recv_timeout(Duration::from_millis(50))
+            .expect("response sent")
+            .expect_err("error block should fail the request");
+        assert_eq!(error.kind, TmuxControlErrorKind::Runtime);
+        assert_eq!(error.message, "can't find pane: %999");
+    }
+
+    #[test]
+    fn token_of_later_request_fails_requests_whose_token_was_lost() {
+        let mut sm = ControlStateMachine::default();
+        let mut tracker = ControlCommandTracker::default();
+        let (pending_tx, pending_rx) = flume::bounded::<PendingCommand>(2);
+
+        let lost_token = next_control_completion_token();
+        let next_token = next_control_completion_token();
+        let (lost_rx, _) = queue_pending(&pending_tx, "lost", &lost_token);
+        let (next_rx, _) = queue_pending(&pending_tx, "next", &next_token);
+        feed(
+            &mut sm,
+            &mut tracker,
+            &pending_rx,
+            &[
+                "%begin 5 1 1",
+                "orphaned",
+                "%end 5 1 1",
+                "%begin 5 2 1",
+                next_token.as_str(),
+                "%end 5 2 1",
+            ],
+        );
+        let lost = lost_rx
+            .recv_timeout(Duration::from_millis(50))
+            .expect("lost request answered")
+            .expect_err("lost request fails");
+        assert_eq!(lost.kind, TmuxControlErrorKind::Protocol);
+        assert!(
+            next_rx
+                .recv_timeout(Duration::from_millis(50))
+                .expect("next request answered")
+                .is_ok()
         );
     }
 

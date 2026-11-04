@@ -156,9 +156,30 @@ mod tests {
         let output = session.send_command("display-message -p termy-ok");
         assert!(output.is_ok(), "send_command failed: {output:?}");
 
-        // A failing command makes tmux skip the rest of the `;` list (including
-        // the completion token); it must fail fast and leave the channel usable.
-        let failed = session.send_command("select-pane -t %999");
+        // Text that consumes the rest of its line must not hide the completion
+        // token: a trailing comment, an unquoted `#{...}` (also a comment), an
+        // unterminated quote (closed at the end of the line), and a line that
+        // is nothing but a comment.
+        let output = session
+            .send_command("display-message -p termy-commented # note ; display-message -p x")
+            .expect("command ending in a comment must complete");
+        assert_eq!(output.trim_end(), "termy-commented");
+        session
+            .send_command("display-message -p #{pane_id}")
+            .expect("unquoted format is a comment, the command still completes");
+        let output = session
+            .send_command("display-message -p 'termy-open ; display-message -p x")
+            .expect("unterminated quote must complete");
+        assert_eq!(output.trim_end(), "termy-open ; display-message -p x");
+        let output = session
+            .send_command("# only a comment")
+            .expect("comment-only command must complete");
+        assert_eq!(output, "");
+
+        // A failing command makes tmux skip the rest of its `;` list; the
+        // completion token is on its own line, so the request still completes,
+        // with the error, and the channel stays usable.
+        let failed = session.send_command("select-pane -t %999 ; display-message -p x");
         let error = failed.expect_err("select-pane on a missing pane should fail");
         assert!(
             error.message.contains("can't find pane"),
