@@ -361,8 +361,8 @@ mod tests {
             response_rx
         }
 
-        fn emit(&mut self, lines: &str) {
-            self.output.write_all(lines.as_bytes()).expect("emit");
+        fn emit(&mut self, lines: impl AsRef<[u8]>) {
+            self.output.write_all(lines.as_ref()).expect("emit");
         }
     }
 
@@ -472,6 +472,23 @@ mod tests {
             "%begin 1 25 1\n__termy_cmd_done_202\n%end 1 25 1\n",
         ));
         assert_eq!(recv_output(&next), "next");
+    }
+
+    #[test]
+    fn non_utf8_command_output_keeps_the_session_alive() {
+        let mut tmux = FakeTmux::spawn();
+
+        // tmux 3.4 prints a stored buffer's bytes raw to a UTF-8 client.
+        let raw = tmux.send("show-buffer -b raw", "__termy_cmd_done_311");
+        tmux.emit(b"%begin 1 31 1\nb\xffb\n%end 1 31 1\n");
+        tmux.emit("%begin 1 32 1\n__termy_cmd_done_311\n%end 1 32 1\n");
+        assert_eq!(recv_output(&raw), "b\u{fffd}b");
+
+        let ok = tmux.send("display-message -p ok", "__termy_cmd_done_312");
+        tmux.emit(
+            "%begin 1 33 1\nok\n%end 1 33 1\n%begin 1 34 1\n__termy_cmd_done_312\n%end 1 34 1\n",
+        );
+        assert_eq!(recv_output(&ok), "ok");
     }
 
     #[test]

@@ -219,9 +219,82 @@ mod tests {
                 })
         );
 
+        // Non-UTF-8 bytes must not end control mode. For a directory named with
+        // a raw 0xff byte, tmux octal-escapes the byte in formats but writes it
+        // raw in `%subscription-changed`; `show-buffer` prints stored bytes raw
+        // inside its %begin/%end block (to a UTF-8 client).
+        let raw_dir_prefix = format!("/tmp/termy-ctrl-{}-", std::process::id());
+        let raw_dir = {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = raw_dir_prefix.clone().into_bytes();
+            bytes.extend_from_slice(b"a\xffb");
+            std::path::PathBuf::from(std::ffi::OsString::from_vec(bytes))
+        };
+        std::fs::create_dir_all(&raw_dir).expect("create non-utf8 directory");
+        session
+            .send_command("refresh-client -B 'termy_path:%*:#{pane_current_path}'")
+            .expect("subscribe to pane path");
+        session
+            .send_command(&format!(
+                r#"send-keys -l 'cd "$(printf "{raw_dir_prefix}a\\377b")"'"#
+            ))
+            .expect("type cd into non-utf8 directory");
+        session.send_command("send-keys Enter").expect("send-keys");
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let status = Command::new("tmux")
+                .args(["-L", &socket, "set-buffer", "-b", "termy-raw"])
+                .arg(std::ffi::OsStr::from_bytes(b"b\xffb"))
+                .status()
+                .expect("run tmux set-buffer");
+            assert!(status.success(), "tmux set-buffer failed: {status}");
+        }
+        let mut path = String::new();
+        let mut subscription = None;
+        for _ in 0..80 {
+            for notification in session.poll() {
+                if let TmuxNotification::SubscriptionChanged { name, value, .. } = notification
+                    && name == "termy_path"
+                    && value.ends_with("a\u{fffd}b")
+                {
+                    subscription = Some(value);
+                }
+            }
+            path = session
+                .send_command("display-message -p '#{q:pane_current_path}'")
+                .expect("query pane path");
+            if path.contains(r"a\377b") && subscription.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(path.contains(r"a\377b"), "{path:?}");
+        assert!(
+            subscription.is_some(),
+            "non-utf8 subscription value was dropped"
+        );
+        // tmux prints the byte raw to a UTF-8 client and as `_` otherwise; the
+        // client is UTF-8 when this test runs under a UTF-8 locale.
+        let buffer = session
+            .send_command("show-buffer -b termy-raw")
+            .expect("show-buffer with a non-utf8 byte must complete");
+        assert!(
+            matches!(buffer.trim_end(), "b\u{fffd}b" | "b_b"),
+            "{buffer:?}"
+        );
+        let output = session
+            .send_command("display-message -p termy-after-raw-bytes")
+            .expect("channel must stay usable after non-utf8 output");
+        assert_eq!(output.trim_end(), "termy-after-raw-bytes");
+        assert!(
+            session.fatal_exit().is_none(),
+            "non-utf8 output ended control mode"
+        );
+
         drop(session);
         let _ = Command::new("tmux")
             .args(["-L", &socket, "kill-server"])
             .output();
+        let _ = std::fs::remove_dir(&raw_dir);
     }
 }

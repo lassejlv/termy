@@ -54,13 +54,18 @@ impl ControlStateMachine {
 
             // Preserve empty lines inside command output blocks so pane captures
             // round-trip faithfully through control-mode framing.
-            let line_text = std::str::from_utf8(line).map_err(|_| {
-                TmuxControlError::parse("received non-utf8 bytes in control command output")
-            })?;
+            //
+            // Command output is not guaranteed to be UTF-8. tmux octal-escapes
+            // formats (`#{pane_current_path}`, window and session names), but
+            // some commands print stored bytes raw: `show-buffer` of a buffer
+            // holding `\xff` returns that byte verbatim inside the block
+            // (verified against tmux 3.4). One such line must not end the whole
+            // control session, so decode it lossily; the command still gets an
+            // answer and later commands keep working.
             if !block.output.is_empty() {
                 block.output.push('\n');
             }
-            block.output.push_str(line_text);
+            block.output.push_str(&String::from_utf8_lossy(line));
             return Ok(ControlStateEvent::None);
         }
 
@@ -430,6 +435,83 @@ mod tests {
         let (is_error, output) = expect_command_complete(sm.on_line(b"%end 13 1 0").expect("end"));
         assert!(!is_error);
         assert_eq!(output, "row-1\n\nrow-3");
+    }
+
+    #[test]
+    fn control_state_machine_decodes_non_utf8_command_output_lossily() {
+        // `show-buffer` of a buffer holding a 0xff byte prints it raw inside
+        // the block (tmux 3.4). The block still completes and the session
+        // keeps parsing later lines.
+        let mut sm = ControlStateMachine::default();
+        assert_eq!(
+            sm.on_line(b"%begin 14 1 1").expect("begin"),
+            ControlStateEvent::CommandBegin
+        );
+        assert_eq!(
+            sm.on_line(b"b\xffb").expect("non-utf8 output line"),
+            ControlStateEvent::None
+        );
+        assert_eq!(
+            sm.on_line(b"/tmp/a\xc3").expect("truncated utf8 sequence"),
+            ControlStateEvent::None
+        );
+        let (is_error, output) = expect_command_complete(sm.on_line(b"%end 14 1 1").expect("end"));
+        assert!(!is_error);
+        assert_eq!(output, "b\u{fffd}b\n/tmp/a\u{fffd}");
+
+        let (is_error, output) = {
+            sm.on_line(b"%begin 14 2 1").expect("next begin");
+            sm.on_line(b"ok").expect("next output");
+            expect_command_complete(sm.on_line(b"%end 14 2 1").expect("next end"))
+        };
+        assert!(!is_error);
+        assert_eq!(output, "ok");
+    }
+
+    #[test]
+    fn control_state_machine_handles_non_utf8_notifications() {
+        let mut sm = ControlStateMachine::default();
+        // tmux writes subscription values raw (tmux 3.4).
+        assert_eq!(
+            sm.on_line(b"%subscription-changed p_path $0 @0 0 %0 : /tmp/a\xffb")
+                .expect("non-utf8 subscription value"),
+            ControlStateEvent::Notification(TmuxNotification::SubscriptionChanged {
+                name: "p_path".to_string(),
+                session: "$0".to_string(),
+                window: "@0".to_string(),
+                pane: "%0".to_string(),
+                value: "/tmp/a\u{fffd}b".to_string(),
+            })
+        );
+        // Names in refresh notifications only trigger a refresh.
+        for line in [
+            b"%window-renamed @0 w\xffz".as_slice(),
+            b"%session-changed $0 s\xffs",
+            b"%unlinked-window-renamed @3 \xfe",
+        ] {
+            assert_eq!(
+                sm.on_line(line).expect("non-utf8 refresh notification"),
+                ControlStateEvent::Notification(TmuxNotification::NeedsRefresh)
+            );
+        }
+        // Unhandled notifications are ignored, not fatal.
+        assert_eq!(
+            sm.on_line(b"%session-renamed $0 s\xffs")
+                .expect("ignored notification"),
+            ControlStateEvent::None
+        );
+        // `%output` stays byte-exact: bytes >= 0x80 arrive unescaped.
+        assert_eq!(
+            sm.on_line(b"%output %0 x\xffy").expect("non-utf8 output"),
+            ControlStateEvent::Notification(TmuxNotification::Output {
+                pane_id: "%0".to_string(),
+                bytes: b"x\xffy".to_vec(),
+            })
+        );
+        assert_eq!(
+            sm.on_line(b"%exit detached from s\xffs").expect("exit"),
+            ControlStateEvent::Exit(Some("detached from s\u{fffd}s".to_string()))
+        );
     }
 
     #[test]

@@ -56,12 +56,11 @@ pub fn capture_pane_range_args<'a>(
 }
 
 pub fn parse_exit_reason(line: &[u8]) -> Option<String> {
-    std::str::from_utf8(line)
-        .ok()
-        .and_then(|value| value.strip_prefix("%exit"))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
+    // The reason can name a session, and tmux does not promise UTF-8 there;
+    // decode lossily rather than dropping it.
+    let reason = String::from_utf8_lossy(line.strip_prefix(b"%exit")?);
+    let reason = reason.trim();
+    (!reason.is_empty()).then(|| reason.to_string())
 }
 
 pub fn parse_output_notification(line: &[u8]) -> Option<(String, Vec<u8>)> {
@@ -123,7 +122,11 @@ pub(crate) fn parse_subscription_changed(
     line: &[u8],
 ) -> Option<(String, String, String, String, String)> {
     let rest = line.strip_prefix(b"%subscription-changed ")?;
-    let text = std::str::from_utf8(rest).ok()?;
+    // tmux writes the subscribed format's value raw, without escaping: a
+    // `#{pane_current_path}` subscription for a directory named `a\xffb`
+    // arrives as `... : /tmp/a<0xff>b` (verified against tmux 3.4). Decode
+    // lossily so the change is still delivered instead of silently dropped.
+    let text = String::from_utf8_lossy(rest);
     let mut fields = text.split(' ');
     let name = fields.next()?;
     let session = fields.next()?;
