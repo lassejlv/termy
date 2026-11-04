@@ -34,7 +34,17 @@ impl SettingsWindow {
         let settings = runtime.plugin_settings_snapshot();
         runtime.suspend_if_eventless();
         let mut inventory_errors = inventory_errors;
-        inventory_errors.extend(refresh.errors);
+        // The refresh reports plugins it skipped with the same message the
+        // inventory already shows, in this list or on the plugin's row.
+        for error in refresh.errors {
+            if !inventory_errors.contains(&error)
+                && !plugins
+                    .iter()
+                    .any(|plugin| plugin.error.as_ref() == Some(&error))
+            {
+                inventory_errors.push(error);
+            }
+        }
         inventory_errors.extend(settings.errors);
         PluginSettingsSnapshot {
             plugins,

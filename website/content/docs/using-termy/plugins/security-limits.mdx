@@ -61,6 +61,10 @@ from 100 to 30,000 milliseconds.
 | View params | 64 KiB JSON object |
 | Structured launch | 128 args and 4,096 characters per program/arg |
 
+A plugin that breaks a source rule or limit is skipped and reported, and the other
+plugins still load. When more than 32 plugins are enabled, Termy loads the first 32
+in ID order.
+
 Small persistent storage has separate limits documented under
 [Lifecycle and storage](/docs/using-termy/plugins/lifecycle-storage#store-json-values).
 

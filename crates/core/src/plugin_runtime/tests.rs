@@ -1495,8 +1495,13 @@ fn invalid_disabled_marker_is_reported_and_not_loaded() {
             .as_deref()
             .is_some_and(|error| error.contains("invalid .termy-disabled marker"))
     );
-    let error = discover_plugins(&plugins).expect_err("invalid marker must block loading");
-    assert!(error.contains("invalid .termy-disabled marker"));
+    let discovered = discover_plugins(&plugins).expect("discover plugins");
+    assert!(
+        discovered.sources.is_empty(),
+        "invalid marker must block loading"
+    );
+    assert_eq!(discovered.errors.len(), 1);
+    assert!(discovered.errors[0].contains("invalid .termy-disabled marker"));
 }
 
 #[cfg(unix)]
@@ -1516,8 +1521,14 @@ fn discovery_rejects_symlinked_plugin_sources() {
     fs::write(&outside, "export const value = 1;").expect("write symlink target");
     symlink(&outside, plugin_dir.join("helper.ts")).expect("create source symlink");
 
-    let error = discover_plugins(&plugins).expect_err("symlink must be rejected");
-    assert!(error.contains("symlink"), "unexpected error: {error}");
+    let discovered = discover_plugins(&plugins).expect("discover plugins");
+    assert!(discovered.sources.is_empty(), "symlink must be rejected");
+    assert_eq!(discovered.errors.len(), 1);
+    assert!(
+        discovered.errors[0].contains("symlink"),
+        "unexpected errors: {:?}",
+        discovered.errors
+    );
 }
 
 #[cfg(unix)]
@@ -1537,8 +1548,168 @@ fn discovery_rejects_symlinked_plugin_roots() {
     fs::create_dir_all(&plugins).expect("create plugins directory");
     symlink(external, plugins.join("linked")).expect("create plugin root symlink");
 
-    let error = discover_plugins(&plugins).expect_err("plugin root symlink must be rejected");
-    assert!(error.contains("symlink"), "unexpected error: {error}");
+    let discovered = discover_plugins(&plugins).expect("discover plugins");
+    assert!(
+        discovered.sources.is_empty(),
+        "plugin root symlink must be rejected"
+    );
+    assert_eq!(discovered.errors.len(), 1);
+    assert!(
+        discovered.errors[0].contains("symlink"),
+        "unexpected errors: {:?}",
+        discovered.errors
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn discovery_skips_only_the_broken_plugins() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new().expect("temp dir");
+    let plugins = temp.path().join("plugins");
+    for id in ["good-a", "good-z"] {
+        write_plugin(&plugins, id, id, "export default { commands: [] };");
+    }
+    let external = write_plugin(
+        &temp.path().join("external-plugins"),
+        "linked-root",
+        "Linked root",
+        "export default { commands: [] };",
+    );
+    symlink(external, plugins.join("linked-root")).expect("create plugin root symlink");
+    write_plugin(
+        &plugins,
+        "Bad_Name",
+        "Bad name",
+        "export default { commands: [] };",
+    );
+    let linked_file = write_plugin(
+        &plugins,
+        "linked-file",
+        "Linked file",
+        "export default { commands: [] };",
+    );
+    let outside = temp.path().join("outside.ts");
+    fs::write(&outside, "export const value = 1;").expect("write symlink target");
+    symlink(&outside, linked_file.join("helper.ts")).expect("create source symlink");
+    let bad_marker = write_plugin(
+        &plugins,
+        "bad-marker",
+        "Bad marker",
+        "export default { commands: [] };",
+    );
+    symlink(&outside, bad_marker.join(DISABLED_MARKER)).expect("create marker symlink");
+    let oversized = write_plugin(
+        &plugins,
+        "oversized",
+        "Oversized",
+        "export default { commands: [] };",
+    );
+    fs::File::create(oversized.join("blob.bin"))
+        .and_then(|file| file.set_len(MAX_PLUGIN_SOURCE_BYTES + 1))
+        .expect("create oversized file");
+
+    let discovered = discover_plugins(&plugins).expect("one broken plugin must not fail discovery");
+    assert_eq!(
+        discovered
+            .sources
+            .iter()
+            .map(|source| source.id.as_str())
+            .collect::<Vec<_>>(),
+        ["good-a", "good-z"]
+    );
+    let errors = &discovered.errors;
+    assert_eq!(errors.len(), 5, "errors: {errors:?}");
+    for expected in [
+        "Invalid plugin directory ID `Bad_Name`",
+        "invalid .termy-disabled marker",
+        "unsupported file or symlink",
+        "cannot be a symlink",
+        "16 MiB source-tree limit",
+    ] {
+        assert!(
+            errors.iter().any(|error| error.contains(expected)),
+            "missing `{expected}` in {errors:?}"
+        );
+    }
+
+    // Settings reports every plugin discovery skipped, with the same message.
+    let inventory = inventory_plugins(&plugins).expect("inventory plugins");
+    let mut reported = inventory.errors.clone();
+    for plugin in &inventory.plugins {
+        let skipped = !discovered
+            .sources
+            .iter()
+            .any(|source| source.id == plugin.id);
+        assert_eq!(
+            plugin.error.is_some(),
+            skipped,
+            "inventory disagrees with discovery about `{}`: {:?}",
+            plugin.id,
+            plugin.error
+        );
+        reported.extend(plugin.error.clone());
+    }
+    reported.sort();
+    let mut expected = errors.clone();
+    expected.sort();
+    assert_eq!(reported, expected);
+}
+
+#[cfg(unix)]
+#[test]
+fn refresh_loads_good_plugins_beside_a_broken_one() {
+    use std::os::unix::fs::symlink;
+
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugins = temp.path().join("plugins");
+    write_plugin(
+        &plugins,
+        "good",
+        "Good",
+        r#"export default definePlugin({
+  commands: [{ id: "hello", title: "Hello", run() {} }],
+});"#,
+    );
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.errors.is_empty(), "errors: {:?}", refresh.errors);
+
+    // Breaking another plugin leaves the loaded sources unchanged, yet the
+    // refresh must still notice and report it.
+    let broken = write_plugin(
+        &plugins,
+        "broken",
+        "Broken",
+        "export default definePlugin({ commands: [] });",
+    );
+    let outside = temp.path().join("outside.ts");
+    fs::write(&outside, "export const value = 1;").expect("write symlink target");
+    symlink(&outside, broken.join("helper.ts")).expect("create source symlink");
+
+    for _ in 0..2 {
+        let refresh = runtime.refresh_if_changed();
+        assert_eq!(refresh.errors.len(), 1, "errors: {:?}", refresh.errors);
+        assert!(
+            refresh.errors[0].contains("unsupported file or symlink"),
+            "errors: {:?}",
+            refresh.errors
+        );
+        assert_eq!(
+            runtime
+                .commands()
+                .iter()
+                .map(PluginCommand::qualified_id)
+                .collect::<Vec<_>>(),
+            ["good.hello"]
+        );
+    }
 }
 
 #[test]
@@ -1618,8 +1789,31 @@ fn discovery_caps_plugin_count_before_starting_workers() {
         );
     }
 
-    let error = discover_plugins(&plugins).expect_err("plugin count must be capped");
-    assert!(error.contains("maximum is 32"), "unexpected error: {error}");
+    let discovered = discover_plugins(&plugins).expect("discover plugins");
+    assert_eq!(discovered.sources.len(), MAX_INSTALLED_PLUGINS);
+    assert!(
+        discovered
+            .sources
+            .iter()
+            .all(|source| source.id != format!("plugin-{MAX_INSTALLED_PLUGINS:02}")),
+        "the plugin past the limit, in ID order, must be left out"
+    );
+    assert_eq!(
+        discovered.errors,
+        [plugin_limit_error(&format!(
+            "plugin-{MAX_INSTALLED_PLUGINS:02}"
+        ))]
+    );
+    assert!(discovered.errors[0].contains("maximum is 32"));
+
+    let inventory = inventory_plugins(&plugins).expect("inventory plugins");
+    assert!(
+        inventory
+            .plugins
+            .iter()
+            .all(|plugin| plugin.error.is_none())
+    );
+    assert_eq!(inventory.errors, discovered.errors);
 }
 
 #[test]

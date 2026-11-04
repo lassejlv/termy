@@ -1817,7 +1817,12 @@ impl PluginRuntime {
                     .catalog
                     .write()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                catalog.fingerprint = Some(discovered.fingerprint);
+                // Like load errors below, skipped plugins are reported again on
+                // every refresh until they are fixed.
+                catalog.fingerprint = discovered
+                    .errors
+                    .is_empty()
+                    .then_some(discovered.fingerprint);
                 catalog.commands.clear();
                 catalog.events.clear();
                 catalog.views.clear();
@@ -1835,7 +1840,7 @@ impl PluginRuntime {
             }
             return Ok(PluginRefresh {
                 changed: previous_fingerprint.is_some() || had_commands,
-                errors: Vec::new(),
+                errors: discovered.errors,
             });
         }
 
@@ -1880,7 +1885,8 @@ impl PluginRuntime {
                 return Err(error.into_message());
             }
         };
-        let mut errors = load_result.errors;
+        let mut errors = discovered.errors;
+        errors.extend(load_result.errors);
         let source_revisions = discovered
             .sources
             .iter()
@@ -3099,6 +3105,8 @@ impl Drop for HostConnection {
 #[derive(Debug)]
 struct DiscoveredPlugins {
     sources: Vec<PluginSource>,
+    /// Entries and enabled plugins left out of `sources`, one message each.
+    errors: Vec<String>,
     fingerprint: [u8; 32],
 }
 
@@ -3190,44 +3198,15 @@ fn read_source_metadata(root: &Path) -> Result<Option<PluginSourceMetadata>, Str
 }
 
 fn inventory_plugins(plugins_dir: &Path) -> Result<PluginInventory, String> {
-    fs::create_dir_all(plugins_dir).map_err(|error| {
-        format!(
-            "Failed to create plugin directory {}: {error}",
-            plugins_dir.display()
-        )
-    })?;
-    let mut entries = fs::read_dir(plugins_dir)
-        .map_err(|error| format!("Failed to read {}: {error}", plugins_dir.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("Failed to inspect {}: {error}", plugins_dir.display()))?;
-    entries.sort_by_key(|entry| entry.file_name());
-
-    let mut inventory = PluginInventory::default();
-    for entry in entries {
-        let id = entry.file_name().to_string_lossy().into_owned();
-        if id.starts_with('.') {
-            continue;
-        }
-        let root = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("Failed to inspect {}: {error}", root.display()))?;
-        if file_type.is_symlink() {
-            inventory.errors.push(format!(
-                "Plugin source cannot be a symlink: {}",
-                root.display()
-            ));
-            continue;
-        }
-        if !file_type.is_dir() || !root.join("plugin.json").is_file() {
-            continue;
-        }
-        if !valid_id(&id) {
-            inventory
-                .errors
-                .push(format!("Invalid plugin directory ID `{id}`"));
-            continue;
-        }
+    let scan = scan_plugin_directory(plugins_dir)?;
+    let mut inventory = PluginInventory {
+        plugins: Vec::new(),
+        errors: scan.errors,
+    };
+    // Mirrors `discover_plugins`, so a plugin discovery leaves out shows why
+    // here instead of looking installed and fine.
+    let mut loadable = 0;
+    for (id, root) in scan.roots {
         let enabled = match plugin_is_enabled(&root, &id) {
             Ok(enabled) => enabled,
             Err(error) => {
@@ -3243,19 +3222,31 @@ fn inventory_plugins(plugins_dir: &Path) -> Result<PluginInventory, String> {
                 continue;
             }
         };
+        let load_error = plugin_tree_entries(&root).err();
+        if enabled && load_error.is_none() {
+            // An error on the plugin marks it invalid and blocks managing it,
+            // but the limit isn't this plugin's fault, so it is listed with
+            // the directory's errors instead.
+            if loadable == MAX_INSTALLED_PLUGINS {
+                inventory.errors.push(plugin_limit_error(&id));
+            } else {
+                loadable += 1;
+            }
+        }
         match validated_plugin_manifest(&root, &id) {
-            Ok((manifest, _)) => match read_source_metadata(&root) {
-                Ok(source) => inventory.plugins.push(installed_plugin_from_manifest(
-                    manifest, root, enabled, source, None,
-                )),
-                Err(error) => inventory.plugins.push(installed_plugin_from_manifest(
+            Ok((manifest, _)) => {
+                let (source, source_error) = match read_source_metadata(&root) {
+                    Ok(source) => (source, None),
+                    Err(error) => (None, Some(error)),
+                };
+                inventory.plugins.push(installed_plugin_from_manifest(
                     manifest,
                     root,
                     enabled,
-                    None,
-                    Some(error),
-                )),
-            },
+                    source,
+                    load_error.or(source_error),
+                ));
+            }
             Err(error) => inventory.plugins.push(InstalledPlugin {
                 id: id.clone(),
                 name: id,
@@ -3422,72 +3413,121 @@ fn normalized_relative_plugin_path(path: &str) -> Option<String> {
     (!components.is_empty()).then(|| components.join("/"))
 }
 
-fn discover_plugins(plugins_dir: &Path) -> Result<DiscoveredPlugins, String> {
-    if !plugins_dir.exists() {
-        fs::create_dir_all(plugins_dir).map_err(|error| {
-            format!(
-                "Failed to create plugin directory {}: {error}",
-                plugins_dir.display()
-            )
-        })?;
-    }
+/// Plugin directories found directly under the plugins directory.
+struct PluginDirectoryScan {
+    /// Plugin IDs and roots, sorted by ID.
+    roots: Vec<(String, PathBuf)>,
+    /// Entries skipped because they can't be a plugin, such as a symlink or a
+    /// directory whose name isn't a valid plugin ID.
+    errors: Vec<String>,
+}
+
+/// Lists the plugin directories under `plugins_dir` for both discovery and
+/// inventory, so the two judge every entry alike. Only failing to read the
+/// directory itself fails the scan; a bad entry is reported and skipped so it
+/// doesn't take the other plugins down with it.
+fn scan_plugin_directory(plugins_dir: &Path) -> Result<PluginDirectoryScan, String> {
+    fs::create_dir_all(plugins_dir).map_err(|error| {
+        format!(
+            "Failed to create plugin directory {}: {error}",
+            plugins_dir.display()
+        )
+    })?;
     let mut entries = fs::read_dir(plugins_dir)
         .map_err(|error| format!("Failed to read {}: {error}", plugins_dir.display()))?
-        .filter_map(Result::ok)
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("Failed to inspect {}: {error}", plugins_dir.display()))?;
     entries.sort_by_key(|entry| entry.file_name());
 
-    let mut candidates = Vec::new();
+    let mut scan = PluginDirectoryScan {
+        roots: Vec::new(),
+        errors: Vec::new(),
+    };
     for entry in entries {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') {
             continue;
         }
         let root = entry.path();
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("Failed to inspect {}: {error}", root.display()))?;
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                scan.errors
+                    .push(format!("Failed to inspect {}: {error}", root.display()));
+                continue;
+            }
+        };
         if file_type.is_symlink() {
-            return Err(format!(
+            scan.errors.push(format!(
                 "Plugin source cannot be a symlink: {}",
                 root.display()
             ));
+            continue;
         }
         if !file_type.is_dir() || !root.join("plugin.json").is_file() {
             continue;
         }
-        let id = name;
-        if !valid_id(&id) {
-            return Err(format!(
-                "Invalid plugin path ID `{id}`; use lowercase letters, numbers, dots, underscores, or hyphens"
+        if !valid_id(&name) {
+            scan.errors.push(format!(
+                "Invalid plugin directory ID `{name}`; use lowercase letters, numbers, dots, underscores, or hyphens"
             ));
-        }
-        if !plugin_is_enabled(&root, &id)? {
             continue;
         }
-        candidates.push((id, root));
+        scan.roots.push((name, root));
     }
-    candidates.sort_by(|left, right| left.0.cmp(&right.0));
-    if candidates.len() > MAX_INSTALLED_PLUGINS {
-        return Err(format!(
-            "Plugin directory contains {} plugins; maximum is {MAX_INSTALLED_PLUGINS}",
-            candidates.len()
-        ));
+    Ok(scan)
+}
+
+fn plugin_limit_error(id: &str) -> String {
+    format!("Plugin `{id}` was not loaded; the maximum is {MAX_INSTALLED_PLUGINS} enabled plugins")
+}
+
+/// Finds the enabled plugins to load. A plugin that fails its checks (a bad
+/// disabled marker, a symlink or oversized source tree, or one past the
+/// enabled-plugin limit, taken in ID order) is left out and reported in
+/// `errors`, and the others still load.
+fn discover_plugins(plugins_dir: &Path) -> Result<DiscoveredPlugins, String> {
+    let PluginDirectoryScan { roots, mut errors } = scan_plugin_directory(plugins_dir)?;
+    let mut candidates = Vec::new();
+    for (id, root) in roots {
+        match plugin_is_enabled(&root, &id) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        }
+        let entries = match plugin_tree_entries(&root) {
+            Ok(entries) => entries,
+            Err(error) => {
+                errors.push(error);
+                continue;
+            }
+        };
+        if candidates.len() == MAX_INSTALLED_PLUGINS {
+            errors.push(plugin_limit_error(&id));
+            continue;
+        }
+        candidates.push((id, root, entries));
     }
 
-    let mut seen = HashSet::new();
     let mut hasher = Sha256::new();
     let mut sources = Vec::with_capacity(candidates.len());
-    for (id, root) in candidates {
-        if !seen.insert(id.clone()) {
-            return Err(format!("Duplicate plugin ID `{id}`"));
-        }
+    'plugins: for (id, root, entries) in candidates {
         let mut source_hasher = Sha256::new();
         source_hasher.update(BUNDLE_CACHE_FORMAT);
-        for entry in plugin_tree_entries(&root)? {
+        for entry in entries {
+            let digest = match plugin_file_digest(&entry) {
+                Ok(digest) => digest,
+                Err(error) => {
+                    errors.push(error);
+                    continue 'plugins;
+                }
+            };
             source_hasher.update(entry.relative_path.as_bytes());
             source_hasher.update([0]);
-            source_hasher.update(plugin_file_digest(&entry)?);
+            source_hasher.update(digest);
             source_hasher.update([0]);
         }
         let source_hash = source_hasher.finalize();
@@ -3503,8 +3543,16 @@ fn discover_plugins(plugins_dir: &Path) -> Result<DiscoveredPlugins, String> {
             cache_key,
         });
     }
+    // A plugin that newly fails its checks must change the fingerprint even
+    // when the plugins that load are unchanged, or the refresh would skip
+    // reporting it.
+    for error in &errors {
+        hasher.update([1]);
+        hasher.update(error.as_bytes());
+    }
     Ok(DiscoveredPlugins {
         sources,
+        errors,
         fingerprint: hasher.finalize().into(),
     })
 }
