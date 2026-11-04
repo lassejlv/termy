@@ -18,7 +18,7 @@ final class SidebarView: GlassPanel {
 
     private var rows: [(Row, NSRect)] = []
     /// Slides under the selected tab row.
-    private let pill = NSView()
+    private let pill = PassthroughView()
     private var pillGlass: GlassView?
     private var lastSelectedTab: ObjectIdentifier?
     private var hoverRow: Int?

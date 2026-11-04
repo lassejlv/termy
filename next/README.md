@@ -107,6 +107,23 @@ the cursor:
 The plugin does nothing when Termy Next isn't listening, and a closed socket
 can't end the shell. The protocol is in `ShellProtocol.swift`.
 
+## Tasks
+
+Termy's tasks work here too. Define them in Termy Next's config file:
+
+```txt
+task.build.command = cargo build
+task.build.working_dir = crates/cli
+task.deploy.layout = shy-orchard
+task.deploy.command = ./deploy.sh
+```
+
+Run Task… (File menu or the command palette) lists them, and the palette
+also matches them by name. A task opens a new tab and types its command
+into the shell, which stays open afterwards. `working_dir` may use `~`; a
+relative path starts from the focused pane's directory. `layout` limits a
+task to the session with that name. `task.<name>.keybind` is not used yet.
+
 ## SSH
 
 `ssh` typed in zsh and Add Remote Host send `COLORTERM` along (Settings →

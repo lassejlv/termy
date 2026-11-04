@@ -1,5 +1,6 @@
 import AppKit
 import Termy
+import TermyNextCore
 
 enum TabStyle: String, CaseIterable { case above, left, right }
 enum PaneStyle: String, CaseIterable { case comfortable, compact }
@@ -57,6 +58,12 @@ final class Preferences {
     var lastWindowFullScreen: Bool {
         get { defaults.bool(forKey: "lastWindowFullScreen") }
         set { defaults.set(newValue, forKey: "lastWindowFullScreen") }
+    }
+    /// New tabs, splits, sessions and windows open in the focused pane's
+    /// folder. Off, they open in the start folder (`working_dir`). On by default.
+    var inheritsDirectory: Bool {
+        get { defaults.object(forKey: "inheritsDirectory") as? Bool ?? true }
+        set { defaults.set(newValue, forKey: "inheritsDirectory"); changed() }
     }
     /// ssh sends COLORTERM along (zsh and Add Remote Host), so programs on
     /// the server use 24-bit color. On by default.
@@ -140,6 +147,8 @@ final class AppConfig {
     private(set) var termyConfig: TermyConfig
     private(set) var renderConfig: RenderConfig
     private(set) var theme: Theme
+    /// `task.<name>.*` entries from the config file, in config order.
+    private(set) var tasks: [TaskSpec] = []
     /// The font size the config file sets, before any pane's zoom.
     private(set) var baseFontSize: Float = 13
     private var cachedThemes: [TermyTheme]?
@@ -180,6 +189,7 @@ final class AppConfig {
         if let render = try? base.renderConfig(for: appearance) { renderConfig = render }
         baseFontSize = renderConfig.fontSize
         theme = Theme(renderConfig)
+        tasks = (try? base.tasksJSON()).map(TaskSpec.decodeList) ?? []
     }
 
     private var appearance: Appearance {
@@ -195,6 +205,37 @@ final class AppConfig {
         let themes = (try? fileConfig.themes()) ?? []
         cachedThemes = themes
         return themes
+    }
+
+    /// `working_dir` as the config file sets it, if it does.
+    var workingDirSetting: String? { fileConfig.workingDirectory }
+
+    /// Where new windows start, and new panes when they don't follow the
+    /// focused pane: the config's `working_dir`, else the home folder.
+    var startDirectory: String {
+        guard let raw = workingDirSetting?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return NSHomeDirectory() }
+        let path = (raw as NSString).expandingTildeInPath
+        return TaskSpec.directoryExists(path) ? path : NSHomeDirectory()
+    }
+
+    /// `warn_on_quit`: ask before every quit. Off by default, as in Termy.
+    var warnsOnQuit: Bool { (try? fileConfig.safety().warnOnQuit) ?? false }
+    /// `warn_on_quit_with_running_process`: ask before quitting while a
+    /// program other than the shell runs in a pane. Off unless the config
+    /// file sets it: Termy defaults it on, but quitting Termy Next detaches
+    /// from the session host instead of ending programs.
+    var warnsOnQuitWithRunningProcess: Bool {
+        guard Self.configSets("warn_on_quit_with_running_process") else { return false }
+        return (try? fileConfig.safety().warnOnQuitWithRunningProcess) ?? false
+    }
+
+    /// Whether the config file has a line for root setting `key`.
+    private static func configSets(_ key: String) -> Bool {
+        guard let text = try? String(contentsOf: configURL, encoding: .utf8) else { return false }
+        return text.split(whereSeparator: \.isNewline).contains { line in
+            let parts = line.split(separator: "=", maxSplits: 1)
+            return parts.count == 2 && parts[0].trimmingCharacters(in: .whitespaces) == key
+        }
     }
 
     /// The `theme` the config file sets, if any.

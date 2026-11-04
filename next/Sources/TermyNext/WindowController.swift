@@ -396,16 +396,35 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         sidebar.needsLayout = true
     }
 
-    private func newTab(directory: String? = nil, command: String? = nil) {
+    /// The folder a new tab, split, session or window opens in: the
+    /// focused pane's, or the start folder when panes don't follow it.
+    private func newPaneDirectory(from pane: PaneView? = nil) -> String? {
+        let start = AppConfig.shared.startDirectory
+        guard Preferences.shared.inheritsDirectory else { return start }
+        return (pane ?? focusedPane)?.directory ?? start
+    }
+
+    @discardableResult
+    private func newTab(directory: String? = nil, command: String? = nil) -> PaneView? {
         do {
-            let pane = try PaneView(workingDirectory: directory ?? focusedPane?.directory, command: command)
+            let pane = try PaneView(workingDirectory: directory ?? newPaneDirectory(), command: command)
             session.append(TerminalTab(pane: pane))
             Workspace.shared.noteDirectory(pane.directory)
             showSelectedTab()
             Workspace.shared.changed()
+            return pane
         } catch {
             showError(error)
+            return nil
         }
+    }
+
+    /// Runs a config task the way Termy does: a new tab whose shell gets the
+    /// command typed in, so the shell stays once the command ends.
+    private func run(_ task: TaskSpec) {
+        guard let input = task.input else { NSSound.beep(); return }
+        guard let pane = newTab(directory: task.resolvedDirectory(base: newPaneDirectory())) else { return }
+        try? pane.terminal.session.terminal.write(input)
     }
 
     private func close(tab: TerminalTab) {
@@ -467,7 +486,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
 
     private func newSession(named name: String? = nil) {
         do {
-            let created = try Workspace.shared.createSession(name: name, directory: focusedPane?.directory)
+            let created = try Workspace.shared.createSession(name: name, directory: newPaneDirectory())
             switchTo(created)
         } catch {
             showError(error)
@@ -509,7 +528,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     private func split(_ direction: Direction, from anchor: PaneView? = nil) {
         guard let tab = currentTab, let anchor = anchor ?? focusedPane else { return }
         do {
-            let pane = try PaneView(workingDirectory: anchor.directory)
+            let pane = try PaneView(workingDirectory: newPaneDirectory(from: anchor))
             pane.zoom = anchor.zoom  // A split keeps the zoom of the pane it came from.
             pane.delegate = self
             if tab.floating[anchor.id] != nil { tab.toggleFloating(anchor.id) }
@@ -1094,11 +1113,12 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         case .addRemoteHost: showRemoteHostPicker()
         case .newSession: newSession()
         case .newTab: newTab()
+        case .runTask: showTaskPicker()
         case .goToDirectory: showDirectoryPicker(insert: false)
         case .insertPath: showDirectoryPicker(insert: true)
         case .askForCommand:
             if Preferences.shared.shellPlugins { focusedPane?.shellUI.toggleAsk() } else { NSSound.beep() }
-        case .newWindow: AppDelegate.shared.newWindow(directory: focusedPane?.directory)
+        case .newWindow: AppDelegate.shared.newWindow(directory: newPaneDirectory())
         case .previousTab: selectTab(at: (session.selectedIndex - 1 + session.tabs.count) % max(session.tabs.count, 1))
         case .nextTab: selectTab(at: (session.selectedIndex + 1) % max(session.tabs.count, 1))
         case .moveTabLeft: if let tab = currentTab { session.move(tab, by: -1); strip.needsDisplay = true; sidebar.needsLayout = true }
@@ -1238,6 +1258,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
                 accessory: command.opensSubpicker ? .chevron(command.shortcutLabel) : command.shortcutLabel.map { .shortcut($0) } ?? .none,
                 run: { [weak self] in self?.run(command) })
         }
+        items += taskItems()
         for (i, tab) in session.tabs.enumerated() where i != session.selectedIndex {
             items.append(PickerItem(title: tab.title, subtitle: tab.detail, symbol: "program:\(tab.program ?? "")",
                                     status: tab.activity, keywords: "tab", run: { [weak self] in self?.selectTab(at: i) }))
@@ -1264,6 +1285,25 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         }, create: { [weak self] name in
             PickerItem(title: "Create “\(name)”", symbol: "plus", run: { self?.newSession(named: name) })
         }))
+        present(view)
+    }
+
+    private func taskItems() -> [PickerItem] {
+        TaskSpec.visible(AppConfig.shared.tasks, inSession: session.name).map { task in
+            PickerItem(title: task.name, subtitle: task.command, symbol: "play", keywords: "task",
+                       run: { [weak self] in self?.run(task) })
+        }
+    }
+
+    private func showTaskPicker() {
+        let view = PickerView(mode: .list(placeholder: "Run a task…", items: { [weak self] in
+            guard let self else { return [] }
+            let items = self.taskItems()
+            guard items.isEmpty else { return items }
+            // Nothing configured yet: point at where tasks go.
+            return [PickerItem(title: "Add tasks to the config file", subtitle: "task.<name>.command = …",
+                               symbol: "doc.text", run: { AppDelegate.shared.openConfig() })]
+        }, create: nil))
         present(view)
     }
 

@@ -315,3 +315,42 @@ import Testing
         #expect(codex.first?.description == "Add dark mode")
     }
 }
+
+@Suite struct TaskSpecTests {
+    @Test func decodesLibtermyJSON() {
+        let json = #"[{"name":"build","command":"cargo build","layout":null,"working_dir":"crates/cli"},{"name":"dev","command":"cargo run","layout":"dashboard","working_dir":null}]"#
+        let tasks = TaskSpec.decodeList(Data(json.utf8))
+        #expect(tasks == [
+            TaskSpec(name: "build", command: "cargo build", workingDir: "crates/cli"),
+            TaskSpec(name: "dev", command: "cargo run", layout: "dashboard"),
+        ])
+        #expect(TaskSpec.decodeList(Data("nope".utf8)).isEmpty)
+    }
+
+    @Test func layoutScopesTasksToASession() {
+        let tasks = [TaskSpec(name: "a", command: "a"), TaskSpec(name: "b", command: "b", layout: "Dashboard")]
+        #expect(TaskSpec.visible(tasks, inSession: "shy-orchard").map(\.name) == ["a"])
+        #expect(TaskSpec.visible(tasks, inSession: "dashboard").map(\.name) == ["a", "b"])
+    }
+
+    @Test func resolvesWorkingDirectory() {
+        let exists: (String) -> Bool = { ["/repo/crates/cli", "/home/me/src", "/home/me", "/abs"].contains($0) }
+        func dir(_ raw: String?, base: String? = "/repo") -> String? {
+            TaskSpec(name: "t", command: "x", workingDir: raw).resolvedDirectory(base: base, home: "/home/me", isDirectory: exists)
+        }
+        #expect(dir(nil) == "/repo")
+        #expect(dir("  ") == "/repo")
+        #expect(dir("crates/cli") == "/repo/crates/cli")
+        #expect(dir("./crates/cli/") == "/repo/crates/cli")
+        #expect(dir("~") == "/home/me")
+        #expect(dir("~/src") == "/home/me/src")
+        #expect(dir("/abs") == "/abs")
+        #expect(dir("missing") == "/repo")
+        #expect(dir("src", base: nil) == "/home/me/src")
+    }
+
+    @Test func inputTypesTheCommandAndReturn() {
+        #expect(TaskSpec(name: "t", command: "  make test \n").input == "make test\r")
+        #expect(TaskSpec(name: "t", command: "  ").input == nil)
+    }
+}

@@ -17,7 +17,7 @@ final class GlassView: NSView {
         self.cornerRadius = cornerRadius
         self.tint = tint
         if #available(macOS 26.0, *) {
-            let glass = NSGlassEffectView()
+            let glass = StillGlassEffectView()
             glass.style = style == .clear ? .clear : .regular
             // Interactive glass is macOS 27 API. Set it by name so the app
             // still builds with the macOS 26 SDK that CI runners have.
@@ -26,7 +26,7 @@ final class GlassView: NSView {
             }
             effect = glass
         } else {
-            let material = NSVisualEffectView()
+            let material = StillVisualEffectView()
             material.material = .hudWindow
             material.blendingMode = .withinWindow
             material.state = .active
@@ -43,6 +43,9 @@ final class GlassView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    /// The app drags the window itself from empty titlebar; glass on a tab
+    /// or button must never start a window drag.
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override func layout() {
         super.layout()
@@ -69,12 +72,31 @@ final class GlassView: NSView {
     }
 }
 
+/// A view that is only drawing: presses go to the view under it. A plain
+/// see-through view in the titlebar would otherwise let AppKit drag the window.
+@MainActor
+final class PassthroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
+/// Glass and material that never start a window drag (see `GlassView`).
+@available(macOS 26.0, *)
+private final class StillGlassEffectView: NSGlassEffectView {
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
+private final class StillVisualEffectView: NSVisualEffectView {
+    override var mouseDownCanMoveWindow: Bool { false }
+}
+
 /// Draws on behalf of its owner, above the owner's glass background.
 @MainActor
 final class DrawingView: NSView {
     weak var owner: GlassPanel?
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override var mouseDownCanMoveWindow: Bool { false }
     override func draw(_ dirtyRect: NSRect) { owner?.drawContent(dirtyRect) }
 }
 

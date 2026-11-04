@@ -5,7 +5,7 @@ import TermyNextCore
 /// go through this list, so each one has a single title and key binding.
 enum Command: String, CaseIterable {
     case settings, checkForUpdates, restartSessionHost, commandPalette, changeSession, renameSession, renameTab, addRemoteHost
-    case newSession, newTab, goToDirectory, newWindow
+    case newSession, newTab, runTask, goToDirectory, newWindow
     case previousTab, nextTab, moveTabLeft, moveTabRight, moveTabToNewWindow
     case closePane, closeTab, closeSession, closeWindow
     case splitRight, splitDown, splitLeft, splitUp, splitBestFit
@@ -30,6 +30,7 @@ enum Command: String, CaseIterable {
         case .addRemoteHost: "Add Remote Host…"
         case .newSession: "New Session"
         case .newTab: "New Tab"
+        case .runTask: "Run Task…"
         case .goToDirectory: "Go to Directory…"
         case .newWindow: "New Window"
         case .previousTab: "Show Previous Tab"
@@ -113,7 +114,7 @@ enum Command: String, CaseIterable {
 
     /// Commands that open a second step in the palette instead of running at once.
     var opensSubpicker: Bool {
-        [.changeSession, .renameSession, .renameTab, .addRemoteHost, .goToDirectory, .insertPath].contains(self)
+        [.changeSession, .renameSession, .renameTab, .addRemoteHost, .runTask, .goToDirectory, .insertPath].contains(self)
     }
 
     /// Hidden from the palette: they only make sense as shortcuts.

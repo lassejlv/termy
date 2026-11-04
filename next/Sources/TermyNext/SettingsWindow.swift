@@ -1,79 +1,683 @@
 import AppKit
 import Termy
+import TermyNextCore
 
-/// The Settings window (⌘,): a standard macOS preferences window with a
-/// toolbar of panes. Every control writes straight to `Preferences`, and the
-/// window follows changes made elsewhere, such as from the View menu. It wears
-/// the terminal theme like the main window: the same backdrop under the
-/// toolbar and panes, the theme's text colors, and its accent on controls.
+/// The Settings window (⌘,), laid out like macOS System Settings: a sidebar
+/// of colored pane icons with a search field over it, and on the right the
+/// pane's title above grouped, rounded cards of rows, each with its label on
+/// the left and its control on the right. Every control writes straight to
+/// `Preferences`, and the window follows changes made elsewhere, such as from
+/// the View menu. It wears the terminal theme like the main window.
 @MainActor
-final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
+final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate, NSWindowDelegate {
     static let shared = SettingsWindowController()
 
     private enum Pane: String, CaseIterable {
-        case general, appearance, sessions
+        case general, appearance, theme, notifications, shell, sessions
 
         var title: String {
             switch self {
             case .general: "General"
             case .appearance: "Appearance"
+            case .theme: "Theme & Font"
+            case .notifications: "Notifications"
+            case .shell: "Shell"
             case .sessions: "Sessions"
             }
         }
 
         var symbol: String {
             switch self {
-            case .general: "gearshape"
-            case .appearance: "textformat.size"
-            case .sessions: "rectangle.stack"
+            case .general: "gearshape.fill"
+            case .appearance: "circle.lefthalf.filled"
+            case .theme: "paintpalette.fill"
+            case .notifications: "bell.badge.fill"
+            case .shell: "terminal.fill"
+            case .sessions: "rectangle.stack.fill"
             }
         }
 
-        var identifier: NSToolbarItem.Identifier { NSToolbarItem.Identifier(rawValue) }
+        var color: NSColor {
+            switch self {
+            case .general: .systemGray
+            case .appearance: .systemBlue
+            case .theme: .systemPink
+            case .notifications: .systemRed
+            case .shell: .systemGreen
+            case .sessions: .systemOrange
+            }
+        }
+
+        /// The sidebar starts a new group at these panes, as System Settings does.
+        var startsGroup: Bool { self == .appearance || self == .shell }
     }
 
-    private static let width: CGFloat = 540
+    private static let size = NSSize(width: 780, height: 580)
+    private static let sidebarWidth: CGFloat = 220
+    private static let headerHeight: CGFloat = 52
+    private static var contentWidth: CGFloat { size.width - sidebarWidth }
+    /// Width of the cards: the content less its side margins.
+    private static var groupWidth: CGFloat { contentWidth - 40 }
+
     private var pane: Pane = .general
     private var paneViews: [Pane: NSView] = [:]
+    /// Every word a pane shows, for the sidebar search.
+    private var paneText: [Pane: String] = [:]
 
-    // Chrome: the main window's backdrop, with the current pane on top.
+    // Chrome
     private let root = NSView()
     private let glass = NSVisualEffectView()
     private let tint = NSView()
-    /// Form text, recolored with the theme.
-    private var formLabels: [NSTextField] = []
+    private let contentBackground = NSView()
+    private let divider = NSView()
+    private let sidebar = SettingsSidebar()
+    private let search = NSSearchField()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let scroll = NSScrollView()
+
+    /// Text recolored with the theme. Row titles dim while their control is off.
+    private var rowTitles: [(label: NSTextField, control: NSControl?)] = []
+    private var headers: [NSTextField] = []
     private var notes: [NSTextField] = []
-    private var separators: [NSBox] = []
+    private var groups: [NSView] = []
+    private var separators: [NSView] = []
 
     // General
-    private let interfaceControl = NSSegmentedControl(labels: ["Liquid", "Classic"], trackingMode: .selectOne, target: nil, action: nil)
-    private let tabPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let shellCheckbox = NSButton(checkboxWithTitle: "zsh completions and the ⇧⌘E command box", target: nil, action: nil)
-    private let agentPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let specCheckbox = NSButton(checkboxWithTitle: "Command completions (experimental)", target: nil, action: nil)
-    private let arrowsCheckbox = NSButton(checkboxWithTitle: "Pick completions with ↑ and ↓", target: nil, action: nil)
-    private let sshColorCheckbox = NSButton(checkboxWithTitle: "Send 24-bit color support to SSH hosts", target: nil, action: nil)
-    private let paneControl = NSSegmentedControl(labels: ["Comfortable", "Compact"], trackingMode: .selectOne, target: nil, action: nil)
-    private let notifyCheckbox = NSButton(checkboxWithTitle: "Notify me about programs in panes", target: nil, action: nil)
-    private let notifyBlocked = NSButton(checkboxWithTitle: "When one needs attention", target: nil, action: nil)
-    private let notifyDone = NSButton(checkboxWithTitle: "When one finishes", target: nil, action: nil)
-    private let notifyFailed = NSButton(checkboxWithTitle: "When one fails", target: nil, action: nil)
-    private let notifySound = NSButton(checkboxWithTitle: "Play a sound", target: nil, action: nil)
-    private let updateCheckbox = NSButton(checkboxWithTitle: "Check for updates automatically", target: nil, action: nil)
-    private let updateDownload = NSButton(checkboxWithTitle: "Download and install them automatically", target: nil, action: nil)
+    private let updateCheckbox = NSSwitch()
+    private let updateDownload = NSSwitch()
     private let checkNowButton = NSButton(title: "Check Now", target: nil, action: nil)
     private let updateStatus = NSTextField(labelWithString: "")
+    private let appName = NSTextField(labelWithString: "Termy Next")
+    private let configLabel = NSTextField(labelWithString: "")
+    private let startPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let inheritSwitch = NSSwitch()
+    private let warnAlwaysSwitch = NSSwitch()
+    private let warnRunningSwitch = NSSwitch()
 
     // Appearance
+    private let interfaceControl = NSSegmentedControl(labels: ["Liquid", "Classic"], trackingMode: .selectOne, target: nil, action: nil)
+    private let tabPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let paneControl = NSSegmentedControl(labels: ["Comfortable", "Compact"], trackingMode: .selectOne, target: nil, action: nil)
+
+    // Theme & Font
     private let fontPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let sizeField = NSTextField()
     private let sizeStepper = NSStepper()
-    private let themePicker = ThemePicker(width: 350, height: 250)
-    private let configLabel = NSTextField(labelWithString: "")
+    private let themePicker = ThemePicker(width: SettingsWindowController.groupWidth - 24, height: 300)
     /// Every font family installed on this Mac, monospaced ones first;
     /// rebuilt when fonts are installed or removed.
     private var localFonts: (monospaced: [String], other: [String])?
     private var fontMenuKey: [String] = []
+
+    // Notifications
+    private let notifyCheckbox = NSSwitch()
+    private let notifyBlocked = NSSwitch()
+    private let notifyDone = NSSwitch()
+    private let notifyFailed = NSSwitch()
+    private let notifySound = NSSwitch()
+
+    // Shell
+    private let shellCheckbox = NSSwitch()
+    private let specCheckbox = NSSwitch()
+    private let arrowsCheckbox = NSSwitch()
+    private let agentPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let sshColorCheckbox = NSSwitch()
+
+    // Sessions
+    private let hostCheckbox = NSSwitch()
+    private let hostStatus = NSTextField(labelWithString: "")
+    private let hostFolderLabel = NSTextField(labelWithString: "")
+    private let revealButton = NSButton(title: "Show in Finder", target: nil, action: nil)
+    private let restartButton = NSButton(title: "Restart…", target: nil, action: nil)
+
+    private var switches: [NSSwitch] {
+        [inheritSwitch, warnAlwaysSwitch, warnRunningSwitch, updateCheckbox, updateDownload, notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound,
+         shellCheckbox, specCheckbox, arrowsCheckbox, sshColorCheckbox, hostCheckbox]
+    }
+
+    private init() {
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: Self.size),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        // An empty unified toolbar gives the tall title bar System Settings has,
+        // with the traffic lights centered in it over the sidebar.
+        window.toolbar = NSToolbar(identifier: "TermyNextSettings")
+        window.toolbarStyle = .unified
+        // Only the height changes, as in System Settings.
+        window.contentMinSize = NSSize(width: Self.size.width, height: 420)
+        window.contentMaxSize = NSSize(width: Self.size.width, height: 4000)
+        super.init(window: window)
+        window.delegate = self
+
+        buildChrome()
+        configureControls()
+        for pane in Pane.allCases { paneViews[pane] = build(pane) }
+
+        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Preferences.didChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Workspace.didChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Updates.didChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(fontsChanged), name: NSFont.fontSetChangedNotification, object: nil)
+        updateSidebar()
+        select(.general)
+        window.center()
+        window.setFrameAutosaveName("TermyNextSettings")
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show() {
+        refresh()
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    // MARK: Chrome
+
+    private func buildChrome() {
+        let size = Self.size
+        let sidebarWidth = Self.sidebarWidth
+        root.frame = NSRect(origin: .zero, size: size)
+        root.wantsLayer = true
+        glass.material = .sidebar
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        tint.wantsLayer = true
+        for view in [glass, tint] {
+            view.frame = root.bounds
+            view.autoresizingMask = [.width, .height]
+            root.addSubview(view)
+        }
+
+        contentBackground.wantsLayer = true
+        contentBackground.frame = NSRect(x: sidebarWidth, y: 0, width: size.width - sidebarWidth, height: size.height)
+        contentBackground.autoresizingMask = [.width, .height]
+        root.addSubview(contentBackground)
+        divider.wantsLayer = true
+        divider.frame = NSRect(x: sidebarWidth, y: 0, width: 1, height: size.height)
+        divider.autoresizingMask = [.height]
+        root.addSubview(divider)
+
+        // Sidebar: search under the traffic lights, then the panes.
+        search.placeholderString = "Search"
+        search.delegate = self
+        search.sendsSearchStringImmediately = true
+        search.target = self
+        search.action = #selector(searchChanged)
+        search.frame = NSRect(x: 10, y: size.height - Self.headerHeight - 28, width: sidebarWidth - 20, height: 28)
+        search.autoresizingMask = [.minYMargin]
+        root.addSubview(search)
+        sidebar.frame = NSRect(x: 0, y: 0, width: sidebarWidth, height: size.height - Self.headerHeight - 38)
+        sidebar.autoresizingMask = [.height]
+        sidebar.onSelect = { [weak self] id in
+            guard let self, let pane = Pane(rawValue: id) else { return }
+            self.select(pane)
+        }
+        root.addSubview(sidebar)
+
+        // Content: the pane's title level with the traffic lights, its rows below.
+        titleLabel.font = .systemFont(ofSize: 15, weight: .bold)
+        titleLabel.frame = NSRect(x: sidebarWidth + 20, y: size.height - Self.headerHeight / 2 - 10,
+                                  width: size.width - sidebarWidth - 40, height: 20)
+        titleLabel.autoresizingMask = [.minYMargin, .width]
+        root.addSubview(titleLabel)
+        scroll.frame = NSRect(x: sidebarWidth + 1, y: 0, width: size.width - sidebarWidth - 1, height: size.height - Self.headerHeight)
+        scroll.autoresizingMask = [.width, .height]
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.automaticallyAdjustsContentInsets = false
+        root.addSubview(scroll)
+
+        window?.contentView = root
+    }
+
+    /// Shows `pane` in the content area.
+    private func select(_ pane: Pane) {
+        self.pane = pane
+        window?.title = pane.title
+        titleLabel.stringValue = pane.title
+        sidebar.selected = pane.rawValue
+        guard let view = paneViews[pane] else { return }
+        if scroll.documentView !== view {
+            scroll.documentView = view
+            let clip = scroll.contentView
+            NSLayoutConstraint.activate([
+                view.topAnchor.constraint(equalTo: clip.topAnchor),
+                view.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+                view.widthAnchor.constraint(equalTo: clip.widthAnchor),
+            ])
+            clip.scroll(to: .zero)
+            scroll.reflectScrolledClipView(clip)
+        }
+        refresh()
+    }
+
+    // MARK: Search
+
+    @objc private func searchChanged() { updateSidebar() }
+
+    func controlTextDidChange(_ obj: Notification) { updateSidebar() }
+
+    /// Lists the panes whose title or rows match the search, and shows the
+    /// first match when the current pane isn't one.
+    private func updateSidebar() {
+        let query = search.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+        let words = query.split(separator: " ").map(String.init)
+        let panes = Pane.allCases.filter { pane in
+            words.allSatisfy { (paneText[pane] ?? pane.title.lowercased()).contains($0) }
+        }
+        sidebar.items = panes.map {
+            SettingsSidebar.Item(id: $0.rawValue, title: $0.title, symbol: $0.symbol, color: $0.color,
+                                 startsGroup: query.isEmpty && $0.startsGroup)
+        }
+        if let first = panes.first, !panes.contains(pane) { select(first) }
+    }
+
+    // MARK: Theme
+
+    /// Dresses the window in the terminal theme, the way the main window is.
+    private func applyTheme() {
+        let theme = AppConfig.shared.theme
+        window?.appearance = theme.appearance
+        glass.isHidden = !theme.isLiquid
+        glass.appearance = theme.appearance
+        tint.layer?.backgroundColor = (theme.isLiquid ? theme.backdropTint : theme.chrome).cgColor
+        contentBackground.layer?.backgroundColor = (theme.isLiquid
+            ? theme.terminalBackground.withAlphaComponent(theme.isDark ? 0.45 : 0.4)
+            : theme.paneFill).cgColor
+        divider.layer?.backgroundColor = theme.paneStroke.cgColor
+        titleLabel.textColor = theme.textPrimary
+        appName.textColor = theme.textPrimary
+        sidebar.needsDisplay = true
+
+        for (label, control) in rowTitles {
+            label.textColor = (control?.isEnabled ?? true) ? theme.textPrimary : theme.textTertiary
+        }
+        for header in headers { header.textColor = theme.textPrimary }
+        for note in notes { note.textColor = theme.textSecondary }
+        for group in groups {
+            group.layer?.backgroundColor = theme.foreground.withAlphaComponent(theme.isDark ? 0.05 : 0.035).cgColor
+            group.layer?.borderColor = theme.paneStroke.cgColor
+        }
+        for line in separators { line.layer?.backgroundColor = theme.paneStroke.cgColor }
+        for label in [updateStatus, configLabel, hostStatus, hostFolderLabel] { label.textColor = theme.textSecondary }
+        themePicker.applyTheme(theme)
+    }
+
+    // MARK: Panes
+
+    private func build(_ pane: Pane) -> NSView {
+        let sections: [Section]
+        switch pane {
+        case .general:
+            sections = [
+                Section(rows: [.full(aboutView())]),
+                Section(header: "New Windows and Tabs", rows: [
+                    .control("Start in", startPopup),
+                    .control("Open in the current pane's folder", inheritSwitch),
+                ], footer: "New windows start in this folder (working_dir in the config). With the switch on, new tabs, splits and sessions open where the focused pane is; off, they open in this folder too."),
+                Section(header: "Quitting", rows: [
+                    .control("Always ask before quitting", warnAlwaysSwitch),
+                    .control("Ask while programs are running", warnRunningSwitch),
+                ], footer: "A program is running when something other than the shell is in front of a pane. With the session host on, quitting doesn't end programs: they keep running and come back on the next launch. Programs inside the app end when it quits."),
+                Section(header: "Updates", rows: [
+                    .control("Check for updates automatically", updateCheckbox),
+                    .control("Download and install them automatically", updateDownload),
+                ], footer: Updates.shared.isAvailable
+                    ? "Updates are installed when you quit or relaunch. Programs in panes keep running through it."
+                    : "This build doesn't update itself. Releases are on GitHub, tagged next-v*."),
+                Section(header: "Config File", rows: [
+                    .control("Config file", row([button("Reload", #selector(reloadConfig)), button("Open in Editor", #selector(openConfig))]),
+                             subtitle: configLabel),
+                    .control("Import from Termy", button("Import…", #selector(importConfig)),
+                             subtitle: noteLabel("Copies ~/.config/termy/config.txt and its local themes")),
+                ], footer: "Termy Next keeps its own config, separate from the Termy app's. Import copies a Termy config over it, along with its local themes; the old file is kept as config.txt.bak."),
+            ]
+        case .appearance:
+            sections = [
+                Section(rows: [
+                    .control("Interface style", interfaceControl),
+                    .control("Tabs", tabPopup),
+                    .control("Pane spacing", paneControl),
+                ], footer: "Liquid puts the window chrome and panes on Liquid Glass; Classic draws them solid. Compact drops the gaps and headers around panes."),
+            ]
+        case .theme:
+            sections = [
+                Section(header: "Font", rows: [
+                    .control("Font", fontPopup),
+                    .control("Size", row([sizeField, sizeStepper, NSTextField(labelWithString: "pt")], spacing: 6)),
+                ], footer: "⌘+ and ⌘− zoom only the pane you're in; ⌘0 puts it back to this size."),
+                Section(header: "Theme", rows: [.full(themePicker)],
+                        footer: "Termy's theme library. Add your own as JSON files in ~/.config/termy-next/themes."),
+            ]
+        case .notifications:
+            sections = [
+                Section(rows: [.control("Notify me about programs in panes", notifyCheckbox)]),
+                Section(header: "Notify Me When a Program", rows: [
+                    .control("Needs attention", notifyBlocked),
+                    .control("Finishes", notifyDone),
+                    .control("Fails", notifyFailed),
+                    .control("Play a sound", notifySound),
+                ], footer: "Programs report their status with OSC 7501, as Claude Code and other agents do. You're notified only about panes you aren't looking at; clicking a notification takes you to the pane."),
+            ]
+        case .shell:
+            sections = [
+                Section(header: "zsh Plugin", rows: [
+                    .control("Completions and the ⇧⌘E command box", shellCheckbox),
+                    .control("Command completions", specCheckbox, subtitle: noteLabel("Experimental")),
+                    .control("Pick completions with ↑ and ↓", arrowsCheckbox),
+                    .control("Ask with", agentPopup),
+                ], footer: "A small zsh plugin shows matching history and commands under the prompt: ⌃N and ⌃P pick one, Return takes it. ⇧⌘E describes a command to Claude Code (claude -p) or Codex (codex exec), with the sign-in they already have. Applies to panes opened after you turn it on. Command completions add subcommands, options, branches, formulae and scripts for git, brew, cargo, rustup, rustc and bun."),
+                Section(header: "SSH", rows: [
+                    .control("Send 24-bit color support to SSH hosts", sshColorCheckbox),
+                ], footer: "ssh in zsh and Add Remote Host send COLORTERM, so Claude Code and other programs on the server draw true colors. The server has to accept it (AcceptEnv COLORTERM), as Debian and Ubuntu do. Copying over SSH works through OSC 52 from the pane you're in."),
+            ]
+        case .sessions:
+            sections = [
+                Section(rows: [
+                    .control("Keep programs running after Termy Next quits", hostCheckbox),
+                ], footer: "Shells run in a Termy session host, so they keep running when you quit and reattach when you open Termy Next again. Turned off, new panes run inside the app and end when it quits. Panes that are already open keep running where they are."),
+                Section(header: "Session Host", rows: [
+                    .control("Status", restartButton, subtitle: hostStatus),
+                    .control("Host folder", revealButton, subtitle: hostFolderLabel),
+                ]),
+            ]
+        }
+        paneText[pane] = ([pane.title] + sections.flatMap(\.searchText)).joined(separator: " ").lowercased()
+        return paneView(sections)
+    }
+
+    private struct Section {
+        var header: String?
+        var rows: [Row]
+        var footer: String?
+
+        var searchText: [String] {
+            [header, footer].compactMap { $0 } + rows.compactMap {
+                if case .control(let title, _, _) = $0 { return title }
+                return nil
+            }
+        }
+    }
+
+    private enum Row {
+        /// A title (and an optional line under it) on the left, a control on the right.
+        case control(String, NSView, subtitle: NSTextField? = nil)
+        /// A view across the whole card.
+        case full(NSView)
+    }
+
+    /// The scrolling page for a pane: each section's header, its card of
+    /// rows and its footer note, stacked down the content area.
+    private func paneView(_ sections: [Section]) -> NSView {
+        let page = FlippedView()
+        page.translatesAutoresizingMaskIntoConstraints = false
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 0
+        stack.edgeInsets = NSEdgeInsets(top: 4, left: 20, bottom: 24, right: 20)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        page.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: page.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: page.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: page.trailingAnchor),
+            stack.bottomAnchor.constraint(equalTo: page.bottomAnchor),
+        ])
+
+        func add(_ view: NSView, after spacing: CGFloat) {
+            stack.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalToConstant: Self.groupWidth).isActive = true
+            stack.setCustomSpacing(spacing, after: view)
+        }
+
+        for (index, section) in sections.enumerated() {
+            let last = index == sections.count - 1
+            if let header = section.header {
+                let label = NSTextField(labelWithString: header)
+                label.font = .systemFont(ofSize: 13, weight: .bold)
+                headers.append(label)
+                add(inset(label, by: 6), after: 8)
+            }
+            add(group(section.rows), after: section.footer == nil ? (last ? 0 : 24) : 6)
+            if let footer = section.footer {
+                let note = noteLabel(footer, wraps: true)
+                note.preferredMaxLayoutWidth = Self.groupWidth - 12
+                add(inset(note, by: 6), after: last ? 0 : 24)
+            }
+        }
+        return page
+    }
+
+    /// A rounded card of rows with hairlines between them.
+    private func group(_ rows: [Row]) -> NSView {
+        let card = NSView()
+        card.wantsLayer = true
+        card.layer?.cornerRadius = 10
+        card.layer?.cornerCurve = .continuous
+        card.layer?.borderWidth = 0.5
+        groups.append(card)
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 0
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: card.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+        ])
+        for (index, row) in rows.enumerated() {
+            if index > 0 {
+                let line = NSView()
+                line.wantsLayer = true
+                separators.append(line)
+                let holder = NSView()
+                line.translatesAutoresizingMaskIntoConstraints = false
+                holder.addSubview(line)
+                NSLayoutConstraint.activate([
+                    holder.heightAnchor.constraint(equalToConstant: 1),
+                    line.heightAnchor.constraint(equalToConstant: 1),
+                    line.centerYAnchor.constraint(equalTo: holder.centerYAnchor),
+                    line.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 12),
+                    line.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -12),
+                ])
+                stack.addArrangedSubview(holder)
+                holder.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            }
+            let view = rowView(row)
+            stack.addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        return card
+    }
+
+    private func rowView(_ row: Row) -> NSView {
+        let view = NSView()
+        switch row {
+        case .full(let content):
+            content.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(content)
+            NSLayoutConstraint.activate([
+                content.topAnchor.constraint(equalTo: view.topAnchor, constant: 12),
+                content.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -12),
+                content.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+                content.trailingAnchor.constraint(lessThanOrEqualTo: view.trailingAnchor, constant: -12),
+            ])
+        case .control(let title, let control, let subtitle):
+            let label = NSTextField(labelWithString: title)
+            label.font = .systemFont(ofSize: 13)
+            label.lineBreakMode = .byTruncatingTail
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            rowTitles.append((label, control as? NSControl))
+            let text = NSStackView(views: [label] + (subtitle.map { [$0] } ?? []))
+            text.orientation = .vertical
+            text.alignment = .leading
+            text.spacing = 2
+            subtitle?.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            for item in [text, control] {
+                item.translatesAutoresizingMaskIntoConstraints = false
+                view.addSubview(item)
+            }
+            control.setContentCompressionResistancePriority(.required, for: .horizontal)
+            NSLayoutConstraint.activate([
+                view.heightAnchor.constraint(greaterThanOrEqualToConstant: 40),
+                text.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
+                text.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+                text.topAnchor.constraint(greaterThanOrEqualTo: view.topAnchor, constant: 9),
+                text.trailingAnchor.constraint(lessThanOrEqualTo: control.leadingAnchor, constant: -16),
+                control.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
+                control.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+                control.topAnchor.constraint(greaterThanOrEqualTo: view.topAnchor, constant: 7),
+            ])
+        }
+        return view
+    }
+
+    /// The top of General: the app's icon, name and version, and Check Now.
+    private func aboutView() -> NSView {
+        let icon = NSImageView(image: NSApp.applicationIconImage ?? NSImage())
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        icon.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        appName.font = .systemFont(ofSize: 15, weight: .semibold)
+        let text = NSStackView(views: [appName, updateStatus])
+        text.orientation = .vertical
+        text.alignment = .leading
+        text.spacing = 2
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let stack = NSStackView(views: [icon, text, spacer, checkNowButton])
+        stack.orientation = .horizontal
+        stack.alignment = .centerY
+        stack.spacing = 12
+        stack.widthAnchor.constraint(equalToConstant: Self.groupWidth - 24).isActive = true
+        return stack
+    }
+
+    private func noteLabel(_ text: String, wraps: Bool = false) -> NSTextField {
+        let label = wraps ? NSTextField(wrappingLabelWithString: text) : NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        notes.append(label)
+        return label
+    }
+
+    /// `view` set in from the card's edge, as System Settings sets its headers.
+    private func inset(_ view: NSView, by amount: CGFloat) -> NSView {
+        let holder = NSView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        holder.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.topAnchor.constraint(equalTo: holder.topAnchor),
+            view.bottomAnchor.constraint(equalTo: holder.bottomAnchor),
+            view.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: amount),
+            view.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -amount),
+        ])
+        return holder
+    }
+
+    private func row(_ views: [NSView], spacing: CGFloat = 8) -> NSStackView {
+        let stack = NSStackView(views: views)
+        stack.orientation = .horizontal
+        stack.spacing = spacing
+        stack.alignment = .centerY
+        return stack
+    }
+
+    private func button(_ title: String, _ action: Selector) -> NSButton {
+        let button = NSButton(title: title, target: self, action: action)
+        button.bezelStyle = .push
+        button.controlSize = .regular
+        return button
+    }
+
+    // MARK: Controls
+
+    private func configureControls() {
+        for toggle in switches {
+            toggle.controlSize = .small
+            toggle.target = self
+        }
+        interfaceControl.target = self
+        interfaceControl.action = #selector(interfaceChanged)
+        paneControl.target = self
+        paneControl.action = #selector(paneStyleChanged)
+        tabPopup.addItems(withTitles: ["Above", "Left Side", "Right Side"])
+        tabPopup.target = self
+        tabPopup.action = #selector(tabStyleChanged)
+
+        shellCheckbox.action = #selector(shellPluginsChanged)
+        arrowsCheckbox.action = #selector(arrowKeysChanged)
+        specCheckbox.action = #selector(specCompletionsChanged)
+        sshColorCheckbox.action = #selector(sshColorChanged)
+        agentPopup.addItems(withTitles: ShellAgent.all.map(\.title))
+        agentPopup.target = self
+        agentPopup.action = #selector(shellAgentChanged)
+
+        for toggle in [notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound] {
+            toggle.action = #selector(notificationsChanged(_:))
+        }
+        for toggle in [updateCheckbox, updateDownload] {
+            toggle.action = #selector(updatesChanged(_:))
+        }
+        checkNowButton.bezelStyle = .push
+        checkNowButton.target = self
+        checkNowButton.action = #selector(checkForUpdates)
+        updateStatus.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+
+        let formatter = NumberFormatter()
+        formatter.minimum = 6
+        formatter.maximum = 72
+        formatter.maximumFractionDigits = 1
+        sizeField.formatter = formatter
+        sizeField.alignment = .right
+        sizeField.widthAnchor.constraint(equalToConstant: 52).isActive = true
+        sizeField.target = self
+        sizeField.action = #selector(sizeFieldChanged)
+        sizeStepper.minValue = 6
+        sizeStepper.maxValue = 72
+        sizeStepper.increment = 1
+        sizeStepper.valueWraps = false
+        sizeStepper.target = self
+        sizeStepper.action = #selector(sizeStepperChanged)
+
+        fontPopup.target = self
+        fontPopup.action = #selector(fontChanged)
+        fontPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
+        themePicker.onPick = { theme in AppDelegate.shared.applySetting("theme", theme.id) }
+
+        for label in [configLabel, hostFolderLabel, hostStatus] {
+            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            label.lineBreakMode = .byTruncatingMiddle
+        }
+        configLabel.isSelectable = true
+        hostFolderLabel.isSelectable = true
+
+        hostCheckbox.action = #selector(hostToggled)
+        startPopup.target = self
+        startPopup.action = #selector(startFolderChanged)
+        startPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 260).isActive = true
+        inheritSwitch.action = #selector(inheritChanged)
+        warnAlwaysSwitch.action = #selector(quitWarningChanged(_:))
+        warnRunningSwitch.action = #selector(quitWarningChanged(_:))
+        for button in [revealButton, restartButton] {
+            button.bezelStyle = .push
+            button.target = self
+        }
+        revealButton.action = #selector(revealHostFolder)
+        restartButton.action = #selector(restartHost)
+    }
 
     private func loadLocalFonts() -> (monospaced: [String], other: [String]) {
         if let localFonts { return localFonts }
@@ -102,355 +706,6 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         refresh()
     }
 
-    // Sessions
-    private let hostCheckbox = NSButton(checkboxWithTitle: "Keep programs running after Termy Next quits", target: nil, action: nil)
-    private let hostStatus = NSTextField(labelWithString: "")
-    private let hostFolderLabel = NSTextField(labelWithString: "")
-    private let revealButton = NSButton(title: "Show in Finder", target: nil, action: nil)
-    private let restartButton = NSButton(title: "Restart Session Host…", target: nil, action: nil)
-
-    private init() {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: Self.width, height: 300),
-            styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: true)
-        window.isReleasedWhenClosed = false
-        window.toolbarStyle = .preference
-        window.titlebarAppearsTransparent = true
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        super.init(window: window)
-
-        root.wantsLayer = true
-        root.layer?.cornerRadius = 12
-        root.layer?.masksToBounds = true
-        glass.material = .hudWindow
-        glass.blendingMode = .behindWindow
-        glass.state = .active
-        tint.wantsLayer = true
-        for view in [glass, tint] {
-            view.frame = root.bounds
-            view.autoresizingMask = [.width, .height]
-            root.addSubview(view)
-        }
-        window.contentView = root
-
-        let toolbar = NSToolbar(identifier: "TermyNextSettings")
-        toolbar.delegate = self
-        toolbar.displayMode = .iconAndLabel
-        toolbar.allowsUserCustomization = false
-        window.toolbar = toolbar
-
-        configureControls()
-        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Preferences.didChange, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Workspace.didChange, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Updates.didChange, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(fontsChanged), name: NSFont.fontSetChangedNotification, object: nil)
-        select(.general, animated: false)
-        window.center()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
-
-    func show() {
-        refresh()
-        showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
-    }
-
-    // MARK: Toolbar
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { Pane.allCases.map(\.identifier) }
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { Pane.allCases.map(\.identifier) }
-    func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { Pane.allCases.map(\.identifier) }
-
-    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier,
-                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        guard let pane = Pane(rawValue: identifier.rawValue) else { return nil }
-        let item = NSToolbarItem(itemIdentifier: identifier)
-        item.label = pane.title
-        item.image = NSImage(systemSymbolName: pane.symbol, accessibilityDescription: pane.title)
-        item.target = self
-        item.action = #selector(toolbarItemClicked(_:))
-        return item
-    }
-
-    @objc private func toolbarItemClicked(_ sender: NSToolbarItem) {
-        if let pane = Pane(rawValue: sender.itemIdentifier.rawValue) { select(pane, animated: true) }
-    }
-
-    /// Shows `pane`, resizing the window around it from the top edge like
-    /// every macOS settings window.
-    private func select(_ pane: Pane, animated: Bool) {
-        guard let window else { return }
-        self.pane = pane
-        window.toolbar?.selectedItemIdentifier = pane.identifier
-        window.title = pane.title
-        let view = paneViews[pane] ?? build(pane)
-        paneViews[pane] = view
-        refresh()
-
-        view.layoutSubtreeIfNeeded()
-        // The content runs under the toolbar, so the window is the pane plus
-        // the title bar and toolbar above it.
-        let paneHeight = view.fittingSize.height
-        let toolbarHeight = window.frame.height - window.contentLayoutRect.height
-        let height = paneHeight + toolbarHeight
-        let frame = NSRect(x: window.frame.minX, y: window.frame.maxY - height, width: Self.width, height: height)
-        root.subviews.filter { $0 !== glass && $0 !== tint }.forEach { $0.removeFromSuperview() }
-        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        window.setFrame(frame, display: true, animate: animated && window.isVisible && !reduceMotion)
-        view.frame = NSRect(x: 0, y: 0, width: Self.width, height: paneHeight)
-        view.autoresizingMask = [.width, .maxYMargin]
-        root.addSubview(view)
-    }
-
-    // MARK: Theme
-
-    /// Dresses the window in the terminal theme, the way the main window is.
-    private func applyTheme() {
-        let theme = AppConfig.shared.theme
-        window?.appearance = theme.appearance
-        glass.isHidden = !theme.isLiquid
-        glass.appearance = theme.appearance
-        tint.layer?.backgroundColor = (theme.isLiquid ? theme.backdropTint : theme.chrome).cgColor
-
-        for label in formLabels { label.textColor = theme.textPrimary }
-        for note in notes { note.textColor = theme.textSecondary }
-        for line in separators { line.fillColor = theme.paneStroke }
-        for label in [updateStatus, configLabel, hostStatus, hostFolderLabel] { label.textColor = theme.textSecondary }
-        themePicker.applyTheme(theme)
-        styleCheckboxes()
-    }
-
-    /// Checkbox titles in the theme's text color, dimmed while disabled, with
-    /// the theme's accent in the box.
-    private func styleCheckboxes() {
-        let theme = AppConfig.shared.theme
-        let checkboxes = [notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound,
-                          updateCheckbox, updateDownload, hostCheckbox, shellCheckbox, specCheckbox, arrowsCheckbox, sshColorCheckbox]
-        for checkbox in checkboxes {
-            checkbox.contentTintColor = theme.accent
-            checkbox.attributedTitle = NSAttributedString(string: checkbox.title, attributes: [
-                .foregroundColor: checkbox.isEnabled ? theme.textPrimary : theme.textTertiary,
-                .font: checkbox.font ?? .systemFont(ofSize: NSFont.systemFontSize),
-            ])
-        }
-    }
-
-    // MARK: Panes
-
-    private func build(_ pane: Pane) -> NSView {
-        switch pane {
-        case .general:
-            return form([
-                .control("Interface style:", interfaceControl),
-                .note("Liquid puts the window chrome and panes on Liquid Glass. Classic draws them solid."),
-                .control("Tabs:", tabPopup),
-                .control("Pane spacing:", paneControl),
-                .note("Compact drops the gaps and headers around panes."),
-                .separator,
-                .control("Notifications:", notifyCheckbox),
-                .control("", notifyBlocked),
-                .control("", notifyDone),
-                .control("", notifyFailed),
-                .control("", notifySound),
-                .note("Programs report their status with OSC 7501, as Claude Code and other agents do. You're notified only about panes you aren't looking at; clicking a notification takes you to the pane."),
-                .separator,
-                .control("Shell plugins:", shellCheckbox),
-                .control("", specCheckbox),
-                .control("", arrowsCheckbox),
-                .control("Ask with:", agentPopup),
-                .note("A small zsh plugin shows matching history and commands under the prompt: ⌃N and ⌃P pick one, Return takes it. ⇧⌘E describes a command to Claude Code (claude -p) or Codex (codex exec), with the sign-in they already have. Applies to panes opened after you turn it on. Command completions add subcommands, options, branches, formulae and scripts for git, brew, cargo, rustup, rustc and bun."),
-                .control("SSH:", sshColorCheckbox),
-                .note("ssh in zsh and Add Remote Host send COLORTERM, so Claude Code and other programs on the server draw true colors. The server has to accept it (AcceptEnv COLORTERM), as Debian and Ubuntu do. Copying over SSH works through OSC 52 from the pane you're in."),
-                .separator,
-                .control("Updates:", updateCheckbox),
-                .control("", updateDownload),
-                .control("", row([checkNowButton, updateStatus], spacing: 10)),
-                .note(Updates.shared.isAvailable
-                    ? "Updates are installed when you quit or relaunch. Programs in panes keep running through it."
-                    : "This build doesn't update itself. Releases are on GitHub, tagged next-v*."),
-            ])
-        case .appearance:
-            let size = row([sizeField, sizeStepper, NSTextField(labelWithString: "pt")], spacing: 6)
-            let configButtons = row([
-                button("Open in Editor", #selector(openConfig)),
-                button("Import Termy Config…", #selector(importConfig)),
-                button("Reload", #selector(reloadConfig)),
-            ], spacing: 8)
-            return form([
-                .control("Font:", fontPopup),
-                .control("Size:", size),
-                .note("⌘+ and ⌘− zoom only the pane you're in; ⌘0 puts it back to this size."),
-                .control("Theme:", themePicker),
-                .note("Termy's theme library. Add your own as JSON files in ~/.config/termy-next/themes."),
-                .separator,
-                .control("Config file:", configLabel),
-                .control("", configButtons),
-                .note("Termy Next keeps its own config, separate from the Termy app's. Import copies a Termy config over it, along with its local themes; the old file is kept as config.txt.bak."),
-            ])
-        case .sessions:
-            return form([
-                .control("Session host:", hostCheckbox),
-                .note("Shells run in a Termy session host, so they keep running when you quit and reattach when you open Termy Next again. Turned off, new panes run inside the app and end when it quits. Panes that are already open keep running where they are."),
-                .control("Status:", hostStatus),
-                .control("", restartButton),
-                .control("Host folder:", hostFolderLabel),
-                .control("", revealButton),
-            ])
-        }
-    }
-
-    private enum Row {
-        case control(String, NSView)
-        case note(String)
-        case separator
-    }
-
-    /// A two-column settings form: right-aligned labels, controls on the left
-    /// edge of the second column, as in macOS settings windows.
-    private func form(_ rows: [Row]) -> NSView {
-        let grid = NSGridView()
-        grid.columnSpacing = 8
-        grid.rowSpacing = 10
-        grid.rowAlignment = .firstBaseline
-        for row in rows {
-            switch row {
-            case .control(let title, let view):
-                let label = NSTextField(labelWithString: title)
-                label.alignment = .right
-                if !title.isEmpty { formLabels.append(label) }
-                grid.addRow(with: [title.isEmpty ? NSGridCell.emptyContentView : label, view])
-            case .note(let text):
-                let note = NSTextField(wrappingLabelWithString: text)
-                note.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-                note.preferredMaxLayoutWidth = 340
-                notes.append(note)
-                grid.addRow(with: [NSGridCell.emptyContentView, note])
-                grid.row(at: grid.numberOfRows - 1).topPadding = -4
-            case .separator:
-                // A hairline in the theme's stroke color, across both columns.
-                let line = NSBox()
-                line.boxType = .custom
-                line.borderWidth = 0
-                line.heightAnchor.constraint(equalToConstant: 1).isActive = true
-                separators.append(line)
-                grid.addRow(with: [line])
-                let gridRow = grid.row(at: grid.numberOfRows - 1)
-                gridRow.mergeCells(in: NSRange(location: 0, length: 2))
-                gridRow.cell(at: 0).xPlacement = .fill
-                gridRow.topPadding = 4
-                gridRow.bottomPadding = 4
-                gridRow.rowAlignment = .none
-                gridRow.yPlacement = .center
-            }
-        }
-        grid.column(at: 0).xPlacement = .trailing
-        grid.column(at: 0).width = 130
-        grid.column(at: 1).xPlacement = .leading
-
-        let container = NSView()
-        grid.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(grid)
-        NSLayoutConstraint.activate([
-            container.widthAnchor.constraint(equalToConstant: Self.width),
-            grid.topAnchor.constraint(equalTo: container.topAnchor, constant: 24),
-            grid.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -24),
-            grid.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
-            grid.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
-        ])
-        return container
-    }
-
-    private func row(_ views: [NSView], spacing: CGFloat) -> NSStackView {
-        let stack = NSStackView(views: views)
-        stack.orientation = .horizontal
-        stack.spacing = spacing
-        stack.alignment = .firstBaseline
-        return stack
-    }
-
-    private func button(_ title: String, _ action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.bezelStyle = .push
-        return button
-    }
-
-    // MARK: Controls
-
-    private func configureControls() {
-        interfaceControl.target = self
-        interfaceControl.action = #selector(interfaceChanged)
-
-        tabPopup.addItems(withTitles: ["Above", "Left Side", "Right Side"])
-        tabPopup.target = self
-        tabPopup.action = #selector(tabStyleChanged)
-
-        shellCheckbox.target = self
-        shellCheckbox.action = #selector(shellPluginsChanged)
-        arrowsCheckbox.target = self
-        arrowsCheckbox.action = #selector(arrowKeysChanged)
-        specCheckbox.target = self
-        specCheckbox.action = #selector(specCompletionsChanged)
-        sshColorCheckbox.target = self
-        sshColorCheckbox.action = #selector(sshColorChanged)
-        agentPopup.addItems(withTitles: ShellAgent.all.map(\.title))
-        agentPopup.target = self
-        agentPopup.action = #selector(shellAgentChanged)
-
-        for checkbox in [notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound] {
-            checkbox.target = self
-            checkbox.action = #selector(notificationsChanged(_:))
-        }
-        paneControl.target = self
-        paneControl.action = #selector(paneStyleChanged)
-
-        for checkbox in [updateCheckbox, updateDownload] {
-            checkbox.target = self
-            checkbox.action = #selector(updatesChanged(_:))
-        }
-        checkNowButton.bezelStyle = .push
-        checkNowButton.target = self
-        checkNowButton.action = #selector(checkForUpdates)
-        updateStatus.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-
-        let formatter = NumberFormatter()
-        formatter.minimum = 6
-        formatter.maximum = 72
-        formatter.maximumFractionDigits = 1
-        sizeField.formatter = formatter
-        sizeField.alignment = .right
-        sizeField.widthAnchor.constraint(equalToConstant: 52).isActive = true
-        sizeField.target = self
-        sizeField.action = #selector(sizeFieldChanged)
-        sizeStepper.minValue = 6
-        sizeStepper.maxValue = 72
-        sizeStepper.increment = 1
-        sizeStepper.valueWraps = false
-        sizeStepper.target = self
-        sizeStepper.action = #selector(sizeStepperChanged)
-
-        fontPopup.target = self
-        fontPopup.action = #selector(fontChanged)
-        themePicker.onPick = { theme in AppDelegate.shared.applySetting("theme", theme.id) }
-        configLabel.isSelectable = true
-        configLabel.lineBreakMode = .byTruncatingMiddle
-        configLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 340).isActive = true
-
-        hostCheckbox.target = self
-        hostCheckbox.action = #selector(hostToggled)
-        hostFolderLabel.isSelectable = true
-        hostFolderLabel.lineBreakMode = .byTruncatingMiddle
-        hostFolderLabel.widthAnchor.constraint(lessThanOrEqualToConstant: 340).isActive = true
-        revealButton.bezelStyle = .push
-        revealButton.target = self
-        revealButton.action = #selector(revealHostFolder)
-        restartButton.bezelStyle = .push
-        restartButton.target = self
-        restartButton.action = #selector(restartHost)
-    }
-
     /// Puts every control in step with the current preferences and config.
     @objc private func refresh() {
         let prefs = Preferences.shared
@@ -472,13 +727,19 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         arrowsCheckbox.state = prefs.completionArrowKeys ? .on : .off
         arrowsCheckbox.isEnabled = prefs.shellPlugins
         sshColorCheckbox.state = prefs.sshSendsColor ? .on : .off
+        refreshStartMenu()
+        inheritSwitch.state = prefs.inheritsDirectory ? .on : .off
+        warnAlwaysSwitch.state = app.warnsOnQuit ? .on : .off
+        warnRunningSwitch.state = app.warnsOnQuitWithRunningProcess ? .on : .off
+        // Always asking covers running programs too.
+        warnRunningSwitch.isEnabled = !app.warnsOnQuit
         refreshUpdates()
 
         let render = app.renderConfig
         refreshFontMenu(current: render.fontFamily)
         sizeField.doubleValue = Double(app.baseFontSize)
         sizeStepper.doubleValue = Double(app.baseFontSize)
-        if pane == .appearance || paneViews[.appearance] != nil {
+        if pane == .theme {
             themePicker.update(themes: app.themes, current: app.themeSetting ?? render.activeTheme)
         }
         configLabel.stringValue = (AppConfig.configURL.path as NSString).abbreviatingWithTildeInPath
@@ -531,8 +792,59 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         fontPopup.selectItem(withTitle: current)
     }
 
-    private static func points(_ size: Float) -> String {
-        size.rounded() == size ? "\(Int(size)) pt" : String(format: "%.1f pt", size)
+    /// Home, the configured folder when there is one, and Other… to pick one.
+    private func refreshStartMenu() {
+        let menu = NSMenu()
+        func item(_ title: String, tag: Int, symbol: String?) -> NSMenuItem {
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.tag = tag
+            if let symbol { item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil) }
+            menu.addItem(item)
+            return item
+        }
+        let home = item("Home Folder", tag: 0, symbol: "house")
+        var selected = home
+        if let custom = AppConfig.shared.workingDirSetting, !custom.isEmpty {
+            let path = (custom as NSString).expandingTildeInPath
+            selected = item(Naming.abbreviatingHome(path), tag: 1, symbol: "folder")
+            selected.toolTip = path
+        }
+        menu.addItem(.separator())
+        _ = item("Other…", tag: 2, symbol: nil)
+        startPopup.menu = menu
+        startPopup.select(selected)
+    }
+
+    @objc private func startFolderChanged() {
+        switch startPopup.selectedTag() {
+        case 0: AppDelegate.shared.applySetting("working_dir", nil)
+        case 2: chooseStartFolder()
+        default: break
+        }
+    }
+
+    private func chooseStartFolder() {
+        guard let window else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Choose"
+        panel.message = "New windows start in this folder."
+        panel.directoryURL = URL(fileURLWithPath: AppConfig.shared.startDirectory)
+        panel.beginSheetModal(for: window) { [weak self] response in
+            if response == .OK, let url = panel.url {
+                AppDelegate.shared.applySetting("working_dir", Naming.abbreviatingHome(url.path))
+            }
+            self?.refresh()
+        }
+    }
+
+    @objc private func inheritChanged() { Preferences.shared.inheritsDirectory = inheritSwitch.state == .on }
+
+    @objc private func quitWarningChanged(_ sender: NSSwitch) {
+        let key = sender === warnAlwaysSwitch ? "warn_on_quit" : "warn_on_quit_with_running_process"
+        AppDelegate.shared.applySetting(key, sender.state == .on ? "true" : "false")
     }
 
     @objc private func interfaceChanged() {
@@ -543,7 +855,7 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
         Preferences.shared.tabStyle = [TabStyle.above, .left, .right][max(0, tabPopup.indexOfSelectedItem)]
     }
 
-    @objc private func notificationsChanged(_ sender: NSButton) {
+    @objc private func notificationsChanged(_ sender: NSSwitch) {
         let prefs = Preferences.shared
         let on = sender.state == .on
         switch sender {
@@ -571,17 +883,16 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
             status += " · checked \(relative.localizedString(for: last, relativeTo: Date()))"
         }
         updateStatus.stringValue = status
-        styleCheckboxes()
     }
 
-    @objc private func updatesChanged(_ sender: NSButton) {
+    @objc private func updatesChanged(_ sender: NSSwitch) {
         let on = sender.state == .on
         if sender === updateCheckbox {
             Updates.shared.checksAutomatically = on
         } else {
             Updates.shared.downloadsAutomatically = on
         }
-        refreshUpdates()
+        refresh()
     }
 
     @objc private func checkForUpdates() { Updates.shared.checkForUpdates() }
@@ -601,11 +912,8 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     @objc private func reloadConfig() { AppDelegate.shared.reloadConfig() }
 
     @objc private func shellPluginsChanged() { Preferences.shared.shellPlugins = shellCheckbox.state == .on }
-
     @objc private func arrowKeysChanged() { Preferences.shared.completionArrowKeys = arrowsCheckbox.state == .on }
-
     @objc private func specCompletionsChanged() { Preferences.shared.commandCompletions = specCheckbox.state == .on }
-
     @objc private func sshColorChanged() { Preferences.shared.sshSendsColor = sshColorCheckbox.state == .on }
 
     @objc private func shellAgentChanged() {
@@ -634,4 +942,108 @@ final class SettingsWindowController: NSWindowController, NSToolbarDelegate {
     @objc private func revealHostFolder() {
         NSWorkspace.shared.activateFileViewerSelecting([SessionHost.root])
     }
+}
+
+/// A view whose origin is its top-left, so pages scroll from the top.
+private final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+/// The Settings sidebar: a row per pane with a colored icon tile and its
+/// name, in groups, the selected row filled with the theme's accent.
+@MainActor
+final class SettingsSidebar: NSView {
+    struct Item {
+        let id: String
+        let title: String
+        let symbol: String
+        let color: NSColor
+        let startsGroup: Bool
+    }
+
+    var items: [Item] = [] { didSet { needsDisplay = true } }
+    var selected: String? { didSet { needsDisplay = true } }
+    var onSelect: ((String) -> Void)?
+
+    private let rowHeight: CGFloat = 30
+    private let groupGap: CGFloat = 14
+
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    private var rows: [(item: Item, rect: NSRect)] {
+        var y: CGFloat = 4
+        return items.enumerated().map { index, item in
+            if index > 0, item.startsGroup { y += groupGap }
+            defer { y += rowHeight }
+            return (item, NSRect(x: 10, y: y, width: bounds.width - 20, height: rowHeight))
+        }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let theme = AppConfig.shared.theme
+        if items.isEmpty {
+            let text = NSAttributedString(string: "No Results", attributes: [
+                .font: NSFont.systemFont(ofSize: 13), .foregroundColor: theme.textTertiary,
+            ])
+            text.draw(at: NSPoint(x: (bounds.width - text.size().width) / 2, y: 16))
+            return
+        }
+        for (item, rect) in rows {
+            let isSelected = item.id == selected
+            if isSelected {
+                theme.selectionFill.setFill()
+                NSBezierPath(roundedRect: rect, xRadius: 7, yRadius: 7).fill()
+            }
+            // The icon: a white symbol on a colored rounded square.
+            let tile = NSRect(x: rect.minX + 6, y: rect.midY - 11, width: 22, height: 22)
+            item.color.setFill()
+            NSBezierPath(roundedRect: tile, xRadius: 6, yRadius: 6).fill()
+            let config = NSImage.SymbolConfiguration(pointSize: 11.5, weight: .semibold)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [.white]))
+            if let symbol = NSImage(systemSymbolName: item.symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config) {
+                let size = symbol.size
+                symbol.draw(in: NSRect(x: tile.midX - size.width / 2, y: tile.midY - size.height / 2,
+                                       width: size.width, height: size.height))
+            }
+            let title = NSAttributedString(string: item.title, attributes: [
+                .font: NSFont.systemFont(ofSize: 13),
+                .foregroundColor: isSelected ? theme.selectionText : theme.textPrimary,
+            ])
+            let size = title.size()
+            title.draw(at: NSPoint(x: tile.maxX + 9, y: rect.midY - size.height / 2))
+        }
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let hit = rows.first(where: { $0.rect.contains(point) }) else { return }
+        window?.makeFirstResponder(self)
+        choose(hit.item.id)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let ids = items.map(\.id)
+        guard !ids.isEmpty else { return super.keyDown(with: event) }
+        let index = selected.flatMap { ids.firstIndex(of: $0) }
+        switch Int(event.keyCode) {
+        case 125: // down
+            choose(ids[min((index ?? -1) + 1, ids.count - 1)])
+        case 126: // up
+            choose(ids[max((index ?? ids.count) - 1, 0)])
+        default:
+            super.keyDown(with: event)
+        }
+    }
+
+    private func choose(_ id: String) {
+        guard id != selected else { return }
+        selected = id
+        onSelect?(id)
+    }
+
+    override func isAccessibilityElement() -> Bool { true }
+    override func accessibilityRole() -> NSAccessibility.Role? { .list }
+    override func accessibilityLabel() -> String? { "Settings" }
 }

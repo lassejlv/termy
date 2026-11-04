@@ -1,5 +1,6 @@
 import AppKit
 import TermyAppKit
+import TermyNextCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
@@ -35,7 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Connects to the session host, then reopens the saved sessions or a new one.
     private func startSessionHost() {
         guard Preferences.shared.usesSessionHost else {
-            newWindow(directory: ProcessInfo.processInfo.environment["TERMY_NEXT_CWD"] ?? NSHomeDirectory())
+            newWindow(directory: ProcessInfo.processInfo.environment["TERMY_NEXT_CWD"] ?? AppConfig.shared.startDirectory)
             return
         }
         SessionHost.shared.connect { [weak self] result in
@@ -52,7 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                 if self.controllers.isEmpty {
                     let open = SessionHost.shared.restore()
                     if open.isEmpty {
-                        self.newWindow(directory: ProcessInfo.processInfo.environment["TERMY_NEXT_CWD"] ?? NSHomeDirectory())
+                        self.newWindow(directory: ProcessInfo.processInfo.environment["TERMY_NEXT_CWD"] ?? AppConfig.shared.startDirectory)
                     } else {
                         open.reversed().forEach { self.open($0) }
                     }
@@ -94,7 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             if let session = Workspace.shared.sessionsByRecency.first {
                 open(session)
             } else {
-                newWindow(directory: NSHomeDirectory())
+                newWindow(directory: AppConfig.shared.startDirectory)
             }
         }
         return true
@@ -105,9 +106,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// From here on, windows may leave full screen or close on the way out;
     /// programs keep the size they have, so they come back as they were.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if !isTerminating, let alert = quitWarning() {
+            if let window = keyController?.window ?? NSApp.keyWindow {
+                alert.beginSheetModal(for: window) { [weak self] response in
+                    let quit = response == .alertFirstButtonReturn
+                    if quit { self?.noteQuitSuppression(alert) }
+                    NSApp.reply(toApplicationShouldTerminate: quit)
+                    if quit { self?.prepareToTerminate() }
+                }
+                return .terminateLater
+            }
+            guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+            noteQuitSuppression(alert)
+        }
+        prepareToTerminate()
+        return .terminateNow
+    }
+
+    private func prepareToTerminate() {
         isTerminating = true
         for controller in controllers { (controller.window as? TermyWindow)?.holdsTerminalGrids = true }
-        return .terminateNow
+    }
+
+    /// The question to ask before quitting, if the config wants one asked:
+    /// always with `warn_on_quit`, or while programs run in panes with
+    /// `warn_on_quit_with_running_process`. Nil quits straight away.
+    private func quitWarning() -> NSAlert? {
+        let config = AppConfig.shared
+        guard config.warnsOnQuit || config.warnsOnQuitWithRunningProcess else { return nil }
+        refreshProcesses()
+        let running = Workspace.shared.sessions.flatMap { $0.tabs.flatMap(\.allPanes) }.filter { !$0.isShellInFront }
+        guard config.warnsOnQuit || !running.isEmpty else { return nil }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Quit")
+        alert.addButton(withTitle: "Cancel")
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = "Don't ask again"
+        if running.isEmpty {
+            alert.messageText = "Quit Termy Next?"
+            alert.informativeText = Preferences.shared.usesSessionHost
+                ? "Programs keep running in the session host and come back when you open Termy Next again."
+                : "The shells in your panes end when Termy Next quits."
+            return alert
+        }
+        let names: [String] = running.prefix(5).map { pane in
+            let program = pane.foregroundProgram ?? pane.label.name
+            guard let directory = pane.directory else { return "• " + program }
+            return "• \(program)  \(Naming.abbreviatingHome(directory))"
+        }
+        let more = running.count > 5 ? ["…and \(running.count - 5) more"] : []
+        let hosted = running.filter(\.isHosted).count
+        var outcome: [String] = []
+        if hosted > 0 {
+            outcome.append(hosted == running.count
+                ? "They keep running in the session host and come back when you open Termy Next again."
+                : "Those in the session host keep running and come back when you open Termy Next again.")
+        }
+        if hosted < running.count {
+            outcome.append(hosted == 0
+                ? "They run inside the app and end when it quits."
+                : "Those running inside the app end when it quits.")
+        }
+        alert.messageText = running.count == 1 ? "A program is still running" : "\(running.count) programs are still running"
+        alert.informativeText = (names + more).joined(separator: "\n") + "\n\n" + outcome.joined(separator: " ")
+        return alert
+    }
+
+    /// "Don't ask again" turns off the warning that asked.
+    private func noteQuitSuppression(_ alert: NSAlert) {
+        guard alert.suppressionButton?.state == .on else { return }
+        let config = AppConfig.shared
+        try? config.set("warn_on_quit", to: "false")
+        let ranPrograms = alert.messageText != "Quit Termy Next?"
+        if ranPrograms { try? config.set("warn_on_quit_with_running_process", to: "false") }
     }
 
     /// Quitting detaches: every program keeps running in the session host,
@@ -373,7 +446,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         for (tab, old, directory) in hosted {
             old.stop()
-            guard let fresh = try? PaneView(workingDirectory: directory ?? NSHomeDirectory()) else {
+            guard let fresh = try? PaneView(workingDirectory: directory ?? AppConfig.shared.startDirectory) else {
                 tab.remove(old.id)
                 continue
             }
@@ -471,7 +544,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if let controller = keyController {
             controller.run(command)
         } else if command == .newWindow || command == .newSession || command == .newTab {
-            newWindow(directory: NSHomeDirectory())
+            newWindow(directory: AppConfig.shared.startDirectory)
         }
     }
 
@@ -523,7 +596,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             NSMenuItem(title: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
         ]))
         main.addItem(submenu("File", [
-            c(.newWindow), c(.newSession), c(.addRemoteHost), c(.newTab), c(.goToDirectory), sep(),
+            c(.newWindow), c(.newSession), c(.addRemoteHost), c(.newTab), c(.runTask), c(.goToDirectory), sep(),
             c(.closePane), c(.closeTab), c(.closeSession), c(.closeWindow),
         ]))
         main.addItem(submenu("Edit", [

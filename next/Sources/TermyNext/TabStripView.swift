@@ -35,6 +35,14 @@ final class TabStripView: GlassPanel {
 
     override var mouseDownCanMoveWindow: Bool { false }
 
+    /// Every press lands on the strip itself. The pill and glass are only
+    /// drawing; a plain view under the pointer would let AppKit drag the
+    /// whole window along with the tab.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden else { return nil }
+        return frame.contains(point) ? self : nil
+    }
+
     func advanceSpinner() {
         guard navigator?.session.tabs.contains(where: { $0.activity == .working }) == true else { return }
         phase = (phase - 24).truncatingRemainder(dividingBy: 360)
@@ -68,7 +76,7 @@ final class TabStripView: GlassPanel {
                 view = GlassView(style: .regular, cornerRadius: 16, tint: theme.selectionGlassTint, interactive: true)
                 (view as? GlassView)?.isCapsule = true
             } else {
-                view = NSView()
+                view = PassthroughView()
                 view.wantsLayer = true
                 view.layer?.cornerCurve = .continuous
                 view.layer?.shadowColor = NSColor.black.cgColor
