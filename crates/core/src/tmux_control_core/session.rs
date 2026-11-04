@@ -219,6 +219,30 @@ mod tests {
                 })
         );
 
+        // Live output keeps a bare LF: with ONLCR off it means "cursor down,
+        // same column", and tmux forwards it unchanged.
+        session
+            .send_command(r#"send-keys -l 'stty -onlcr; printf "termy-lf:a\\nb\\n"; stty onlcr'"#)
+            .expect("type onlcr-off printf");
+        session.send_command("send-keys Enter").expect("send-keys");
+        let mut live = Vec::new();
+        for _ in 0..40 {
+            for notification in session.poll() {
+                if let TmuxNotification::Output { bytes, .. } = notification {
+                    live.extend_from_slice(&bytes);
+                }
+            }
+            if live.windows(12).any(|w| w == b"termy-lf:a\nb") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            live.windows(12).any(|w| w == b"termy-lf:a\nb"),
+            "bare LF was rewritten: {:?}",
+            String::from_utf8_lossy(&live)
+        );
+
         // Non-UTF-8 bytes must not end control mode. For a directory named with
         // a raw 0xff byte, tmux octal-escapes the byte in formats but writes it
         // raw in `%subscription-changed`; `show-buffer` prints stored bytes raw

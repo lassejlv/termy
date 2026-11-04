@@ -572,7 +572,8 @@ mod tests {
 
         // Outside a block the same lines are real notifications again.
         assert_eq!(
-            sm.on_line(b"%output %1 hi\\012").expect("notification"),
+            sm.on_line(b"%output %1 hi\\015\\012")
+                .expect("notification"),
             ControlStateEvent::Notification(TmuxNotification::Output {
                 pane_id: "%1".to_string(),
                 bytes: b"hi\r\n".to_vec(),
