@@ -928,11 +928,16 @@ mod tests {
     }
 
     /// Whether the host closed `stream`. Windows reports a closed socket as
-    /// reset or aborted rather than as end of file.
+    /// reset or aborted rather than as end of file, and macOS refuses socket
+    /// options (EINVAL) on a socket the host has already reset.
     fn closed_by_host(stream: &mut TcpStream) -> Result<(), String> {
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
+        if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(2))) {
+            return if error.kind() == std::io::ErrorKind::InvalidInput {
+                Ok(())
+            } else {
+                Err(format!("set_read_timeout: {error}"))
+            };
+        }
         match stream.read(&mut [0; 1]) {
             Ok(0) => Ok(()),
             Err(error)
