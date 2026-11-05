@@ -8,6 +8,11 @@ struct HostsView: View {
     var body: some View {
         NavigationStack {
             List {
+                if let error = model.lastError {
+                    Section {
+                        Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    }
+                }
                 if model.hosts.isEmpty {
                     Section {
                         SetupHint()

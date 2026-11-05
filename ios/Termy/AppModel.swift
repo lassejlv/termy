@@ -36,13 +36,8 @@ final class AppModel {
     @ObservationIgnored private var loop: Task<Void, Never>?
     @ObservationIgnored private var active = true
 
-    static var defaultRelayURL: URL {
-        #if DEBUG
-            URL(string: "http://localhost:8787")!
-        #else
-            RelayAPI.defaultURL
-        #endif
-    }
+    /// Point a development build at a local relay (`just relay`) under Relay server on the sign-in screen.
+    static var defaultRelayURL: URL { RelayAPI.defaultURL }
 
     init() {
         if let raw = Keychain.data("identity"), let identity = try? DeviceIdentity(rawRepresentation: raw) {
@@ -54,6 +49,11 @@ final class AppModel {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         trust = TrustStore(url: support.appendingPathComponent("trusted-hosts.json"))
         relayURL = UserDefaults.standard.string(forKey: "relayURL").flatMap(URL.init(string:)) ?? Self.defaultRelayURL
+        // Keychain items outlive the app; a fresh install starts signed out.
+        if !UserDefaults.standard.bool(forKey: "installed") {
+            Keychain.remove("account")
+            UserDefaults.standard.set(true, forKey: "installed")
+        }
         if let data = Keychain.data("account"), let account = try? JSONDecoder().decode(Account.self, from: data) {
             self.account = account
             start()

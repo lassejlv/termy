@@ -49,6 +49,10 @@ just relay                                                  # PORT 8787
 docker build -f crates/relay/Dockerfile .                   # deployable image
 ```
 
+Production runs on Unkey Deploy (project `termy`, app `relay`, eu-central-1,
+one replica) at `https://relay.termy.sh`, built from `crates/relay/Dockerfile`;
+`DATABASE_URL` is a write-only environment variable there.
+
 `HOST`, `PORT` and `RUST_LOG` are read from the environment. Run one
 instance: the hub keeps sockets in memory.
 

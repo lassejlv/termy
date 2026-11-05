@@ -1,4 +1,5 @@
 import SwiftUI
+import TermyRemoteKit
 
 struct SignInView: View {
     @Environment(AppModel.self) private var model
@@ -72,7 +73,7 @@ struct SignInView: View {
 
                 Section {
                     DisclosureGroup("Relay server") {
-                        TextField("https://relay.termy.sh", text: $relay)
+                        TextField(RelayAPI.defaultURL.absoluteString, text: $relay)
                             .keyboardType(.URL)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()

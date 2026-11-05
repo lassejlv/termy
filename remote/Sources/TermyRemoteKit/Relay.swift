@@ -68,6 +68,7 @@ public struct RelayAPI: Sendable {
         self.token = token
     }
 
+    /// Deployed on Unkey (project termy, app relay; also termy-relay-teamlasse.unkey.app).
     public static let defaultURL = URL(string: "https://relay.termy.sh")!
 
     private struct Credentials: Encodable {
