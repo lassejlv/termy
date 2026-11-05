@@ -40,7 +40,7 @@ C exports and header contracts are unchanged.
 
 ## CLI: `crates/cli` (`termy_cli`)
 
-- `src/commands/`: terminal launch, plugin and config commands, and JSON multiplexer controls.
+- `src/commands/`: terminal launch, plugin and config commands, JSON multiplexer controls, and `termy remote` (runs `termy-remote`).
 - `src/xtask/`: repository automation, generated documentation, dependency checks, and performance tooling.
 
 The default binary is `termy-cli`. Run repository tooling with
@@ -69,6 +69,17 @@ packages it per target (musl Linux, macOS, plus an xcframework on macOS).
 node-pty replacement. It wraps `termy_core::pty` (the `pty` feature: the native
 PTY process layer with no other dependencies). Prebuilt binaries ship as
 per-platform npm packages; see `packages/pty/README.md`.
+
+## iPhone app and relay: `ios/`, `remote/`, `crates/relay` (`termy_relay`)
+
+`ios/` is the Termy iPhone app (SwiftUI, `xcodegen generate` makes
+`Termy.xcodeproj`). It opens the Termy Next sessions of the account's
+computers through `crates/relay`, a Rust server (axum, sqlx on Neon Postgres)
+that holds accounts and devices and routes sealed packets. `remote/` is
+TermyRemoteKit, the end-to-end channel and messages the app shares with
+`termy-remote` (`next/Sources/TermyRemoteAgent`, run as `termy remote …`),
+which serves the session host. See `crates/relay/README.md` and
+`remote/README.md`.
 
 ## Repository support
 

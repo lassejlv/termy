@@ -8,8 +8,14 @@ import PackageDescription
 let package = Package(
     name: "TermyNext",
     platforms: [.macOS(.v14)],
+    products: [
+        .executable(name: "TermyNext", targets: ["TermyNext"]),
+        // Serves the session host to the Termy iPhone app through the relay.
+        .executable(name: "termy-remote", targets: ["TermyRemoteAgent"]),
+    ],
     dependencies: [
         .package(path: "../sdk/swift"),
+        .package(path: "../remote"),
         // Automatic updates. Keep in step with scripts/fetch-sparkle.sh, whose
         // sign_update signs the releases this version installs.
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
@@ -24,6 +30,14 @@ let package = Package(
                 .product(name: "Termy", package: "swift"),
                 .product(name: "TermyAppKit", package: "swift"),
                 .product(name: "Sparkle", package: "Sparkle"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .executableTarget(
+            name: "TermyRemoteAgent",
+            dependencies: [
+                .product(name: "Termy", package: "swift"),
+                .product(name: "TermyRemoteKit", package: "remote"),
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
