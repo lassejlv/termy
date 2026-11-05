@@ -30,8 +30,18 @@ enum ShellScripts {
     # vim, bat) draw 24-bit color instead of guessing from TERM. The server
     # takes it when its sshd_config has AcceptEnv COLORTERM, as Debian and
     # Ubuntu ship. SendEnv adds to your ssh config; it doesn't replace it.
-    if [[ -n $TERMY_NEXT_SSH_ENV && -n $COLORTERM ]] && (( ! ${+functions[ssh]} )); then
-      ssh() { command ssh -o SendEnv=COLORTERM "$@" }
+    # An ssh wrapper goes first in PATH, so tools that run ssh themselves
+    # (boat ssh, git, rsync) send it too. That happens before the first
+    # prompt, after the startup files, since path_helper in /etc/zprofile
+    # moves the system folders to the front.
+    if [[ -n $TERMY_NEXT_SSH_ENV && -n $TERMY_NEXT_SSH_BIN && -x $TERMY_NEXT_SSH_BIN/ssh ]]; then
+      _termy_next_ssh_path() {
+        path=($TERMY_NEXT_SSH_BIN ${path:#$TERMY_NEXT_SSH_BIN})
+        add-zsh-hook -d precmd _termy_next_ssh_path
+        unfunction _termy_next_ssh_path
+      }
+      autoload -Uz add-zsh-hook
+      add-zsh-hook precmd _termy_next_ssh_path
     fi
 
     # The rest is the GUI plugins: the completion popup under the prompt and
@@ -163,5 +173,28 @@ enum ShellScripts {
       _termy_next_precmd
     }
     add-zsh-hook precmd _termy_next_install
+    """#
+
+    /// The `ssh` that zsh panes find first in PATH: runs the next ssh in
+    /// PATH with COLORTERM sent along, for tools that start ssh themselves.
+    static let ssh = #"""
+    #!/bin/sh
+    # Termy Next's ssh wrapper: runs the next ssh in PATH and sends COLORTERM
+    # along, so programs on the server draw 24-bit color. Turn it off in
+    # Termy Next › Settings › Shell › SSH.
+    set -f
+    self=${0%/*}
+    IFS=:
+    for dir in $PATH; do
+      [ -n "$dir" ] && [ "$dir" != "$self" ] || continue
+      [ -f "$dir/ssh" ] && [ -x "$dir/ssh" ] || continue
+      [ "$dir/ssh" -ef "$0" ] && continue
+      unset IFS
+      set +f
+      [ -n "$COLORTERM" ] && exec "$dir/ssh" -o SendEnv=COLORTERM "$@"
+      exec "$dir/ssh" "$@"
+    done
+    echo "ssh: command not found" >&2
+    exit 127
     """#
 }

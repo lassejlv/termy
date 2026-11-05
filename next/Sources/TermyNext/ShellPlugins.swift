@@ -39,6 +39,8 @@ final class ShellPlugins {
         return (NSTemporaryDirectory() as NSString).appendingPathComponent("termy-next-\(String(hash, radix: 36)).sock")
     }
     private static var zshFolder: URL { folder.appendingPathComponent("zsh", isDirectory: true) }
+    /// Holds the `ssh` wrapper zsh puts first in PATH when SSH colors are on.
+    private static var binFolder: URL { folder.appendingPathComponent("bin", isDirectory: true) }
 
     var isRunning: Bool { listener >= 0 }
 
@@ -64,7 +66,10 @@ final class ShellPlugins {
         if let zdotdir = ProcessInfo.processInfo.environment["ZDOTDIR"] {
             environment["TERMY_NEXT_ZDOTDIR"] = zdotdir
         }
-        if prefs.sshSendsColor { environment["TERMY_NEXT_SSH_ENV"] = "1" }
+        if prefs.sshSendsColor {
+            environment["TERMY_NEXT_SSH_ENV"] = "1"
+            environment["TERMY_NEXT_SSH_BIN"] = Self.binFolder.path
+        }
         if isRunning {
             environment["TERMY_NEXT_SOCKET"] = Self.socketPath
             environment["TERMY_NEXT_PANE"] = token ?? ""
@@ -82,6 +87,11 @@ final class ShellPlugins {
                                                     attributes: [.posixPermissions: 0o700])
             try ShellScripts.zshenv.write(to: Self.zshFolder.appendingPathComponent(".zshenv"), atomically: true, encoding: .utf8)
             try ShellScripts.plugin.write(to: Self.zshFolder.appendingPathComponent("termy-next.zsh"), atomically: true, encoding: .utf8)
+            try FileManager.default.createDirectory(at: Self.binFolder, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            let ssh = Self.binFolder.appendingPathComponent("ssh")
+            try ShellScripts.ssh.write(to: ssh, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: ssh.path)
             installed = true
         } catch {
             NSLog("Termy Next: can't install the zsh integration: \(error)")

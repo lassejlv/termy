@@ -101,7 +101,8 @@ final class Preferences {
         get { defaults.bool(forKey: "reduceMotion") }
         set { defaults.set(newValue, forKey: "reduceMotion") }
     }
-    /// ssh sends COLORTERM along (zsh and Add Remote Host), so programs on
+    /// ssh sends COLORTERM along (zsh, tools zsh starts that run ssh, and
+    /// Add Remote Host), so programs on
     /// the server use 24-bit color. On by default.
     var sshSendsColor: Bool {
         get { defaults.object(forKey: "sshSendsColor") as? Bool ?? true }

@@ -399,7 +399,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
                 ], footer: "A small zsh plugin shows matching history and commands under the prompt: ⌃N and ⌃P pick one, Return takes it. ⇧⌘E describes a command to Claude Code (claude -p) or Codex (codex exec), with the sign-in they already have. Applies to panes opened after you turn it on. Command completions add subcommands, options, branches, formulae and scripts for git, brew, cargo, rustup, rustc and bun."),
                 Section(header: "SSH", rows: [
                     .control("Send 24-bit color support to SSH hosts", sshColorCheckbox),
-                ], footer: "ssh in zsh and Add Remote Host send COLORTERM, so Claude Code and other programs on the server draw true colors. The server has to accept it (AcceptEnv COLORTERM), as Debian and Ubuntu do. Copying over SSH works through OSC 52 from the pane you're in."),
+                ], footer: "ssh sends COLORTERM from zsh, from Add Remote Host and from tools that run ssh themselves (boat ssh, git), so Claude Code and other programs on the server draw true colors. The server has to accept it (AcceptEnv COLORTERM), as Debian and Ubuntu do. Copying over SSH works through OSC 52 from the pane you're in."),
             ]
         case .sessions:
             sections = [
