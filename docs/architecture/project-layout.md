@@ -40,7 +40,7 @@ C exports and header contracts are unchanged.
 
 ## CLI: `crates/cli` (`termy_cli`)
 
-- `src/commands/`: terminal launch, plugin and config commands, JSON multiplexer controls, and `termy remote` (runs `termy-remote`).
+- `src/commands/`: terminal launch, plugin and config commands, JSON multiplexer controls.
 - `src/xtask/`: repository automation, generated documentation, dependency checks, and performance tooling.
 
 The default binary is `termy-cli`. Run repository tooling with
@@ -73,13 +73,20 @@ per-platform npm packages; see `packages/pty/README.md`.
 ## iPhone app and relay: `ios/`, `remote/`, `crates/relay` (`termy_relay`)
 
 `ios/` is the Termy iPhone app (SwiftUI, `xcodegen generate` makes
-`Termy.xcodeproj`). It opens the Termy Next sessions of the account's
-computers through `crates/relay`, a Rust server (axum, sqlx on Neon Postgres)
-that holds accounts and devices and routes sealed packets. `remote/` is
-TermyRemoteKit, the end-to-end channel and messages the app shares with
-`termy-remote` (`next/Sources/TermyRemoteAgent`, run as `termy remote …`),
-which serves the session host. See `crates/relay/README.md` and
-`remote/README.md`.
+`Termy.xcodeproj`). Pair it from **Termy Next → Settings → Mobile** by scanning
+a short-lived QR code and approving the phone on the Mac. Accounts and the
+`termy remote` CLI are no longer part of this flow.
+
+`remote/` is TermyRemoteKit: device identity, QR pairing, encryption, messages,
+and relay transport. `next/Sources/TermyRemoteHost` is an importable host
+library over the session host, independent of Next's UI. Next owns its lifetime
+and exposes only its own sessions. It stops on app quit or when Mobile is off.
+
+`crates/relay` authenticates devices, stores explicit phone–Mac links in
+Postgres, and routes sealed packets. The default is `https://relay.termy.sh`
+on Unkey; `crates/relay/deploy` supplies a Docker Compose VPS stack. The relay
+URL is configured in Next and carried to iPhone by the QR. See
+`crates/relay/README.md` and `remote/README.md`.
 
 ## Repository support
 

@@ -7,13 +7,7 @@ struct TermyApp: App {
 
     var body: some Scene {
         WindowGroup {
-            Group {
-                if model.account == nil {
-                    SignInView()
-                } else {
-                    HostsView()
-                }
-            }
+            HostsView()
             .environment(model)
             .preferredColorScheme(.dark)
         }

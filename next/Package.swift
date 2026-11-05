@@ -10,8 +10,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "TermyNext", targets: ["TermyNext"]),
-        // Serves the session host to the Termy iPhone app through the relay.
-        .executable(name: "termy-remote", targets: ["TermyRemoteAgent"]),
+        .library(name: "TermyRemoteHost", targets: ["TermyRemoteHost"]),
     ],
     dependencies: [
         .package(path: "../sdk/swift"),
@@ -27,18 +26,25 @@ let package = Package(
             name: "TermyNext",
             dependencies: [
                 "TermyNextCore",
+                "TermyRemoteHost",
+                .product(name: "TermyRemoteKit", package: "remote"),
                 .product(name: "Termy", package: "swift"),
                 .product(name: "TermyAppKit", package: "swift"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
-        .executableTarget(
-            name: "TermyRemoteAgent",
+        .target(
+            name: "TermyRemoteHost",
             dependencies: [
                 .product(name: "Termy", package: "swift"),
                 .product(name: "TermyRemoteKit", package: "remote"),
             ],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .testTarget(
+            name: "TermyRemoteHostTests",
+            dependencies: ["TermyRemoteHost", .product(name: "Termy", package: "swift"), .product(name: "TermyRemoteKit", package: "remote")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(

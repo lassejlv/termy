@@ -37,13 +37,6 @@ struct Cli {
 enum Action {
     /// Control persistent terminal sessions; responses are JSON
     Mux(commands::mux::Args),
-    /// Open your sessions on the Termy iPhone app: login, serve, status, …
-    #[command(disable_help_flag = true)]
-    Remote {
-        /// Arguments for termy-remote (run `termy remote help`)
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<std::ffi::OsString>,
-    },
     /// Install and manage plugins
     Plugin {
         #[command(subcommand)]
@@ -218,7 +211,6 @@ fn main() {
 
     match cli.action {
         Some(Action::Mux(args)) => commands::mux::run(args),
-        Some(Action::Remote { args }) => commands::remote::run(args),
         Some(Action::Plugin { command }) => commands::plugins::run(command),
         Some(Action::Version) => commands::version::run(),
         Some(Action::Help) => commands::help::run(),

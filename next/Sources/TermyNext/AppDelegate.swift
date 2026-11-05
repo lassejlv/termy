@@ -45,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             guard let self else { return }
             switch result {
             case .success:
+                MobileController.shared.configure()
                 // The host's shared layout (`termy mux layout`) wins; the
                 // app's own saved layout is for a host that has none yet.
                 if let multiplexer = SessionHost.shared.multiplexer, let layout = HostLayoutSync.shared.attach(multiplexer) {
@@ -127,6 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private func prepareToTerminate() {
         isTerminating = true
+        MobileController.shared.stop()
         for controller in controllers { (controller.window as? TermyWindow)?.holdsTerminalGrids = true }
     }
 
@@ -413,6 +415,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         alert.buttons.first?.hasDestructiveAction = true
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
+        MobileController.shared.stop()
         // Note where every hosted pane was before its program ends.
         var hosted: [(TerminalTab, PaneView, String?)] = []
         for session in Workspace.shared.sessions {
@@ -460,6 +463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         if let multiplexer = SessionHost.shared.multiplexer { _ = HostLayoutSync.shared.attach(multiplexer) }
         SessionHost.shared.finishRestart()
+        MobileController.shared.configure()
         controllers.forEach { $0.showRestartedPanes() }
         Workspace.shared.changed()
     }

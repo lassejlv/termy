@@ -1,24 +1,33 @@
 # TermyRemoteKit
 
-What the Termy iPhone app (`ios/`) and `termy remote` (`next/Sources/TermyRemoteAgent`)
-share to reach terminal sessions through the relay (`crates/relay`):
+Reusable device pairing, trust, messages and encrypted relay transport shared
+by the iPhone app (`ios/`) and the Mac host library
+(`next/Sources/TermyRemoteHost`). Termy Next owns the host's settings and lifetime;
+no command-line process or account is required.
 
-- `SecureChannel`: the end-to-end handshake and transport. The client sends
-  its ephemeral and static X25519 keys; the host answers with its ephemeral
-  key and a sealed confirmation. Keys come from HKDF-SHA256 over
-  DH(e,e), DH(e_client, s_host) and DH(s_client, e_host), salted with the
-  hash of all four public keys, so only the real host can answer and only the
-  real phone can send. Transport is ChaCha20-Poly1305 with a 64-bit counter
-  nonce per direction; replays are refused.
-- `TrustStore`: keys pinned per device. The phone pins a computer after the
-  user compares fingerprints; the computer asks before trusting a new phone
-  (`termy remote serve` prompts, `--trust-new` skips the prompt).
-- `Messages`: what travels inside the channel. The host keeps the terminal
-  (libtermy in the session host); the phone receives style runs per changed
-  row, at most one frame every 33 ms, and sends logical keys the host encodes
-  for the program's keyboard mode.
-- `Relay`: the account API and the relay socket.
+- `PairingCode`: versioned QR payload, HTTPS relay validation, and HMAC-bound
+  invitation/handshake verification. The QR secret never goes to the server.
+- `DeviceStore`: Keychain-backed identity and relay credentials.
+- `SecureChannel`: X25519 ephemeral/static handshake, HKDF-SHA256,
+  ChaCha20-Poly1305, directional counters and replay rejection. It is the
+  existing Termy protocol, not an implementation of a standard Noise protocol.
+- `RelayAPI`: accountless device registration, expiring invitations, explicit
+  approval, paired-device discovery and revocation.
+- `RelayConnection`: authenticated WebSocket transport and presence events.
+- `Messages`: logical keys, paste, resize, scroll, session operations and
+  changed-row screen frames. The terminal engine stays on the Mac.
+- `TrustStore`: existing file-backed pinning utility, retained for embedders.
+  The apps persist pairing pins through `DeviceStore` instead.
+
+A phone may have separate credentials for multiple relay servers. Both sides
+pin peer keys after QR pairing and refuse substituted keys on later connects.
+See [the relay README](../crates/relay/README.md) for the protocol, rollout,
+and the Docker Compose VPS deployment.
 
 ```sh
 just test-remote
 ```
+
+The package does not import Next's UI, AppKit, or libtermy; a future client can
+reuse it. `TermyRemoteHost` adds the Mac-specific terminal/session bridge as a
+separate library product in `next/Package.swift`.

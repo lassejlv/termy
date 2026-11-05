@@ -1,5 +1,5 @@
-//! The Termy relay: accounts, each account's device list, and a WebSocket
-//! hub that routes sealed packets between an account's online devices.
+//! The Termy relay: accountless device pairing and a WebSocket hub that
+//! routes sealed packets only between explicitly paired phones and Macs.
 //!
 //! Terminal sessions are end-to-end encrypted between the phone and the
 //! computer (`remote/Sources/TermyRemoteKit`). The relay only sees who talks
@@ -21,6 +21,7 @@ use tracing_subscriber::EnvFilter;
 pub struct AppState {
     pub db: db::Db,
     pub hub: Arc<hub::Hub>,
+    pub gate: Arc<tokio::sync::Mutex<()>>,
     pub limiter: Arc<api::AttemptLimiter>,
 }
 
@@ -32,8 +33,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let database_url =
-        std::env::var("DATABASE_URL").context("set DATABASE_URL to the Neon connection string")?;
+    let database_url = std::env::var("DATABASE_URL")
+        .context("set DATABASE_URL to a Postgres connection string")?;
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&database_url)
@@ -47,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         db: db::Db::new(pool),
         hub: Arc::new(hub::Hub::default()),
+        gate: Arc::new(tokio::sync::Mutex::new(())),
         limiter: Arc::new(api::AttemptLimiter::default()),
     };
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
@@ -67,3 +69,6 @@ async fn main() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+#[cfg(all(test, feature = "integration-tests"))]
+mod tests;

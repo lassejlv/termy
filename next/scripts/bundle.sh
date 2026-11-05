@@ -52,15 +52,13 @@ cp "$executable" "$app/Contents/MacOS/TermyNext"
 cp "$sdk_dir/lib/libtermy_core.dylib" "$app/Contents/Frameworks/"
 # The session host that runs every pane's program, so they outlive the app.
 cp "$sdk_dir/lib/termy-session-host" "$app/Contents/Helpers/"
-# Serves the sessions to the Termy iPhone app (`termy remote`).
-cp "$(dirname "$executable")/termy-remote" "$app/Contents/Helpers/"
 # Sparkle, for automatic updates. SwiftPM puts it next to the executable.
 # Its XPC services are only for sandboxed apps; Termy Next isn't sandboxed.
 ditto "$(dirname "$executable")/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 rm -rf "$app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" "$app/Contents/Frameworks/Sparkle.framework/XPCServices"
 # Load libtermy and Sparkle from the bundle, never from the build directories,
 # whose copies on this Mac are signed differently.
-for binary in "$app/Contents/MacOS/TermyNext" "$app/Contents/Helpers/termy-remote"; do
+for binary in "$app/Contents/MacOS/TermyNext"; do
   while read -r rpath; do
     case "$rpath" in
       "$sdk_dir"/*|"$sdk_dir"|"$next_dir"/*) install_name_tool -delete_rpath "$rpath" "$binary" ;;
@@ -125,6 +123,5 @@ codesign --force --sign - "$app/Contents/Frameworks/Sparkle.framework" >/dev/nul
 codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
 # Again, outside in, with the privacy entitlements (see the file).
 codesign --force --sign - --entitlements "$entitlements" "$app/Contents/Helpers/termy-session-host" >/dev/null 2>&1 || true
-codesign --force --sign - "$app/Contents/Helpers/termy-remote" >/dev/null 2>&1 || true
 codesign --force --sign - --entitlements "$entitlements" "$app" >/dev/null 2>&1 || true
 echo "built $app ($version, $( [[ $universal -eq 1 ]] && echo universal || uname -m ))"

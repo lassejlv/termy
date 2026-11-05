@@ -1,7 +1,7 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-// TermyRemoteKit: what the Termy iPhone app and the `termy-remote` agent
+// TermyRemoteKit: what the Termy iPhone app and the Termy remote host
 // share to reach terminal sessions through the relay. The relay only routes
 // sealed bytes; everything a session shows or receives is end-to-end
 // encrypted between the two devices (see Sources/TermyRemoteKit/README.md).

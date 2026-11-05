@@ -15,7 +15,7 @@ struct SessionsView: View {
             case .keyChanged:
                 TrustSection(link: link, changed: true)
             case .offline:
-                StatusRow(symbol: "moon.zzz", text: "\(link.device.name) is offline. Run `termy remote serve` on it.")
+                StatusRow(symbol: "moon.zzz", text: "\(link.device.name) is offline. Open Termy Next with Mobile access enabled.")
             case .failed(let message):
                 StatusRow(symbol: "exclamationmark.triangle", text: message)
                 Button("Try Again") { link.connect() }
@@ -120,34 +120,16 @@ struct StatusRow: View {
     }
 }
 
-/// Pinning a computer's key: the first time, compare it with the Mac; when it
-/// changed, warn, since a relay that lies would look exactly like this.
+/// Pairing pins the computer key; a changed key always requires a fresh QR exchange.
 struct TrustSection: View {
     let link: HostLink
     let changed: Bool
-
     var body: some View {
         Section {
-            VStack(alignment: .leading, spacing: 10) {
-                Label(changed ? "This computer's key changed" : "Verify \(link.device.name)",
-                      systemImage: changed ? "exclamationmark.shield" : "checkmark.shield")
-                    .font(.headline)
-                    .foregroundStyle(changed ? .orange : .primary)
-                Text(changed
-                    ? "If you signed in again on it, this is expected. Otherwise someone may be trying to read your sessions. Compare the key with `termy remote status` on the computer."
-                    : "Compare this key with the one `termy remote status` shows on the computer. Your sessions are encrypted to this key, so only that computer can read them.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Text(link.device.fingerprint)
-                    .font(.system(.callout, design: .monospaced))
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-            }
-            .padding(.vertical, 4)
-            Button(changed ? "Trust the New Key" : "Keys Match — Trust", role: changed ? .destructive : nil) {
-                link.trustAndConnect()
-            }
+            Label(changed ? "This computer’s key changed" : "Pair this computer again", systemImage: "exclamationmark.shield")
+                .foregroundStyle(.orange)
+            Text("Remove this computer in Settings, then scan a new QR code from Termy Next → Settings → Mobile.")
+                .foregroundStyle(.secondary)
         }
     }
 }

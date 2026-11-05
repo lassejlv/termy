@@ -12,9 +12,11 @@ workspace = true
 name = "termy-relay"
 path = "src/main.rs"
 
+[features]
+integration-tests = []
+
 [dependencies]
 anyhow = { workspace = true }
-argon2 = { version = "0.5", features = ["std"] }
 axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
@@ -29,3 +31,6 @@ tower-http = { version = "0.6", features = ["trace", "limit"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

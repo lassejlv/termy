@@ -1,0 +1,49 @@
+name: termy-remote
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: termy
+      POSTGRES_USER: termy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U termy -d termy"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  relay:
+    build:
+      context: ../../..
+      dockerfile: crates/relay/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://termy:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/termy
+      PORT: 8080
+      RUST_LOG: info,sqlx=warn
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8080"
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      RELAY_DOMAIN: ${RELAY_DOMAIN:?Set RELAY_DOMAIN in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - relay
+volumes:
+  postgres:
+  caddy_data:
+  caddy_config:

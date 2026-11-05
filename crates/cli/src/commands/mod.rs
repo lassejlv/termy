@@ -10,7 +10,6 @@ pub mod open;
 pub mod plugins;
 pub mod prettify_config;
 pub mod providers;
-pub mod remote;
 pub mod show_config;
 pub mod tui;
 pub mod update;

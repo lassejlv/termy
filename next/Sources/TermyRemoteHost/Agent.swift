@@ -2,53 +2,60 @@ import Foundation
 import Termy
 import TermyRemoteKit
 
-/// Serves this computer's session host to the account's phones through the
+/// Serves this computer's session host to its paired phones through the
 /// relay. Each phone gets one `SecureChannel`; every screen and key inside it
 /// is sealed end to end.
 @MainActor
-final class Agent {
-    struct Options {
-        var muxRoot: URL?
-        /// Trust phones the first time they connect without asking.
-        var trustNew = false
-    }
-
-    private let store: AgentStore
-    private let credentials: AgentStore.Credentials
+public final class RemoteHostAgent {
+    public enum ConnectionState: Sendable { case connecting, connected, offline }
+    public var onConnectionState: ((ConnectionState) -> Void)?
+    private let credentials: DeviceCredentials
     private let identity: DeviceIdentity
-    private let options: Options
-    private var trust: TrustStore
-    private var multiplexer: Multiplexer?
+    private let trustedDevices: [UUID: Data]
+    private let multiplexer: Multiplexer
     private var connection: RelayConnection?
     private var peers: [UUID: Peer] = [:]
-    /// Phones waiting for the user to answer the trust prompt.
-    private var pendingTrust: Set<UUID> = []
+    private var running = false
     private var lastSessions: RemoteSessionList?
 
-    init(store: AgentStore, credentials: AgentStore.Credentials, identity: DeviceIdentity, options: Options) {
-        self.store = store
+    public init(
+        multiplexer: Multiplexer, credentials: DeviceCredentials, identity: DeviceIdentity, trustedDevices: [UUID: Data]
+    ) {
+        self.multiplexer = multiplexer
         self.credentials = credentials
         self.identity = identity
-        self.options = options
-        trust = TrustStore(url: store.trustURL)
+        self.trustedDevices = trustedDevices
     }
+    private var api: RelayAPI { credentials.api }
 
-    private var api: RelayAPI { RelayAPI(baseURL: credentials.relayURL, token: credentials.token) }
+    public func stop() {
+        running = false
+        connection?.close()
+        connection = nil
+        for peer in peers.values { peer.close() }
+        peers.removeAll()
+    }
 
     // MARK: Running
 
-    func run() async throws {
-        multiplexer = try await connectMultiplexer()
+    public func run() async throws {
+        running = true
         log("Serving \(hostName) to your phones. This computer's key: \(identity.fingerprint)")
-        Task { await self.watchSessions() }
+        let watcher = Task { await self.watchSessions() }
+        defer {
+            watcher.cancel()
+            stop()
+        }
         var delay: UInt64 = 1
-        while true {
+        while !Task.isCancelled {
+            onConnectionState?(.connecting)
             let connection = RelayConnection(api: api)
             self.connection = connection
             var wasReady = false
             for await event in connection.events {
                 switch event {
                 case .ready:
+                    onConnectionState?(.connected)
                     wasReady = true
                     delay = 1
                     log("Connected to \(credentials.relayURL.host ?? "the relay").")
@@ -65,6 +72,7 @@ final class Agent {
                     if let error { log("Relay connection closed: \(error.localizedDescription)") }
                 }
             }
+            onConnectionState?(.offline)
             for peer in peers.values { peer.close() }
             peers.removeAll()
             if !wasReady, try await !sessionIsValid() {
@@ -77,31 +85,13 @@ final class Agent {
 
     private func sessionIsValid() async throws -> Bool {
         do {
-            _ = try await api.me()
+            _ = try await api.devices()
             return true
         } catch let error as RelayAPIError where error.status == 401 {
             return false
         } catch {
             return true
         }
-    }
-
-    private func connectMultiplexer() async throws -> Multiplexer {
-        // Inside Termy Next.app the host sits next to us in Contents/Helpers.
-        let sibling = Bundle.main.executableURL?.resolvingSymlinksInPath().deletingLastPathComponent()
-            .appendingPathComponent("termy-session-host")
-        let executable = sibling.flatMap { FileManager.default.isExecutableFile(atPath: $0.path) ? $0 : nil }
-            ?? Multiplexer.bundledHostExecutable
-        guard let executable else { throw AgentError.missingHost }
-        let root = options.muxRoot
-        return try await Task.detached {
-            if let root {
-                try FileManager.default.createDirectory(
-                    at: root.deletingLastPathComponent(), withIntermediateDirectories: true
-                )
-            }
-            return try Multiplexer.connect(root: root, hostExecutable: executable)
-        }.value
     }
 
     var hostName: String {
@@ -125,35 +115,20 @@ final class Agent {
     }
 
     private func accept(_ initPacket: Data, from deviceID: UUID) async {
-        guard !pendingTrust.contains(deviceID) else { return }
         do {
             let clientKey = try SecureChannel.clientStaticKey(inInit: initPacket)
-            // The phone must be a device of this account, with this key.
+            // Both the relay link and the locally pinned phone key must authorize access.
             let devices = try await api.devices()
+            guard running, !Task.isCancelled else { return }
             guard let device = devices.first(where: { $0.id == deviceID }), device.kind == .client,
-                  device.publicKeyData == clientKey
+                device.publicKeyData == clientKey
             else {
                 log("Refused a connection from an unknown device.")
                 return
             }
-            switch trust.verdict(deviceID: deviceID, publicKey: clientKey) {
-            case .trusted:
-                break
-            case .changed:
-                log("""
-                Refused \(device.name): its key changed since you trusted it. If you signed in again on that \
-                phone, run `termy remote untrust \(deviceID)` and connect again.
-                """)
+            guard trustedDevices[deviceID] == clientKey else {
+                log("Refused a phone that has not been paired with this Mac.")
                 return
-            case .unknown:
-                pendingTrust.insert(deviceID)
-                let allowed = options.trustNew ? true : await askTrust(device)
-                pendingTrust.remove(deviceID)
-                guard allowed else {
-                    log("Did not trust \(device.name).")
-                    return
-                }
-                try trust.trust(deviceID: deviceID, name: device.name, publicKey: clientKey)
             }
             let (channel, response) = try SecureChannel.respond(identity: identity, initPacket: initPacket)
             peers.removeValue(forKey: deviceID)?.close()
@@ -168,26 +143,6 @@ final class Agent {
         }
     }
 
-    private func askTrust(_ device: RelayDevice) async -> Bool {
-        guard isatty(STDIN_FILENO) != 0 else {
-            log("""
-            \(device.name) wants to open your sessions. Its key: \(device.fingerprint)
-            Run `termy remote serve` in a terminal to approve it, or `termy remote serve --trust-new`.
-            """)
-            return false
-        }
-        print("""
-
-        \(device.name) wants to open your terminal sessions.
-        Check that the key below matches Settings → This iPhone in the Termy app:
-            \(device.fingerprint)
-        Allow it? [y/N]
-        """, terminator: "")
-        fflush(stdout)
-        let answer = await Task.detached { readLine() }.value
-        return answer?.lowercased().hasPrefix("y") == true
-    }
-
     // MARK: Sessions
 
     func send(_ packet: Data, to device: UUID) {
@@ -195,14 +150,13 @@ final class Agent {
     }
 
     func attach(paneID: String) async throws -> Terminal {
-        guard let multiplexer else { throw AgentError.missingHost }
         // A new terminal has no other owner yet, so handing it over is safe.
-        return try await Task.detached { Handoff(try multiplexer.attachTerminal(paneID: paneID)) }.value.value
+        return try await Task.detached { [multiplexer] in Handoff(try multiplexer.attachTerminal(paneID: paneID)) }
+            .value.value
     }
 
     func createPane() async throws -> String {
-        guard let multiplexer else { throw AgentError.missingHost }
-        let terminal = try await Task.detached {
+        let terminal = try await Task.detached { [multiplexer] in
             Handoff(try multiplexer.createTerminal(size: TerminalSize(cols: 80, rows: 24)))
         }.value.value
         // Releasing the terminal detaches and leaves the shell running.
@@ -210,12 +164,10 @@ final class Agent {
     }
 
     func closePane(_ paneID: String) async throws {
-        guard let multiplexer else { throw AgentError.missingHost }
-        try await Task.detached { try multiplexer.close(paneID: paneID) }.value
+        try await Task.detached { [multiplexer] in try multiplexer.close(paneID: paneID) }.value
     }
 
     func currentSessions() -> RemoteSessionList {
-        guard let multiplexer else { return RemoteSessionList(groups: [], panes: []) }
         let panes = (try? multiplexer.panes()) ?? []
         let layout = try? multiplexer.layout()
         var groups: [RemoteSessionGroup] = []
@@ -235,8 +187,8 @@ final class Agent {
 
     /// Tells phones when panes come and go or are renamed.
     private func watchSessions() async {
-        while true {
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        while !Task.isCancelled {
+            do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
             guard !peers.isEmpty else { continue }
             broadcastSessionsIfChanged()
         }
@@ -256,10 +208,11 @@ final class Peer {
     let id: UUID
     let name: String
     var channel: SecureChannel
-    private weak var agent: Agent?
+    private weak var agent: RemoteHostAgent?
     private var streams: [Int: Stream] = [:]
+    private var active = true
 
-    init(id: UUID, name: String, channel: SecureChannel, agent: Agent) {
+    init(id: UUID, name: String, channel: SecureChannel, agent: RemoteHostAgent) {
         self.id = id
         self.name = name
         self.channel = channel
@@ -276,11 +229,13 @@ final class Peer {
     }
 
     func close() {
+        active = false
         for stream in streams.values { stream.close() }
         streams.removeAll()
     }
 
     func handle(_ message: ClientMessage) {
+        guard active else { return }
         switch message {
         case .listSessions:
             if let agent { send(.sessions(agent.currentSessions())) }
@@ -318,6 +273,7 @@ final class Peer {
         streams.removeValue(forKey: id)?.close()
         do {
             guard let terminal = try await agent?.attach(paneID: paneID) else { return }
+            guard active else { return }
             let frame = try terminal.snapshot()
             let size = TerminalSize(cols: UInt16(frame.cols), rows: UInt16(frame.rows))
             streams[id] = Stream(id: id, session: TerminalSession(terminal: terminal, size: size), peer: self)
@@ -409,18 +365,21 @@ final class Stream {
         sendScheduled = false
         let store = session.frame
         guard !store.isEmpty else { return }
-        let rows: [Int] = pendingFull ? Array(0 ..< store.rows) : (dirty ?? []).filter { $0 < store.rows }.sorted()
+        let rows: [Int] = pendingFull ? Array(0..<store.rows) : (dirty ?? []).filter { $0 < store.rows }.sorted()
         let full = pendingFull
         pendingFull = false
         dirty = nil
         let updates = rows.map { RowUpdate(row: $0, runs: FrameEncoder.runs(store.cells(row: $0))) }
-        let background = (0 ..< store.rows).lazy.compactMap { row -> UInt32? in
-            store.cells(row: row).first(where: \.usesDefaultBackground)?.background.rgba
-        }.first ?? 0x000000ff
-        peer?.send(.frame(RemoteFrame(
-            stream: id, cols: store.cols, rows: store.rows, full: full, updates: updates,
-            cursor: FrameEncoder.cursor(store.cursor), background: background
-        )))
+        let background =
+            (0..<store.rows).lazy.compactMap { row -> UInt32? in
+                store.cells(row: row).first(where: \.usesDefaultBackground)?.background.rgba
+            }.first ?? 0x0000_00ff
+        peer?.send(
+            .frame(
+                RemoteFrame(
+                    stream: id, cols: store.cols, rows: store.rows, full: full, updates: updates,
+                    cursor: FrameEncoder.cursor(store.cursor), background: background
+                )))
     }
 }
 
@@ -437,7 +396,7 @@ enum AgentError: Error, CustomStringConvertible {
     var description: String {
         switch self {
         case .missingHost: "Couldn't find termy-session-host. Install Termy Next, or run from a build next to libtermy."
-        case .signedOut: "This computer was signed out. Run `termy remote login`."
+        case .signedOut: "This Mac’s relay registration ended. Pair your phone again in Settings → Mobile."
         }
     }
 }

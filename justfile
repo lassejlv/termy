@@ -146,11 +146,6 @@ bundle-next profile="release":
 test-next:
     swift test --package-path next
 
-# Run termy-remote, which serves Termy Next's sessions to the iPhone app (macOS)
-remote *args:
-    ./sdk/swift/scripts/build-libtermy.sh debug
-    swift run --package-path next termy-remote {{ args }}
-
 # Run the relay locally; reads DATABASE_URL from crates/relay/.env
 relay:
     set -a; . crates/relay/.env; set +a; PORT="${PORT:-8787}" cargo run -p termy_relay
@@ -159,7 +154,7 @@ relay:
 ios:
     cd ios && xcodegen generate && xcodebuild -project Termy.xcodeproj -scheme Termy -destination 'generic/platform=iOS Simulator' -derivedDataPath build/DerivedData build
 
-# Test what the iPhone app and termy-remote share: the E2E channel and messages
+# Test what the iPhone app and Mac host share: the E2E channel and messages
 test-remote:
     swift test --package-path remote
 

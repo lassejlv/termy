@@ -1,73 +1,81 @@
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::time::{Duration, Instant};
-
-use argon2::Argon2;
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, FromRequestParts, Path, State};
-use axum::http::StatusCode;
-use axum::http::request::Parts;
-use axum::response::Response;
-use axum::routing::{delete, get, post};
-use axum::{Json, Router};
-use base64::Engine;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use crate::{
+    AppState,
+    db::Device,
+    error::{ApiError, ApiResult},
+    hub::Hub,
+};
+use axum::{
+    Json, Router,
+    extract::{
+        ConnectInfo, FromRequestParts, Path, State,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
+    http::{StatusCode, request::Parts},
+    response::Response,
+    routing::{delete, get, post},
+};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
-use serde::{Deserialize, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 use tokio::sync::Mutex;
 use uuid::Uuid;
-
-use crate::AppState;
-use crate::db::{Device, User};
-use crate::error::{ApiError, ApiResult};
-use crate::hub::Hub;
-
-/// Largest relay frame: a compressed screen is a few KiB, a big paste more.
-const MAX_FRAME: usize = 4 << 20;
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
-        .route("/v1/auth/signup", post(sign_up))
-        .route("/v1/auth/login", post(log_in))
-        .route("/v1/auth/logout", post(log_out))
-        .route("/v1/me", get(me).delete(delete_account))
-        .route("/v1/devices", get(devices))
-        .route("/v1/devices/{id}", delete(remove_device))
-        .route("/v1/relay", get(relay))
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
+        .route("/v2/devices", post(register).get(devices))
+        .route("/v2/device", delete(delete_self))
+        .route("/v2/links/{id}", delete(unpair))
+        .route("/v2/pairings", post(create_pairing))
+        .route("/v2/pairings/{id}", get(pairing).delete(cancel_pairing))
+        .route("/v2/pairings/{id}/claim", post(claim))
+        .route("/v2/pairings/{id}/approve", post(approve))
+        .route("/v2/relay", get(relay))
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(16 * 1024))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .with_state(state)
 }
 
-// MARK: Wire types (camelCase, dates as RFC 3339 seconds, matching TermyRemoteKit)
-
+#[derive(Default)]
+pub struct AttemptLimiter {
+    attempts: Mutex<HashMap<String, Vec<Instant>>>,
+}
+impl AttemptLimiter {
+    async fn allow(&self, key: String) -> bool {
+        let mut attempts = self.attempts.lock().await;
+        attempts.retain(|_, v| {
+            v.retain(|t| t.elapsed() < Duration::from_secs(300));
+            !v.is_empty()
+        });
+        if attempts.len() >= 10_000 && !attempts.contains_key(&key) {
+            return false;
+        }
+        let recent = attempts.entry(key).or_default();
+        if recent.len() >= 30 {
+            return false;
+        }
+        recent.push(Instant::now());
+        true
+    }
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct DeviceRegistration {
+struct Registration {
     name: String,
     kind: String,
     public_key: String,
 }
-
-#[derive(Deserialize)]
-struct Credentials {
-    email: String,
-    password: String,
-    device: DeviceRegistration,
-}
-
-#[derive(Serialize)]
-struct UserDto {
-    id: Uuid,
-    email: String,
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceDto {
@@ -76,237 +84,84 @@ struct DeviceDto {
     kind: String,
     public_key: String,
     online: bool,
-    #[serde(serialize_with = "rfc3339")]
-    created_at: DateTime<Utc>,
-    #[serde(
-        serialize_with = "rfc3339_opt",
-        skip_serializing_if = "Option::is_none"
-    )]
-    last_seen_at: Option<DateTime<Utc>>,
+    created_at: String,
+    last_seen_at: Option<String>,
 }
-
-fn rfc3339<S: Serializer>(date: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Error> {
-    s.serialize_str(&date.to_rfc3339_opts(SecondsFormat::Secs, true))
+fn date(d: DateTime<Utc>) -> String {
+    d.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
-
-fn rfc3339_opt<S: Serializer>(date: &Option<DateTime<Utc>>, s: S) -> Result<S::Ok, S::Error> {
-    match date {
-        Some(date) => rfc3339(date, s),
-        None => s.serialize_none(),
+async fn dto(state: &AppState, d: Device) -> DeviceDto {
+    DeviceDto {
+        id: d.id,
+        online: state.hub.is_online(d.id).await,
+        name: d.name,
+        kind: d.kind,
+        public_key: STANDARD.encode(d.public_key),
+        created_at: date(d.created_at),
+        last_seen_at: d.last_seen_at.map(date),
     }
 }
-
 #[derive(Serialize)]
-struct AuthResponse {
+struct Registered {
     token: String,
-    user: UserDto,
     device: DeviceDto,
 }
-
-#[derive(Serialize)]
-struct MeResponse {
-    user: UserDto,
-    device: DeviceDto,
-}
-
 #[derive(Serialize)]
 struct Empty {}
-
-// MARK: Sign-in throttling
-
-/// Ten sign-in attempts per address and email every five minutes.
-#[derive(Default)]
-pub struct AttemptLimiter {
-    attempts: Mutex<HashMap<String, Vec<Instant>>>,
+fn gone() -> ApiError {
+    ApiError::new(
+        StatusCode::GONE,
+        "This pairing expired or was cancelled. Scan a new QR code.",
+    )
 }
-
-impl AttemptLimiter {
-    const LIMIT: usize = 10;
-    const WINDOW: Duration = Duration::from_secs(300);
-
-    async fn allow(&self, key: String) -> bool {
-        let mut attempts = self.attempts.lock().await;
-        if attempts.len() > 10_000 {
-            attempts.retain(|_, v| v.iter().any(|t| t.elapsed() < Self::WINDOW));
-        }
-        let recent = attempts.entry(key).or_default();
-        recent.retain(|t| t.elapsed() < Self::WINDOW);
-        if recent.len() >= Self::LIMIT {
-            return false;
-        }
-        recent.push(Instant::now());
-        true
-    }
+fn forbidden() -> ApiError {
+    ApiError::new(
+        StatusCode::FORBIDDEN,
+        "This device is not allowed to do that.",
+    )
 }
-
-// MARK: Accounts
-
-struct ValidDevice {
-    name: String,
-    kind: String,
-    key: Vec<u8>,
-}
-
-fn validate_device(device: DeviceRegistration) -> ApiResult<ValidDevice> {
-    if device.kind != "host" && device.kind != "client" {
-        return Err(ApiError::bad_request("Unknown device kind."));
-    }
-    let key = STANDARD
-        .decode(device.public_key.as_bytes())
+fn bytes(s: &str, size: usize) -> ApiResult<Vec<u8>> {
+    STANDARD
+        .decode(s)
         .ok()
-        .filter(|k| k.len() == 32)
-        .ok_or_else(|| ApiError::bad_request("The device key must be 32 bytes."))?;
-    let name: String = device.name.trim().chars().take(80).collect();
-    Ok(ValidDevice {
-        name: if name.is_empty() {
-            "Device".into()
-        } else {
-            name
-        },
-        kind: device.kind,
-        key,
-    })
+        .filter(|b| b.len() == size)
+        .ok_or_else(|| ApiError::bad_request("Invalid pairing data."))
 }
-
-async fn hash_password(password: String) -> ApiResult<String> {
-    tokio::task::spawn_blocking(move || {
-        let salt = SaltString::generate(&mut OsRng);
-        Argon2::default()
-            .hash_password(password.as_bytes(), &salt)
-            .map(|h| h.to_string())
-    })
-    .await
-    .ok()
-    .and_then(Result::ok)
-    .ok_or_else(|| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Couldn't secure the password. Try again.",
-        )
-    })
-}
-
-async fn verify_password(password: String, hash: String) -> bool {
-    tokio::task::spawn_blocking(move || {
-        PasswordHash::new(&hash).is_ok_and(|parsed| {
-            Argon2::default()
-                .verify_password(password.as_bytes(), &parsed)
-                .is_ok()
-        })
-    })
-    .await
-    .unwrap_or(false)
-}
-
-fn token_hash(token: &str) -> Vec<u8> {
+fn hash(token: &str) -> Vec<u8> {
     Sha256::digest(token.as_bytes()).to_vec()
 }
-
-async fn device_dto(state: &AppState, device: Device) -> DeviceDto {
-    DeviceDto {
-        id: device.id,
-        online: state.hub.is_online(device.id).await,
-        name: device.name,
-        kind: device.kind,
-        public_key: STANDARD.encode(&device.public_key),
-        created_at: device.created_at,
-        last_seen_at: device.last_seen_at,
-    }
-}
-
-async fn start_session(
-    state: &AppState,
-    user: User,
-    device: ValidDevice,
-) -> ApiResult<Json<AuthResponse>> {
-    let row = state
-        .db
-        .upsert_device(user.id, &device.name, &device.kind, &device.key)
-        .await?;
-    let mut bytes = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let token = URL_SAFE_NO_PAD.encode(bytes);
-    state
-        .db
-        .create_session(&token_hash(&token), user.id, row.id)
-        .await?;
-    Ok(Json(AuthResponse {
-        token,
-        user: UserDto {
-            id: user.id,
-            email: user.email,
-        },
-        device: device_dto(state, row).await,
-    }))
-}
-
-async fn sign_up(
-    State(state): State<AppState>,
-    Json(body): Json<Credentials>,
-) -> ApiResult<Json<AuthResponse>> {
-    let email = body.email.trim().to_string();
-    let valid_email = email.len() <= 254
-        && email
-            .split_once('@')
-            .is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.'));
-    if !valid_email {
-        return Err(ApiError::bad_request("Enter a valid email address."));
-    }
-    if body.password.chars().count() < 8 {
-        return Err(ApiError::bad_request(
-            "Use a password of at least 8 characters.",
-        ));
-    }
-    if body.password.len() > 256 {
-        return Err(ApiError::bad_request(
-            "Use a password of at most 256 bytes.",
-        ));
-    }
-    let device = validate_device(body.device)?;
-    let hash = hash_password(body.password).await?;
-    let user = state.db.create_user(&email, &hash).await?.ok_or_else(|| {
-        ApiError::new(
-            StatusCode::CONFLICT,
-            "An account with this email already exists.",
-        )
-    })?;
-    start_session(&state, user, device).await
-}
-
-async fn log_in(
+async fn register(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    Json(body): Json<Credentials>,
-) -> ApiResult<Json<AuthResponse>> {
-    let email = body.email.trim().to_string();
-    if !state
-        .limiter
-        .allow(format!("{}|{}", addr.ip(), email.to_lowercase()))
-        .await
-    {
+    Json(body): Json<Registration>,
+) -> ApiResult<Json<Registered>> {
+    if !state.limiter.allow(addr.ip().to_string()).await {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
-            "Too many attempts. Try again in a few minutes.",
+            "Too many device registrations. Try again later.",
         ));
     }
-    let device = validate_device(body.device)?;
-    let wrong = || ApiError::unauthorized("Wrong email or password.");
-    let user = state.db.user_by_email(&email).await?.ok_or_else(wrong)?;
-    if !verify_password(body.password, user.password_hash.clone()).await {
-        return Err(wrong());
+    if body.kind != "host" && body.kind != "client" {
+        return Err(ApiError::bad_request("Unknown device kind."));
     }
-    start_session(&state, user, device).await
+    let key = bytes(&body.public_key, 32)?;
+    let name = body.name.trim().chars().take(80).collect::<String>();
+    if name.is_empty() {
+        return Err(ApiError::bad_request("Give this device a name."));
+    }
+    let mut raw = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut raw);
+    let token = URL_SAFE_NO_PAD.encode(raw);
+    let d=sqlx::query_as::<_,Device>("INSERT INTO remote_devices(name,kind,public_key,token_hash) VALUES($1,$2,$3,$4) RETURNING id,name,kind,public_key,created_at,last_seen_at")
+        .bind(name).bind(body.kind).bind(key).bind(hash(&token)).fetch_one(&state.db.pool).await?;
+    Ok(Json(Registered {
+        token,
+        device: dto(&state, d).await,
+    }))
 }
-
-/// The signed-in device, from `Authorization: Bearer <token>`.
-pub struct Authed {
-    pub user_id: Uuid,
-    pub device_id: Uuid,
-}
-
+struct Authed(Device);
 impl FromRequestParts<AppState> for Authed {
     type Rejection = ApiError;
-
     async fn from_request_parts(
         parts: &mut Parts,
         state: &AppState,
@@ -315,126 +170,237 @@ impl FromRequestParts<AppState> for Authed {
             .headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .ok_or_else(|| ApiError::unauthorized("Sign in first."))?;
-        let (user_id, device_id) = state
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .ok_or_else(|| ApiError::unauthorized("Pair this device again."))?;
+        state
             .db
-            .session(&token_hash(token))
+            .authenticate(&hash(token))
             .await?
-            .ok_or_else(|| ApiError::unauthorized("Your session ended. Sign in again."))?;
-        Ok(Self { user_id, device_id })
+            .map(Self)
+            .ok_or_else(|| ApiError::unauthorized("This device registration ended. Pair again."))
     }
 }
-
-async fn log_out(State(state): State<AppState>, auth: Authed) -> ApiResult<Json<Empty>> {
-    state.db.delete_device(auth.device_id, auth.user_id).await?;
-    state.hub.kick(auth.device_id).await;
-    Ok(Json(Empty {}))
-}
-
-async fn me(State(state): State<AppState>, auth: Authed) -> ApiResult<Json<MeResponse>> {
-    let user = state
-        .db
-        .user(auth.user_id)
-        .await?
-        .ok_or_else(|| ApiError::unauthorized("Sign in again."))?;
-    let device = state
-        .db
-        .devices(auth.user_id)
-        .await?
-        .into_iter()
-        .find(|d| d.id == auth.device_id)
-        .ok_or_else(|| ApiError::unauthorized("Sign in again."))?;
-    Ok(Json(MeResponse {
-        user: UserDto {
-            id: user.id,
-            email: user.email,
-        },
-        device: device_dto(&state, device).await,
-    }))
-}
-
-async fn delete_account(State(state): State<AppState>, auth: Authed) -> ApiResult<Json<Empty>> {
-    let devices = state.db.devices(auth.user_id).await?;
-    state.db.delete_user(auth.user_id).await?;
-    for device in devices {
-        state.hub.kick(device.id).await;
-    }
-    Ok(Json(Empty {}))
-}
-
-async fn devices(State(state): State<AppState>, auth: Authed) -> ApiResult<Json<Vec<DeviceDto>>> {
+async fn devices(
+    State(state): State<AppState>,
+    Authed(d): Authed,
+) -> ApiResult<Json<Vec<DeviceDto>>> {
     let mut out = vec![];
-    for device in state.db.devices(auth.user_id).await? {
-        out.push(device_dto(&state, device).await);
+    for peer in state.db.peers(d.id).await? {
+        out.push(dto(&state, peer).await);
     }
     Ok(Json(out))
 }
-
-async fn remove_device(
+async fn unpair(
     State(state): State<AppState>,
-    auth: Authed,
+    Authed(d): Authed,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<Empty>> {
-    if !state.db.delete_device(id, auth.user_id).await? {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "No such device."));
-    }
-    state.hub.kick(id).await;
+    let _guard = state.gate.lock().await;
+    sqlx::query("DELETE FROM remote_links WHERE (host_id=$1 AND client_id=$2) OR (host_id=$2 AND client_id=$1)").bind(d.id).bind(id).execute(&state.db.pool).await?;
+    // Delete pending/approved retrieval too: a delayed poll must not resurrect removed access.
+    sqlx::query("DELETE FROM remote_pairings WHERE (host_id=$1 AND client_id=$2) OR (host_id=$2 AND client_id=$1)").bind(d.id).bind(id).execute(&state.db.pool).await?;
+    state.hub.revoke(d.id, id).await;
     Ok(Json(Empty {}))
 }
-
-// MARK: Relay socket
-
-async fn relay(State(state): State<AppState>, auth: Authed, upgrade: WebSocketUpgrade) -> Response {
-    upgrade
-        .max_message_size(MAX_FRAME)
-        .max_frame_size(MAX_FRAME)
-        .on_upgrade(move |socket| serve(state, auth, socket))
+async fn delete_self(State(state): State<AppState>, Authed(d): Authed) -> ApiResult<Json<Empty>> {
+    let _guard = state.gate.lock().await;
+    let peers = state.db.peers(d.id).await?;
+    sqlx::query("DELETE FROM remote_devices WHERE id=$1")
+        .bind(d.id)
+        .execute(&state.db.pool)
+        .await?;
+    for peer in peers {
+        state.hub.revoke(d.id, peer.id).await;
+    }
+    state.hub.kick(d.id).await;
+    Ok(Json(Empty {}))
 }
-
-async fn serve(state: AppState, auth: Authed, socket: WebSocket) {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PairingDto {
+    id: Uuid,
+    expires_at: String,
+    host: DeviceDto,
+    client: Option<DeviceDto>,
+    init_packet: Option<String>,
+    proof: Option<String>,
+    response_packet: Option<String>,
+}
+async fn pairing_dto(state: &AppState, p: crate::db::Pairing) -> ApiResult<PairingDto> {
+    Ok(PairingDto {
+        id: p.id,
+        expires_at: date(p.expires_at),
+        host: dto(state, state.db.device(p.host_id).await?).await,
+        client: match p.client_id {
+            Some(id) => Some(dto(state, state.db.device(id).await?).await),
+            None => None,
+        },
+        init_packet: p.init_packet.map(|b| STANDARD.encode(b)),
+        proof: p.proof.map(|b| STANDARD.encode(b)),
+        response_packet: p.response_packet.map(|b| STANDARD.encode(b)),
+    })
+}
+async fn create_pairing(
+    State(state): State<AppState>,
+    Authed(d): Authed,
+) -> ApiResult<Json<PairingDto>> {
+    if d.kind != "host" {
+        return Err(forbidden());
+    }
+    let _guard = state.gate.lock().await;
+    let mut tx = state.db.pool.begin().await?;
+    sqlx::query("DELETE FROM remote_pairings WHERE (host_id=$1 AND response_packet IS NULL) OR expires_at<now()-interval '10 minutes'").bind(d.id).execute(&mut *tx).await?;
+    let p = sqlx::query_as("INSERT INTO remote_pairings(host_id) VALUES($1) RETURNING *")
+        .bind(d.id)
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(pairing_dto(&state, p).await?))
+}
+async fn pairing(
+    State(state): State<AppState>,
+    Authed(d): Authed,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<PairingDto>> {
+    let p = state.db.pairing(id).await?.ok_or_else(gone)?;
+    if p.host_id != d.id && p.client_id != Some(d.id) {
+        return Err(forbidden());
+    }
+    Ok(Json(pairing_dto(&state, p).await?))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Claim {
+    init_packet: String,
+    proof: String,
+}
+async fn claim(
+    State(state): State<AppState>,
+    Authed(d): Authed,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Claim>,
+) -> ApiResult<Json<Empty>> {
+    if d.kind != "client" {
+        return Err(forbidden());
+    }
+    let init = bytes(&body.init_packet, 65)?;
+    let proof = bytes(&body.proof, 32)?;
+    if init[0] != 1 || init[33..] != d.public_key {
+        return Err(ApiError::bad_request(
+            "The pairing identity does not match this device.",
+        ));
+    }
+    let changed=sqlx::query("UPDATE remote_pairings SET client_id=$2,init_packet=$3,proof=$4 WHERE id=$1 AND expires_at>now() AND response_packet IS NULL AND (client_id IS NULL OR (client_id=$2 AND init_packet=$3 AND proof=$4))")
+        .bind(id).bind(d.id).bind(init).bind(proof).execute(&state.db.pool).await?;
+    if changed.rows_affected() != 1 {
+        return Err(gone());
+    }
+    Ok(Json(Empty {}))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Approval {
+    client_id: Uuid,
+    init_packet: String,
+    response_packet: String,
+}
+async fn approve(
+    State(state): State<AppState>,
+    Authed(d): Authed,
+    Path(id): Path<Uuid>,
+    Json(body): Json<Approval>,
+) -> ApiResult<Json<Empty>> {
+    let init = bytes(&body.init_packet, 65)?;
+    let response = bytes(&body.response_packet, 59)?; // kind + ephemeral + counter + confirmation + tag
+    if response[0] != 2 {
+        return Err(ApiError::bad_request("Invalid handshake response."));
+    }
+    let _guard = state.gate.lock().await;
+    let mut tx = state.db.pool.begin().await?;
+    let p=sqlx::query_as::<_,crate::db::Pairing>("SELECT * FROM remote_pairings WHERE id=$1 AND host_id=$2 AND expires_at>now() AND response_packet IS NULL FOR UPDATE")
+        .bind(id).bind(d.id).fetch_optional(&mut *tx).await?.ok_or_else(gone)?;
+    if p.client_id != Some(body.client_id) || p.init_packet.as_deref() != Some(init.as_slice()) {
+        return Err(forbidden());
+    }
+    sqlx::query("INSERT INTO remote_links(host_id,client_id) VALUES($1,$2) ON CONFLICT DO NOTHING")
+        .bind(d.id)
+        .bind(body.client_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE remote_pairings SET response_packet=$2 WHERE id=$1")
+        .bind(id)
+        .bind(response)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    state.hub.authorize(d.id, body.client_id).await;
+    Ok(Json(Empty {}))
+}
+async fn cancel_pairing(
+    State(state): State<AppState>,
+    Authed(d): Authed,
+    Path(id): Path<Uuid>,
+) -> ApiResult<Json<Empty>> {
+    let _guard = state.gate.lock().await;
+    sqlx::query(
+        "DELETE FROM remote_pairings WHERE id=$1 AND host_id=$2 AND response_packet IS NULL",
+    )
+    .bind(id)
+    .bind(d.id)
+    .execute(&state.db.pool)
+    .await?;
+    Ok(Json(Empty {}))
+}
+async fn relay(
+    State(state): State<AppState>,
+    Authed(d): Authed,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    upgrade
+        .max_message_size(4 << 20)
+        .max_frame_size(4 << 20)
+        .on_upgrade(move |socket| serve(state, d, socket))
+}
+async fn serve(state: AppState, d: Device, socket: WebSocket) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = Hub::queue();
-    let serial = state
-        .hub
-        .connect(auth.device_id, auth.user_id, tx.clone())
-        .await;
-    let _ = state.db.touch_device(auth.device_id).await;
-
+    let serial = {
+        let _guard = state.gate.lock().await;
+        // Recheck registration after upgrade and serialize peer lookup with revocation.
+        let Ok(peers) = state.db.peers(d.id).await else {
+            return;
+        };
+        if state.db.device(d.id).await.is_err() {
+            return;
+        }
+        state
+            .hub
+            .connect(d.id, peers.into_iter().map(|p| p.id).collect(), tx.clone())
+            .await
+    };
+    state.db.touch(d.id).await;
     let writer = tokio::spawn(async move {
-        while let Some(message) = rx.recv().await {
-            let closing = matches!(message, Message::Close(_));
-            if sink.send(message).await.is_err() || closing {
+        while let Some(m) = rx.recv().await {
+            let close = matches!(m, Message::Close(_));
+            if sink.send(m).await.is_err() || close {
                 break;
             }
         }
     });
-    // Keep idle sockets open through proxies that drop quiet connections.
-    let pinger = {
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(25));
-            loop {
-                interval.tick().await;
-                if tx.send(Message::Ping(Vec::new().into())).await.is_err() {
-                    break;
-                }
-            }
-        })
-    };
-
-    while let Some(Ok(message)) = stream.next().await {
-        match message {
-            Message::Binary(bytes) => state.hub.route(auth.device_id, bytes.to_vec()).await,
-            Message::Close(_) => break,
-            _ => {}
-        }
-        if writer.is_finished() {
-            break;
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(20));
+    let mut membership = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tokio::select! {
+            message=stream.next()=>match message {
+                Some(Ok(Message::Binary(b)))=>state.hub.route(d.id,serial,b.to_vec()).await,
+                Some(Ok(Message::Close(_)) | Err(_)) | None=>break,
+                _=>{}
+            },
+            _=heartbeat.tick()=> { if tx.try_send(Message::Ping(Vec::new().into())).is_err() { break; } },
+            _=membership.tick()=> { if writer.is_finished() || !state.hub.is_current(d.id,serial).await { break; } }
         }
     }
-    pinger.abort();
     writer.abort();
-    state.hub.disconnect(auth.device_id, serial).await;
-    let _ = state.db.touch_device(auth.device_id).await;
+    state.hub.disconnect(d.id, serial).await;
+    state.db.touch(d.id).await;
 }

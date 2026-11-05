@@ -49,7 +49,7 @@ enum PacketKind: UInt8 {
 }
 
 /// Directional keys and counters for one authenticated session between a
-/// client (the phone) and a host (the computer running `termy-remote`).
+/// client (the phone) and a host (the computer running Termy Next).
 ///
 /// The handshake mixes three X25519 results, as Noise KK does:
 /// ephemeral–ephemeral for forward secrecy, client-ephemeral–host-static so

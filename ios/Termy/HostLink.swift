@@ -56,7 +56,7 @@ final class HostLink {
         case .trusted:
             break
         }
-        guard model.relayState == .connected else {
+        guard model.isConnected(to: device.id) else {
             state = .connecting
             return
         }
@@ -72,15 +72,9 @@ final class HostLink {
             guard let self, !Task.isCancelled, self.handshake != nil else { return }
             self.handshake = nil
             self.state = self.device.online
-                ? .failed("\(self.device.name) didn't answer. Is `termy remote serve` running, and did you allow this iPhone there?")
+                ? .failed("\(self.device.name) didn't answer. Is Termy Next running with Mobile access enabled?")
                 : .offline
         }
-    }
-
-    func trustAndConnect() {
-        model?.trustHost(device)
-        state = .idle
-        connect()
     }
 
     func disconnect() {
@@ -128,7 +122,10 @@ final class HostLink {
                 lastError = nil
                 send(.listSessions)
                 // Pick up where we were: streams survive a reconnect.
-                for screen in screens.values { send(.attach(stream: screen.stream, paneID: screen.paneID)) }
+                for screen in screens.values {
+                    screen.fitted = false // The host restored the original size when the old stream closed.
+                    send(.attach(stream: screen.stream, paneID: screen.paneID))
+                }
             } catch {
                 self.handshake = nil
                 state = .failed("\(device.name) couldn't prove it holds the key you trusted.")
