@@ -93,6 +93,13 @@ final class MobileController {
                 let host = RemoteHostAgent(
                     multiplexer: mux, credentials: c, identity: identity,
                     trustedDevices: allPins[relay.absoluteString] ?? [:])
+                host.configPath = AppConfig.configURL.path
+                host.launchEnvironment.merge(ShellPlugins.shared.environment(token: nil)) { $1 }
+                host.configurationProvider = {
+                    RemoteConfiguration(render: AppConfig.shared.renderConfig,
+                        contents: (try? String(contentsOf: AppConfig.configURL, encoding: .utf8)) ?? "",
+                        reduceMotion: Preferences.shared.reduceMotion, appearance: AppConfig.shared.appearance)
+                }
                 host.onConnectionState = { [weak self] state in
                     guard let self, current == self.generation else { return }
                     switch state {

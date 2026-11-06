@@ -16,6 +16,11 @@ public final class RemoteHostAgent {
     private var connection: RelayConnection?
     private var peers: [UUID: Peer] = [:]
     private var running = false
+    public var configurationProvider: () -> RemoteConfiguration = { RemoteConfiguration() }
+    public var configPath: String?
+    public var launchEnvironment: [String: String] = ["TERM_PROGRAM": "TermyNext"]
+    private var lastConfiguration: RemoteConfiguration?
+    var configuration: RemoteConfiguration { lastConfiguration ?? configurationProvider() }
     private var lastSessions: RemoteSessionList?
 
     public init(
@@ -40,6 +45,7 @@ public final class RemoteHostAgent {
 
     public func run() async throws {
         running = true
+        lastConfiguration = configurationProvider()
         log("Serving \(hostName) to your phones. This computer's key: \(identity.fingerprint)")
         let watcher = Task { await self.watchSessions() }
         defer {
@@ -136,6 +142,7 @@ public final class RemoteHostAgent {
             peers[deviceID] = peer
             connection?.send(response, to: deviceID)
             peer.send(.hello(hostName: hostName, version: RemoteProtocol.version))
+            peer.send(.configuration(configuration))
             peer.send(.sessions(currentSessions()))
             log("\(device.name) connected.")
         } catch {
@@ -155,14 +162,69 @@ public final class RemoteHostAgent {
             .value.value
     }
 
-    func createPane() async throws -> String {
-        let terminal = try await Task.detached { [multiplexer] in
-            Handoff(try multiplexer.createTerminal(size: TerminalSize(cols: 80, rows: 24)))
-        }.value.value
-        // Releasing the terminal detaches and leaves the shell running.
-        return terminal.paneID ?? ""
+    enum Creation {
+        case session(String)
+        case tab(String)
+        case split(String, Bool)
     }
-
+    func create(_ destination: Creation) async throws -> String {
+        let path = configPath
+        let environment = launchEnvironment
+        return try await Task.detached { [multiplexer] in
+            let config = try path.map { try TermyConfig(path: $0) } ?? TermyConfig.loadDefault()
+            var directory = config.workingDirectory
+            switch destination {
+            case .session: break
+            case .tab(let anchor), .split(let anchor, _):
+                _ = try RemoteLayout.locate(multiplexer.layout(), pane: anchor)
+                if let cwd = try multiplexer.panes().first(where: { $0.id == anchor })?.workingDirectory {
+                    directory = cwd.hasPrefix("file://") ? URL(string: cwd)?.path : cwd
+                }
+            }
+            let render = try config.renderConfig()
+            let terminal = try multiplexer.createTerminal(
+                size: TerminalSize(cols: 80, rows: 24, cellWidth: render.cellWidth, cellHeight: render.cellHeight),
+                options: TerminalOptions(config: config, workingDirectory: directory, environment: environment))
+            guard let id = terminal.paneID else { throw RemoteLayout.EditError.missingSession }
+            do {
+                try RemoteLayout.edit(multiplexer) { layout in
+                    switch destination {
+                    case .session(let name): try RemoteLayout.addSession(&layout, pane: id, name: name)
+                    case .tab(let anchor):
+                        let (w, s, _) = try RemoteLayout.locate(layout, pane: anchor)
+                        layout.windows[w].workspaces[s].tabs.append(.init(activePane: id, tree: .leaf(id)))
+                        layout.windows[w].workspaces[s].activeTab = layout.windows[w].workspaces[s].tabs.count - 1
+                    case .split(let anchor, let horizontal):
+                        let (w, s, t) = try RemoteLayout.locate(layout, pane: anchor)
+                        let old = layout.windows[w].workspaces[s].tabs[t].tree
+                        layout.windows[w].workspaces[s].tabs[t].tree = RemoteLayout.split(
+                            old, at: anchor, pane: id, horizontal: horizontal)
+                        layout.windows[w].workspaces[s].tabs[t].activePane = id
+                    }
+                }
+            } catch {
+                try? multiplexer.close(paneID: id)
+                throw error
+            }
+            return id
+        }.value
+    }
+    func rename(pane: String, name: String, session: Bool) throws {
+        try RemoteLayout.edit(multiplexer) { layout in
+            let (w, s, t) = try RemoteLayout.locate(layout, pane: pane)
+            let value = try RemoteLayout.name(name)
+            if session {
+                guard
+                    !layout.windows[w].workspaces.enumerated().contains(where: {
+                        $0.offset != s && $0.element.name == value
+                    })
+                else { throw RemoteLayout.EditError.invalidName }
+                layout.windows[w].workspaces[s].name = value
+            } else {
+                layout.windows[w].workspaces[s].tabs[t].title = value
+            }
+        }
+    }
     func closePane(_ paneID: String) async throws {
         try await Task.detached { [multiplexer] in try multiplexer.close(paneID: paneID) }.value
     }
@@ -173,8 +235,16 @@ public final class RemoteHostAgent {
         var groups: [RemoteSessionGroup] = []
         for window in layout?.windows ?? [] {
             for workspace in window.workspaces {
-                let tabs = workspace.tabs.map { RemoteSessionGroup.Tab(title: $0.title, paneIDs: $0.tree.paneIDs) }
-                if !tabs.isEmpty { groups.append(RemoteSessionGroup(name: workspace.name, tabs: tabs)) }
+                let tabs = workspace.tabs.map { tab in
+                    var remote = RemoteSessionGroup.Tab(title: tab.title, paneIDs: tab.tree.paneIDs)
+                    remote.activePaneID = tab.activePane
+                    return remote
+                }
+                if !tabs.isEmpty {
+                    var group = RemoteSessionGroup(name: workspace.name, tabs: tabs)
+                    group.windowID = window.id
+                    groups.append(group)
+                }
             }
         }
         return RemoteSessionList(
@@ -190,6 +260,11 @@ public final class RemoteHostAgent {
         while !Task.isCancelled {
             do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
             guard !peers.isEmpty else { continue }
+            let configuration = configurationProvider()
+            if configuration != lastConfiguration {
+                lastConfiguration = configuration
+                for peer in peers.values { peer.configure(configuration) }
+            }
             broadcastSessionsIfChanged()
         }
     }
@@ -228,6 +303,10 @@ final class Peer {
         }
     }
 
+    func configure(_ configuration: RemoteConfiguration) {
+        send(.configuration(configuration))
+        for stream in streams.values { stream.configure() }
+    }
     func close() {
         active = false
         for stream in streams.values { stream.close() }
@@ -250,30 +329,65 @@ final class Peer {
         case .resize(let stream, let cols, let rows):
             streams[stream]?.resize(cols: cols, rows: rows)
         case .scroll(let stream, let lines):
-            streams[stream]?.session.scroll(lines: Int32(lines))
-        case .createPane:
-            Task {
-                do {
-                    guard let paneID = try await agent?.createPane() else { return }
-                    send(.created(paneID: paneID))
-                    agent?.broadcastSessionsIfChanged()
-                } catch {
-                    send(.error("Couldn't start a session: \(error)"))
-                }
-            }
+            streams[stream]?.scroll(lines: lines)
+        case .createPane: create(.session("Session"))
+        case .createSession(let name): create(.session(name))
+        case .createTab(let anchor): create(.tab(anchor))
+        case .splitPane(let pane, let horizontal): create(.split(pane, horizontal))
+        case .renameSession(let pane, let name): rename(pane, name: name, session: true)
+        case .renameTab(let pane, let title): rename(pane, name: title, session: false)
+        case .mouse(let id, let col, let row, let action): streams[id]?.mouse(col: col, row: row, action: action)
+        case .scrollToBottom(let id): streams[id]?.session.scrollToBottom()
+        case .search(let id, let query):
+            guard let stream = streams[id] else { return }
+            do {
+                let matches = query.isEmpty ? [] : try stream.session.terminal.search(String(query.prefix(512)))
+                send(
+                    .searchResults(
+                        stream: id,
+                        matches: matches.prefix(500).map {
+                            RemoteSearchMatch(row: $0.row, startCol: $0.startCol, endCol: $0.endCol, line: $0.line)
+                        }))
+            } catch { send(.error("Couldn't search the terminal.")) }
+        case .revealSearch(let id, let bufferRow):
+            guard let stream = streams[id], bufferRow >= 0 else { return }
+            let frame = stream.session.frame
+            let desired = max(0, frame.historySize - bufferRow + frame.rows / 2)
+            stream.session.scroll(lines: Int32(clamping: desired - frame.displayOffset))
         case .closePane(let paneID):
             Task {
-                try? await agent?.closePane(paneID)
+                do { try await agent?.closePane(paneID) } catch { send(.error("Couldn’t close the pane: \(error)")) }
                 agent?.broadcastSessionsIfChanged()
             }
         }
     }
 
+    private func create(_ destination: RemoteHostAgent.Creation) {
+        Task {
+            do {
+                guard let id = try await agent?.create(destination) else { return }
+                send(.created(paneID: id))
+                agent?.broadcastSessionsIfChanged()
+            } catch { send(.error("Couldn't create a terminal: \(error)")) }
+        }
+    }
+    private func rename(_ pane: String, name: String, session: Bool) {
+        do {
+            try agent?.rename(pane: pane, name: name, session: session)
+            agent?.broadcastSessionsIfChanged()
+        } catch { send(.error("Couldn't rename. The item may have moved or that name is already used.")) }
+    }
+    var configuration: RemoteConfiguration { agent?.configuration ?? RemoteConfiguration() }
+    var configPath: String? { agent?.configPath }
     private func attach(stream id: Int, paneID: String) async {
         streams.removeValue(forKey: id)?.close()
         do {
             guard let terminal = try await agent?.attach(paneID: paneID) else { return }
             guard active else { return }
+            if let path = agent?.configPath {
+                try terminal.applyColors(
+                    from: TermyConfig(path: path), appearance: configuration.appearance == "light" ? .light : .dark)
+            }
             let frame = try terminal.snapshot()
             let size = TerminalSize(cols: UInt16(frame.cols), rows: UInt16(frame.rows))
             streams[id] = Stream(id: id, session: TerminalSession(terminal: terminal, size: size), peer: self)
@@ -334,6 +448,37 @@ final class Stream {
         scheduleSend()
     }
 
+    func configure() {
+        if let path = peer?.configPath {
+            try? session.terminal.applyColors(
+                from: TermyConfig(path: path), appearance: peer?.configuration.appearance == "light" ? .light : .dark)
+        }
+        session.poll(forceFull: true)
+        pendingFull = true
+        scheduleSend()
+    }
+    func mouse(col: Int, row: Int, action: String) {
+        guard (0..<session.frame.cols).contains(col), (0..<session.frame.rows).contains(row) else { return }
+        let kind: MouseInput.Kind
+        switch action {
+        case "press": kind = .press(.left)
+        case "release": kind = .release(.left)
+        case "drag": kind = .drag(.left)
+        default: return
+        }
+        _ = try? session.send(MouseInput(kind, at: GridPosition(row: row, col: col)))
+    }
+    func scroll(lines: Int) {
+        let count = min(abs(max(-500, min(lines, 500))), 100)
+        guard count > 0 else { return }
+        let kind: MouseInput.Kind = lines > 0 ? .wheelUp : .wheelDown
+        let reported = (try? session.send(MouseInput(kind, at: GridPosition(row: 0, col: 0)))) ?? false
+        if reported {
+            for _ in 1..<count { _ = try? session.send(MouseInput(kind, at: GridPosition(row: 0, col: 0))) }
+        } else {
+            session.scroll(lines: Int32(clamping: lines))
+        }
+    }
     private func changed(_ change: FrameChange) {
         if let rows = FrameEncoder.dirtyRows(change) {
             if !pendingFull { dirty = (dirty ?? []).union(rows) }
@@ -369,17 +514,33 @@ final class Stream {
         let full = pendingFull
         pendingFull = false
         dirty = nil
-        let updates = rows.map { RowUpdate(row: $0, runs: FrameEncoder.runs(store.cells(row: $0))) }
+        let config = peer?.configuration ?? RemoteConfiguration()
+        let spans = full ? nil : rows.map { DirtySpan(row: $0, leftCol: 0, rightCol: store.cols - 1) }
+        let plans =
+            (try? store.glyphPlan(
+                metrics: GlyphMetrics(
+                    cellWidth: Float(config.cellWidth), cellHeight: Float(config.cellHeight),
+                    fontSize: Float(config.fontSize)), spans: spans)) ?? []
+        let glyphs = Dictionary(uniqueKeysWithValues: plans.map { ($0.cellIndex, $0) })
+        let updates = rows.map { row in
+            var update = RowUpdate(
+                row: row,
+                runs: FrameEncoder.runs(
+                    store.cells(row: row), configuration: config, row: row, cols: store.cols, glyphs: glyphs))
+            update.wrapped = store.cells(row: row).last?.isLineWrapped ?? false
+            return update
+        }
         let background =
             (0..<store.rows).lazy.compactMap { row -> UInt32? in
                 store.cells(row: row).first(where: \.usesDefaultBackground)?.background.rgba
-            }.first ?? 0x0000_00ff
-        peer?.send(
-            .frame(
-                RemoteFrame(
-                    stream: id, cols: store.cols, rows: store.rows, full: full, updates: updates,
-                    cursor: FrameEncoder.cursor(store.cursor), background: background
-                )))
+            }.first ?? config.background
+        var frame = RemoteFrame(
+            stream: id, cols: store.cols, rows: store.rows, full: full, updates: updates,
+            cursor: FrameEncoder.cursor(store.cursor), background: background
+        )
+        frame.displayOffset = store.displayOffset
+        frame.historySize = store.historySize
+        peer?.send(.frame(frame))
     }
 }
 

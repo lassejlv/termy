@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import TermyRemoteKit
+import UIKit
 
 /// The end-to-end encrypted channel to one computer, its session list, and
 /// the screens open on it.
@@ -22,6 +23,10 @@ final class HostLink {
     var device: RelayDevice
     private(set) var state: State = .idle
     private(set) var hostName: String?
+    private(set) var protocolVersion = 1
+    private(set) var configuration: RemoteConfiguration
+    private(set) var creating = false
+    @ObservationIgnored private var creationTimeout: Task<Void, Never>?
     private(set) var sessions = RemoteSessionList(groups: [], panes: [])
     private(set) var screens: [Int: TerminalScreen] = [:]
     var lastError: String?
@@ -39,6 +44,7 @@ final class HostLink {
     init(device: RelayDevice, model: AppModel) {
         self.device = device
         self.model = model
+        self.configuration = model.configuration(for: device.id) ?? RemoteConfiguration()
     }
 
     // MARK: Connecting
@@ -71,7 +77,8 @@ final class HostLink {
             try? await Task.sleep(nanoseconds: 10_000_000_000)
             guard let self, !Task.isCancelled, self.handshake != nil else { return }
             self.handshake = nil
-            self.state = self.device.online
+            self.state =
+                self.device.online
                 ? .failed("\(self.device.name) didn't answer. Is Termy Next running with Mobile access enabled?")
                 : .offline
         }
@@ -81,6 +88,8 @@ final class HostLink {
         wanted = false
         for screen in screens.values { send(.detach(stream: screen.stream)) }
         screens.removeAll()
+        creating = false
+        creationTimeout?.cancel()
         channel = nil
         handshake = nil
         state = .idle
@@ -91,6 +100,8 @@ final class HostLink {
     }
 
     func relayWentAway() {
+        creating = false
+        creationTimeout?.cancel()
         channel = nil
         handshake = nil
         timeout?.cancel()
@@ -123,7 +134,7 @@ final class HostLink {
                 send(.listSessions)
                 // Pick up where we were: streams survive a reconnect.
                 for screen in screens.values {
-                    screen.fitted = false // The host restored the original size when the old stream closed.
+                    screen.changedRows = nil  // Refit after the host restores the previous stream’s size.
                     send(.attach(stream: screen.stream, paneID: screen.paneID))
                 }
             } catch {
@@ -144,8 +155,9 @@ final class HostLink {
 
     private func handle(_ message: HostMessage) {
         switch message {
-        case .hello(let hostName, _):
+        case .hello(let hostName, let version):
             self.hostName = hostName
+            protocolVersion = version
         case .sessions(let list):
             sessions = list
         case .frame(let frame):
@@ -155,16 +167,44 @@ final class HostLink {
         case .exited(let stream):
             screens[stream]?.exited = true
         case .bell:
-            break
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        case .configuration(let config):
+            configuration = config
+            model?.saveConfiguration(config, for: device.id)
+            for screen in screens.values {
+                screen.configuration = config
+                screen.changedRows = nil
+                screen.onChange?()
+            }
+        case .searchResults(let stream, let matches):
+            screens[stream]?.searchMatches = matches
         case .created(let paneID):
+            creating = false
+            creationTimeout?.cancel()
             createdPaneID = paneID
         case .error(let message):
+            creating = false
+            creationTimeout?.cancel()
             lastError = message
         }
     }
 
     func send(_ message: ClientMessage) {
         guard var channel, let model else { return }
+        switch message {
+        case .createPane, .createSession, .createTab, .splitPane:
+            guard !creating else { return }
+            creating = true
+            lastError = nil
+            creationTimeout?.cancel()
+            creationTimeout = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled else { return }
+                self?.creating = false
+                self?.lastError = "The Mac hasn’t answered the creation request. Refresh before trying again."
+            }
+        default: break
+        }
         do {
             let packet = try channel.seal(try MessageCodec.encode(message))
             self.channel = channel
@@ -181,6 +221,7 @@ final class HostLink {
         let stream = nextStream
         nextStream += 1
         let screen = TerminalScreen(stream: stream, paneID: pane.id, title: pane.title)
+        screen.configuration = configuration
         screens[stream] = screen
         send(.attach(stream: stream, paneID: pane.id))
         return screen

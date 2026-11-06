@@ -10,6 +10,7 @@ final class AppModel {
         var credentials: DeviceCredentials
         var pins: [UUID: Data] = [:]
         var hosts: [RelayDevice] = []
+        var configurations: [UUID: RemoteConfiguration]?
     }
     enum RelayState { case offline, connecting, connected }
     let identity: DeviceIdentity
@@ -137,6 +138,7 @@ final class AppModel {
         guard let latest = profiles[k], latest.credentials.token == profile.credentials.token else { return }
         profile = latest
         profile.pins[host.id] = nil
+        profile.configurations?[host.id] = nil
         profile.hosts.removeAll { $0.id == host.id }
         links.removeValue(forKey: host.id)?.disconnect()
         profiles[k] = profile
@@ -180,6 +182,15 @@ final class AppModel {
             rebuildDevices()
             lastError = "This device registration ended. Pair your Mac again."
         } catch { lastError = error.localizedDescription }
+    }
+    func configuration(for host: UUID) -> RemoteConfiguration? {
+        key(for: host).flatMap { profiles[$0]?.configurations?[host] }
+    }
+    func saveConfiguration(_ configuration: RemoteConfiguration, for host: UUID) {
+        guard let key = key(for: host) else { return }
+        if profiles[key]?.configurations == nil { profiles[key]?.configurations = [:] }
+        profiles[key]?.configurations?[host] = configuration
+        do { try persist() } catch { lastError = "Couldn’t securely save the Mac’s config." }
     }
     func link(for host: RelayDevice) -> HostLink {
         if let link = links[host.id] {

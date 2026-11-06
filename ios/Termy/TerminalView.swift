@@ -4,13 +4,13 @@ import UIKit
 
 /// Draws a `TerminalScreen` and turns touches and keys into `ClientMessage`s.
 ///
-/// The grid is scaled to fit the view's width. "Fit to iPhone" instead resizes
-/// the pane on the host to the grid that fits here at a readable size.
+/// Uses the Mac’s cell metrics and fits the host grid to the phone by default.
+/// Restoring the Mac size scales that grid to fit without changing its columns.
 final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
     var screen: TerminalScreen? {
         didSet {
             oldValue?.onChange = nil
-            screen?.onChange = { [weak self] in self?.setNeedsDisplay() }
+            screen?.onChange = { [weak self] in self?.invalidateRows() }
             setNeedsDisplay()
         }
     }
@@ -18,6 +18,15 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
     var onKey: ((RemoteKey) -> Void)?
     var onPaste: ((String) -> Void)?
     var onScroll: ((Int) -> Void)?
+    var onMouse: ((Int, Int, String) -> Void)?
+    var onGridChange: ((Int, Int) -> Void)?
+    var mouseMode = false
+    private var zoom: CGFloat = 1
+    private var blinkTimer: Timer?
+    private var cursorOn = true
+    private var lastGrid: (Int, Int)?
+    private var resizeWork: DispatchWorkItem?
+    private static let imageCache = NSCache<NSData, UIImage>()
 
     /// Sticky modifiers from the key bar, applied to the next key.
     private var controlArmed = false { didSet { keyBar.setArmed(control: controlArmed, alt: altArmed) } }
@@ -25,16 +34,46 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
     private lazy var keyBar = KeyBar(view: self)
     private var scrollRemainder: CGFloat = 0
 
-    static let readableFontSize: CGFloat = 12
-
     override init(frame: CGRect) {
         super.init(frame: frame)
         isOpaque = true
         contentMode = .redraw
-        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped(_:))))
         let pan = UIPanGestureRecognizer(target: self, action: #selector(panned(_:)))
         pan.maximumNumberOfTouches = 1
         addGestureRecognizer(pan)
+        addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:))))
+        let copy = UILongPressGestureRecognizer(target: self, action: #selector(selectText(_:)))
+        addGestureRecognizer(copy)
+        accessibilityLabel = "Remote terminal"
+        accessibilityHint = "Tap to type. Drag to scroll. Pinch to change text size. Hold to select text."
+
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            blinkTimer?.invalidate()
+            blinkTimer = nil
+            resizeWork?.cancel()
+        } else if blinkTimer == nil {
+            startBlinking()
+        }
+    }
+    private func startBlinking() {
+        blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
+            guard let self, self.window != nil, self.isFirstResponder, self.config.cursorBlink,
+                !self.config.reduceMotion, !UIAccessibility.isReduceMotionEnabled
+            else { return }
+            self.cursorOn.toggle()
+            guard let cursor = self.screen?.cursor else { return }
+            let cell = self.cellSize(fontSize: self.fittingFontSize)
+            self.setNeedsDisplay(
+                CGRect(
+                    x: self.gridOrigin.x + CGFloat(cursor.col) * cell.width,
+                    y: self.gridOrigin.y + CGFloat(cursor.row) * cell.height, width: cell.width, height: cell.height))
+        }
+
     }
 
     @available(*, unavailable)
@@ -42,34 +81,89 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
 
     // MARK: Layout
 
+    private var config: RemoteConfiguration { screen?.configuration ?? RemoteConfiguration() }
+    private var baseSize: CGFloat { CGFloat(min(36, max(8, config.fontSize))) * zoom }
     private func font(size: CGFloat, bold: Bool = false, italic: Bool = false) -> UIFont {
-        var font = UIFont.monospacedSystemFont(ofSize: size, weight: bold ? .bold : .regular)
-        if italic, let descriptor = font.fontDescriptor.withSymbolicTraits(.traitItalic) {
+        var font =
+            UIFont(name: config.fontFamily, size: size) ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        var traits = font.fontDescriptor.symbolicTraits
+        if bold { traits.insert(.traitBold) }
+        if italic { traits.insert(.traitItalic) }
+        if let descriptor = font.fontDescriptor.withSymbolicTraits(traits) {
             font = UIFont(descriptor: descriptor, size: size)
         }
         return font
     }
-
     private func cellSize(fontSize: CGFloat) -> CGSize {
-        let font = font(size: fontSize)
-        let width = ("M" as NSString).size(withAttributes: [.font: font]).width
-        return CGSize(width: width, height: ceil(font.lineHeight))
+        let scale = fontSize / CGFloat(max(1, config.fontSize))
+        return CGSize(
+            width: CGFloat(max(1, config.cellWidth)) * scale, height: CGFloat(max(1, config.cellHeight)) * scale)
     }
-
-    /// The font size that fits the screen's columns in the view.
+    private var padding: CGSize {
+        CGSize(width: CGFloat(min(40, max(0, config.paddingX))), height: CGFloat(min(40, max(0, config.paddingY))))
+    }
     private var fittingFontSize: CGFloat {
-        guard let screen, screen.cols > 0, bounds.width > 0 else { return Self.readableFontSize }
-        let unit = cellSize(fontSize: 10).width / 10
-        let byWidth = bounds.width / (CGFloat(screen.cols) * unit)
-        let unitHeight = cellSize(fontSize: 10).height / 10
-        let byHeight = bounds.height / (CGFloat(max(screen.rows, 1)) * unitHeight)
-        return max(4, (min(byWidth, byHeight, 18) * 2).rounded(.down) / 2)
+        guard let screen, screen.cols > 0, bounds.width > 0 else { return baseSize }
+        let cell = cellSize(fontSize: baseSize)
+        let ratio = min(
+            (bounds.width - 2 * padding.width) / (CGFloat(screen.cols) * cell.width),
+            (bounds.height - 2 * padding.height) / (CGFloat(max(screen.rows, 1)) * cell.height), 1)
+        return max(0.5, baseSize * ratio)
     }
-
-    /// Columns and rows that fit here at a readable size, for "Fit to iPhone".
+    private var gridOrigin: CGPoint { CGPoint(x: padding.width, y: padding.height) }
     var readableGrid: (cols: Int, rows: Int) {
-        let cell = cellSize(fontSize: Self.readableFontSize)
-        return (max(20, Int(bounds.width / cell.width)), max(5, Int(bounds.height / cell.height)))
+        let cell = cellSize(fontSize: baseSize)
+        return (
+            max(2, min(500, Int(max(0, bounds.width - 2 * padding.width) / cell.width))),
+            max(2, min(300, Int(max(0, bounds.height - 2 * padding.height) / cell.height)))
+        )
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updateGrid()
+    }
+    func updateGrid() {
+        guard screen?.fitted == true, bounds.width > 20, bounds.height > 20 else { return }
+        let grid = readableGrid
+        guard
+            lastGrid?.0 != grid.cols || lastGrid?.1 != grid.rows
+                || (screen?.live == true && (screen?.cols != grid.cols || screen?.rows != grid.rows))
+        else { return }
+        lastGrid = (grid.cols, grid.rows)
+        resizeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.onGridChange?(grid.cols, grid.rows) }
+        resizeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+    func resetFit() {
+        lastGrid = nil
+        updateGrid()
+        setNeedsDisplay()
+    }
+    private func invalidateRows() {
+        let appearance: UIKeyboardAppearance = config.appearance == "light" ? .light : .dark
+        if keyboardAppearance != appearance {
+            keyboardAppearance = appearance
+            if isFirstResponder { reloadInputViews() }
+        }
+        updateGrid()
+        guard let rows = screen?.changedRows else {
+            setNeedsDisplay()
+            return
+        }
+        let cell = cellSize(fontSize: fittingFontSize)
+        for row in rows {
+            setNeedsDisplay(
+                CGRect(x: 0, y: gridOrigin.y + CGFloat(row) * cell.height, width: bounds.width, height: cell.height + 1)
+            )
+        }
+    }
+    @objc private func pinched(_ gesture: UIPinchGestureRecognizer) {
+        guard gesture.state == .changed else { return }
+        zoom = min(2.5, max(0.6, zoom * gesture.scale))
+        gesture.scale = 1
+        updateGrid()
+        setNeedsDisplay()
     }
 
     // MARK: Drawing
@@ -83,58 +177,82 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
 
     override func draw(_ rect: CGRect) {
         guard let context = UIGraphicsGetCurrentContext() else { return }
-        let background = Self.color(screen?.background ?? 0x101421ff).withAlphaComponent(1)
+        let background = Self.color(screen?.background ?? 0x1014_21ff).withAlphaComponent(1)
         context.setFillColor(background.cgColor)
         context.fill(bounds)
         guard let screen, screen.cols > 0 else { return }
 
         let size = fittingFontSize
         let cell = cellSize(fontSize: size)
-        let regular = font(size: size)
-        let origin = CGPoint(x: max(0, (bounds.width - cell.width * CGFloat(screen.cols)) / 2), y: 0)
+        let origin = gridOrigin
         for (row, runs) in screen.lines.enumerated() {
             let y = origin.y + CGFloat(row) * cell.height
             guard y < rect.maxY, y + cell.height > rect.minY else { continue }
             for run in runs {
                 let frame = CGRect(
                     x: origin.x + CGFloat(run.col) * cell.width, y: y,
-                    width: CGFloat(run.cells) * cell.width, height: cell.height
-                )
+                    width: CGFloat(run.cells) * cell.width, height: cell.height)
                 if run.flags & CellRun.defaultBackground == 0 {
                     context.setFillColor(Self.color(run.bg).cgColor)
                     context.fill(frame)
                 }
-                guard run.text.contains(where: { $0 != " " }) else { continue }
-                let bold = run.flags & CellRun.bold != 0, italic = run.flags & CellRun.italic != 0
-                var attributes: [NSAttributedString.Key: Any] = [
-                    .font: bold || italic ? font(size: size, bold: bold, italic: italic) : regular,
-                    .foregroundColor: Self.color(run.fg),
-                ]
-                if run.flags & CellRun.underline != 0 { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
-                if run.flags & CellRun.strikethrough != 0 {
-                    attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
-                }
-                let scalars = Array(run.text.unicodeScalars)
-                if scalars.count == run.cells, scalars.allSatisfy(\.isASCII) {
-                    (run.text as NSString).draw(at: frame.origin, withAttributes: attributes)
-                } else if scalars.count == run.cells {
-                    // Fallback fonts can be wider than a cell: place each one.
-                    for (index, scalar) in scalars.enumerated() where scalar != " " {
-                        let point = CGPoint(x: frame.minX + CGFloat(index) * cell.width, y: y)
-                        (String(Character(scalar)) as NSString).draw(at: point, withAttributes: attributes)
+                if let data = run.glyphPNG {
+                    let key = data as NSData
+                    let image: UIImage? = Self.imageCache.object(forKey: key) ?? UIImage(data: data)
+                    if let image {
+                        Self.imageCache.totalCostLimit = 12 * 1024 * 1024
+                        Self.imageCache.setObject(
+                            image, forKey: key, cost: Int(image.size.width * image.size.height * 4))
+                        image.draw(in: frame)
                     }
                 } else {
-                    (run.text as NSString).draw(at: frame.origin, withAttributes: attributes)
+                    let scalars = Array(run.text.unicodeScalars)
+                    for (index, scalar) in scalars.prefix(run.cells).enumerated() where scalar != " " {
+                        // Every scalar starts at its own cell; a wide scalar owns the whole run.
+                        let span = scalars.count == 1 ? run.cells : 1
+                        let x = frame.minX + CGFloat(index) * cell.width
+                        let attributes: [NSAttributedString.Key: Any] = [
+                            .font: font(
+                                size: size, bold: run.flags & CellRun.bold != 0, italic: run.flags & CellRun.italic != 0
+                            ),
+                            .foregroundColor: Self.color(run.fg), .ligature: 0,
+                        ]
+                        let text = String(scalar) as NSString
+                        let measured = text.size(withAttributes: attributes)
+                        let width = CGFloat(span) * cell.width
+                        context.saveGState()
+                        context.clip(to: CGRect(x: x, y: y, width: width, height: cell.height))
+                        context.translateBy(x: x, y: y + max(0, (cell.height - measured.height) / 2))
+                        context.scaleBy(x: width / max(0.1, measured.width), y: 1)
+                        text.draw(at: .zero, withAttributes: attributes)
+                        context.restoreGState()
+                        if span > 1 { break }
+                    }
+                }
+                context.setFillColor(Self.color(run.fg).cgColor)
+                if run.flags & CellRun.underline != 0 {
+                    context.fill(
+                        CGRect(
+                            x: frame.minX, y: frame.maxY - max(1, size / 12), width: frame.width,
+                            height: max(1, size / 14)))
+                }
+                if run.flags & CellRun.strikethrough != 0 {
+                    context.fill(CGRect(x: frame.minX, y: frame.midY, width: frame.width, height: max(1, size / 14)))
                 }
             }
         }
-
         let cursor = screen.cursor
-        if cursor.visible, cursor.row < screen.rows, cursor.col < screen.cols {
-            let x = origin.x + CGFloat(cursor.col) * cell.width, y = origin.y + CGFloat(cursor.row) * cell.height
-            context.setFillColor(UIColor.white.withAlphaComponent(isFirstResponder ? 0.55 : 0.3).cgColor)
+        if cursor.visible,
+            cursorOn || !config.cursorBlink || !isFirstResponder || config.reduceMotion
+                || UIAccessibility.isReduceMotionEnabled, cursor.row >= 0, cursor.col >= 0, cursor.row < screen.rows,
+            cursor.col < screen.cols
+        {
+            let x = origin.x + CGFloat(cursor.col) * cell.width
+            let y = origin.y + CGFloat(cursor.row) * cell.height
+            context.setFillColor(
+                Self.color(config.cursorColor).withAlphaComponent(isFirstResponder ? 0.65 : 0.3).cgColor)
             switch cursor.style {
-            case "bar": context.fill(CGRect(x: x, y: y, width: max(1.5, cell.width / 6), height: cell.height))
+            case "bar": context.fill(CGRect(x: x, y: y, width: max(1, cell.width / 6), height: cell.height))
             case "underline": context.fill(CGRect(x: x, y: y + cell.height - 2, width: cell.width, height: 2))
             default: context.fill(CGRect(x: x, y: y, width: cell.width, height: cell.height))
             }
@@ -143,12 +261,45 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
 
     // MARK: Touch
 
-    @objc private func tapped() {
-        if isFirstResponder { resignFirstResponder() } else { becomeFirstResponder() }
+    @objc private func tapped(_ gesture: UITapGestureRecognizer) {
+        guard screen?.live == true else { return }
+        if mouseMode {
+            let point = position(gesture.location(in: self))
+            onMouse?(point.col, point.row, "press")
+            onMouse?(point.col, point.row, "release")
+        } else {
+            _ = becomeFirstResponder()
+        }
+    }
+    private func position(_ point: CGPoint) -> (col: Int, row: Int) {
+        let cell = cellSize(fontSize: fittingFontSize)
+        return (max(0, Int((point.x - gridOrigin.x) / cell.width)), max(0, Int((point.y - gridOrigin.y) / cell.height)))
+    }
+    @objc private func selectText(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began, let screen else { return }
+        let controller = UINavigationController(
+            rootViewController: TerminalTextController(text: screen.visibleText, copyOnSelect: config.copyOnSelect))
+        var responder: UIResponder? = self
+        while let next = responder?.next {
+            if let presenter = next as? UIViewController {
+                presenter.present(controller, animated: !config.reduceMotion)
+                break
+            }
+            responder = next
+        }
     }
 
     @objc private func panned(_ gesture: UIPanGestureRecognizer) {
-        let lineHeight = cellSize(fontSize: fittingFontSize).height
+        guard screen?.live == true else { return }
+        if mouseMode {
+            let point = position(gesture.location(in: self))
+            let action =
+                gesture.state == .began
+                ? "press" : (gesture.state == .ended || gesture.state == .cancelled ? "release" : "drag")
+            onMouse?(point.col, point.row, action)
+            return
+        }
+        let lineHeight = cellSize(fontSize: fittingFontSize).height / CGFloat(max(0.1, config.scrollMultiplier))
         scrollRemainder += gesture.translation(in: self).y
         gesture.setTranslation(.zero, in: self)
         let lines = Int(scrollRemainder / lineHeight)
@@ -181,7 +332,7 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
     var smartDashesType: UITextSmartDashesType = .no
     var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
     var keyboardAppearance: UIKeyboardAppearance = .dark
-    var keyboardType: UIKeyboardType = .asciiCapable
+    var keyboardType: UIKeyboardType = .default
     var returnKeyType: UIReturnKeyType = .default
 
     var hasText: Bool { true }
@@ -204,6 +355,8 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
     }
 
     func send(_ key: RemoteKey) {
+        guard screen?.live == true, screen?.exited == false else { return }
+        cursorOn = true
         var key = key
         if controlArmed {
             key.control = true
@@ -221,7 +374,7 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
     func toggleAlt() { altArmed.toggle() }
 
     func paste() {
-        guard let text = UIPasteboard.general.string, !text.isEmpty else { return }
+        guard screen?.live == true, let text = UIPasteboard.general.string, !text.isEmpty else { return }
         onPaste?(text)
     }
 
@@ -238,26 +391,42 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
 
     static func remoteKey(for key: UIKey) -> RemoteKey? {
         let flags = key.modifierFlags
-        let control = flags.contains(.control), alt = flags.contains(.alternate), shift = flags.contains(.shift)
-        let named: String? = switch key.keyCode {
-        case .keyboardUpArrow: "up"
-        case .keyboardDownArrow: "down"
-        case .keyboardLeftArrow: "left"
-        case .keyboardRightArrow: "right"
-        case .keyboardEscape: "escape"
-        case .keyboardHome: "home"
-        case .keyboardEnd: "end"
-        case .keyboardPageUp: "pageup"
-        case .keyboardPageDown: "pagedown"
-        case .keyboardDeleteForward: "delete"
-        case .keyboardTab where control || alt || shift: "tab"
-        default: nil
-        }
+        let control = flags.contains(.control)
+        let alt = flags.contains(.alternate)
+        let shift = flags.contains(.shift)
+        let named: String? =
+            switch key.keyCode {
+            case .keyboardUpArrow: "up"
+            case .keyboardDownArrow: "down"
+            case .keyboardLeftArrow: "left"
+            case .keyboardRightArrow: "right"
+            case .keyboardEscape: "escape"
+            case .keyboardHome: "home"
+            case .keyboardEnd: "end"
+            case .keyboardPageUp: "pageup"
+            case .keyboardPageDown: "pagedown"
+            case .keyboardF1: "f1"
+            case .keyboardF2: "f2"
+            case .keyboardF3: "f3"
+            case .keyboardF4: "f4"
+            case .keyboardF5: "f5"
+            case .keyboardF6: "f6"
+            case .keyboardF7: "f7"
+            case .keyboardF8: "f8"
+            case .keyboardF9: "f9"
+            case .keyboardF10: "f10"
+            case .keyboardF11: "f11"
+            case .keyboardF12: "f12"
+            case .keyboardDeleteForward: "delete"
+            case .keyboardTab where control || alt || shift: "tab"
+            default: nil
+            }
         if let named { return RemoteKey(key: named, control: control, alt: alt, shift: shift) }
         guard control || alt, !flags.contains(.command) else { return nil }
         let character = key.charactersIgnoringModifiers
         guard character.count == 1 else { return nil }
-        return RemoteKey(key: character.lowercased(), text: control ? nil : character, control: control, alt: alt, shift: shift)
+        return RemoteKey(
+            key: character.lowercased(), text: control ? nil : character, control: control, alt: alt, shift: shift)
     }
 }
 
@@ -292,20 +461,27 @@ final class KeyBar: UIInputView {
             stack.heightAnchor.constraint(equalToConstant: 34),
         ])
 
-        func button(_ title: String, symbol: String? = nil, label: String? = nil, action: @escaping (TerminalUIView) -> Void) -> UIButton {
+        func button(
+            _ title: String, symbol: String? = nil, label: String? = nil, action: @escaping (TerminalUIView) -> Void
+        ) -> UIButton {
             var config = UIButton.Configuration.gray()
             if let symbol {
-                config.image = UIImage(systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+                config.image = UIImage(
+                    systemName: symbol, withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+                )
             } else {
-                config.attributedTitle = AttributedString(title, attributes: .init([.font: UIFont.monospacedSystemFont(ofSize: 14, weight: .medium)]))
+                config.attributedTitle = AttributedString(
+                    title, attributes: .init([.font: UIFont.monospacedSystemFont(ofSize: 14, weight: .medium)]))
             }
             config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 10, bottom: 4, trailing: 10)
             config.cornerStyle = .medium
-            let button = UIButton(configuration: config, primaryAction: UIAction { [weak self] _ in
-                guard let terminal = self?.terminal else { return }
-                UIDevice.current.playInputClick()
-                action(terminal)
-            })
+            let button = UIButton(
+                configuration: config,
+                primaryAction: UIAction { [weak self] _ in
+                    guard let terminal = self?.terminal else { return }
+                    UIDevice.current.playInputClick()
+                    action(terminal)
+                })
             button.accessibilityLabel = label ?? title
             stack.addArrangedSubview(button)
             return button
@@ -322,8 +498,15 @@ final class KeyBar: UIInputView {
         for character in ["~", "|", "/", "-", "_", "\\", "`", "$", "*"] {
             _ = button(character) { $0.send(.text(character)) }
         }
+        for (title, key) in [("home", "home"), ("end", "end"), ("pg↑", "pageup"), ("pg↓", "pagedown"), ("⇧tab", "tab")]
+        {
+            _ = button(title) { $0.send(RemoteKey(key: key, shift: title == "⇧tab")) }
+        }
+        for number in 1...12 { _ = button("F\(number)") { $0.send(RemoteKey(key: "f\(number)")) } }
         _ = button("", symbol: "doc.on.clipboard", label: "Paste") { $0.paste() }
-        _ = button("", symbol: "keyboard.chevron.compact.down", label: "Hide keyboard") { _ = $0.resignFirstResponder() }
+        _ = button("", symbol: "keyboard.chevron.compact.down", label: "Hide keyboard") {
+            _ = $0.resignFirstResponder()
+        }
     }
 
     @available(*, unavailable)
@@ -350,6 +533,13 @@ struct TerminalViewRepresentable: UIViewRepresentable {
         view.onKey = { [weak link] key in link?.send(.key(stream: stream, key: key)) }
         view.onPaste = { [weak link] text in link?.send(.paste(stream: stream, text: text)) }
         view.onScroll = { [weak link] lines in link?.send(.scroll(stream: stream, lines: lines)) }
+        view.onMouse = { [weak link] col, row, action in
+            link?.send(.mouse(stream: stream, col: col, row: row, action: action))
+        }
+        view.onGridChange = { [weak link, weak screen] cols, rows in
+            guard screen?.fitted == true, link?.state == .connected else { return }
+            link?.send(.resize(stream: stream, cols: cols, rows: rows))
+        }
         view.screen = screen
         onReady?(view)
         DispatchQueue.main.async { _ = view.becomeFirstResponder() }
@@ -358,6 +548,36 @@ struct TerminalViewRepresentable: UIViewRepresentable {
 
     func updateUIView(_ view: TerminalUIView, context: Context) {
         if view.screen !== screen { view.screen = screen }
-        view.setNeedsDisplay()
+        view.updateGrid()
+    }
+}
+
+/// Native text selection with standard copy/share actions and optional copy on select.
+private final class TerminalTextController: UIViewController, UITextViewDelegate {
+    private let text: String
+    private let copyOnSelect: Bool
+    init(text: String, copyOnSelect: Bool) {
+        self.text = text
+        self.copyOnSelect = copyOnSelect
+        super.init(nibName: nil, bundle: nil)
+    }
+    @available(*, unavailable) required init?(coder: NSCoder) { fatalError() }
+    override func loadView() {
+        let textView = UITextView()
+        textView.text = text
+        textView.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.delegate = self
+        textView.textContainerInset = UIEdgeInsets(top: 16, left: 12, bottom: 16, right: 12)
+        view = textView
+        title = "Select Text"
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            systemItem: .done, primaryAction: UIAction { [weak self] _ in self?.dismiss(animated: true) })
+    }
+    func textViewDidChangeSelection(_ textView: UITextView) {
+        guard copyOnSelect, let range = textView.selectedTextRange, let text = textView.text(in: range), !text.isEmpty
+        else { return }
+        UIPasteboard.general.string = text
     }
 }

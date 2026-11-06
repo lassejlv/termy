@@ -36,6 +36,7 @@ public struct CellRun: Codable, Hashable, Sendable {
     /// 0xRRGGBBAA.
     public var fg: UInt32
     public var bg: UInt32
+    public var glyphPNG: Data? = nil
     public var flags: UInt8
 
     public static let bold: UInt8 = 1
@@ -55,20 +56,30 @@ public struct CellRun: Codable, Hashable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case col = "c", cells = "n", text = "s", fg = "f", bg = "b", flags = "a"
+        case col = "c"
+        case cells = "n"
+        case text = "s"
+        case fg = "f"
+        case bg = "b"
+        case flags = "a"
+        case glyphPNG = "g"
     }
 }
 
 public struct RowUpdate: Codable, Hashable, Sendable {
     public var row: Int
     public var runs: [CellRun]
+    public var wrapped: Bool? = nil
 
     public init(row: Int, runs: [CellRun]) {
         self.row = row
         self.runs = runs
     }
 
-    enum CodingKeys: String, CodingKey { case row = "r", runs = "u" }
+    enum CodingKeys: String, CodingKey {
+        case row = "r"
+        case runs = "u"
+    }
 }
 
 public struct RemoteCursor: Codable, Hashable, Sendable {
@@ -96,6 +107,8 @@ public struct RemoteFrame: Codable, Hashable, Sendable {
     public var cursor: RemoteCursor
     /// 0xRRGGBBAA of the default background, for padding around the grid.
     public var background: UInt32
+    public var displayOffset: Int? = nil
+    public var historySize: Int? = nil
 
     public init(
         stream: Int, cols: Int, rows: Int, full: Bool, updates: [RowUpdate], cursor: RemoteCursor, background: UInt32
@@ -129,6 +142,7 @@ public struct RemotePane: Codable, Hashable, Sendable, Identifiable {
 public struct RemoteSessionGroup: Codable, Hashable, Sendable, Identifiable {
     public struct Tab: Codable, Hashable, Sendable {
         public var title: String?
+        public var activePaneID: String? = nil
         public var paneIDs: [String]
 
         public init(title: String?, paneIDs: [String]) {
@@ -138,8 +152,9 @@ public struct RemoteSessionGroup: Codable, Hashable, Sendable, Identifiable {
     }
 
     public var name: String
+    public var windowID: String? = nil
     public var tabs: [Tab]
-    public var id: String { name }
+    public var id: String { (windowID ?? "") + ":" + name }
 
     public init(name: String, tabs: [Tab]) {
         self.name = name
@@ -171,6 +186,17 @@ public enum ClientMessage: Codable, Hashable, Sendable {
     /// Starts a new pane running the default shell.
     case createPane
     case closePane(paneID: String)
+    case createSession(name: String)
+    /// A pane anchors a stable session even if its name changes during the request.
+    case createTab(inSessionContaining: String)
+    case splitPane(paneID: String, horizontal: Bool)
+    case renameSession(containing: String, name: String)
+    case renameTab(containing: String, title: String)
+    case mouse(stream: Int, col: Int, row: Int, action: String)
+    case scrollToBottom(stream: Int)
+    case search(stream: Int, query: String)
+    case revealSearch(stream: Int, bufferRow: Int)
+
 }
 
 /// Host → phone.
@@ -183,10 +209,13 @@ public enum HostMessage: Codable, Hashable, Sendable {
     case bell(stream: Int)
     case created(paneID: String)
     case error(String)
+    case configuration(RemoteConfiguration)
+    case searchResults(stream: Int, matches: [RemoteSearchMatch])
+
 }
 
 public enum RemoteProtocol {
-    public static let version = 1
+    public static let version = 2
 }
 
 /// JSON, deflated when that saves space. The first byte says which.
@@ -200,7 +229,7 @@ public enum MessageCodec {
     public static func encode<T: Encodable>(_ value: T) throws -> Data {
         let json = try encoder.encode(value)
         if json.count > 512, let compressed = try? (json as NSData).compressed(using: .zlib) as Data,
-           compressed.count < json.count
+            compressed.count < json.count
         {
             return Data([1]) + compressed
         }
@@ -216,5 +245,31 @@ public enum MessageCodec {
             throw ChannelError.malformed
         }
         return try JSONDecoder().decode(type, from: body)
+    }
+}
+
+public struct RemoteSearchMatch: Codable, Hashable, Sendable {
+    public var row: Int
+    public var startCol: Int
+    public var endCol: Int
+    public var line: String
+    public init(row: Int, startCol: Int, endCol: Int, line: String) {
+        self.row = row
+        self.startCol = startCol
+        self.endCol = endCol
+        self.line = line
+    }
+}
+
+extension RemoteFrame {
+    /// Reject invalid dimensions/indices before allocating or drawing untrusted frames.
+    public var isValid: Bool {
+        (1...500).contains(cols) && (1...300).contains(rows) && updates.count <= rows
+            && updates.allSatisfy { update in
+                (0..<rows).contains(update.row) && update.runs.count <= cols
+                    && update.runs.allSatisfy {
+                        $0.col >= 0 && $0.cells > 0 && $0.col < cols && $0.cells <= cols - $0.col
+                    }
+            }
     }
 }
