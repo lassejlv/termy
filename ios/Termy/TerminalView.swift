@@ -62,16 +62,19 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
     }
     private func startBlinking() {
         blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
-            guard let self, self.window != nil, self.isFirstResponder, self.config.cursorBlink,
-                !self.config.reduceMotion, !UIAccessibility.isReduceMotionEnabled
-            else { return }
-            self.cursorOn.toggle()
-            guard let cursor = self.screen?.cursor else { return }
-            let cell = self.cellSize(fontSize: self.fittingFontSize)
-            self.setNeedsDisplay(
-                CGRect(
-                    x: self.gridOrigin.x + CGFloat(cursor.col) * cell.width,
-                    y: self.gridOrigin.y + CGFloat(cursor.row) * cell.height, width: cell.width, height: cell.height))
+            MainActor.assumeIsolated {
+                guard let self, self.window != nil, self.isFirstResponder, self.config.cursorBlink,
+                    !self.config.reduceMotion, !UIAccessibility.isReduceMotionEnabled
+                else { return }
+                self.cursorOn.toggle()
+                guard let cursor = self.screen?.cursor else { return }
+                let cell = self.cellSize(fontSize: self.fittingFontSize)
+                self.setNeedsDisplay(
+                    CGRect(
+                        x: self.gridOrigin.x + CGFloat(cursor.col) * cell.width,
+                        y: self.gridOrigin.y + CGFloat(cursor.row) * cell.height, width: cell.width, height: cell.height
+                    ))
+            }
         }
 
     }

@@ -1,5 +1,6 @@
 import AppKit
 import Termy
+import TermyAppKit
 import TermyRemoteKit
 
 /// Font files stay on the Mac. Only the visible non-ASCII glyphs are sent as
@@ -60,11 +61,12 @@ import TermyRemoteKit
                 context.strokePath()
             }
         } else {
-            var font =
-                NSFont(name: config.fontFamily, size: config.fontSize)
-                ?? NSFont.monospacedSystemFont(ofSize: config.fontSize, weight: .regular)
-            if flags & CellRun.bold != 0 { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
-            if flags & CellRun.italic != 0 { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
+            guard let codepoint = text.unicodeScalars.first?.value,
+                let resolved = TerminalGlyphFont.resolve(
+                    codepoint: codepoint, family: config.fontFamily,
+                    size: Float(config.fontSize), bold: flags & CellRun.bold != 0, italic: flags & CellRun.italic != 0)
+            else { return nil }
+            let font = resolved as NSFont
             let text = NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color])
             let size = text.size()
             text.draw(at: CGPoint(x: max(0, (width - size.width) / 2), y: max(0, (height - size.height) / 2)))

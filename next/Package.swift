@@ -38,6 +38,7 @@ let package = Package(
             name: "TermyRemoteHost",
             dependencies: [
                 .product(name: "Termy", package: "swift"),
+                .product(name: "TermyAppKit", package: "swift"),
                 .product(name: "TermyRemoteKit", package: "remote"),
             ],
             swiftSettings: [.swiftLanguageMode(.v5)]
