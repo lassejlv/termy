@@ -71,13 +71,18 @@ final class MobileController {
                 } else {
                     status = "Connecting to relay…"
                     c = try await RelayAPI(baseURL: relay).register(
-                        DeviceRegistration(
-                            name: Host.current().localizedName ?? "Mac", kind: .host, publicKey: identity.publicKey))
+                        try DeviceRegistration(
+                            name: Host.current().localizedName ?? "Mac", kind: .host, identity: identity))
                     saved[relay.absoluteString] = c
                     try store.save(saved, key: "registrations")
                 }
                 guard !Task.isCancelled, current == generation else { return }
-                do { devices = try await c.api.devices() } catch let e as RelayAPIError where e.status == 401 {
+                do {
+                    try await c.api.updateName(Host.current().localizedName ?? "Mac", identity: identity)
+                    devices = try localNames(try await c.api.devices(), relay: relay)
+                } catch let e
+                    as RelayAPIError where e.status == 401
+                {
                     saved[relay.absoluteString] = nil
                     try store.save(saved, key: "registrations")
                     throw e
@@ -106,8 +111,10 @@ final class MobileController {
                         do {
                             try await Task.sleep(for: .seconds(3))
                             try Task.checkCancellation()
-                            self?.devices = try await c.api.devices()
-                        } catch is CancellationError { return } catch { self?.error = error.localizedDescription }
+                            self?.devices = try self?.localNames(try await c.api.devices(), relay: relay) ?? []
+                        } catch is CancellationError { return } catch {
+                            self?.error = error.localizedDescription
+                        }
                     }
                 }
                 defer { refresh.cancel() }
@@ -162,7 +169,9 @@ final class MobileController {
             guard status.host.id == credentials.device.id,
                 status.host.publicKeyData == (try store.identity()).publicKey
             else { throw PairingError.invalidProof }
-            code = try PairingCode(status: status, relayURL: credentials.relayURL)
+            code = try PairingCode(
+                status: status, relayURL: credentials.relayURL,
+                hostName: Host.current().localizedName ?? "Mac")
             pairingBusy = false
             pairingTask = Task { [weak self] in
                 guard let self else { return }
@@ -174,8 +183,10 @@ final class MobileController {
                         let next = try await credentials.api.pairing(code.invitationID)
                         guard current == pairingGeneration else { return }
                         if next.client != nil {
-                            _ = try code.verify(next)
-                            pending = next
+                            let verified = try code.verify(next)
+                            var named = next
+                            named.client = verified.client
+                            pending = named
                             return
                         }
                     }
@@ -205,6 +216,9 @@ final class MobileController {
             var pins = try store.load([String: [UUID: Data]].self, key: "pins") ?? [:]
             pins[credentials.relayURL.absoluteString, default: [:]][verified.client.id] = verified.client.publicKeyData!
             try store.save(pins, key: "pins")
+            var names = try store.load([String: [UUID: RelayDevice]].self, key: "peerNames") ?? [:]
+            names[credentials.relayURL.absoluteString, default: [:]][verified.client.id] = verified.client
+            try store.save(names, key: "peerNames")
             try await credentials.api.approve(
                 code.invitationID, client: verified.client.id, initPacket: verified.initPacket, response: response)
             showPairing = false
@@ -223,6 +237,12 @@ final class MobileController {
         pending = nil
         pairingBusy = false
     }
+    private func localNames(_ peers: [RelayDevice], relay: URL) throws -> [RelayDevice] {
+        let saved = try store.load([String: [UUID: RelayDevice]].self, key: "peerNames") ?? [:]
+        return peers.map { peer in
+            peer.withLocalName(from: saved[relay.absoluteString]?[peer.id])
+        }
+    }
     func remove(_ device: RelayDevice) async {
         guard let credentials else { return }
         do {
@@ -230,6 +250,9 @@ final class MobileController {
             var pins = try store.load([String: [UUID: Data]].self, key: "pins") ?? [:]
             pins[credentials.relayURL.absoluteString]?[device.id] = nil
             try store.save(pins, key: "pins")
+            var names = try store.load([String: [UUID: RelayDevice]].self, key: "peerNames") ?? [:]
+            names[credentials.relayURL.absoluteString]?[device.id] = nil
+            try store.save(names, key: "peerNames")
             configure()
         } catch { self.error = error.localizedDescription }
     }

@@ -23,9 +23,21 @@ the Mac's encrypted handshake response against the key from the QR. Both
 sides pin the resulting peer key. Subsequent connections use `SecureChannel`
 in `remote/`, with fresh ephemeral keys and replay-resistant encrypted frames.
 
-The relay sees device names, public keys, pair relationships, connection times,
-and traffic sizes. It cannot read terminal content or input. A compromised
-relay can disrupt access but cannot substitute an identity in a valid QR
+Device names are sealed on the owning device with ChaCha20-Poly1305 and a
+separate HKDF-SHA256 key derived from its Keychain-held identity. Names are
+padded to 256 bytes and use random nonces. The database stores only versioned
+ciphertext; there is no server decryption key. During version-3 QR pairing,
+the phone name is separately encrypted using a domain-separated key from the
+QR secret, bound to the invitation and handshake. Its ciphertext is also
+included in the pairing HMAC. The Mac name travels in the QR directly, never
+through the relay. Readable peer names are cached in each app's Keychain and
+are never replaced with a relay-supplied name.
+
+The relay still sees random device IDs, public keys, device kinds, pair
+relationships, connection times, and traffic sizes. Bearer tokens are stored
+as one-way SHA-256 hashes. These routing/authentication fields are deliberately
+not described as end-to-end encrypted. It cannot read names, terminal content,
+or input sent by updated apps. A compromised relay can disrupt access but cannot substitute an identity in a valid QR
 pairing. Someone who sees an unexpired QR can request access; the Mac still
 requires explicit approval. Pair only on a trusted Mac screen.
 
@@ -51,8 +63,21 @@ The default public relay is **https://relay.termy.sh**, deployed on Unkey from
 `crates/relay/Dockerfile`. Keep production at **one replica**: the socket hub
 and registration limiter are in memory. Deploying this branch replaces the
 v1 account endpoints with v2 pairing endpoints. Existing apps need updating
-and re-pairing; migration `0002` preserves the old account tables for rollback.
-Do not edit migration `0001` or delete production account data during rollout.
+and re-pairing for the original v1 transition. Migration `0003` removes the
+plaintext device-name column and the retired v1 account tables (including
+emails/password hashes) while preserving all v2 device credentials and links.
+Updated apps republish their own encrypted name without re-registering.
+Existing iPhone-cached Mac names survive refresh; the Mac shows a generic
+phone label until paired again with both apps updated. New QR codes use
+version 3 and require updated apps on both sides. Old apps continue existing
+connections with generic relay labels; submitted legacy plaintext names are
+ignored and never stored. Rolling back to a pre-0003 server requires a schema
+restore and would reintroduce the old privacy exposure.
+
+Dropping columns/tables removes them from the live schema, not from historical
+backups, WAL, provider retention, or old database branches. Manage those copies
+through the database provider's retention policy; do not treat this migration
+as proof that historical plaintext has been physically erased.
 
 Configuration: `DATABASE_URL` (required), `HOST` (default `0.0.0.0`), `PORT`
 (default `8080`; `just relay` uses `8787`), and `RUST_LOG`.
@@ -97,20 +122,26 @@ trusted. Add stricter edge quotas if exposing a relay to a large audience.
 ## API
 
 Every route except registration and health requires the device's bearer token.
+Encrypted names are base64 envelopes: version `0x01`, 12-byte nonce, 256 bytes
+of padded ciphertext, and 16-byte authentication tag (285 bytes total).
+Device DTO `name` fields contain only generic `Mac`/`iPhone` compatibility labels.
+Legacy registrations/claims may omit ciphertext but never persist plaintext.
+
 Tokens are random 256-bit values, stored only as SHA-256 hashes on the server.
 Device private keys and credentials live in the clients' Keychain.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | GET | `/health` | Liveness |
-| POST | `/v2/devices` | Register `{name,kind,publicKey}` → `{token,device}` |
+| POST | `/v2/devices` | Register `{encryptedName,kind,publicKey}` → `{token,device}` |
 | GET | `/v2/devices` | Only this device's paired peers, with presence |
+| PUT | `/v2/device` | Replace this device’s encrypted name `{encryptedName}` |
 | DELETE | `/v2/device` | Delete this registration and all its links |
 | DELETE | `/v2/links/{peer}` | Revoke one phone–Mac link |
 | POST | `/v2/pairings` | Host creates an expiring invitation |
 | GET | `/v2/pairings/{id}` | Host or claiming phone polls status |
 | DELETE | `/v2/pairings/{id}` | Host cancels an unapproved invitation |
-| POST | `/v2/pairings/{id}/claim` | Phone submits `{initPacket,proof}` (base64) |
+| POST | `/v2/pairings/{id}/claim` | Phone submits `{initPacket,proof,encryptedClientName}` (base64) |
 | POST | `/v2/pairings/{id}/approve` | Host submits `{clientId,initPacket,responsePacket}` |
 | GET | `/v2/relay` | Authenticated WebSocket |
 
@@ -127,11 +158,16 @@ approval, retries, revocation, isolation and device deletion).
 
 ```sh
 # Use an isolated branch/database and a direct (non-pooler) connection.
-TEST_DATABASE_URL=postgresql://… cargo test -p termy_relay --features integration-tests pairing_api_lifecycle
+RELAY_SWIFT_E2E=1 TEST_DATABASE_URL=postgresql://… cargo test -p termy_relay --features integration-tests pairing_api_lifecycle
 just test-remote
 # With a local relay backed by an isolated database and the staged Swift SDK:
 RELAY_TEST_URL=http://127.0.0.1:8787 swift test --package-path next --filter RemoteHostTests
 ```
+
+`RELAY_SWIFT_E2E=1` additionally starts a local relay on a random loopback port
+inside the isolated test schema and invokes the Swift host integration test.
+The migration test seeds the former schema with private names and account
+records, applies `0003`, checks removal, and verifies current links still work.
 
 The opt-in host test uses disposable devices and a private session host. It
 pairs through the real API, establishes an encrypted socket channel, creates a

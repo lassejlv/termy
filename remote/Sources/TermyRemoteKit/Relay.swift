@@ -11,6 +11,7 @@ public enum DeviceKind: String, Codable, Sendable {
 
 public struct RelayDevice: Codable, Hashable, Sendable, Identifiable {
     public var id: UUID
+    /// A local display name. Relay responses contain generic compatibility labels only.
     public var name: String
     public var kind: DeviceKind
     /// Base64 X25519 public key.
@@ -19,19 +20,28 @@ public struct RelayDevice: Codable, Hashable, Sendable, Identifiable {
     public var createdAt: Date
     public var lastSeenAt: Date?
 
+    /// Discovery must never replace an authenticated local name with relay-controlled text.
+    public func withLocalName(from cached: RelayDevice?) -> Self {
+        var device = self
+        device.name = cached.flatMap {
+            $0.id == id && $0.publicKey == publicKey ? $0.name : nil
+        } ?? (kind == .host ? "Mac" : "iPhone")
+        return device
+    }
+
     public var publicKeyData: Data? { Data(base64Encoded: publicKey) }
     public var fingerprint: String { publicKeyData.map(Fingerprint.of) ?? "?" }
 }
 
 public struct DeviceRegistration: Codable, Sendable {
-    public var name: String
+    public var encryptedName: Data
     public var kind: DeviceKind
     public var publicKey: String
 
-    public init(name: String, kind: DeviceKind, publicKey: Data) {
-        self.name = name
+    public init(name: String, kind: DeviceKind, identity: DeviceIdentity) throws {
+        encryptedName = try PrivateMetadata.sealName(name, identity: identity)
         self.kind = kind
-        self.publicKey = publicKey.base64EncodedString()
+        publicKey = identity.publicKey.base64EncodedString()
     }
 }
 
@@ -58,6 +68,7 @@ public struct PairingStatus: Codable, Sendable {
     public var initPacket: Data?
     public var proof: Data?
     public var responsePacket: Data?
+    public var encryptedClientName: Data? = nil
 }
 public struct RelayAPIError: Error, LocalizedError, Sendable {
     public var status: Int
@@ -76,6 +87,12 @@ public struct RelayAPI: Sendable {
         let r: DeviceRegistrationResponse = try await request("POST", "v2/devices", body: device)
         return DeviceCredentials(relayURL: baseURL, token: r.token, device: r.device)
     }
+    public func updateName(_ name: String, identity: DeviceIdentity) async throws {
+        struct Update: Encodable { var encryptedName: Data }
+        let _: Empty = try await request(
+            "PUT", "v2/device",
+            body: Update(encryptedName: PrivateMetadata.sealName(name, identity: identity)))
+    }
     public func devices() async throws -> [RelayDevice] { try await request("GET", "v2/devices") }
     public func removeDevice(_ id: UUID) async throws {
         let _: Empty = try await request("DELETE", "v2/links/\(id)")
@@ -89,10 +106,14 @@ public struct RelayAPI: Sendable {
     private struct Claim: Encodable {
         var initPacket: Data
         var proof: Data
+        var encryptedClientName: Data
     }
-    public func claim(_ id: UUID, initPacket: Data, proof: Data) async throws {
+    public func claim(_ id: UUID, initPacket: Data, proof: Data, encryptedClientName: Data)
+        async throws
+    {
         let _: Empty = try await request(
-            "POST", "v2/pairings/\(id)/claim", body: Claim(initPacket: initPacket, proof: proof))
+            "POST", "v2/pairings/\(id)/claim",
+            body: Claim(initPacket: initPacket, proof: proof, encryptedClientName: encryptedClientName))
     }
     private struct Approval: Encodable {
         var clientId: UUID

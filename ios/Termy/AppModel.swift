@@ -74,16 +74,21 @@ final class AppModel {
             profile = existing
         } else {
             let credentials = try await RelayAPI(baseURL: code.relayURL).register(
-                DeviceRegistration(name: UIDevice.current.name, kind: .client, publicKey: identity.publicKey))
+                try DeviceRegistration(name: UIDevice.current.name, kind: .client, identity: identity))
             profile = Profile(credentials: credentials)
             profiles[relayKey] = profile
             try persist()
         }
         let handshake = SecureChannel.startClient(identity: identity, hostStaticKey: code.hostKey)
+        let encryptedName = try code.sealClientName(
+            UIDevice.current.name, initPacket: handshake.initPacket)
         try Task.checkCancellation()
         do {
+            try await profile.credentials.api.updateName(UIDevice.current.name, identity: identity)
             try await profile.credentials.api.claim(
-                code.invitationID, initPacket: handshake.initPacket, proof: code.proof(for: handshake.initPacket))
+                code.invitationID, initPacket: handshake.initPacket,
+                proof: code.proof(for: handshake.initPacket, encryptedClientName: encryptedName),
+                encryptedClientName: encryptedName)
         } catch let e as RelayAPIError where e.status == 401 {
             // An explicitly removed registration cannot be recovered; register a new device and re-pair.
             profiles[relayKey] = nil
@@ -109,6 +114,7 @@ final class AppModel {
                 profile.pins[code.hostID] = code.hostKey
                 profile.hosts.removeAll { $0.id == code.hostID }
                 var host = status.host
+                host.name = code.hostName
                 host.online = false
                 profile.hosts.append(host)
                 profiles[relayKey] = profile
@@ -146,6 +152,7 @@ final class AppModel {
         guard let original = profiles[k] else { return }
         let revision = revisions[k]
         do {
+            try await original.credentials.api.updateName(UIDevice.current.name, identity: identity)
             let peers = try await original.credentials.api.devices()
             guard !Task.isCancelled, revisions[k] == revision, var profile = profiles[k],
                 profile.credentials.token == original.credentials.token
@@ -156,7 +163,10 @@ final class AppModel {
                 profile.pins[id] = nil
                 links[id]?.presenceChanged(online: false)
             }
-            profile.hosts = peers.filter { $0.kind == .host && profile.pins[$0.id] != nil }
+            let names = Dictionary(uniqueKeysWithValues: profile.hosts.map { ($0.id, $0) })
+            profile.hosts = peers.filter { $0.kind == .host && profile.pins[$0.id] != nil }.map { peer in
+                peer.withLocalName(from: names[peer.id])
+            }
             profiles[k] = profile
             revisions[k] = UUID()
             try persist()

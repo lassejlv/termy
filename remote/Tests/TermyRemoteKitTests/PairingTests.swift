@@ -17,11 +17,16 @@ import Testing
         var status = PairingStatus(
             id: UUID(), expiresAt: Date().addingTimeInterval(120), host: h, client: nil, initPacket: nil, proof: nil,
             responsePacket: nil)
-        let code = try PairingCode(status: status, relayURL: URL(string: "https://my-vps.example/relay")!)
+        let code = try PairingCode(
+            status: status, relayURL: URL(string: "https://my-vps.example/relay")!,
+            hostName: "Private Mac")
         let handshake = SecureChannel.startClient(identity: phone, hostStaticKey: host.publicKey)
         status.client = c
         status.initPacket = handshake.initPacket
-        status.proof = code.proof(for: handshake.initPacket)
+        status.encryptedClientName = try code.sealClientName(
+            "Private iPhone", initPacket: handshake.initPacket)
+        status.proof = code.proof(
+            for: handshake.initPacket, encryptedClientName: status.encryptedClientName!)
         return (code, status, handshake, host)
     }
     @Test func qrRoundTripAndAuthenticatedApproval() throws {
@@ -30,6 +35,7 @@ import Testing
         #expect(scanned.relayURL == code.relayURL)
         #expect(scanned.secret == code.secret)
         let verified = try scanned.verify(status)
+        #expect(verified.client.name == "Private iPhone")
         let (_, response) = try SecureChannel.respond(identity: host, initPacket: verified.initPacket)
         #expect(response.count == 59)
         _ = try handshake.finish(response)
@@ -48,8 +54,15 @@ import Testing
         altered = original
         altered.initPacket![1] ^= 1
         #expect(throws: (any Error).self) { try code.verify(altered) }
+        altered = original
+        altered.encryptedClientName![40] ^= 1
+        #expect(throws: (any Error).self) { try code.verify(altered) }
+        altered = original
+        altered.encryptedClientName = nil
+        #expect(throws: (any Error).self) { try code.verify(altered) }
         // Another invite has another secret even for the same Mac/device IDs.
-        let otherCode = try PairingCode(status: original, relayURL: code.relayURL)
+        let otherCode = try PairingCode(
+            status: original, relayURL: code.relayURL, hostName: "Private Mac")
         #expect(throws: (any Error).self) { try otherCode.verify(original) }
     }
     @Test func rejectsExpiredAndUntrustedTransportURLs() throws {

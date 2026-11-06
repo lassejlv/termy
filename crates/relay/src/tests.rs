@@ -40,7 +40,7 @@ async fn register(app: &Router, kind: &str) -> Value {
         "POST",
         "/v2/devices",
         None,
-        json!({"name":kind,"kind":kind,"publicKey":STANDARD.encode([42u8;32])}),
+        json!({"name":"Legacy plaintext must be ignored","encryptedName":STANDARD.encode([1u8;285]),"kind":kind,"publicKey":STANDARD.encode([42u8;32])}),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -77,16 +77,98 @@ async fn pairing_api_lifecycle() {
         .connect(&url)
         .await
         .unwrap();
-    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    for migration in [
+        include_str!("../migrations/0001_init.sql"),
+        include_str!("../migrations/0002_device_pairing.sql"),
+    ] {
+        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+    }
+    let legacy_user: Uuid = sqlx::query_scalar("INSERT INTO users(email,password_hash) VALUES('private@example.com','retired-hash') RETURNING id").fetch_one(&pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO devices(user_id,name,kind,public_key) VALUES($1,'Private old Mac','host',$2)",
+    )
+    .bind(legacy_user)
+    .bind([4u8; 32].as_slice())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let preserved: Uuid = sqlx::query_scalar("INSERT INTO remote_devices(name,kind,public_key,token_hash) VALUES('Private current Mac','host',$1,$2) RETURNING id").bind([5u8;32].as_slice()).bind([6u8;32].as_slice()).fetch_one(&pool).await.unwrap();
+    let preserved_client: Uuid = sqlx::query_scalar("INSERT INTO remote_devices(name,kind,public_key,token_hash) VALUES('Private current phone','client',$1,$2) RETURNING id").bind([7u8;32].as_slice()).bind([8u8;32].as_slice()).fetch_one(&pool).await.unwrap();
+    sqlx::query("INSERT INTO remote_links(host_id,client_id) VALUES($1,$2)")
+        .bind(preserved)
+        .bind(preserved_client)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(include_str!("../migrations/0003_private_metadata.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let private_columns: i64 = sqlx::query_scalar("SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND (column_name IN ('name','email','password_hash') OR table_name IN ('users','sessions','devices'))").fetch_one(&pool).await.unwrap();
+    assert_eq!(private_columns, 0);
+    assert_eq!(
+        db::Db::new(pool.clone()).peers(preserved).await.unwrap()[0].id,
+        preserved_client
+    );
+    assert_eq!(
+        db::Db::new(pool.clone())
+            .authenticate(&[6u8; 32])
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        preserved
+    );
+
     let app = api::router(AppState {
         db: db::Db::new(pool.clone()),
         hub: Arc::new(hub::Hub::default()),
         gate: Arc::new(tokio::sync::Mutex::new(())),
         limiter: Arc::new(api::AttemptLimiter::default()),
     });
+    // Optionally exercise the real Swift host + encrypted terminal over this
+    // isolated schema. No deployed relay or production registrations are used.
+    if std::env::var_os("RELAY_SWIFT_E2E").is_some() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_app = app.clone();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                server_app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let result = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("swift")
+                .args([
+                    "test",
+                    "--package-path",
+                    "../../next",
+                    "--filter",
+                    "RemoteHostTests",
+                ])
+                .env("RELAY_TEST_URL", format!("http://{address}"))
+                .status()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        server.abort();
+        assert!(result.success());
+    }
     let host = register(&app, "host").await;
     let client = register(&app, "client").await;
     let stranger = register(&app, "client").await;
+    assert_eq!(host["device"]["name"], "Mac");
+    let stored: Vec<u8> =
+        sqlx::query_scalar("SELECT encrypted_name FROM remote_devices WHERE id=$1")
+            .bind(Uuid::parse_str(host["device"]["id"].as_str().unwrap()).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored, vec![1u8; 285]);
     let ht = host["token"].as_str().unwrap();
     let ct = client["token"].as_str().unwrap();
     let st = stranger["token"].as_str().unwrap();
@@ -112,7 +194,7 @@ async fn pairing_api_lifecycle() {
     let mut init = vec![1u8];
     init.extend([7u8; 32]);
     init.extend([42u8; 32]);
-    let claim = json!({"initPacket":STANDARD.encode(&init),"proof":STANDARD.encode([8u8;32])});
+    let claim = json!({"initPacket":STANDARD.encode(&init),"proof":STANDARD.encode([8u8;32]),"encryptedClientName":STANDARD.encode([1u8;285])});
     assert_eq!(
         request(
             &app,
@@ -145,6 +227,47 @@ async fn pairing_api_lifecycle() {
     );
     let (_, pending) = request(&app, "GET", &path, Some(ht), json!({})).await;
     assert_eq!(pending["client"]["id"], cid);
+    assert_eq!(pending["client"]["name"], "iPhone");
+    assert_eq!(pending["encryptedClientName"], STANDARD.encode([1u8; 285]));
+    let mut changed_name = [1u8; 285];
+    changed_name[40] = 2;
+    let changed_claim = json!({"initPacket":STANDARD.encode(&init),"proof":STANDARD.encode([8u8;32]),"encryptedClientName":STANDARD.encode(changed_name)});
+    assert_eq!(
+        request(
+            &app,
+            "POST",
+            &format!("{path}/claim"),
+            Some(ct),
+            changed_claim
+        )
+        .await
+        .0,
+        StatusCode::GONE
+    );
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            "/v2/device",
+            Some(ct),
+            json!({"encryptedName":"plaintext"})
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        request(
+            &app,
+            "PUT",
+            "/v2/device",
+            Some(ct),
+            json!({"encryptedName":STANDARD.encode([1u8;285])})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
     assert_eq!(
         request(&app, "GET", "/v2/devices", Some(ht), json!({}))
             .await

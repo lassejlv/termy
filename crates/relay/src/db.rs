@@ -9,7 +9,6 @@ pub struct Db {
 #[derive(sqlx::FromRow, Clone)]
 pub struct Device {
     pub id: Uuid,
-    pub name: String,
     pub kind: String,
     pub public_key: Vec<u8>,
     pub created_at: DateTime<Utc>,
@@ -23,6 +22,7 @@ pub struct Pairing {
     pub init_packet: Option<Vec<u8>>,
     pub proof: Option<Vec<u8>>,
     pub response_packet: Option<Vec<u8>>,
+    pub encrypted_client_name: Option<Vec<u8>>,
     pub expires_at: DateTime<Utc>,
 }
 impl Db {
@@ -30,15 +30,19 @@ impl Db {
         Self { pool }
     }
     pub async fn device(&self, id: Uuid) -> sqlx::Result<Device> {
-        sqlx::query_as("SELECT id,name,kind,public_key,created_at,last_seen_at FROM remote_devices WHERE id=$1")
-            .bind(id).fetch_one(&self.pool).await
+        sqlx::query_as(
+            "SELECT id,kind,public_key,created_at,last_seen_at FROM remote_devices WHERE id=$1",
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await
     }
     pub async fn authenticate(&self, hash: &[u8]) -> sqlx::Result<Option<Device>> {
-        sqlx::query_as("SELECT id,name,kind,public_key,created_at,last_seen_at FROM remote_devices WHERE token_hash=$1")
+        sqlx::query_as("SELECT id,kind,public_key,created_at,last_seen_at FROM remote_devices WHERE token_hash=$1")
             .bind(hash).fetch_optional(&self.pool).await
     }
     pub async fn peers(&self, id: Uuid) -> sqlx::Result<Vec<Device>> {
-        sqlx::query_as("SELECT d.id,d.name,d.kind,d.public_key,d.created_at,d.last_seen_at FROM remote_devices d JOIN remote_links l ON (l.host_id=$1 AND l.client_id=d.id) OR (l.client_id=$1 AND l.host_id=d.id) ORDER BY d.created_at")
+        sqlx::query_as("SELECT d.id,d.kind,d.public_key,d.created_at,d.last_seen_at FROM remote_devices d JOIN remote_links l ON (l.host_id=$1 AND l.client_id=d.id) OR (l.client_id=$1 AND l.host_id=d.id) ORDER BY d.created_at")
             .bind(id).fetch_all(&self.pool).await
     }
     pub async fn pairing(&self, id: Uuid) -> sqlx::Result<Option<Pairing>> {

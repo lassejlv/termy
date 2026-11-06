@@ -14,14 +14,19 @@ import Testing
         let hostIdentity = DeviceIdentity()
         let phoneIdentity = DeviceIdentity()
         let host = try await RelayAPI(baseURL: url).register(
-            DeviceRegistration(name: "Test Mac", kind: .host, publicKey: hostIdentity.publicKey))
+            try DeviceRegistration(name: "Test Mac", kind: .host, identity: hostIdentity))
         let phone = try await RelayAPI(baseURL: url).register(
-            DeviceRegistration(name: "Test iPhone", kind: .client, publicKey: phoneIdentity.publicKey))
+            try DeviceRegistration(name: "Test iPhone", kind: .client, identity: phoneIdentity))
         let invitation = try await host.api.createPairing()
-        let qr = try PairingCode.parse(PairingCode(status: invitation, relayURL: url).text)
-        let initHandshake = SecureChannel.startClient(identity: phoneIdentity, hostStaticKey: qr.hostKey)
+        let qr = try PairingCode.parse(
+            PairingCode(status: invitation, relayURL: url, hostName: "Test Mac").text)
+        let initHandshake = SecureChannel.startClient(
+            identity: phoneIdentity, hostStaticKey: qr.hostKey)
+        let encryptedName = try qr.sealClientName("Test iPhone", initPacket: initHandshake.initPacket)
         try await phone.api.claim(
-            qr.invitationID, initPacket: initHandshake.initPacket, proof: qr.proof(for: initHandshake.initPacket))
+            qr.invitationID, initPacket: initHandshake.initPacket,
+            proof: qr.proof(for: initHandshake.initPacket, encryptedClientName: encryptedName),
+            encryptedClientName: encryptedName)
         let pending = try await host.api.pairing(qr.invitationID)
         let verified = try qr.verify(pending)
         #expect(try await host.api.devices().isEmpty)

@@ -35,7 +35,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v2/devices", post(register).get(devices))
-        .route("/v2/device", delete(delete_self))
+        .route("/v2/device", delete(delete_self).put(update_name))
         .route("/v2/links/{id}", delete(unpair))
         .route("/v2/pairings", post(create_pairing))
         .route("/v2/pairings/{id}", get(pairing).delete(cancel_pairing))
@@ -72,7 +72,7 @@ impl AttemptLimiter {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Registration {
-    name: String,
+    encrypted_name: Option<String>,
     kind: String,
     public_key: String,
 }
@@ -94,7 +94,7 @@ async fn dto(state: &AppState, d: Device) -> DeviceDto {
     DeviceDto {
         id: d.id,
         online: state.hub.is_online(d.id).await,
-        name: d.name,
+        name: if d.kind == "host" { "Mac" } else { "iPhone" }.to_owned(),
         kind: d.kind,
         public_key: STANDARD.encode(d.public_key),
         created_at: date(d.created_at),
@@ -145,19 +145,48 @@ async fn register(
         return Err(ApiError::bad_request("Unknown device kind."));
     }
     let key = bytes(&body.public_key, 32)?;
-    let name = body.name.trim().chars().take(80).collect::<String>();
-    if name.is_empty() {
-        return Err(ApiError::bad_request("Give this device a name."));
-    }
+    let encrypted_name = body
+        .encrypted_name
+        .as_deref()
+        .map(sealed_name)
+        .transpose()?;
     let mut raw = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut raw);
     let token = URL_SAFE_NO_PAD.encode(raw);
-    let d=sqlx::query_as::<_,Device>("INSERT INTO remote_devices(name,kind,public_key,token_hash) VALUES($1,$2,$3,$4) RETURNING id,name,kind,public_key,created_at,last_seen_at")
-        .bind(name).bind(body.kind).bind(key).bind(hash(&token)).fetch_one(&state.db.pool).await?;
+    let d=sqlx::query_as::<_,Device>("INSERT INTO remote_devices(encrypted_name,kind,public_key,token_hash) VALUES($1,$2,$3,$4) RETURNING id,kind,public_key,created_at,last_seen_at")
+        .bind(encrypted_name).bind(body.kind).bind(key).bind(hash(&token)).fetch_one(&state.db.pool).await?;
     Ok(Json(Registered {
         token,
         device: dto(&state, d).await,
     }))
+}
+// A name envelope is: version byte + random 12-byte nonce + 256 padded bytes + tag.
+fn sealed_name(s: &str) -> ApiResult<Vec<u8>> {
+    let value = bytes(s, 285)?;
+    if value[0] != 1 {
+        return Err(ApiError::bad_request(
+            "Unsupported private metadata format.",
+        ));
+    }
+    Ok(value)
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NameUpdate {
+    encrypted_name: String,
+}
+async fn update_name(
+    State(state): State<AppState>,
+    Authed(d): Authed,
+    Json(body): Json<NameUpdate>,
+) -> ApiResult<Json<Empty>> {
+    let encrypted_name = sealed_name(&body.encrypted_name)?;
+    sqlx::query("UPDATE remote_devices SET encrypted_name=$2 WHERE id=$1")
+        .bind(d.id)
+        .bind(encrypted_name)
+        .execute(&state.db.pool)
+        .await?;
+    Ok(Json(Empty {}))
 }
 struct Authed(Device);
 impl FromRequestParts<AppState> for Authed {
@@ -225,6 +254,7 @@ struct PairingDto {
     init_packet: Option<String>,
     proof: Option<String>,
     response_packet: Option<String>,
+    encrypted_client_name: Option<String>,
 }
 async fn pairing_dto(state: &AppState, p: crate::db::Pairing) -> ApiResult<PairingDto> {
     Ok(PairingDto {
@@ -238,6 +268,7 @@ async fn pairing_dto(state: &AppState, p: crate::db::Pairing) -> ApiResult<Pairi
         init_packet: p.init_packet.map(|b| STANDARD.encode(b)),
         proof: p.proof.map(|b| STANDARD.encode(b)),
         response_packet: p.response_packet.map(|b| STANDARD.encode(b)),
+        encrypted_client_name: p.encrypted_client_name.map(|b| STANDARD.encode(b)),
     })
 }
 async fn create_pairing(
@@ -273,6 +304,7 @@ async fn pairing(
 struct Claim {
     init_packet: String,
     proof: String,
+    encrypted_client_name: Option<String>,
 }
 async fn claim(
     State(state): State<AppState>,
@@ -285,13 +317,18 @@ async fn claim(
     }
     let init = bytes(&body.init_packet, 65)?;
     let proof = bytes(&body.proof, 32)?;
+    let encrypted_name = body
+        .encrypted_client_name
+        .as_deref()
+        .map(sealed_name)
+        .transpose()?;
     if init[0] != 1 || init[33..] != d.public_key {
         return Err(ApiError::bad_request(
             "The pairing identity does not match this device.",
         ));
     }
-    let changed=sqlx::query("UPDATE remote_pairings SET client_id=$2,init_packet=$3,proof=$4 WHERE id=$1 AND expires_at>now() AND response_packet IS NULL AND (client_id IS NULL OR (client_id=$2 AND init_packet=$3 AND proof=$4))")
-        .bind(id).bind(d.id).bind(init).bind(proof).execute(&state.db.pool).await?;
+    let changed=sqlx::query("UPDATE remote_pairings SET client_id=$2,init_packet=$3,proof=$4,encrypted_client_name=$5 WHERE id=$1 AND expires_at>now() AND response_packet IS NULL AND (client_id IS NULL OR (client_id=$2 AND init_packet=$3 AND proof=$4 AND encrypted_client_name IS NOT DISTINCT FROM $5))")
+        .bind(id).bind(d.id).bind(init).bind(proof).bind(encrypted_name).execute(&state.db.pool).await?;
     if changed.rows_affected() != 1 {
         return Err(gone());
     }

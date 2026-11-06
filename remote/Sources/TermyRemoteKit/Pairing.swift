@@ -24,13 +24,15 @@ public struct PairingCode: Codable, Sendable {
     public let secret: Data
     public let expiresAt: Date
 
-    public init(status: PairingStatus, relayURL: URL) throws {
-        self.version = 2
+    public init(status: PairingStatus, relayURL: URL, hostName: String) throws {
+        self.version = 3
         self.relayURL = try RelayAddress.validate(relayURL)
         invitationID = status.id
         hostID = status.host.id
-        hostName = status.host.name
-        guard let key = status.host.publicKeyData, key.count == 32 else { throw PairingError.invalidCode }
+        self.hostName = hostName
+        guard let key = status.host.publicKeyData, key.count == 32 else {
+            throw PairingError.invalidCode
+        }
         hostKey = key
         expiresAt = status.expiresAt
         secret = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
@@ -51,8 +53,9 @@ public struct PairingCode: Codable, Sendable {
         else { throw PairingError.invalidCode }
         var b64 = raw.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         b64 += String(repeating: "=", count: (4 - b64.count % 4) % 4)
-        guard let data = Data(base64Encoded: b64), let code = try? JSONDecoder().decode(Self.self, from: data),
-            code.version == 2, code.hostKey.count == 32, code.secret.count == 32, !code.hostName.isEmpty
+        guard let data = Data(base64Encoded: b64),
+            let code = try? JSONDecoder().decode(Self.self, from: data),
+            code.version == 3, code.hostKey.count == 32, code.secret.count == 32, !code.hostName.isEmpty
         else { throw PairingError.invalidCode }
         _ = try RelayAddress.validate(code.relayURL)
         guard code.expiresAt > now, code.expiresAt.timeIntervalSince(now) <= 180 else { throw PairingError.expired }
@@ -60,20 +63,33 @@ public struct PairingCode: Codable, Sendable {
     }
     private func transcript(_ initPacket: Data) -> Data {
         Data(
-            "termy-pair-v2|\(invitationID.uuidString.lowercased())|\(hostID.uuidString.lowercased())|\(relayURL.absoluteString)|"
+            "termy-pair-v3|\(invitationID.uuidString.lowercased())|\(hostID.uuidString.lowercased())|\(relayURL.absoluteString)|"
                 .utf8) + hostKey + initPacket
     }
-    public func proof(for initPacket: Data) -> Data {
-        Data(HMAC<SHA256>.authenticationCode(for: transcript(initPacket), using: SymmetricKey(data: secret)))
+    private var nameKey: SymmetricKey {
+        HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: SymmetricKey(data: secret), salt: hostKey,
+            info: Data("termy-pairing-name-v3".utf8), outputByteCount: 32)
+    }
+    public func sealClientName(_ name: String, initPacket: Data) throws -> Data {
+        try PrivateMetadata.seal(name, key: nameKey, context: transcript(initPacket))
+    }
+    public func proof(for initPacket: Data, encryptedClientName: Data) -> Data {
+        Data(
+            HMAC<SHA256>.authenticationCode(
+                for: transcript(initPacket) + encryptedClientName, using: SymmetricKey(data: secret)))
     }
     public func verify(_ status: PairingStatus) throws -> (client: RelayDevice, initPacket: Data) {
         guard status.id == invitationID, status.host.id == hostID, status.host.publicKeyData == hostKey,
-            let client = status.client, client.kind == .client, let key = client.publicKeyData,
+            var client = status.client, client.kind == .client, let key = client.publicKeyData,
             let packet = status.initPacket, let proof = status.proof,
+            let encryptedName = status.encryptedClientName,
             try SecureChannel.clientStaticKey(inInit: packet) == key,
             HMAC<SHA256>.isValidAuthenticationCode(
-                proof, authenticating: transcript(packet), using: SymmetricKey(data: secret))
+                proof, authenticating: transcript(packet) + encryptedName, using: SymmetricKey(data: secret)
+            )
         else { throw PairingError.invalidProof }
+        client.name = try PrivateMetadata.open(encryptedName, key: nameKey, context: transcript(packet))
         return (client, packet)
     }
 }
