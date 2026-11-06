@@ -16,6 +16,7 @@ struct MobileProtocolTests {
             #expect(try MessageCodec.decode(HostMessage.self, from: MessageCodec.encode(message)) == message)
         }
         let commands: [ClientMessage] = [
+            .clientHello(version: 2),
             .createSession(name: "Work"), .createTab(inSessionContaining: "pane"),
             .splitPane(paneID: "pane", horizontal: true), .renameSession(containing: "pane", name: "Other"),
             .mouse(stream: 1, col: 2, row: 3, action: "press"), .search(stream: 1, query: "hello"),

@@ -61,9 +61,16 @@ import Testing
                 agent.stop()
             }
             let client = TestPhone(credentials: phone, host: host.device, identity: phoneIdentity)
+            client.negotiateConfiguration = false
             client.start()
             defer { client.stop() }
             try await eventually { client.channel != nil }
+            try client.send(.listSessions)
+            try await eventually { client.sessionResponses > 0 }
+            try await Task.sleep(for: .milliseconds(2200))
+            #expect(client.configuration == nil)  // Version-1 phones receive no unknown config messages.
+            client.negotiateConfiguration = true
+            try client.send(.clientHello(version: RemoteProtocol.version))
             try await eventually { client.configuration?.fontSize == 14 }
             try client.send(.createSession(name: "Mobile Work"))
             try await eventually { client.createdPane != nil }
@@ -176,6 +183,8 @@ import Testing
     var retainedRows: [[CellRun]] = []
     var visibleText: String { retainedRows.map { $0.map(\.text).joined() }.joined(separator: "\n") }
     var createdPane: String?
+    var negotiateConfiguration = true
+    var sessionResponses = 0
     var configuration: RemoteConfiguration?
     var sessions = RemoteSessionList(groups: [], panes: [])
     var matches: [RemoteSearchMatch] = []
@@ -214,6 +223,10 @@ import Testing
                             let message = try MessageCodec.decode(HostMessage.self, from: c.open(packet: packet))
                             channel = c
                             switch message {
+                            case .hello(_, let version):
+                                if version >= 2, negotiateConfiguration {
+                                    try send(.clientHello(version: RemoteProtocol.version))
+                                }
                             case .created(let id): createdPane = id
                             case .frame(let f):
                                 frames.append(f)
@@ -224,7 +237,9 @@ import Testing
                                     retainedRows[update.row] = update.runs
                                 }
                             case .configuration(let config): configuration = config
-                            case .sessions(let value): sessions = value
+                            case .sessions(let value):
+                                sessions = value
+                                sessionResponses += 1
                             case .searchResults(_, let value): matches = value
                             case .error(let message): errors.append(message)
                             default: break

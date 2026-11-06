@@ -158,6 +158,7 @@ final class HostLink {
         case .hello(let hostName, let version):
             self.hostName = hostName
             protocolVersion = version
+            if version >= 2 { send(.clientHello(version: RemoteProtocol.version)) }
         case .sessions(let list):
             sessions = list
         case .frame(let frame):

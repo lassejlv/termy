@@ -40,6 +40,9 @@ separate library product in `next/Package.swift`.
 
 ## Mobile terminal and session controls
 
+Clients announce support after the encrypted host hello; version-1 clients
+continue receiving only the messages they understand.
+
 Encrypted protocol version 2 syncs the active Mac render settings and a copy
 of `config.txt` on connect and after config changes. The phone saves this
 per-computer copy in Keychain, applies font metrics, colors, padding, cursor,

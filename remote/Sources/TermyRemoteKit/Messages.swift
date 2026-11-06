@@ -174,6 +174,7 @@ public struct RemoteSessionList: Codable, Hashable, Sendable {
 
 /// Phone → host.
 public enum ClientMessage: Codable, Hashable, Sendable {
+    case clientHello(version: Int)
     case listSessions
     /// Starts streaming a pane's screen as `stream`.
     case attach(stream: Int, paneID: String)

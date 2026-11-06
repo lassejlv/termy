@@ -142,7 +142,6 @@ public final class RemoteHostAgent {
             peers[deviceID] = peer
             connection?.send(response, to: deviceID)
             peer.send(.hello(hostName: hostName, version: RemoteProtocol.version))
-            peer.send(.configuration(configuration))
             peer.send(.sessions(currentSessions()))
             log("\(device.name) connected.")
         } catch {
@@ -286,6 +285,7 @@ final class Peer {
     private weak var agent: RemoteHostAgent?
     private var streams: [Int: Stream] = [:]
     private var active = true
+    private var clientVersion = 1
 
     init(id: UUID, name: String, channel: SecureChannel, agent: RemoteHostAgent) {
         self.id = id
@@ -304,7 +304,7 @@ final class Peer {
     }
 
     func configure(_ configuration: RemoteConfiguration) {
-        send(.configuration(configuration))
+        if clientVersion >= 2 { send(.configuration(configuration)) }
         for stream in streams.values { stream.configure() }
     }
     func close() {
@@ -316,6 +316,9 @@ final class Peer {
     func handle(_ message: ClientMessage) {
         guard active else { return }
         switch message {
+        case .clientHello(let version):
+            clientVersion = max(1, min(RemoteProtocol.version, version))
+            if clientVersion >= 2 { send(.configuration(configuration)) }
         case .listSessions:
             if let agent { send(.sessions(agent.currentSessions())) }
         case .attach(let stream, let paneID):
