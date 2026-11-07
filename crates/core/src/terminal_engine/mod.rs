@@ -128,6 +128,9 @@ pub struct Modes {
     /// foreground and background swapped. Toggling it bumps
     /// [`Engine::palette_revision`].
     pub reverse_video: bool,
+    /// `?2031`: the program asks to hear `CSI ? 997 ; 1|2 n` whenever the
+    /// host's default colors change, such as a light or dark theme switch.
+    pub color_scheme_reports: bool,
 }
 
 /// Reusable, single-owner parser and grid. The runtime controls synchronization;
@@ -627,8 +630,16 @@ impl Engine {
         self.state.grid.row(line).is_some_and(|row| row.wrapped)
     }
 
+    /// Sets the colors that OSC 4/10/11/12 queries answer with. When the
+    /// default foreground or background changes and the program turned on
+    /// `?2031`, it is told with `CSI ? 997 ; 1|2 n` so it can query again.
     pub fn set_query_colors(&mut self, colors: crate::TerminalQueryColors) {
+        let old = self.state.query_colors;
         self.state.query_colors = colors;
+        let changed = old.foreground != colors.foreground || old.background != colors.background;
+        if changed && self.state.modes.color_scheme_reports {
+            self.state.report_color_scheme();
+        }
     }
 
     pub fn set_default_cursor_shape(&mut self, shape: CursorShape) {

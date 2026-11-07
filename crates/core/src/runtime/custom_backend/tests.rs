@@ -684,6 +684,60 @@ fn pty_replies_reach_the_child_in_order() {
     }
 }
 
+/// A program that turned on `?2031` hears a theme change on its input,
+/// as `CSI ? 997 ; 2 n` for a light background.
+#[test]
+fn new_colors_notify_a_program_that_asked_for_color_scheme_reports() {
+    let mut terminal = CustomBackend::new_with_launch_and_wakeup_notifier(
+        TerminalSize::default(),
+        None,
+        None,
+        None,
+        None,
+        Some(&TerminalLaunch::Program {
+            program: "/bin/sh".to_owned(),
+            args: vec![
+                "-c".to_owned(),
+                "stty raw -echo; printf '\\033[?2031hready'; dd bs=1 count=9 2>/dev/null | od -An -c | tr -d ' \\n'; printf '|done'; sleep 1".to_owned(),
+            ],
+        }),
+        None,
+        ChildEnvironment::Process,
+    )
+    .unwrap();
+    let text = |terminal: &CustomBackend| -> String {
+        terminal
+            .snapshot()
+            .cells
+            .into_iter()
+            .map(|cell| cell.char)
+            .collect()
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !text(&terminal).contains("ready") {
+        assert!(Instant::now() < deadline, "child started");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    terminal.set_query_colors(TerminalQueryColors {
+        foreground: TerminalColor { r: 0, g: 0, b: 0 },
+        background: TerminalColor {
+            r: 255,
+            g: 255,
+            b: 255,
+        },
+        ..TerminalQueryColors::default()
+    });
+    loop {
+        let text = text(&terminal);
+        if text.contains("|done") {
+            assert!(text.contains(r"033[?997;2n|done"), "{text:?}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "child read the report: {text:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn damage_cells_reject_spans_outside_the_viewport() {
     let terminal = CustomBackend::new_display(

@@ -164,6 +164,7 @@ final class PaneView: NSView, TerminalViewDelegate {
         addSubview(header)
         header.pane = self
         updateShape()
+        applyTerminalColors()
         refreshProcess()
         ShellPlugins.shared.register(self)
     }
@@ -310,12 +311,29 @@ final class PaneView: NSView, TerminalViewDelegate {
 
     func themeChanged() {
         terminal.apply(AppConfig.shared.terminalRenderConfig(zoom: zoom))
+        applyTerminalColors()
         search?.bar.applyTheme()
         search?.spotlight.applyTheme()
         shellUI.applyTheme()
         updateShape()
         needsLayout = true
         header.needsDisplay = true
+    }
+
+    /// The config and light or dark the terminal's color answers come from.
+    private var appliedColors: (config: ObjectIdentifier, appearance: Appearance)?
+
+    /// Makes the terminal answer color queries (OSC 4/10/11, `CSI ? 996 n`)
+    /// with the theme on screen, so programs that pick light or dark colors
+    /// from them, like Claude Code, Codex and Gemini CLI, match it. Programs
+    /// that turned on `?2031` are told when it changes.
+    private func applyTerminalColors() {
+        let app = AppConfig.shared
+        let config = ObjectIdentifier(app.termyConfig)
+        let appearance = app.appearance
+        if let appliedColors, appliedColors.config == config, appliedColors.appearance == appearance { return }
+        appliedColors = (config, appearance)
+        try? terminal.session.terminal.applyColors(from: app.termyConfig, appearance: appearance)
     }
 
     private func focusChanged() {

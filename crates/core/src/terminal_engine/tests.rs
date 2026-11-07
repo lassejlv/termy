@@ -303,6 +303,46 @@ fn alternate_screen_preserves_primary_and_keyboard_stack_is_per_screen() {
 }
 
 #[test]
+fn color_scheme_is_reported_on_query_and_on_change_when_asked() {
+    let dark = crate::TerminalQueryColors::default();
+    let light = crate::TerminalQueryColors {
+        foreground: crate::TerminalColor {
+            r: 0x20,
+            g: 0x20,
+            b: 0x20,
+        },
+        background: crate::TerminalColor {
+            r: 0xfa,
+            g: 0xfa,
+            b: 0xf9,
+        },
+        ..dark
+    };
+    let mut engine = engine(20, 2, 0);
+    engine.set_query_colors(dark);
+    engine.feed(b"\x1b[?996n");
+    assert_eq!(replies(&mut engine), b"\x1b[?997;1n");
+
+    // Without ?2031 a change stays quiet; the program can still ask.
+    engine.set_query_colors(light);
+    assert!(replies(&mut engine).is_empty());
+    engine.feed(b"\x1b[?996n\x1b[?2031$p");
+    assert_eq!(replies(&mut engine), b"\x1b[?997;2n\x1b[?2031;2$y");
+
+    engine.feed(b"\x1b[?2031h\x1b[?2031$p");
+    assert_eq!(replies(&mut engine), b"\x1b[?2031;1$y");
+    engine.set_query_colors(dark);
+    assert_eq!(replies(&mut engine), b"\x1b[?997;1n");
+    // Same colors again: nothing to report.
+    engine.set_query_colors(dark);
+    assert!(replies(&mut engine).is_empty());
+
+    engine.feed(b"\x1b[?2031l");
+    engine.set_query_colors(light);
+    assert!(replies(&mut engine).is_empty());
+}
+
+#[test]
 fn terminal_queries_report_cursor_and_dimensions() {
     let mut engine = engine(80, 24, 0);
     engine.feed(b"\x1b[4;9H\x1b[6n\x1b[5n\x1b[18t");

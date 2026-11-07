@@ -1023,6 +1023,14 @@ impl CustomBackend {
         state.engine.set_query_colors(colors);
         state.palette_epoch = state.palette_epoch.wrapping_add(1);
         state.force_full_damage = true;
+        // A program that turned on `?2031` hears about the new colors now.
+        let replies = state.take_engine_output();
+        if !replies.is_empty() {
+            match self.shared.live_transport() {
+                Some(transport) => Shared::write_replies_locked(&transport, replies),
+                None => state.append_replies(&replies),
+            }
+        }
     }
     pub(super) fn palette(&self) -> TerminalPalette {
         self.shared.state().palette()

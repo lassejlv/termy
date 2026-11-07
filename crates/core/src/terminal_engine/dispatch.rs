@@ -304,6 +304,7 @@ impl State {
             }
             2004 => self.modes.bracketed_paste = enabled,
             2026 => self.modes.synchronized_update = enabled,
+            2031 => self.modes.color_scheme_reports = enabled,
             5522 => {
                 self.modes.clipboard_paste_events = enabled;
                 self.event(Event::KittyClipboardControl(
@@ -932,6 +933,7 @@ impl Handler for State {
                 );
             }
             (None, b'n') if value(params, 0, 0) == 5 => self.reply(b"\x1b[0n"),
+            (Some(b'?'), b'n') if value(params, 0, 0) == 996 => self.report_color_scheme(),
             (None | Some(b'?'), b'n') if value(params, 0, 0) == 6 => {
                 let private = if private.is_some() { "?" } else { "" };
                 let (top, left) = if self.grid.origin_mode {

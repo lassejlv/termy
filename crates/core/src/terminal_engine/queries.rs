@@ -34,6 +34,7 @@ impl State {
                 }
                 2004 => Some(self.modes.bracketed_paste),
                 2026 => Some(self.modes.synchronized_update),
+                2031 => Some(self.modes.color_scheme_reports),
                 5522 => Some(self.modes.clipboard_paste_events),
                 _ => None,
             }
@@ -44,6 +45,22 @@ impl State {
                 _ => None,
             }
         }
+    }
+
+    /// Answers `CSI ? 996 n` (and announces a `?2031` change) with
+    /// `CSI ? 997 ; 1 n` for a dark color scheme or `CSI ? 997 ; 2 n` for a
+    /// light one: dark when the default background is darker than the text.
+    pub(super) fn report_color_scheme(&mut self) {
+        fn luminance(color: crate::TerminalColor) -> u32 {
+            2126 * u32::from(color.r) + 7152 * u32::from(color.g) + 722 * u32::from(color.b)
+        }
+        let colors = self.query_colors;
+        let dark = luminance(colors.background) <= luminance(colors.foreground);
+        self.reply(if dark {
+            b"\x1b[?997;1n"
+        } else {
+            b"\x1b[?997;2n"
+        });
     }
 
     pub(super) fn report_mode(&mut self, private: bool, mode: u16) {

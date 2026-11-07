@@ -134,6 +134,15 @@ over SSH goes through OSC 52, which Termy Next accepts from the pane you're
 working in. Shift- or Option-drag selects text locally inside programs that
 track the mouse.
 
+## Light and dark in terminal programs
+
+Programs that pick light or dark colors from the terminal (Claude Code's
+`auto` theme, Codex, Gemini CLI) read the theme on screen: color queries
+(OSC 4/10/11, `CSI ? 996 n`) answer with it, and change with it when the theme
+or the Mac's appearance changes. Programs that turn on DEC mode 2031 are told
+right away (`CSI ? 997 ; 1 n` dark, `2` light), so they can switch without a
+restart; programs that only ask at startup pick up a change on their next run.
+
 ## Shortcuts
 
 These are Rex's defaults.
