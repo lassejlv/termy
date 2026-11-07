@@ -130,6 +130,11 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.isMovableByWindowBackground = false
+        // The window server drags a titled window from anywhere in the
+        // titlebar band before the app sees the press, so a tab dragged to
+        // reorder took the whole window along. Only empty titlebar moves the
+        // window, through `TermyWindow.titlebarMouseDown`.
+        window.isMovable = false
         window.minSize = NSSize(width: 480, height: 300)
         window.tabbingMode = .disallowed
         window.isOpaque = false

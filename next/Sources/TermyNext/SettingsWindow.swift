@@ -344,7 +344,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
                     .control("Check for updates automatically", updateCheckbox),
                     .control("Download and install them automatically", updateDownload),
                 ], footer: Updates.shared.isAvailable
-                    ? "Updates are installed when you quit or relaunch. Programs in panes keep running through it."
+                    ? "Termy Next checks every hour. Updates install when you quit or choose Restart to Update; programs in panes keep running through it."
                     : "This build doesn't update itself. Releases are on GitHub, tagged next-v*."),
                 Section(header: "Config File", rows: [
                     .control("Config file", row([button("Reload", #selector(reloadConfig)), button("Open in Editor", #selector(openConfig))]),
@@ -953,8 +953,11 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         updateCheckbox.isEnabled = updates.isAvailable
         updateDownload.isEnabled = updates.isAvailable && updates.checksAutomatically
         checkNowButton.isEnabled = updates.canCheck
+        checkNowButton.title = updates.readyVersion == nil ? "Check Now" : "Restart to Update"
         var status = "Version \(Updates.currentVersion)"
-        if let last = updates.lastCheck {
+        if let ready = updates.readyVersion {
+            status += " · \(ready) installs when you quit"
+        } else if let last = updates.lastCheck {
             let relative = RelativeDateTimeFormatter()
             relative.unitsStyle = .full
             status += " · checked \(relative.localizedString(for: last, relativeTo: Date()))"

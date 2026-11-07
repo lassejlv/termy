@@ -115,7 +115,10 @@ if [[ -n "$update_feed" ]]; then
   "${plist[@]}" -c "Add :SUFeedURL string $update_feed"
   "${plist[@]}" -c "Add :SUPublicEDKey string $sparkle_public_key"
   "${plist[@]}" -c "Add :SUEnableAutomaticChecks bool true"
-  "${plist[@]}" -c "Add :SUScheduledCheckInterval integer 21600"
+  # Hourly (Sparkle's minimum): releases come out often.
+  "${plist[@]}" -c "Add :SUScheduledCheckInterval integer 3600"
+  # Download in the background and install on quit, unless turned off in Settings.
+  "${plist[@]}" -c "Add :SUAutomaticallyUpdate bool true"
 fi
 
 entitlements="$next_dir/Resources/TermyNext.entitlements"

@@ -644,7 +644,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case .toggleActivity: item.title = keyController?.isActivityOpen == true ? "Hide Activity" : "Show Activity"
         default: break
         }
-        if command == .checkForUpdates { return Updates.shared.canCheck }
+        if command == .checkForUpdates {
+            item.title = Updates.shared.menuTitle
+            return Updates.shared.canCheck
+        }
         if command == .restartSessionHost {
             return Preferences.shared.usesSessionHost && SessionHost.shared.multiplexer != nil && !SessionHost.shared.isRestarting
         }

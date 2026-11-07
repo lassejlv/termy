@@ -220,9 +220,13 @@ Release builds update themselves with [Sparkle](https://sparkle-project.org).
 They read `appcast-universal.xml` from the `next-appcast` release, which each
 release run replaces with a feed that lists the version it just published.
 The DMG is EdDSA-signed with the same `SPARKLE_ED_PRIVATE_KEY` secret as
-Termy's releases. Sparkle checks every six hours. **Termy Next → Check for
-Updates…** (also in the command palette) checks right away, and **Settings →
-General → Updates** turns automatic checks and downloads on or off.
+Termy's releases. Sparkle checks every hour, downloads new versions in the
+background and installs them on quit; **Termy Next → Restart to Update**
+installs one now. The first launch of a new version checks again right away,
+so an update downloaded before a newer release doesn't leave you a version
+behind. **Termy Next → Check for Updates…** (also in the command palette)
+reads the feed right away, and **Settings → General → Updates** turns
+automatic checks and downloads on or off.
 Development builds and `scripts/bundle.sh` bundles have no feed and never
 update.
 
