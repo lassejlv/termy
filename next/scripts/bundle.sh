@@ -58,13 +58,15 @@ ditto "$(dirname "$executable")/Sparkle.framework" "$app/Contents/Frameworks/Spa
 rm -rf "$app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" "$app/Contents/Frameworks/Sparkle.framework/XPCServices"
 # Load libtermy and Sparkle from the bundle, never from the build directories,
 # whose copies on this Mac are signed differently.
-while read -r rpath; do
-  case "$rpath" in
-    "$sdk_dir"/*|"$sdk_dir"|"$next_dir"/*) install_name_tool -delete_rpath "$rpath" "$app/Contents/MacOS/TermyNext" ;;
-  esac
-# A universal binary lists each rpath once per architecture.
-done < <(otool -l "$app/Contents/MacOS/TermyNext" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }' | sort -u)
-install_name_tool -add_rpath "@executable_path/../Frameworks" "$app/Contents/MacOS/TermyNext" 2>/dev/null || true
+for binary in "$app/Contents/MacOS/TermyNext"; do
+  while read -r rpath; do
+    case "$rpath" in
+      "$sdk_dir"/*|"$sdk_dir"|"$next_dir"/*) install_name_tool -delete_rpath "$rpath" "$binary" ;;
+    esac
+  # A universal binary lists each rpath once per architecture.
+  done < <(otool -l "$binary" | awk '/cmd LC_RPATH/ { getline; getline; print $2 }' | sort -u)
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "$binary" 2>/dev/null || true
+done
 
 icon="$next_dir/Resources/icon/TermyNext.icns"
 if [[ -f "$icon" ]]; then

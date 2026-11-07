@@ -8,8 +8,13 @@ import PackageDescription
 let package = Package(
     name: "TermyNext",
     platforms: [.macOS(.v14)],
+    products: [
+        .executable(name: "TermyNext", targets: ["TermyNext"]),
+        .library(name: "TermyRemoteHost", targets: ["TermyRemoteHost"]),
+    ],
     dependencies: [
         .package(path: "../sdk/swift"),
+        .package(path: "../remote"),
         // Automatic updates. Keep in step with scripts/fetch-sparkle.sh, whose
         // sign_update signs the releases this version installs.
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
@@ -21,10 +26,26 @@ let package = Package(
             name: "TermyNext",
             dependencies: [
                 "TermyNextCore",
+                "TermyRemoteHost",
+                .product(name: "TermyRemoteKit", package: "remote"),
                 .product(name: "Termy", package: "swift"),
                 .product(name: "TermyAppKit", package: "swift"),
                 .product(name: "Sparkle", package: "Sparkle"),
             ],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .target(
+            name: "TermyRemoteHost",
+            dependencies: [
+                .product(name: "Termy", package: "swift"),
+                .product(name: "TermyAppKit", package: "swift"),
+                .product(name: "TermyRemoteKit", package: "remote"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        .testTarget(
+            name: "TermyRemoteHostTests",
+            dependencies: ["TermyRemoteHost", .product(name: "Termy", package: "swift"), .product(name: "TermyRemoteKit", package: "remote")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(

@@ -1,0 +1,13 @@
+.git
+.pi
+**/.env
+**/.env.*
+!**/.env.example
+**/.build
+**/build
+**/target
+**/node_modules
+**/.DS_Store
+**/*.arego
+.codex
+.claude

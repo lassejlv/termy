@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import Termy
 import TermyNextCore
 
@@ -13,7 +14,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
     static let shared = SettingsWindowController()
 
     private enum Pane: String, CaseIterable {
-        case general, appearance, theme, notifications, shell, sessions
+        case general, appearance, theme, notifications, shell, sessions, mobile
 
         var title: String {
             switch self {
@@ -23,6 +24,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
             case .notifications: "Notifications"
             case .shell: "Shell"
             case .sessions: "Sessions"
+            case .mobile: "Mobile"
             }
         }
 
@@ -34,6 +36,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
             case .notifications: "bell.badge.fill"
             case .shell: "terminal.fill"
             case .sessions: "rectangle.stack.fill"
+            case .mobile: "iphone"
             }
         }
 
@@ -45,6 +48,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
             case .notifications: .systemRed
             case .shell: .systemGreen
             case .sessions: .systemOrange
+            case .mobile: .systemTeal
             }
         }
 
@@ -401,6 +405,9 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
                     .control("Send 24-bit color support to SSH hosts", sshColorCheckbox),
                 ], footer: "ssh sends COLORTERM from zsh, from Add Remote Host and from tools that run ssh themselves (boat ssh, git), so Claude Code and other programs on the server draw true colors. The server has to accept it (AcceptEnv COLORTERM), as Debian and Ubuntu do. Copying over SSH works through OSC 52 from the pane you're in."),
             ]
+        case .mobile:
+            let host = NSHostingView(rootView: MobileSettingsView())
+            sections = [Section(rows: [.full(host)], footer: "Connect your iPhone to this Mac with a QR code. Mobile access uses your chosen relay server.")]
         case .sessions:
             sections = [
                 Section(rows: [

@@ -157,6 +157,11 @@ for forbidden_dep in gpui keyring ureq fontdb flume polling dirs uuid termy; do
   check_forbidden_all_target_dep termy_engine_ffi "$forbidden_dep"
 done
 
+# The relay only routes sealed bytes: no terminal, no UI.
+for forbidden_dep in "gpui(-kit|-pre)?" termy_core termy_pty; do
+  check_forbidden_all_target_dep termy_relay "$forbidden_dep"
+done
+
 require_pattern './scripts/build-dmg-signed\.sh' \
   ".github/workflows/release.yml" \
   "release workflow must call scripts/build-dmg-signed.sh"

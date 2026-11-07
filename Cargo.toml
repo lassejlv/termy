@@ -6,6 +6,7 @@ members = [
   "crates/wasm",
   "crates/pty",
   "crates/engine_ffi",
+  "crates/relay",
 ]
 resolver = "2"
 
