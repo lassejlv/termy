@@ -68,6 +68,10 @@ cargo run -p termy_cli --bin xtask -- benchmark-compare \
 
 Notes:
 
+- `--pairs N` runs each scenario N times per side, alternating which side
+  starts, and reports the median of the per-pair deltas. One run per side
+  (the default) lets a single scheduler stall decide a latency gate; CI runs
+  five pairs for `echo-train`.
 - Shared report tables use external Activity Monitor data so mixed-app runs stay
   comparable.
 - Shared frame cadence now comes from a second `Animation Hitches` trace pass,

@@ -123,6 +123,7 @@ pub(super) fn record(mut args: impl Iterator<Item = String>) -> Result<()> {
             scenario,
             duration_secs,
             &output,
+            None,
             true,
         )?);
         write_json(&output.join("presentation.json"), &runs)?;

@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod echo_tests;
+mod pairs;
 mod presentation;
 mod workloads;
 
@@ -95,6 +96,7 @@ fn run_compare(mut args: impl Iterator<Item = String>) -> Result<()> {
     let mut duration_secs = DEFAULT_DURATION_SECS;
     let mut selected_scenarios = Vec::new();
     let mut collect_animation = true;
+    let mut pair_count = 1usize;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -134,8 +136,16 @@ fn run_compare(mut args: impl Iterator<Item = String>) -> Result<()> {
             "--skip-animation-trace" => {
                 collect_animation = false;
             }
+            "--pairs" => {
+                let value = args.next().context("missing value for --pairs")?;
+                pair_count = value
+                    .parse()
+                    .ok()
+                    .filter(|count| *count > 0)
+                    .with_context(|| format!("invalid --pairs `{value}`; expected at least 1"))?;
+            }
             other => bail!(
-                "unknown benchmark-compare argument `{other}`; expected --baseline, --candidate, --baseline-root, --candidate-root, --output, --duration-secs, --scenario, or --skip-animation-trace"
+                "unknown benchmark-compare argument `{other}`; expected --baseline, --candidate, --baseline-root, --candidate-root, --output, --duration-secs, --scenario, --pairs, or --skip-animation-trace"
             ),
         }
     }
@@ -181,17 +191,21 @@ fn run_compare(mut args: impl Iterator<Item = String>) -> Result<()> {
     } else {
         selected_scenarios
     };
-    let mut runs = Vec::with_capacity(scenarios.len() * 2);
-    for build in [&baseline, &candidate] {
+    let mut runs = Vec::with_capacity(scenarios.len() * pair_count * 2);
+    for pair in 0..pair_count {
         for scenario in &scenarios {
-            runs.push(run_single_benchmark(
-                build,
-                &driver,
-                *scenario,
-                duration_secs,
-                &output_root,
-                collect_animation,
-            )?);
+            for build in pairs::pair_order(pair, &baseline, &candidate) {
+                let run = run_single_benchmark(
+                    build,
+                    &driver,
+                    *scenario,
+                    duration_secs,
+                    &output_root,
+                    pairs::pair_dir(pair, pair_count).as_deref(),
+                    collect_animation,
+                )?;
+                runs.push((pair, run));
+            }
         }
     }
 
@@ -310,10 +324,7 @@ impl BenchmarkGateThresholds {
 
         for scenario in &summary.scenarios {
             if self.min_displayed_frames > 0 {
-                for (label, run) in [
-                    ("baseline", &scenario.baseline),
-                    ("candidate", &scenario.candidate),
-                ] {
+                for (label, run) in scenario.labeled_runs() {
                     if let Some(animation) = run.animation_summary.as_ref()
                         && matches!(
                             animation.displayed_frame_capture_status,
@@ -345,10 +356,7 @@ impl BenchmarkGateThresholds {
                 }
             };
             if minimum_displayed_frames > 0 {
-                for (label, run) in [
-                    ("baseline", &scenario.baseline),
-                    ("candidate", &scenario.candidate),
-                ] {
+                for (label, run) in scenario.labeled_runs() {
                     let count = run
                         .animation_summary
                         .as_ref()
@@ -1221,20 +1229,22 @@ fn run_single_benchmark(
     scenario: Scenario,
     duration_secs: u64,
     output_root: &Path,
+    pair_dir: Option<&str>,
     collect_animation: bool,
 ) -> Result<RunResult> {
-    let raw_dir = output_root
-        .join("raw")
-        .join(build.label)
-        .join(scenario.as_str());
-    let energy_dir = output_root
-        .join("energy")
-        .join(build.label)
-        .join(scenario.as_str());
-    let animation_dir = output_root
-        .join("animation")
-        .join(build.label)
-        .join(scenario.as_str());
+    let run_dir = |kind: &str| {
+        let dir = output_root
+            .join(kind)
+            .join(build.label)
+            .join(scenario.as_str());
+        match pair_dir {
+            Some(pair) => dir.join(pair),
+            None => dir,
+        }
+    };
+    let raw_dir = run_dir("raw");
+    let energy_dir = run_dir("energy");
+    let animation_dir = run_dir("animation");
     let config_root = raw_dir.join("config");
     let metrics_dir = raw_dir.join("app");
     let driver_dir = raw_dir.join("driver");
@@ -2520,24 +2530,38 @@ impl ComparisonSummary {
         baseline: &BenchmarkTargetSpec,
         candidate: &BenchmarkTargetSpec,
         selected_scenarios: &[Scenario],
-        runs: Vec<RunResult>,
+        runs: Vec<(usize, RunResult)>,
     ) -> Result<Self> {
+        let pair_count = runs.iter().map(|(pair, _)| pair + 1).max().unwrap_or(0);
+        let find = |label: &str, scenario: Scenario, pair: usize| {
+            runs.iter()
+                .find(|(run_pair, run)| {
+                    *run_pair == pair
+                        && run.build_label == label
+                        && run.scenario == scenario.as_str()
+                })
+                .map(|(_, run)| run.clone())
+                .with_context(|| {
+                    format!(
+                        "missing {label} run for {} (pair {})",
+                        scenario.as_str(),
+                        pair + 1
+                    )
+                })
+        };
         let mut scenarios = Vec::new();
         for scenario in selected_scenarios {
-            let baseline_run = runs
-                .iter()
-                .find(|run| run.build_label == baseline.label && run.scenario == scenario.as_str())
-                .cloned()
-                .with_context(|| format!("missing baseline run for {}", scenario.as_str()))?;
-            let candidate_run = runs
-                .iter()
-                .find(|run| run.build_label == candidate.label && run.scenario == scenario.as_str())
-                .cloned()
-                .with_context(|| format!("missing candidate run for {}", scenario.as_str()))?;
-            scenarios.push(ScenarioComparison::new(
+            let pairs = (0..pair_count)
+                .map(|pair| {
+                    Ok((
+                        find(baseline.label, *scenario, pair)?,
+                        find(candidate.label, *scenario, pair)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            scenarios.push(ScenarioComparison::from_pairs(
                 scenario.as_str().to_string(),
-                baseline_run,
-                candidate_run,
+                pairs,
             ));
         }
 
@@ -2576,6 +2600,10 @@ struct ScenarioComparison {
     baseline: RunResult,
     candidate: RunResult,
     deltas: ScenarioDeltas,
+    /// Every pair when the comparison ran more than one; `deltas` are then
+    /// their medians and `baseline`/`candidate` repeat the first pair.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pairs: Vec<pairs::ScenarioPair>,
 }
 
 impl ScenarioComparison {
@@ -2695,6 +2723,7 @@ impl ScenarioComparison {
             baseline,
             candidate,
             deltas,
+            pairs: Vec::new(),
         }
     }
 }
@@ -2822,6 +2851,7 @@ fn render_report(summary: &ComparisonSummary) -> String {
     for scenario in &summary.scenarios {
         let idle_blink = scenario.scenario == "idle-blink";
         report.push_str(&format!("## {}\n\n", scenario.scenario));
+        report.push_str(&pairs::render_pairs(scenario));
         report.push_str("### Shared external metrics\n\n");
         report.push_str("| Metric | Baseline | Candidate | Delta |\n");
         report.push_str("| --- | ---: | ---: | ---: |\n");
@@ -3918,6 +3948,7 @@ mod tests {
                     echo_first_frame_ms_max: None,
                     echo_missed_count: None,
                 },
+                pairs: Vec::new(),
             }],
         });
         assert!(report.contains("Shared external metrics"));
@@ -4135,7 +4166,7 @@ mod tests {
         assert!(!failures.iter().any(|failure| failure.contains("frame p95")));
     }
 
-    fn compared_target(label: &str) -> super::ComparedTargetSummary {
+    pub(super) fn compared_target(label: &str) -> super::ComparedTargetSummary {
         super::ComparedTargetSummary {
             label: label.to_string(),
             name: "Termy".to_string(),
@@ -4145,7 +4176,7 @@ mod tests {
         }
     }
 
-    fn run_result(
+    pub(super) fn run_result(
         build_label: &str,
         cpu_percent: f32,
         idle_wakeups: u64,
