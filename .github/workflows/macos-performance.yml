@@ -29,7 +29,9 @@ jobs:
   performance:
     name: Benchmark and gate (${{ matrix.scenario }})
     runs-on: macos-latest
-    timeout-minutes: 35
+    # A cold-cache build of both trees takes about 20 minutes; echo-train's
+    # five pairs add about 8 more.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +42,12 @@ jobs:
           - steady-scroll
           # Instruments hangs while finalizing full-screen TUI traces on hosted
           # runners, so keep that scenario out of this workflow.
+        include:
+          # Echo p95 is the second-slowest of 40 echoes, so two scheduler
+          # stalls in one run decide the gate. Gate on the median of five
+          # alternating pairs instead.
+          - scenario: echo-train
+            pairs: 5
     env:
       DURATION_SECS: ${{ github.event_name == 'workflow_dispatch' && inputs.duration_secs || '13' }}
     steps:
@@ -76,6 +84,7 @@ jobs:
             --output "$GITHUB_WORKSPACE/benchmark-output-${{ matrix.scenario }}" \
             --duration-secs "$DURATION_SECS" \
             --scenario "${{ matrix.scenario }}" \
+            --pairs "${{ matrix.pairs || 1 }}" \
             --skip-animation-trace
 
       - name: Check performance gates
