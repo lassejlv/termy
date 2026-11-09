@@ -686,6 +686,7 @@ fn pty_replies_reach_the_child_in_order() {
 
 /// A program that turned on `?2031` hears a theme change on its input,
 /// as `CSI ? 997 ; 2 n` for a light background.
+#[cfg(unix)]
 #[test]
 fn new_colors_notify_a_program_that_asked_for_color_scheme_reports() {
     let mut terminal = CustomBackend::new_with_launch_and_wakeup_notifier(
