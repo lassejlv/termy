@@ -21,16 +21,11 @@ final class SessionHost {
     private var saveScheduled = false
 
     static var root: URL {
-        // TERMY_NEXT_HOME keeps a test instance's host and layout apart from yours.
-        if let home = ProcessInfo.processInfo.environment["TERMY_NEXT_HOME"] {
-            return URL(fileURLWithPath: home).appendingPathComponent("support/multiplexer", isDirectory: true)
-        }
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return support.appendingPathComponent("TermyNext/multiplexer", isDirectory: true)
+        NextPaths.current.multiplexerDirectory
     }
 
     private static var layoutURL: URL {
-        root.deletingLastPathComponent().appendingPathComponent("layout.json")
+        NextPaths.current.layoutFile
     }
 
     /// Connects off the main thread (starting a host takes seconds), then

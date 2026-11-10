@@ -678,8 +678,8 @@ impl TerminalView {
         self.reset_tab_rename_state();
         self.finish_workspace_drag();
         self.renaming_workspace = Some(index);
-        self.workspace_rename_input
-            .set_text(self.workspace_display_name(index));
+        let name = self.workspace_display_name(index);
+        self.workspace_rename_input.set_text(name);
         self.reset_cursor_blink_phase();
         self.inline_input_selecting = false;
         cx.notify();

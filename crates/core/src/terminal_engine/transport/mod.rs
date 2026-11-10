@@ -5,6 +5,8 @@
 //! The output callback runs on the reader thread; its return value queues a
 //! protocol reply, and the exit callback follows final readable child output.
 
+#[cfg(any(windows, test))]
+use std::path::Path;
 use std::path::PathBuf;
 
 #[cfg(any(
@@ -63,6 +65,16 @@ mod unsupported;
 )))]
 pub(crate) use unsupported::Transport;
 
+/// A regular file, or a Windows app execution alias (`WindowsApps\pwsh.exe`):
+/// a reparse point `metadata` cannot follow but `CreateProcessW` starts.
+#[cfg(any(windows, test))]
+pub(crate) fn is_launchable_file(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(metadata) => metadata.is_file(),
+        Err(_) => std::fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_dir()),
+    }
+}
+
 pub(crate) fn available() -> bool {
     #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
     {
@@ -93,6 +105,21 @@ mod tests {
         sync::mpsc,
         time::{Duration, Instant},
     };
+
+    #[test]
+    fn launchable_paths_accept_files_and_unresolved_aliases_but_not_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("pwsh.exe");
+        let alias = root.path().join("alias.exe");
+        assert!(!is_launchable_file(&program));
+        assert!(!is_launchable_file(root.path()));
+        std::fs::write(&program, b"executable").unwrap();
+        assert!(is_launchable_file(&program));
+        std::os::unix::fs::symlink(&program, &alias).unwrap();
+        assert!(is_launchable_file(&alias));
+        std::fs::remove_file(program).unwrap();
+        assert!(is_launchable_file(&alias));
+    }
 
     #[test]
     fn native_interface_delivers_borrowed_owned_and_protocol_input() {

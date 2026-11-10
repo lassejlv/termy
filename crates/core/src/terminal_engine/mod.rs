@@ -68,7 +68,7 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
-            scrollback_history: 1000,
+            scrollback_history: crate::launch_policy::DEFAULT_SCROLLBACK_HISTORY,
             scrollback_bytes: DEFAULT_SCROLLBACK_BYTES,
             max_string_bytes: MAX_STRING_PAYLOAD_BYTES,
             max_clipboard_bytes: MAX_CLIPBOARD_PAYLOAD_BYTES,
@@ -131,6 +131,34 @@ pub struct Modes {
     /// `?2031`: the program asks to hear `CSI ? 997 ; 1|2 n` whenever the
     /// host's default colors change, such as a light or dark theme switch.
     pub color_scheme_reports: bool,
+}
+
+impl Modes {
+    /// The keyboard encoder's view of the current application and kitty modes.
+    pub fn keyboard_mode(self) -> crate::TerminalKeyboardMode {
+        crate::TerminalKeyboardMode::from_flags(
+            self.application_cursor,
+            self.kitty_keyboard & 1 != 0,
+            self.kitty_keyboard & 2 != 0,
+            self.kitty_keyboard & 4 != 0,
+            self.kitty_keyboard & 8 != 0,
+            self.kitty_keyboard & 16 != 0,
+        )
+        .with_application_keypad(self.application_keypad)
+    }
+
+    /// The cell-coordinate mouse encoder's view of the current tracking modes.
+    pub fn mouse_mode(self) -> crate::TerminalMouseMode {
+        crate::TerminalMouseMode {
+            enabled: self.mouse_tracking != MouseTracking::None,
+            // X10 (mode 9) reports presses only: enabled with no other flag.
+            report_click: self.mouse_tracking == MouseTracking::Click,
+            report_drag: self.mouse_tracking == MouseTracking::Drag,
+            report_motion: self.mouse_tracking == MouseTracking::Motion,
+            sgr_encoding: self.mouse_encoding == MouseEncoding::Sgr,
+            utf8_encoding: self.mouse_encoding == MouseEncoding::Utf8,
+        }
+    }
 }
 
 /// Reusable, single-owner parser and grid. The runtime controls synchronization;

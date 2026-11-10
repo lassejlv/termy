@@ -3327,39 +3327,6 @@ pub unsafe extern "C" fn termy_terminal_encode_mouse(
     })
 }
 
-/// Paste text with line endings as Enter, unsafe controls removed, and the
-/// bracketed-paste markers when the program enabled them. Matches
-/// `termy_engine_encode_paste` and the wasm encoder.
-fn encode_paste(text: &[u8], bracketed: bool) -> Vec<u8> {
-    let text = String::from_utf8_lossy(text);
-    let mut body = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(character) = chars.next() {
-        match character {
-            '\r' => {
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                body.push('\r');
-            }
-            '\n' => body.push('\r'),
-            '\t' => body.push('\t'),
-            // Other C0 controls, DEL and C1 controls could run commands or
-            // end the bracket early, including nested end markers.
-            '\0'..='\x1f' | '\x7f'..='\u{9f}' => {}
-            character => body.push(character),
-        }
-    }
-    if !bracketed {
-        return body.into_bytes();
-    }
-    let mut out = Vec::with_capacity(body.len() + 12);
-    out.extend_from_slice(b"\x1b[200~");
-    out.extend_from_slice(body.as_bytes());
-    out.extend_from_slice(b"\x1b[201~");
-    out
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_terminal_encode_paste(
     terminal: *mut TermyFfiTerminal,
@@ -3378,7 +3345,7 @@ pub unsafe extern "C" fn termy_terminal_encode_paste(
             unsafe { slice::from_raw_parts(text_ptr, text_len) }
         };
         let bracketed = unsafe { (*terminal).terminal.bracketed_paste_mode() };
-        let encoded = encode_paste(text, bracketed);
+        let encoded = crate::encode_paste(&String::from_utf8_lossy(text), bracketed);
         unsafe {
             *out_bytes = if encoded.is_empty() {
                 termy_null_buffer()

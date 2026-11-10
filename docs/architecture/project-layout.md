@@ -1,7 +1,8 @@
 # Project Layout
 
-The workspace has three packages: desktop, CLI, and core. Add modules within the
-appropriate package instead of creating a crate for each helper.
+The Rust workspace contains the desktop app, CLI, core, WASM adapter, Node PTY
+addon, engine C library, and relay. Keep shared behavior in core and boundary
+adapters in their owning packages; add modules instead of a crate for each helper.
 
 ## Desktop: `crates/desktop_app` (`termy`)
 
@@ -13,7 +14,9 @@ appropriate package instead of creating a crate for each helper.
 - `src/auto_update/`: update checks and installation coordinated with GPUI.
 
 The library target exposes presentation helpers to the desktop binary, examples,
-and integration tests. It is part of the same package.
+and integration tests. It is part of the same package. `text_input/` owns shared
+Unicode editing and IME state; inline overlays retain their own geometry adapter.
+`commands.rs` owns the visibility policy shared by menus and the command palette.
 
 ## Core: `crates/core` (`termy_core`)
 
@@ -22,7 +25,10 @@ at the library root. Supporting modules are grouped by responsibility:
 
 - `multiplexer/`: persistent session host, authenticated IPC, clients, and layout operations.
 - `session_model/`: saved windows, workspaces, tabs, panes, and split geometry.
-- `terminal_engine/`: terminal engine and native PTY/ConPTY runtime.
+- `terminal_engine/`: engine state, parser, grid, mode-to-input conversion, and native PTY/ConPTY transport.
+- `pty.rs`: raw PTY process API for hosts that supply their own terminal engine.
+- `launch_policy.rs`: shared launch choices and history bounds, reexported by config and runtime.
+- `paste.rs`: engine-independent paste filtering, newline conversion, and bracket framing.
 - `tmux_control_core/`: tmux control-mode protocol and transport.
 - `config_core/`, `command_core/`, `theme_core/`, `themes/`, and `search_engine/`: shared configuration, commands, themes, and search.
 - `plugin_runtime/` and `ssh_core/`: plugin execution and SSH host management.
@@ -76,6 +82,9 @@ per-platform npm packages; see `packages/pty/README.md`.
 `Termy.xcodeproj`). Pair it from **Termy Next → Settings → Mobile** by scanning
 a short-lived QR code and approving the phone on the Mac. Accounts and the
 `termy remote` CLI are no longer part of this flow.
+
+`next/Sources/TermyNextCore/NextPaths.swift` resolves Next's isolated support and
+configuration directories for the session host, plugins, and app configuration.
 
 `remote/` is TermyRemoteKit: device identity, QR pairing, encryption, messages,
 and relay transport. `next/Sources/TermyRemoteHost` is an importable host

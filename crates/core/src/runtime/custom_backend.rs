@@ -1266,35 +1266,10 @@ impl CustomBackend {
         self.shared.state().engine.alternate_screen()
     }
     pub(super) fn keyboard_mode(&self) -> TerminalKeyboardMode {
-        keyboard_mode(self.shared.state().engine.modes())
+        self.shared.state().engine.modes().keyboard_mode()
     }
     pub(super) fn mouse_mode(&self) -> TerminalMouseMode {
-        mouse_mode(self.shared.state().engine.modes())
-    }
-}
-
-fn keyboard_mode(modes: engine::Modes) -> TerminalKeyboardMode {
-    let bits = modes.kitty_keyboard;
-    TerminalKeyboardMode::from_flags(
-        modes.application_cursor,
-        bits & 1 != 0,
-        bits & 2 != 0,
-        bits & 4 != 0,
-        bits & 8 != 0,
-        bits & 16 != 0,
-    )
-    .with_application_keypad(modes.application_keypad)
-}
-
-fn mouse_mode(modes: engine::Modes) -> TerminalMouseMode {
-    TerminalMouseMode {
-        enabled: modes.mouse_tracking != engine::MouseTracking::None,
-        // X10 (mode 9) reports presses only: enabled with no other flag.
-        report_click: modes.mouse_tracking == engine::MouseTracking::Click,
-        report_drag: modes.mouse_tracking == engine::MouseTracking::Drag,
-        report_motion: modes.mouse_tracking == engine::MouseTracking::Motion,
-        sgr_encoding: modes.mouse_encoding == engine::MouseEncoding::Sgr,
-        utf8_encoding: modes.mouse_encoding == engine::MouseEncoding::Utf8,
+        self.shared.state().engine.modes().mouse_mode()
     }
 }
 

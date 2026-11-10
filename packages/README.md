@@ -190,7 +190,8 @@ packages/
   xterm/src/                terminal.ts (adapter), buffer.ts, addons.ts, options.ts, types.ts
   pty/
     src/                    native.ts (binary loader), terminal.ts (node-pty API), types.ts
-    scripts/                platforms.mjs, build-native.mjs, prepare-publish.mjs
+    platforms.mjs           shared native platform catalog and host detection
+    scripts/                build-native.mjs, prepare-publish.mjs
     test/                   pty.test.ts (vitest), smoke.mjs (dependency-free, for Alpine)
 crates/pty/                 termy_pty: Node-API addon over termy_core::pty
   demo/                     side-by-side web/xterm demo page

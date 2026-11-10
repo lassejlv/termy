@@ -47,15 +47,15 @@ impl RunPluginCommand {
 
 pub type MenuSection = u8;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandPaletteVisibility {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CommandVisibility {
     Always,
     MacOsOnly,
     /// The tmux/pane command group is hidden on Windows until tmux is active.
     NotWindows,
 }
 
-impl CommandPaletteVisibility {
+impl CommandVisibility {
     pub fn is_visible(self) -> bool {
         self.is_visible_on_platform(cfg!(target_os = "macos"), cfg!(target_os = "windows"))
     }
@@ -97,32 +97,8 @@ impl MenuRoot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum MenuVisibility {
-    Always,
-    MacOsOnly,
-    /// The tmux/pane command group is hidden on Windows until tmux is active.
-    NotWindows,
-}
-
-impl MenuVisibility {
-    pub fn is_visible(self) -> bool {
-        self.is_visible_on_platform(cfg!(target_os = "macos"), cfg!(target_os = "windows"))
-    }
-
-    pub fn is_visible_for_runtime(self, tmux_runtime_active: bool) -> bool {
-        self.is_visible()
-            || (cfg!(target_os = "windows") && tmux_runtime_active && self == Self::NotWindows)
-    }
-
-    pub const fn is_visible_on_platform(self, is_macos: bool, is_windows: bool) -> bool {
-        match self {
-            Self::Always => true,
-            Self::MacOsOnly => is_macos,
-            Self::NotWindows => !is_windows,
-        }
-    }
-}
+pub type MenuVisibility = CommandVisibility;
+pub type CommandPaletteVisibility = CommandVisibility;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MenuActionRole {

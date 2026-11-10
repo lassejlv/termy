@@ -33,18 +33,7 @@ public indirect enum SplitTree<ID: Hashable & Sendable>: Hashable, Sendable {
 
     /// Puts `new` next to `anchor` on the side `direction` names.
     public func inserting(_ new: ID, at anchor: ID, direction: Direction, ratio: CGFloat = 0.5) -> SplitTree {
-        switch self {
-        case .leaf(let id) where id == anchor:
-            let pair: (SplitTree, SplitTree) = direction.isTrailing ? (.leaf(id), .leaf(new)) : (.leaf(new), .leaf(id))
-            return .split(axis: direction.axis, ratio: ratio, first: pair.0, second: pair.1)
-        case .leaf:
-            return self
-        case .split(let axis, let r, let first, let second):
-            return .split(
-                axis: axis, ratio: r,
-                first: first.inserting(new, at: anchor, direction: direction, ratio: ratio),
-                second: second.inserting(new, at: anchor, direction: direction, ratio: ratio))
-        }
+        inserting(.leaf(new), at: anchor, direction: direction, ratio: ratio)
     }
 
     /// Puts a whole layout next to `anchor` on the side `direction` names,

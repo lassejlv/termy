@@ -2,6 +2,7 @@
 
 use super::{ChildEnvironment, ResolvedTerminalLaunch, TabTitleShellIntegration, WindowsShell};
 use crate::path_env::normalized_path_env;
+use crate::terminal_engine::transport::is_launchable_file;
 use std::{
     collections::HashMap,
     env,
@@ -66,16 +67,6 @@ fn system_root() -> PathBuf {
         .or_else(|| env::var_os("WINDIR"))
         .filter(|value| !value.is_empty())
         .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
-}
-
-/// Whether `path` is a regular file, or an app execution alias (the
-/// `WindowsApps` reparse points behind Store installs such as `pwsh.exe`),
-/// which `metadata` cannot follow but `CreateProcessW` starts.
-fn is_launchable_file(path: &Path) -> bool {
-    match std::fs::metadata(path) {
-        Ok(metadata) => metadata.is_file(),
-        Err(_) => std::fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_dir()),
-    }
 }
 
 /// Every `file_name` on the PATH a child would see (the process PATH plus

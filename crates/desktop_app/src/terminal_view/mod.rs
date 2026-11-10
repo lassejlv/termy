@@ -49,12 +49,12 @@ use termy_core::session_model::{
 };
 use termy_core::{
     CommandLifecycle, KittyGraphicsRenderPlacement, ProgressState, TabTitleShellIntegration,
-    TermProgram as RuntimeTermProgram, Terminal as NativeTerminal, TerminalClipboardContent,
-    TerminalClipboardLocation, TerminalClipboardReadRequest, TerminalClipboardReadResult,
-    TerminalClipboardTarget, TerminalClipboardWriteRequest, TerminalClipboardWriteResult,
-    TerminalColor, TerminalCursorState, TerminalCursorStyle, TerminalDamageSnapshot,
-    TerminalDirtySpan, TerminalEvent, TerminalKeyEventKind, TerminalKeyboardMode, TerminalLaunch,
-    TerminalMouseMode, TerminalOptions, TerminalPalette, TerminalQueryColors, TerminalReplyHost,
+    Terminal as NativeTerminal, TerminalClipboardContent, TerminalClipboardLocation,
+    TerminalClipboardReadRequest, TerminalClipboardReadResult, TerminalClipboardTarget,
+    TerminalClipboardWriteRequest, TerminalClipboardWriteResult, TerminalColor,
+    TerminalCursorState, TerminalCursorStyle, TerminalDamageSnapshot, TerminalDirtySpan,
+    TerminalEvent, TerminalKeyEventKind, TerminalKeyboardMode, TerminalLaunch, TerminalMouseMode,
+    TerminalOptions, TerminalPalette, TerminalQueryColors, TerminalReplyHost,
     TerminalRuntimeConfig, TerminalSize, TerminalWakeupNotifier,
     WindowsShell as RuntimeWindowsShell, WorkingDirFallback as RuntimeWorkingDirFallback,
     normalize_working_directory_candidate, resolve_launch_working_directory,
@@ -1769,35 +1769,10 @@ impl TerminalView {
         config: &AppConfig,
         colors: &TerminalColors,
     ) -> TerminalRuntimeConfig {
-        let working_dir_fallback = match config.working_dir_fallback {
-            config::WorkingDirFallback::Home => RuntimeWorkingDirFallback::Home,
-            config::WorkingDirFallback::Process => RuntimeWorkingDirFallback::Process,
-        };
-
-        TerminalRuntimeConfig {
-            shell: config.shell.clone(),
-            windows_shell: match config.windows_shell {
-                config::WindowsShell::Auto => RuntimeWindowsShell::Auto,
-                config::WindowsShell::Cmd => RuntimeWindowsShell::Cmd,
-                config::WindowsShell::PowerShell => RuntimeWindowsShell::PowerShell,
-                config::WindowsShell::PowerShellCore => RuntimeWindowsShell::PowerShellCore,
-                config::WindowsShell::GitBash => RuntimeWindowsShell::GitBash,
-            },
-            term: config.term.clone(),
-            colorterm: config.colorterm.clone(),
-            term_program: match config.term_program {
-                config::TermProgram::Termy => RuntimeTermProgram::Termy,
-                config::TermProgram::Ghostty => RuntimeTermProgram::Ghostty,
-            },
-            environment: Default::default(),
-            query_colors: Self::terminal_query_colors(colors),
-            working_dir_fallback,
-            scrollback_history: config.scrollback_history,
-            default_cursor_style: match config.cursor_style {
-                AppCursorStyle::Line => TerminalCursorStyle::Line,
-                AppCursorStyle::Block => TerminalCursorStyle::Block,
-            },
-        }
+        termy_core::runtime_config_from_app_config_with_query_colors(
+            config,
+            Self::terminal_query_colors(colors),
+        )
     }
 
     fn terminal_query_colors(colors: &TerminalColors) -> TerminalQueryColors {

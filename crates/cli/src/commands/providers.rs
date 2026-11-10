@@ -5,7 +5,7 @@ use termy_core::command_core::{
     default_resolved_keybinds, parse_keybind_directives_from_iter, resolve_keybinds,
 };
 use termy_core::config_core::{AppConfig, config_path};
-use termy_core::theme_core::{ANSI_COLOR_NAMES, ThemeColors, format_hex, parse_theme_colors_json};
+use termy_core::theme_core::{ANSI_COLOR_NAMES, ThemeColors, format_hex};
 
 pub fn config_file_path() -> Result<PathBuf, String> {
     config_path().ok_or_else(|| "Could not determine config directory".to_string())
@@ -205,14 +205,7 @@ pub fn terminal_default_theme_colors() -> termy_core::themes::ThemeColors {
 }
 
 fn load_installed_theme_colors(theme_id: &str) -> Option<ThemeColors> {
-    let normalized = termy_core::theme_core::normalize_theme_id(theme_id);
-    if normalized.is_empty() {
-        return None;
-    }
-
-    let theme_path = installed_themes_dir()?.join(format!("{normalized}.json"));
-    let contents = std::fs::read_to_string(theme_path).ok()?;
-    parse_theme_colors_json(&contents).ok()
+    termy_core::themes::load_local_theme(&installed_themes_dir()?, theme_id)
 }
 
 fn apply_custom_colors(colors: &mut ThemeColors, custom: &termy_core::config_core::CustomColors) {

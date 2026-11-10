@@ -3,8 +3,7 @@
 
 use termy_core::terminal_engine::{Engine, MouseEncoding, MouseTracking};
 use termy_core::{
-    TerminalKeyEventKind, TerminalKeyboardMode, TermyKeystroke, TermyModifiers,
-    keystroke_to_input_with_options,
+    TerminalKeyEventKind, TermyKeystroke, TermyModifiers, keystroke_to_input_with_options,
 };
 
 use crate::{TermyEngine, TermyEngineBytes, TermyEngineStatus, guard, handle, input};
@@ -83,20 +82,6 @@ const _: () = {
     assert!(size_of::<TermyEngineMouseEvent>() == 24);
 };
 
-pub(crate) fn keyboard_mode(engine: &Engine) -> TerminalKeyboardMode {
-    let modes = engine.modes();
-    let bits = modes.kitty_keyboard;
-    TerminalKeyboardMode::from_flags(
-        modes.application_cursor,
-        bits & 1 != 0,
-        bits & 2 != 0,
-        bits & 4 != 0,
-        bits & 8 != 0,
-        bits & 16 != 0,
-    )
-    .with_application_keypad(modes.application_keypad)
-}
-
 /// Encode a key event. `option_as_alt` says which Option keys act as Alt;
 /// an Alt from the other side composes text instead (`consumed_mods`).
 pub(crate) fn encode_key(
@@ -114,7 +99,7 @@ pub(crate) fn encode_key(
         KEY_RELEASE => TerminalKeyEventKind::Release,
         _ => TerminalKeyEventKind::Press,
     };
-    let mode = keyboard_mode(engine);
+    let mode = engine.modes().keyboard_mode();
     let enhanced = mode.enhanced_reporting_active();
     let mut mods = event.mods;
     // An Alt that the host reports by side is Alt only on a configured side.
@@ -293,38 +278,6 @@ pub(crate) fn encode_mouse(engine: &Engine, event: &TermyEngineMouseEvent) -> Ve
     }
 }
 
-/// Paste text with line endings as Enter, unsafe controls removed, and the
-/// bracketed-paste markers when the application enabled them.
-pub(crate) fn encode_paste(text: &[u8], bracketed: bool) -> Vec<u8> {
-    let text = String::from_utf8_lossy(text);
-    let mut body = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(character) = chars.next() {
-        match character {
-            '\r' => {
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                body.push('\r');
-            }
-            '\n' => body.push('\r'),
-            '\t' => body.push('\t'),
-            // Other C0 controls, DEL and C1 controls could run commands or
-            // end the bracket early.
-            '\0'..='\x1f' | '\x7f'..='\u{9f}' => {}
-            character => body.push(character),
-        }
-    }
-    if !bracketed {
-        return body.into_bytes();
-    }
-    let mut out = Vec::with_capacity(body.len() + 12);
-    out.extend_from_slice(b"\x1b[200~");
-    out.extend_from_slice(body.as_bytes());
-    out.extend_from_slice(b"\x1b[201~");
-    out
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_engine_encode_key(
     engine: *mut TermyEngine,
@@ -405,7 +358,10 @@ pub unsafe extern "C" fn termy_engine_encode_paste(
         let Some(out) = (unsafe { out_bytes.as_mut() }) else {
             return TermyEngineStatus::Null;
         };
-        *out = TermyEngineBytes::from_vec(encode_paste(text, bracketed));
+        *out = TermyEngineBytes::from_vec(termy_core::encode_paste(
+            &String::from_utf8_lossy(text),
+            bracketed,
+        ));
         TermyEngineStatus::Ok
     })
 }

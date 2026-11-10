@@ -11,12 +11,14 @@ mod frame;
 mod glyph_geometry;
 mod keyboard;
 mod kitty_graphics;
+mod launch_policy;
 #[cfg(feature = "native")]
 mod links;
 #[cfg(feature = "native")]
 mod locale;
 mod monotonic_time;
 mod mouse_protocol;
+mod paste;
 #[cfg(feature = "native")]
 mod path_env;
 mod program_status;
@@ -89,6 +91,7 @@ pub use mouse_protocol::{
     TerminalMouseButton, TerminalMouseEventKind, TerminalMouseMode, TerminalMouseModifiers,
     TerminalMousePosition, encode_mouse_report,
 };
+pub use paste::encode_paste;
 #[cfg(feature = "native")]
 pub use path_env::normalized_path_env;
 pub use protocol::{

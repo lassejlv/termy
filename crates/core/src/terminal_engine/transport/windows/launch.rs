@@ -273,15 +273,6 @@ fn executable_candidate(candidate: &Path, path_extensions: &OsStr) -> Option<Pat
     (extension.is_some() && is_launchable_file(candidate)).then(|| candidate.to_path_buf())
 }
 
-/// A regular file, or an app execution alias (`WindowsApps\pwsh.exe`), a
-/// reparse point `metadata` cannot follow but CreateProcessW starts.
-fn is_launchable_file(path: &Path) -> bool {
-    match std::fs::metadata(path) {
-        Ok(metadata) => metadata.is_file(),
-        Err(_) => std::fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_dir()),
-    }
-}
-
 fn is_command_processor(path: &Path) -> bool {
     path.file_name().is_some_and(|name| {
         name.to_string_lossy()
@@ -469,7 +460,9 @@ fn child_environment(
 ) -> io::Result<Vec<u16>> {
     let inherited = if inherit {
         std::env::vars_os()
-            .filter(|(name, _)| !crate::terminal_engine::transport::belongs_to_parent_terminal(name))
+            .filter(|(name, _)| {
+                !crate::terminal_engine::transport::belongs_to_parent_terminal(name)
+            })
             .collect()
     } else {
         Vec::new()

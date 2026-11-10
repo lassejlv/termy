@@ -5,14 +5,11 @@ use std::{
 };
 
 use crate::config_core::{
-    AppConfig, ConfigDiagnostic, CursorStyle, SHELL_DECIDE_THEME_ID, SystemAppearance, TermProgram,
-    WindowsShell, WorkingDirFallback, resolve_active_theme,
+    AppConfig, ConfigDiagnostic, CursorStyle, SHELL_DECIDE_THEME_ID, SystemAppearance,
+    resolve_active_theme,
 };
 use crate::protocol::TerminalQueryColors;
-use crate::runtime::{
-    TermProgram as RuntimeTermProgram, TerminalCursorStyle, TerminalRuntimeConfig,
-    WindowsShell as RuntimeWindowsShell, WorkingDirFallback as RuntimeWorkingDirFallback,
-};
+use crate::runtime::{TerminalCursorStyle, TerminalRuntimeConfig};
 use crate::themes::ThemeColors;
 use crate::{TerminalColor, TermyColor};
 
@@ -113,29 +110,15 @@ pub fn runtime_config_from_app_config_with_query_colors(
     config: &AppConfig,
     query_colors: TerminalQueryColors,
 ) -> TerminalRuntimeConfig {
-    let working_dir_fallback = match config.working_dir_fallback {
-        WorkingDirFallback::Home => RuntimeWorkingDirFallback::Home,
-        WorkingDirFallback::Process => RuntimeWorkingDirFallback::Process,
-    };
-
     TerminalRuntimeConfig {
         shell: config.shell.clone(),
-        windows_shell: match config.windows_shell {
-            WindowsShell::Auto => RuntimeWindowsShell::Auto,
-            WindowsShell::Cmd => RuntimeWindowsShell::Cmd,
-            WindowsShell::PowerShell => RuntimeWindowsShell::PowerShell,
-            WindowsShell::PowerShellCore => RuntimeWindowsShell::PowerShellCore,
-            WindowsShell::GitBash => RuntimeWindowsShell::GitBash,
-        },
+        windows_shell: config.windows_shell,
         term: config.term.clone(),
         colorterm: config.colorterm.clone(),
-        term_program: match config.term_program {
-            TermProgram::Termy => RuntimeTermProgram::Termy,
-            TermProgram::Ghostty => RuntimeTermProgram::Ghostty,
-        },
+        term_program: config.term_program,
         environment: Default::default(),
         query_colors,
-        working_dir_fallback,
+        working_dir_fallback: config.working_dir_fallback,
         scrollback_history: config.scrollback_history,
         default_cursor_style: match config.cursor_style {
             CursorStyle::Line => TerminalCursorStyle::Line,
@@ -299,7 +282,7 @@ mod tests {
         assert_eq!(loaded.runtime_config.colorterm, None);
         assert_eq!(
             loaded.runtime_config.term_program,
-            RuntimeTermProgram::Termy
+            crate::TermProgram::Termy
         );
         assert_eq!(loaded.runtime_config.scrollback_history, 42);
         assert_eq!(loaded.runtime_config.query_colors.background.r, 0xfa);

@@ -1,6 +1,8 @@
-import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import { binaryName, platformKey, platforms } from '../platforms.mjs'
+
+export { platformKey } from '../platforms.mjs'
 
 /** Event codes passed to the native callback. */
 export const EVENT_DATA = 0
@@ -44,34 +46,6 @@ export interface NativeBinding {
 
 const PACKAGE = '@termysh/pty'
 
-/** The prebuilt binary key for this machine, e.g. `linux-x64-gnu`. */
-export function platformKey(): string {
-  const { platform, arch } = process
-  switch (platform) {
-    case 'darwin':
-      return `darwin-${arch}`
-    case 'win32':
-      return `win32-${arch}-msvc`
-    case 'linux':
-      return `linux-${arch}-${isMusl() ? 'musl' : 'gnu'}`
-    default:
-      return `${platform}-${arch}`
-  }
-}
-
-function isMusl(): boolean {
-  try {
-    const report = process.report as unknown as {
-      excludeNetwork?: boolean
-      getReport(): { header?: { glibcVersionRuntime?: string } }
-    }
-    report.excludeNetwork = true
-    return !report.getReport().header?.glibcVersionRuntime
-  } catch {
-    return existsSync('/etc/alpine-release')
-  }
-}
-
 let binding: NativeBinding | undefined
 
 /**
@@ -83,7 +57,7 @@ export function loadNative(): NativeBinding {
   if (binding) return binding
   const require = createRequire(import.meta.url)
   const key = platformKey()
-  const file = `termy-pty.${key}.node`
+  const file = binaryName(key)
   const candidates = [
     process.env.TERMY_PTY_NATIVE,
     fileURLToPath(new URL(`../${file}`, import.meta.url)),
@@ -107,7 +81,6 @@ export function loadNative(): NativeBinding {
   throw new Error(
     `${PACKAGE}: no native binary for ${key}. Install with optional dependencies enabled ` +
       `(npm installs ${PACKAGE}-${key} automatically; --omit=optional or --no-optional skips it). ` +
-      `Supported: darwin-arm64, darwin-x64, linux-x64-gnu, linux-arm64-gnu, linux-x64-musl, ` +
-      `linux-arm64-musl, win32-x64-msvc, win32-arm64-msvc.${details}`,
+      `Supported: ${platforms.map(({ key }) => key).join(', ')}.${details}`,
   )
 }

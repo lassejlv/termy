@@ -1,3 +1,8 @@
+use crate::launch_policy::{DEFAULT_COLORTERM, DEFAULT_SCROLLBACK_HISTORY, DEFAULT_TERM};
+pub use crate::launch_policy::{
+    MAX_TERMINAL_SCROLLBACK_HISTORY, TermProgram, WindowsShell, WorkingDirFallback,
+};
+
 use crate::frame::{
     TerminalRenderDamageSnapshot, TerminalRenderRead, TerminalViewportMetadata, TermyFrame,
     TermyFrameUpdate,
@@ -28,56 +33,9 @@ pub struct TabTitleShellIntegration {
     pub explicit_prefix: String,
 }
 
-const DEFAULT_TERM: &str = "xterm-256color";
-const DEFAULT_COLORTERM: &str = "truecolor";
 const TERMY_TERM_PROGRAM: &str = "termy";
 const GHOSTTY_COMPAT_TERM_PROGRAM: &str = "ghostty";
 const GHOSTTY_COMPAT_TERM_PROGRAM_VERSION: &str = "1.2.0";
-
-/// Value advertised to child processes through `TERM_PROGRAM`.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TermProgram {
-    Termy,
-    /// Claude Code and similar CLIs gate terminal progress escape sequences on
-    /// known terminal identities. Termy supports Ghostty's OSC progress
-    /// protocol, so this advertises that compatibility while keeping TERM
-    /// conservative for terminfo.
-    #[default]
-    Ghostty,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkingDirFallback {
-    Home,
-    Process,
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for WorkingDirFallback {
-    fn default() -> Self {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            Self::Home
-        }
-
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            Self::Process
-        }
-    }
-}
-
-const DEFAULT_SCROLLBACK_HISTORY: usize = 1000;
-
-/// Upper clamp on scrollback lines, enforced at the point the value is applied
-/// to the live grid. The config-file parser (`config_core`) already bounds this
-/// at parse time, but the runtime/FFI setters (`with_scrollback_history`,
-/// `set_scrollback_history`) and directly-constructed `TerminalRuntimeConfig`s
-/// bypass that parser, so the core must self-defend: each pane eagerly grows its
-/// scrollback toward this cap, so an unbounded value plus hostile output is an
-/// unbounded memory leak. Kept in parity with `config_core`'s constant of the
-/// same name.
-pub const MAX_TERMINAL_SCROLLBACK_HISTORY: usize = 20_000;
 
 /// Upper clamp on terminal dimensions. Real displays never approach this (an 8K
 /// display at a 4px font is ~1900 columns); it exists only to stop a buggy or
@@ -86,19 +44,6 @@ pub const MAX_TERMINAL_SCROLLBACK_HISTORY: usize = 20_000;
 /// bound both the grid and snapshots allocated from it.
 const MAX_TERMINAL_COLS: u16 = 4096;
 const MAX_TERMINAL_ROWS: u16 = 4096;
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum WindowsShell {
-    Cmd,
-    PowerShell,
-    PowerShellCore,
-    GitBash,
-    /// PowerShell 7 (`pwsh.exe`) when it is installed, else Windows
-    /// PowerShell, else the `COMSPEC` command processor. Declared last so
-    /// serialized indices of the explicit presets stay stable.
-    #[default]
-    Auto,
-}
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalCursorStyle {
