@@ -400,7 +400,7 @@ impl TermyEngine {
     /// Normalize newlines, drop control characters, and apply bracketed paste
     /// when the application asked for it and `allow_brackets` is set.
     pub fn encode_paste(&self, text: &str, allow_brackets: bool) -> Vec<u8> {
-        input::encode_paste(allow_brackets && self.engine.modes().bracketed_paste, text)
+        termy_core::encode_paste(text, allow_brackets && self.engine.modes().bracketed_paste)
     }
 
     pub fn encode_focus(&self, focused: bool) -> Option<Vec<u8>> {

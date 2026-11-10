@@ -1,44 +1,17 @@
 //! Keyboard, mouse and paste encoding through `termy_core`'s native encoders,
 //! so web and desktop Termy send identical bytes.
 
-use termy_core::terminal_engine::{Engine, MouseEncoding, MouseTracking};
+use termy_core::terminal_engine::Engine;
 use termy_core::{
-    TerminalKeyEventKind, TerminalKeyboardMode, TerminalMouseButton, TerminalMouseEventKind,
-    TerminalMouseMode, TerminalMouseModifiers, TerminalMousePosition, TermyKeystroke,
-    TermyModifiers, encode_mouse_report, keystroke_to_input_with_options,
+    TerminalKeyEventKind, TerminalMouseButton, TerminalMouseEventKind, TerminalMouseModifiers,
+    TerminalMousePosition, TermyKeystroke, TermyModifiers, encode_mouse_report,
+    keystroke_to_input_with_options,
 };
 
 const CTRL: u32 = 1;
 const ALT: u32 = 1 << 1;
 const SHIFT: u32 = 1 << 2;
 const META: u32 = 1 << 3;
-
-pub fn keyboard_mode(engine: &Engine) -> TerminalKeyboardMode {
-    let modes = engine.modes();
-    let bits = modes.kitty_keyboard;
-    TerminalKeyboardMode::from_flags(
-        modes.application_cursor,
-        bits & 1 != 0,
-        bits & 2 != 0,
-        bits & 4 != 0,
-        bits & 8 != 0,
-        bits & 16 != 0,
-    )
-    .with_application_keypad(modes.application_keypad)
-}
-
-pub fn mouse_mode(engine: &Engine) -> TerminalMouseMode {
-    let modes = engine.modes();
-    TerminalMouseMode {
-        enabled: modes.mouse_tracking != MouseTracking::None,
-        // X10 (mode 9) reports presses only: enabled with no other flag.
-        report_click: modes.mouse_tracking == MouseTracking::Click,
-        report_drag: modes.mouse_tracking == MouseTracking::Drag,
-        report_motion: modes.mouse_tracking == MouseTracking::Motion,
-        sgr_encoding: modes.mouse_encoding == MouseEncoding::Sgr,
-        utf8_encoding: modes.mouse_encoding == MouseEncoding::Utf8,
-    }
-}
 
 pub fn encode_key(
     engine: &Engine,
@@ -67,7 +40,7 @@ pub fn encode_key(
     keystroke_to_input_with_options(
         &keystroke,
         kind,
-        keyboard_mode(engine),
+        engine.modes().keyboard_mode(),
         false,
         option_as_alt,
     )
@@ -98,7 +71,7 @@ pub fn encode_mouse(
         _ => return None,
     };
     encode_mouse_report(
-        mouse_mode(engine),
+        engine.modes().mouse_mode(),
         event,
         TerminalMousePosition {
             col: col as usize,
@@ -110,37 +83,4 @@ pub fn encode_mouse(
             control: modifiers & CTRL != 0,
         },
     )
-}
-
-/// Paste text with line endings as Enter, unsafe controls removed, and the
-/// bracketed-paste markers when the application enabled them. Mirrors
-/// `termy_engine_ffi`'s encoder so every host filters pastes the same way.
-pub fn encode_paste(bracketed: bool, text: &str) -> Vec<u8> {
-    let mut body = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(character) = chars.next() {
-        match character {
-            '\r' => {
-                if chars.peek() == Some(&'\n') {
-                    chars.next();
-                }
-                body.push('\r');
-            }
-            '\n' => body.push('\r'),
-            '\t' => body.push('\t'),
-            // Other C0 controls, DEL and C1 controls could run commands or
-            // end the bracket early. Dropping ESC also defeats nested end
-            // markers such as `ESC[20 ESC[201~ 1~`.
-            '\0'..='\x1f' | '\x7f'..='\u{9f}' => {}
-            character => body.push(character),
-        }
-    }
-    if !bracketed {
-        return body.into_bytes();
-    }
-    let mut out = Vec::with_capacity(body.len() + 12);
-    out.extend_from_slice(b"\x1b[200~");
-    out.extend_from_slice(body.as_bytes());
-    out.extend_from_slice(b"\x1b[201~");
-    out
 }

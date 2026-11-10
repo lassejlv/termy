@@ -93,23 +93,11 @@ impl TerminalColors {
     }
 
     pub(crate) fn indexed_color(&self, idx: u8) -> Rgba {
-        match idx {
-            // Standard ANSI colors
-            0..=15 => self.ansi[idx as usize],
-            // 216 color cube (6x6x6)
-            16..=231 => {
-                let idx = idx - 16;
-                let r = (idx / 36) % 6;
-                let g = (idx / 6) % 6;
-                let b = idx % 6;
-                let to_component = |c: u8| if c == 0 { 0 } else { 55 + c * 40 };
-                rgba(to_component(r), to_component(g), to_component(b))
-            }
-            // Grayscale (24 shades)
-            232..=255 => {
-                let gray = 8 + (idx - 232) * 10;
-                rgba(gray, gray, gray)
-            }
+        if idx < 16 {
+            self.ansi[idx as usize]
+        } else {
+            let color = termy_core::TerminalQueryColors::default().indexed_color(idx);
+            rgba(color.r, color.g, color.b)
         }
     }
 }

@@ -6,11 +6,14 @@ use gpui_kit::{
 };
 use std::ops::Range;
 
+mod inline;
 mod multiline;
+
+pub(crate) use inline::InlineInputState;
 
 pub use multiline::MultilineTextInputElement;
 
-const INLINE_INPUT_LINE_HEIGHT_MULTIPLIER: f32 = 1.35;
+pub(crate) const INLINE_INPUT_LINE_HEIGHT_MULTIPLIER: f32 = 1.35;
 
 /// Shared text input state for single-line and multiline text fields.
 #[derive(Clone, Debug)]
@@ -53,6 +56,15 @@ impl TextInputState {
         self.selection_reversed = false;
         self.invalidate_layout();
         self.move_to_end();
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.set_text(String::new());
+    }
+
+    pub(crate) fn selected_text(&self) -> Option<String> {
+        (!self.selected_range.is_empty())
+            .then(|| self.text[self.selected_range.clone()].to_string())
     }
 
     pub fn move_to_end(&mut self) {

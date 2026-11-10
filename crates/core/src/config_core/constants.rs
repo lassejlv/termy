@@ -16,8 +16,6 @@ pub const DEFAULT_FONT_FAMILY: &str = "monospace";
 pub const DEFAULT_UI_FONT_FAMILY: &str = ".SystemUIFont";
 #[cfg(not(target_os = "macos"))]
 pub const DEFAULT_UI_FONT_FAMILY: &str = DEFAULT_FONT_FAMILY;
-pub(crate) const DEFAULT_TERM: &str = "xterm-256color";
-pub(crate) const DEFAULT_COLORTERM: &str = "truecolor";
 pub(crate) const DEFAULT_TMUX_ENABLED: bool = false;
 pub(crate) const DEFAULT_TMUX_BINARY: &str = "tmux";
 pub(crate) const DEFAULT_TMUX_PERSISTENCE: bool = true;
@@ -33,12 +31,10 @@ pub const MIN_LINE_HEIGHT: f32 = 0.8;
 /// Highest accepted line-height multiplier. Values above this make the grid
 /// unusably sparse.
 pub const MAX_LINE_HEIGHT: f32 = 2.5;
-pub(crate) const DEFAULT_SCROLLBACK_HISTORY: usize = 1000;
-/// Upper clamp for scrollback lines. The engine also bounds each pane's
-/// history to a fixed byte budget (about 24 MiB, one million dense cells),
-/// counting packed rows at their real size, so width no longer limits how
-/// many of these lines survive.
-pub(crate) const MAX_SCROLLBACK_HISTORY: usize = 20_000;
+pub(crate) use crate::launch_policy::{
+    DEFAULT_COLORTERM, DEFAULT_SCROLLBACK_HISTORY, DEFAULT_TERM,
+    MAX_TERMINAL_SCROLLBACK_HISTORY as MAX_SCROLLBACK_HISTORY,
+};
 pub(crate) const DEFAULT_INACTIVE_TAB_SCROLLBACK: Option<usize> = Some(250);
 pub(crate) const DEFAULT_PANE_FOCUS_STRENGTH: f32 = 0.6;
 pub(crate) const DEFAULT_TAB_SWITCH_MODIFIER_HINTS: bool = true;

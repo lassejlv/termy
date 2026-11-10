@@ -10,7 +10,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { binaryName, platforms } from './platforms.mjs'
+import { binaryName, platforms } from '../platforms.mjs'
 
 const source = process.argv[2]
 if (!source) {

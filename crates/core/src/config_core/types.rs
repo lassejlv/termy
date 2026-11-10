@@ -8,6 +8,7 @@ use crate::config_core::constants::{
     DEFAULT_WARN_ON_QUIT_WITH_RUNNING_PROCESS,
 };
 
+pub use crate::launch_policy::{TermProgram, WindowsShell, WorkingDirFallback};
 pub use crate::theme_core::Rgb8;
 
 pub type ThemeId = String;
@@ -290,31 +291,6 @@ impl TerminalScrollbarStyle {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum WindowsShell {
-    /// PowerShell 7 when installed, else Windows PowerShell, else `COMSPEC`.
-    #[default]
-    Auto,
-    Cmd,
-    PowerShell,
-    PowerShellCore,
-    GitBash,
-}
-
-impl WindowsShell {
-    pub(crate) fn from_str(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "auto" | "automatic" => Some(Self::Auto),
-            "cmd" | "command_prompt" | "commandprompt" => Some(Self::Cmd),
-            "powershell" | "power_shell" | "windows_powershell" | "ps" => Some(Self::PowerShell),
-            "pwsh" | "powershell_core" | "powershellcore" | "powershell_7" | "powershell-7"
-            | "powershell7" | "power_shell_7" | "power_shell_core" => Some(Self::PowerShellCore),
-            "git_bash" | "gitbash" | "git-bash" | "bash" => Some(Self::GitBash),
-            _ => None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PaneFocusEffect {
     Off,
     #[default]
@@ -364,40 +340,6 @@ impl ClipboardReadPolicy {
             Self::Ask => "ask",
             Self::Allow => "allow",
             Self::Deny => "deny",
-        }
-    }
-}
-
-/// Terminal identity advertised to child processes through `TERM_PROGRAM`.
-///
-/// `Ghostty` is the default because CLIs such as Claude Code only emit
-/// features like OSC 9;4 progress to terminals they recognise. The cost is
-/// that system info tools such as neofetch report Ghostty; `Termy` reports
-/// the real identity instead.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TermProgram {
-    Termy,
-    #[default]
-    Ghostty,
-}
-
-impl std::str::FromStr for TermProgram {
-    type Err = ();
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "termy" => Ok(Self::Termy),
-            "ghostty" => Ok(Self::Ghostty),
-            _ => Err(()),
-        }
-    }
-}
-
-impl TermProgram {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Termy => "termy",
-            Self::Ghostty => "ghostty",
         }
     }
 }
@@ -586,37 +528,6 @@ impl Default for AppConfig {
             keybind_lines: Vec::new(),
             tasks: Vec::new(),
             colors: CustomColors::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkingDirFallback {
-    Home,
-    Process,
-}
-
-impl WorkingDirFallback {
-    pub(crate) fn from_str(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "home" | "user" => Some(Self::Home),
-            "process" | "cwd" => Some(Self::Process),
-            _ => None,
-        }
-    }
-}
-
-#[allow(clippy::derivable_impls)]
-impl Default for WorkingDirFallback {
-    fn default() -> Self {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
-        {
-            Self::Home
-        }
-
-        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        {
-            Self::Process
         }
     }
 }

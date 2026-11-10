@@ -1,3 +1,4 @@
+use super::is_launchable_file;
 use std::{
     cmp::Ordering as CmpOrdering,
     collections::VecDeque,

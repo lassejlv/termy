@@ -23,11 +23,7 @@ final class ShellPlugins {
     private init() {}
 
     static var folder: URL {
-        if let home = ProcessInfo.processInfo.environment["TERMY_NEXT_HOME"] {
-            return URL(fileURLWithPath: home).appendingPathComponent("support/shell", isDirectory: true)
-        }
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return support.appendingPathComponent("TermyNext/shell", isDirectory: true)
+        NextPaths.current.shellDirectory
     }
 
     /// In the support folder, unless that path is too long for a Unix socket

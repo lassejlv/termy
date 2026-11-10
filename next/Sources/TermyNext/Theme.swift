@@ -166,10 +166,7 @@ final class AppConfig {
     static let shared = AppConfig()
 
     static var directory: URL {
-        if let home = ProcessInfo.processInfo.environment["TERMY_NEXT_HOME"] {
-            return URL(fileURLWithPath: home).appendingPathComponent("config", isDirectory: true)
-        }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/termy-next", isDirectory: true)
+        NextPaths.current.configurationDirectory
     }
     static var configURL: URL { directory.appendingPathComponent("config.txt") }
     static var themesURL: URL { directory.appendingPathComponent("themes", isDirectory: true) }

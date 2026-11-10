@@ -13,7 +13,7 @@ import { copyFileSync, existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { parseArgs } from 'node:util'
 import { fileURLToPath } from 'node:url'
-import { binaryName, hostPlatform, platformForTarget } from './platforms.mjs'
+import { binaryName, hostPlatform, platformForTarget } from '../platforms.mjs'
 
 const { values } = parseArgs({
   options: {
