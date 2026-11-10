@@ -123,6 +123,73 @@ public struct RemoteFrame: Codable, Hashable, Sendable {
     }
 }
 
+/// One Kitty graphics placement on a pane's screen.
+///
+/// Rectangles are `[x, y, width, height]`. `frame` and `clip` are in cells
+/// from the grid's top-left corner, so they fit whatever cell size the phone
+/// draws; `crop` is in fractions of the image, so it fits a downscaled copy.
+public struct RemoteImagePlacement: Codable, Hashable, Sendable {
+    /// The image to draw, as an earlier `HostMessage.image` named it.
+    public var key: String
+    /// Where the cropped image is drawn.
+    public var frame: [Double]
+    /// The part of the grid the placement may paint.
+    public var clip: [Double]
+    /// The part of the image to draw.
+    public var crop: [Double]
+    /// Negative values draw below text.
+    public var z: Int
+
+    public init(key: String, frame: [Double], clip: [Double], crop: [Double], z: Int) {
+        self.key = key
+        self.frame = frame
+        self.clip = clip
+        self.crop = crop
+        self.z = z
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case key = "k"
+        case frame = "f"
+        case clip = "c"
+        case crop = "s"
+        case z
+    }
+
+    public var isValid: Bool {
+        key.count <= 64 && [frame, clip, crop].allSatisfy { rect in
+            rect.count == 4 && rect.allSatisfy { $0.isFinite && abs($0) <= 100_000 } && rect[2] >= 0 && rect[3] >= 0
+        }
+    }
+}
+
+/// Every image on a stream's screen. It replaces the list the phone had.
+public struct RemoteImages: Codable, Hashable, Sendable {
+    public static let maxPlacements = 4096
+    /// The largest image the host sends, encoded. The relay carries
+    /// messages up to 4 MiB, and JSON takes a third more than the PNG.
+    public static let maxImageBytes = 2 * 1024 * 1024
+
+    public var stream: Int
+    public var placements: [RemoteImagePlacement]
+    /// Images the phone may forget: the host sends them again if needed.
+    public var evicted: [String]
+    /// True for a stream's first list: forget every image it doesn't place.
+    public var full: Bool
+
+    public init(stream: Int, placements: [RemoteImagePlacement], evicted: [String] = [], full: Bool = false) {
+        self.stream = stream
+        self.placements = placements
+        self.evicted = evicted
+        self.full = full
+    }
+
+    public var isValid: Bool {
+        placements.count <= Self.maxPlacements && evicted.count <= Self.maxPlacements
+            && placements.allSatisfy(\.isValid)
+    }
+}
+
 /// A pane as the phone lists it.
 public struct RemotePane: Codable, Hashable, Sendable, Identifiable {
     public var id: String
@@ -212,11 +279,16 @@ public enum HostMessage: Codable, Hashable, Sendable {
     case error(String)
     case configuration(RemoteConfiguration)
     case searchResults(stream: Int, matches: [RemoteSearchMatch])
+    /// An image's pixels as a PNG, before the first `images` that places it.
+    /// Sent to phones that said hello with version 3 or later.
+    case image(stream: Int, key: String, png: Data)
+    case images(RemoteImages)
 
 }
 
 public enum RemoteProtocol {
-    public static let version = 2
+    /// 3 adds Kitty graphics: `HostMessage.image` and `.images`.
+    public static let version = 3
 }
 
 /// JSON, deflated when that saves space. The first byte says which.

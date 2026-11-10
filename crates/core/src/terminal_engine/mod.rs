@@ -710,6 +710,17 @@ impl Engine {
             }
         };
         self.state.cell_pixels = (clamp(width), clamp(height));
+        let exact = |value: f32, rounded: u16| {
+            if value.is_finite() && value >= 1.0 {
+                value.min(65535.0)
+            } else {
+                f32::from(rounded)
+            }
+        };
+        self.state.cell_size = (
+            exact(width, self.state.cell_pixels.0),
+            exact(height, self.state.cell_pixels.1),
+        );
         self.state.resize_graphics();
     }
 
@@ -730,7 +741,7 @@ impl Engine {
             return;
         }
         self.stop_synchronized_update();
-        self.state.grid.resize(size);
+        self.state.resize_grid_with_graphics(size);
         self.state.resize_graphics();
         self.state.flush_graphics_effects();
         self.generation = self.generation.wrapping_add(1);

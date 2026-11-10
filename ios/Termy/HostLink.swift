@@ -179,6 +179,10 @@ final class HostLink {
             }
         case .searchResults(let stream, let matches):
             screens[stream]?.searchMatches = matches
+        case .image(let stream, let key, let png):
+            screens[stream]?.store(image: png, key: key)
+        case .images(let list):
+            screens[list.stream]?.apply(list)
         case .created(let paneID):
             creating = false
             creationTimeout?.cancel()

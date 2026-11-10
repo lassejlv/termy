@@ -19,6 +19,9 @@ public final class TerminalSession {
 
     /// Called after the retained frame changes visibly.
     public var onFrameChange: ((FrameChange) -> Void)?
+    /// Called when Kitty graphics change. An image placed without moving the
+    /// cursor, or deleted, changes no cell, so `onFrameChange` stays silent.
+    public var onGraphicsChange: (() -> Void)?
     /// Called for every drained event, after session state is updated.
     public var onEvent: ((TerminalEvent) -> Void)?
     /// Services Kitty OSC 5522 clipboard requests. Reads are denied when nil.
@@ -33,6 +36,7 @@ public final class TerminalSession {
     private var isPolling = false
     private var pollRequestedWhilePolling = false
     private var forceFullOnNextPoll = true
+    private var graphicsRevision: UInt64?
 
     /// Spawns a shell in a PTY and starts polling on output.
     public convenience init(size: TerminalSize, options: TerminalOptions = TerminalOptions()) throws(TermyError) {
@@ -103,9 +107,14 @@ public final class TerminalSession {
         if hasMore { schedulePoll() }
 
         let force = forceFull || forceFullOnNextPoll
-        guard let change = try? terminal.updateFrame(frame, forceFull: force) else { return }
-        forceFullOnNextPoll = false
-        if change.needsDisplay { onFrameChange?(change) }
+        if let change = try? terminal.updateFrame(frame, forceFull: force) {
+            forceFullOnNextPoll = false
+            if change.needsDisplay { onFrameChange?(change) }
+        }
+        if let revision = try? terminal.kittyGraphicsRevision(), revision != graphicsRevision {
+            graphicsRevision = revision
+            onGraphicsChange?()
+        }
     }
 
     private var protocolReplyHandler: ((Data) -> Void)? {

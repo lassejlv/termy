@@ -86,8 +86,8 @@ impl State {
         TerminalSize {
             cols: size.cols as u16,
             rows: size.rows as u16,
-            cell_width: f32::from(self.cell_pixels.0),
-            cell_height: f32::from(self.cell_pixels.1),
+            cell_width: self.cell_size.0,
+            cell_height: self.cell_size.1,
         }
     }
 
@@ -103,6 +103,25 @@ impl State {
         // The decoded grid's full damage is not an edit of placeholder cells;
         // the encoded engine had flushed its own.
         self.grid.take_visual_dirty();
+    }
+
+    /// Resize the grid, keeping each image on the text row it was placed
+    /// at when a width change rewraps the lines above it.
+    pub(super) fn resize_grid_with_graphics(&mut self, size: super::Size) {
+        if !self.graphics.state.has_placements() {
+            self.grid.resize(size);
+            return;
+        }
+        // Scrolls recorded so far describe rows as they were before this
+        // resize; the ones the resize records apply after its moves.
+        self.flush_graphics_effects();
+        self.grid.track_rows(self.graphics.state.primary_rows());
+        self.grid.resize(size);
+        if let Some(moves) = self.grid.take_tracked_rows()
+            && self.graphics.state.move_primary_rows(&moves)
+        {
+            self.graphics.changed();
+        }
     }
 
     pub(super) fn resize_graphics(&mut self) {

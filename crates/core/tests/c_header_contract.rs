@@ -90,6 +90,8 @@ void termy_header_contract(void) {
   (void)termy_terminal_kitty_graphics_revision(terminal, &graphics_revision);
   (void)termy_terminal_kitty_graphics_placements(terminal, &graphics);
   (void)termy_kitty_graphics_batch_free(&graphics);
+  (void)termy_terminal_kitty_graphics_placements_rgba(terminal, 0, 0, &graphics);
+  (void)termy_kitty_graphics_batch_free(&graphics);
   (void)termy_terminal_drain_events_with_clipboard(
       terminal, 0, read_clipboard, write_clipboard, protocol_reply, &events);
   (void)termy_event_batch_free(&events);

@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import Observation
 import TermyRemoteKit
 
@@ -25,6 +27,9 @@ final class TerminalScreen: Identifiable {
     @ObservationIgnored private(set) var lines: [[CellRun]] = []
     @ObservationIgnored private(set) var cursor = RemoteCursor(row: 0, col: 0, visible: false, style: "block")
     @ObservationIgnored private(set) var background: UInt32 = 0x1014_21ff
+    /// Kitty graphics on the screen, and the images the host has sent.
+    @ObservationIgnored private(set) var images: [RemoteImagePlacement] = []
+    @ObservationIgnored private var pixels: [String: CGImage] = [:]
     /// Called after each frame; the terminal view redraws.
     @ObservationIgnored var changedRows: [Int]?
     @ObservationIgnored var onChange: (() -> Void)?
@@ -48,6 +53,31 @@ final class TerminalScreen: Identifiable {
         }
         return result
     }
+    func image(_ key: String) -> CGImage? { pixels[key] }
+
+    /// Keeps an image the host sent; a later `apply(_:)` places it.
+    func store(image png: Data, key: String) {
+        // Untrusted: bound what is decoded and how much is kept.
+        guard key.count <= 64, png.count <= RemoteImages.maxImageBytes, pixels.count < RemoteImages.maxPlacements,
+            let source = CGImageSourceCreateWithData(png as CFData, nil),
+            let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+            image.width <= 4096, image.height <= 4096
+        else { return }
+        pixels[key] = image
+    }
+
+    func apply(_ list: RemoteImages) {
+        guard list.isValid else { return }
+        for key in list.evicted { pixels[key] = nil }
+        if list.full {
+            let placed = Set(list.placements.map(\.key))
+            pixels = pixels.filter { placed.contains($0.key) }
+        }
+        images = list.placements
+        changedRows = nil
+        onChange?()
+    }
+
     func apply(_ frame: RemoteFrame) {
         guard frame.isValid else { return }
         changedRows =

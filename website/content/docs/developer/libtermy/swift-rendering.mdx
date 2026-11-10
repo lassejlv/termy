@@ -70,17 +70,19 @@ created, because command-line SwiftPM builds don't compile `.metal` files.
 Each frame draws these layers, back to front:
 
 1. Clear to the theme background at the configured opacity.
-2. Cell backgrounds (cached per row).
-3. Selection.
-4. Kitty images with a negative z-index.
-5. Foreground (cached per row): glyphs, underline and strikethrough, and
+2. Kitty images with a z-index below `Int32.min / 2`, which go under cells
+   that have a background color of their own.
+3. Cell backgrounds (cached per row).
+4. Selection.
+5. Kitty images with any other negative z-index.
+6. Foreground (cached per row): glyphs, underline and strikethrough, and
    special-glyph geometry.
-6. Kitty images with a z-index of zero or more.
-7. Cursor: a bar, a hollow block when the view is unfocused, or a filled block
+7. Kitty images with a z-index of zero or more.
+8. Cursor: a bar, a hollow block when the view is unfocused, or a filled block
    with the character under it redrawn in the background color.
-8. IME marked text.
+9. IME marked text.
 
-Only layers 2 and 5 are cached. Everything else is rebuilt each frame, which is
+Only layers 3 and 6 are cached. Everything else is rebuilt each frame, which is
 cheap because it is a few quads. A cursor blink or a selection drag rebuilds no
 rows.
 
@@ -125,8 +127,24 @@ instead of font glyphs, so lines meet seamlessly across cells at any font size.
 - The layer presents in step with Core Animation (`presentsWithTransaction`).
   The main thread waits until the GPU has accepted the frame, not until it
   finishes, so live window resizes don't show stretched content.
-- Kitty image textures are cached by image ID and generation and released when
-  their placements disappear.
+- Kitty image textures are cached by image ID and generation. Textures no
+  frame draws are kept, most recently drawn first, up to 64 MiB, so a looping
+  animation or an image scrolled back into view is uploaded once.
+
+## Kitty images
+
+The view resizes the terminal with its cell size in device pixels, so programs
+that size images from the window's pixel size send every pixel a Retina display
+can show. Each placement is laid out by `KittyPlacementGeometry` (public, for
+drawing placements elsewhere), which scales image pixels by the terminal's cell
+size over the cell size drawn, so an image covers the cells the terminal
+counted for it whoever resized the pane last.
+
+Pixels reach the view as raw RGBA through `Terminal.kittyGraphics(holding:)`,
+which leaves out the images the view already holds. Images change without any
+cell changing (a placement that keeps the cursor still, a deletion), so the
+view reloads them from `TerminalSession.onGraphicsChange` as well as on frame
+changes. Unicode placeholder cells draw their part of the image and no glyph.
 
 ## Performance
 

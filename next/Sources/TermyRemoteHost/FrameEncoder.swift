@@ -35,7 +35,8 @@ enum FrameEncoder {
                 col += 2
                 continue
             }
-            let text = cell.text ?? " "
+            // A Kitty graphics placeholder shows an image, not a glyph.
+            let text = cell.codepoint == 0x10EEEE ? " " : cell.text ?? " "
             if var last = runs.last, last.fg == fg, last.bg == bg, last.flags == style,
                 last.col + last.cells == col, last.cells == last.text.unicodeScalars.count,
                 last.glyphPNG == nil, last.text.unicodeScalars.allSatisfy(\.isASCII),

@@ -188,6 +188,7 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
         let size = fittingFontSize
         let cell = cellSize(fontSize: size)
         let origin = gridOrigin
+        drawImages(screen, below: true, cell: cell, origin: origin, in: context)
         for (row, runs) in screen.lines.enumerated() {
             let y = origin.y + CGFloat(row) * cell.height
             guard y < rect.maxY, y + cell.height > rect.minY else { continue }
@@ -244,6 +245,7 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
                 }
             }
         }
+        drawImages(screen, below: false, cell: cell, origin: origin, in: context)
         let cursor = screen.cursor
         if cursor.visible,
             cursorOn || !config.cursorBlink || !isFirstResponder || config.reduceMotion
@@ -259,6 +261,32 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits {
             case "underline": context.fill(CGRect(x: x, y: y + cell.height - 2, width: cell.width, height: 2))
             default: context.fill(CGRect(x: x, y: y, width: cell.width, height: cell.height))
             }
+        }
+    }
+
+    /// Draws the screen's Kitty graphics that go below text, or above it.
+    private func drawImages(
+        _ screen: TerminalScreen, below: Bool, cell: CGSize, origin: CGPoint, in context: CGContext
+    ) {
+        func rect(_ cells: [Double]) -> CGRect {
+            CGRect(
+                x: origin.x + CGFloat(cells[0]) * cell.width, y: origin.y + CGFloat(cells[1]) * cell.height,
+                width: CGFloat(cells[2]) * cell.width, height: CGFloat(cells[3]) * cell.height)
+        }
+        for placement in screen.images where (placement.z < 0) == below {
+            guard let image = screen.image(placement.key) else { continue }
+            let crop = CGRect(
+                x: placement.crop[0] * Double(image.width), y: placement.crop[1] * Double(image.height),
+                width: placement.crop[2] * Double(image.width), height: placement.crop[3] * Double(image.height))
+            guard let cropped = image.cropping(to: crop) else { continue }
+            let frame = rect(placement.frame)
+            context.saveGState()
+            context.clip(to: rect(placement.clip))
+            // CGImage draws bottom-up; flip into the view's top-down space.
+            context.translateBy(x: 0, y: frame.maxY + frame.minY)
+            context.scaleBy(x: 1, y: -1)
+            context.draw(cropped, in: frame)
+            context.restoreGState()
         }
     }
 

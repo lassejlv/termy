@@ -208,6 +208,10 @@ pub(super) struct Grid {
     history_read_end: AtomicUsize,
     track_effects: bool,
     effects: Vec<GridEffect>,
+    // Rows a width change should follow, and where it moved them; see
+    // `reflow.rs`.
+    tracked_rows: Vec<usize>,
+    tracked_moves: Option<Vec<(usize, i64)>>,
     #[cfg(test)]
     last_reflow_row_allocations: usize,
     pub(super) cursor: Cursor,
@@ -317,6 +321,8 @@ impl Grid {
             history_read_end: AtomicUsize::new(0),
             track_effects: false,
             effects: Vec::new(),
+            tracked_rows: Vec::new(),
+            tracked_moves: None,
             #[cfg(test)]
             last_reflow_row_allocations: 0,
             cursor: Cursor::default(),
