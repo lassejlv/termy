@@ -444,7 +444,36 @@ public final class Terminal {
                 pngs[ptr] = png
                 return KittyGraphicsPlacement(placement, png: png)
             }
-        return KittyGraphicsSnapshot(revision: batch.revision, placements: placements)
+        return KittyGraphicsSnapshot(
+            revision: batch.revision, placements: placements,
+            cellWidth: batch.cell_width, cellHeight: batch.cell_height)
+    }
+
+    /// The placements, with pixels as raw RGBA and none of the PNG encoding
+    /// `kittyGraphics()` does. Images in `held` come without pixels: pass the
+    /// keys of the images you keep, so each one is copied once.
+    public func kittyGraphics(holding held: Set<KittyImageKey>) throws(TermyError) -> KittyGraphicsSnapshot {
+        var batch = TermyFfiKittyGraphicsBatch()
+        let known = held.map { TermyFfiKittyImageKey(image_id: $0.imageID, image_generation: $0.generation) }
+        let status = known.withUnsafeBufferPointer { known in
+            termy_terminal_kitty_graphics_placements_rgba(handle, known.baseAddress, known.count, &batch)
+        }
+        defer { termy_kitty_graphics_batch_free(&batch) }
+        try check(status, "termy_terminal_kitty_graphics_placements_rgba")
+        // Placements of one image share a buffer; copy each buffer once.
+        var buffers: [UnsafeMutablePointer<UInt8>: Data] = [:]
+        func copy(_ bytes: TermyFfiBytes) -> Data? {
+            guard let ptr = bytes.ptr else { return nil }
+            if let data = buffers[ptr] { return data }
+            let data = bytes.copyData()
+            buffers[ptr] = data
+            return data
+        }
+        let placements = UnsafeBufferPointer(start: batch.placements_ptr, count: batch.placements_len)
+            .map { KittyGraphicsPlacement($0, png: copy($0.png) ?? Data(), rgba: copy($0.rgba)) }
+        return KittyGraphicsSnapshot(
+            revision: batch.revision, placements: placements,
+            cellWidth: batch.cell_width, cellHeight: batch.cell_height)
     }
 
     /// Applies a config's theme colors, resolved for `appearance`.

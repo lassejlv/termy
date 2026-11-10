@@ -33,6 +33,10 @@ pub(super) struct State {
     pub(super) default_cursor_shape: CursorShape,
     pub(super) cursor_shape_overridden: bool,
     pub(super) cell_pixels: (u16, u16),
+    /// The unrounded cell size, which image layout uses: a renderer draws on
+    /// the fractional grid, so whole-pixel cells would miscount the rows and
+    /// columns an image covers. Reports and snapshots use `cell_pixels`.
+    pub(super) cell_size: (f32, f32),
     pub(super) pixel_mouse_reports: bool,
     /// Host configuration, not terminal state (snapshots leave it out): see
     /// [`super::Engine::set_passthrough_replies_only`].
@@ -74,6 +78,7 @@ impl State {
             default_cursor_shape: CursorShape::Block,
             cursor_shape_overridden: false,
             cell_pixels: (9, 18),
+            cell_size: (9.0, 18.0),
             pixel_mouse_reports: false,
             passthrough_replies_only: false,
             program_status: crate::program_status::ProgramStatus::default(),
@@ -949,8 +954,8 @@ impl Handler for State {
                 14 => self.reply(
                     format!(
                         "\x1b[4;{};{}t",
-                        usize::from(self.cell_pixels.1) * self.grid.size().rows,
-                        usize::from(self.cell_pixels.0) * self.grid.size().cols
+                        window_pixels(self.cell_size.1, self.grid.size().rows),
+                        window_pixels(self.cell_size.0, self.grid.size().cols)
                     )
                     .as_bytes(),
                 ),
@@ -1089,6 +1094,12 @@ fn percent_decode(text: &str) -> Option<String> {
         }
     }
     String::from_utf8(decoded).ok()
+}
+
+/// The text area's pixel extent along one axis, from the unrounded cell
+/// size, so it matches what `TIOCGWINSZ` reports.
+fn window_pixels(cell: f32, cells: usize) -> usize {
+    (cell * cells as f32).round().max(1.0) as usize
 }
 
 fn value(params: &[Param], index: usize, default: u16) -> u16 {

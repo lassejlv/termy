@@ -178,6 +178,10 @@ impl State {
         state.default_cursor_shape = reader.cursor_shape()?;
         state.cursor_shape_overridden = reader.bool()?;
         state.cell_pixels = (reader.u16()?.max(1), reader.u16()?.max(1));
+        state.cell_size = (
+            f32::from(state.cell_pixels.0),
+            f32::from(state.cell_pixels.1),
+        );
         state.pixel_mouse_reports = reader.bool()?;
         if state.modes.mouse_encoding == MouseEncoding::SgrPixels && !state.pixel_mouse_reports {
             return Err(Corrupt("mouse encoding"));

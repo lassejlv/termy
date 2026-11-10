@@ -25,6 +25,11 @@ struct ReflowWindow {
     cursor: Option<(usize, usize, bool)>,
     boundary: Option<usize>,
     viewport: Option<usize>,
+    // Where each tracked row landed, by its index in `Grid::tracked_rows`,
+    // and the tracked rows of the logical line being joined: the index of
+    // each one's first cell, and its index in `pins`.
+    pins: Vec<Option<usize>>,
+    logical_pins: Vec<(usize, usize)>,
     #[cfg(test)]
     row_allocations: usize,
 }
@@ -48,6 +53,8 @@ impl ReflowWindow {
             cursor: None,
             boundary: None,
             viewport: None,
+            pins: Vec::new(),
+            logical_pins: Vec::new(),
             #[cfg(test)]
             row_allocations: 0,
         }
@@ -145,7 +152,25 @@ impl ReflowWindow {
 }
 
 impl Grid {
+    /// Follow these rows through the next width change. They count from the
+    /// oldest history row, ascending and without repeats, as a placed
+    /// image's rows are known to the engine.
+    pub(in crate::terminal_engine) fn track_rows(&mut self, rows: Vec<usize>) {
+        self.tracked_rows = rows;
+        self.tracked_moves = None;
+    }
+
+    /// Each tracked row and where a width change moved it, counted from the
+    /// oldest history row it kept (negative when the row was evicted). None
+    /// when the width did not change, so nothing moved.
+    pub(in crate::terminal_engine) fn take_tracked_rows(&mut self) -> Option<Vec<(usize, i64)>> {
+        self.tracked_rows.clear();
+        self.tracked_moves.take()
+    }
+
     pub(super) fn reflow_primary(&mut self, size: Size) {
+        let tracked = std::mem::take(&mut self.tracked_rows);
+        let mut next_tracked = 0;
         let old_history = self.history.len();
         let cursor_source = old_history + self.primary.cursor.row;
         let cursor_col = self.primary.cursor.col;
@@ -175,14 +200,22 @@ impl Grid {
         let mut logical_cursor = None;
         let mut logical_boundary = None;
         let mut logical_viewport = None;
+        output.pins = vec![None; tracked.len()];
         // Rows printed on a one-column screen hold narrowed wide glyphs that
         // only the logical-line path restores.
         let in_place = self.size.cols > 1;
         let mut joining = false;
         for (index, mut row) in source.enumerate() {
+            let pin = (tracked.get(next_tracked) == Some(&index)).then(|| {
+                next_tracked += 1;
+                next_tracked - 1
+            });
             if in_place && !joining && index != cursor_source && row.reflow_in_place(size.cols) {
                 if index == old_history {
                     output.boundary = Some(output.produced);
+                }
+                if let Some(pin) = pin {
+                    output.pins[pin] = Some(output.produced);
                 }
                 if Some(index) == viewport_source {
                     output.viewport = Some(output.produced);
@@ -197,6 +230,9 @@ impl Grid {
             }
             if Some(index) == viewport_source {
                 logical_viewport = Some(logical.len());
+            }
+            if let Some(pin) = pin {
+                output.logical_pins.push((logical.len(), pin));
             }
             if index == cursor_source {
                 let removed = row.cells[..cursor_col]
@@ -253,6 +289,21 @@ impl Grid {
             );
         }
         let cursor = output.cursor.expect("reflow maps the live cursor");
+        // Rows below the last one with text were dropped above; they keep
+        // their distance from the cursor's row.
+        self.tracked_moves = Some(
+            tracked
+                .iter()
+                .zip(&output.pins)
+                .map(|(source, mapped)| {
+                    let mapped = mapped.map_or_else(
+                        || cursor.0 as i64 + (*source as i64 - cursor_source as i64),
+                        |mapped| mapped as i64,
+                    );
+                    (*source, mapped - output.first as i64)
+                })
+                .collect(),
+        );
         let mut split = output.produced.saturating_sub(size.rows).min(cursor.0);
         if self.clear_anchor {
             split = split.max(output.boundary.unwrap_or(0).min(cursor.0));
@@ -296,6 +347,8 @@ impl Grid {
         let mut viewport_mapped = false;
         let mut input = cells.drain(..).enumerate().peekable();
         let mut extras = extras.drain(..).peekable();
+        let pins = std::mem::take(&mut output.logical_pins);
+        let mut pins = pins.into_iter().peekable();
         while let Some((index, mut cell)) = input.next() {
             // Metadata of cells skipped below (narrowed spacers) is dropped.
             while extras
@@ -334,6 +387,9 @@ impl Grid {
             if viewport == Some(index) {
                 output.viewport = Some(output.produced);
                 viewport_mapped = true;
+            }
+            while let Some((_, pin)) = pins.next_if(|(cell, _)| *cell <= index) {
+                output.pins[pin] = Some(output.produced);
             }
             if wide && cols == 1 {
                 cell.flags &= !Cell::WIDE;
@@ -381,6 +437,10 @@ impl Grid {
         }
         if !viewport_mapped && viewport.is_some() {
             output.viewport = Some(output.produced);
+        }
+        // A tracked row with no text of its own is the row that ends the line.
+        for (_, pin) in pins {
+            output.pins[pin] = Some(output.produced);
         }
         output.push(row);
     }

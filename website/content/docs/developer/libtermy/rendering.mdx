@@ -173,7 +173,25 @@ clipping; converting a negative value to an unsigned index can put an image far
 outside the viewport. Respect the placement transform and clipping fields
 instead of stretching every PNG over its occupied cells.
 
+Image sizes (`source_width`, `source_height`) and pixel offsets are in the
+pixels of the cell size the terminal was resized with, which the batch reports
+as `cell_width` and `cell_height`. Give the terminal its cell size in device
+pixels and programs send full-resolution images; when you draw in other units,
+scale by your cell size over the batch's.
+
 An animated placement's nonzero `next_frame_delay_ms` requires a host timer to
 fetch refreshed placements and redraw. Zero means static. A terminal that is not
 receiving new text can still need an image repaint. The batch owns its PNG
 buffers; copy bytes needed by asynchronous decoders before freeing it.
+
+A renderer that keeps its own textures should call
+`termy_terminal_kitty_graphics_placements_rgba` instead. It skips the PNG
+encoding: pixels arrive as straight-alpha RGBA8 in `rgba` (`image_width *
+image_height * 4` bytes), or in `png` for an image the terminal holds only as a
+PNG. Pass the `(image_id, image_generation)` keys of the images you already
+hold in `known`, and their placements arrive with no pixels at all, so a
+scrolling image or a repeating animation frame is copied once.
+
+Images can change with no cell or cursor change: a placement sent with `C=1`,
+or a deletion. Compare `termy_terminal_kitty_graphics_revision` after every
+wakeup, not only when a frame update reports damage.

@@ -241,9 +241,12 @@ typedef void (*TermyFfiProtocolReplyCallback)(
     TermyFfiUserData user_data,
     TermyFfiByteSlice reply);
 
-/* Placements of the same image in one batch share a single `png` buffer
- * (same pointer). Never free it directly: termy_kitty_graphics_batch_free
- * releases each buffer once. */
+/* Placements of the same image in one batch share a single `png` (or `rgba`)
+ * buffer (same pointer). Never free it directly:
+ * termy_kitty_graphics_batch_free releases each buffer once.
+ *
+ * `rgba` is set only by termy_terminal_kitty_graphics_placements_rgba: the
+ * image as image_width * image_height RGBA8 pixels with straight alpha. */
 typedef struct {
   uint64_t placement_serial;
   uint32_t image_id;
@@ -274,13 +277,25 @@ typedef struct {
   uint32_t clip_top_rows;
   uint32_t clip_bottom_rows;
   uint64_t next_frame_delay_ms;
+  TermyFfiBytes rgba;
 } TermyFfiKittyGraphicsPlacement;
 
+/* An image whose pixels the host already holds. */
+typedef struct {
+  uint32_t image_id;
+  uint64_t image_generation;
+} TermyFfiKittyImageKey;
+
+/* `cell_width` and `cell_height` are the terminal's cell size, in the pixels
+ * that image sizes and pixel offsets are measured in. Scale by your cell size
+ * over this one. */
 typedef struct {
   uint64_t revision;
   TermyFfiKittyGraphicsPlacement *placements_ptr;
   size_t placements_len;
   size_t placements_capacity;
+  float cell_width;
+  float cell_height;
 } TermyFfiKittyGraphicsBatch;
 
 typedef struct {
@@ -821,6 +836,15 @@ TermyFfiStatus termy_terminal_kitty_graphics_revision(
     uint64_t *out_revision);
 TermyFfiStatus termy_terminal_kitty_graphics_placements(
     TermyFfiTerminal *terminal,
+    TermyFfiKittyGraphicsBatch *out_batch);
+/* The same placements without the PNG round trip. An image's pixels arrive
+ * as raw RGBA8 in `rgba` (or in `png` for the rare image stored only as a
+ * PNG), and an image listed in `known` arrives with neither: keep the pixels
+ * of the images you draw, keyed by id and generation, and pass those keys. */
+TermyFfiStatus termy_terminal_kitty_graphics_placements_rgba(
+    TermyFfiTerminal *terminal,
+    const TermyFfiKittyImageKey *known_ptr,
+    size_t known_len,
     TermyFfiKittyGraphicsBatch *out_batch);
 TermyFfiStatus termy_kitty_graphics_batch_free(
     TermyFfiKittyGraphicsBatch *batch);

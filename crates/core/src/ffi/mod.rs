@@ -252,15 +252,30 @@ pub struct TermyFfiKittyGraphicsPlacement {
     pub clip_bottom_rows: u32,
     /// Zero for a static placement; otherwise the next animation wakeup delay.
     pub next_frame_delay_ms: u64,
+    /// Set only by `termy_terminal_kitty_graphics_placements_rgba`: the
+    /// image as `image_width * image_height` RGBA8 pixels with straight alpha.
+    pub rgba: TermyFfiBytes,
+}
+
+/// An image whose pixels the host already holds: its id and generation.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct TermyFfiKittyImageKey {
+    pub image_id: u32,
+    pub image_generation: u64,
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TermyFfiKittyGraphicsBatch {
     pub revision: u64,
     pub placements_ptr: *mut TermyFfiKittyGraphicsPlacement,
     pub placements_len: usize,
     pub placements_capacity: usize,
+    /// The terminal's cell size, in the pixels that image sizes and pixel
+    /// offsets are measured in. Scale by your cell size over this one.
+    pub cell_width: f32,
+    pub cell_height: f32,
 }
 
 #[repr(C)]
@@ -992,6 +1007,7 @@ fn ffi_bytes_from_string(value: String) -> TermyFfiBytes {
 fn ffi_kitty_graphics_placement_from_placement(
     placement: KittyGraphicsRenderPlacement,
     png: TermyFfiBytes,
+    rgba: TermyFfiBytes,
 ) -> TermyFfiKittyGraphicsPlacement {
     TermyFfiKittyGraphicsPlacement {
         placement_serial: placement.placement_serial,
@@ -1029,6 +1045,7 @@ fn ffi_kitty_graphics_placement_from_placement(
                 .max(1)
                 .min(u64::MAX as u128) as u64
         }),
+        rgba,
     }
 }
 
@@ -3832,38 +3849,93 @@ pub unsafe extern "C" fn termy_terminal_kitty_graphics_placements(
         }
 
         let terminal = unsafe { &mut *terminal };
-        let (revision, placements) = terminal.terminal.kitty_graphics_snapshot();
-        // An image may have thousands of Unicode placeholder placements. They
-        // all share one C copy of its PNG, which the batch frees once.
-        let mut png_exports = HashMap::new();
-        let mut exports = Vec::new();
-        let placements = placements
-            .into_iter()
-            .map(|placement| {
-                let png = *png_exports
-                    .entry(std::sync::Arc::as_ptr(&placement.image))
-                    .or_insert_with(|| {
-                        let png = placement.image.png();
-                        let bytes = ffi_bytes_from_vec(png.to_vec());
-                        exports.push(png);
-                        bytes
-                    });
-                ffi_kitty_graphics_placement_from_placement(placement, png)
-            })
-            .collect::<Vec<_>>();
-        // Hold the encodings of images still placed until the next batch.
-        terminal.kitty_png_exports = exports;
-        let (placements_ptr, placements_len, placements_capacity) = leak_vec(placements);
-        unsafe {
-            *out_batch = TermyFfiKittyGraphicsBatch {
-                revision,
-                placements_ptr,
-                placements_len,
-                placements_capacity,
-            };
-        }
+        unsafe { *out_batch = kitty_graphics_batch(terminal, None) };
         TermyFfiStatus::Ok
     })
+}
+
+/// Like `termy_terminal_kitty_graphics_placements`, without the PNG
+/// round trip: an image's pixels arrive as raw RGBA8 in `rgba` (or, for the
+/// rare image stored only as a PNG, in `png`), and an image listed in `known`
+/// arrives with neither, since the host has its pixels already.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_kitty_graphics_placements_rgba(
+    terminal: *mut TermyFfiTerminal,
+    known_ptr: *const TermyFfiKittyImageKey,
+    known_len: usize,
+    out_batch: *mut TermyFfiKittyGraphicsBatch,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_batch.is_null() || (known_ptr.is_null() && known_len != 0) {
+            return TermyFfiStatus::Null;
+        }
+
+        let known = if known_len == 0 {
+            std::collections::HashSet::new()
+        } else {
+            unsafe { slice::from_raw_parts(known_ptr, known_len) }
+                .iter()
+                .copied()
+                .collect()
+        };
+        let terminal = unsafe { &mut *terminal };
+        unsafe { *out_batch = kitty_graphics_batch(terminal, Some(&known)) };
+        TermyFfiStatus::Ok
+    })
+}
+
+/// The terminal's placements. With `known` (the RGBA export), images in it
+/// carry no pixels and the others carry RGBA when they have it; without, every
+/// image carries its PNG.
+fn kitty_graphics_batch(
+    terminal: &mut TermyFfiTerminal,
+    known: Option<&std::collections::HashSet<TermyFfiKittyImageKey>>,
+) -> TermyFfiKittyGraphicsBatch {
+    let (revision, placements) = terminal.terminal.kitty_graphics_snapshot();
+    let size = terminal.terminal.size();
+    // An image may have thousands of Unicode placeholder placements. They
+    // all share one C copy of its pixels, which the batch frees once.
+    let mut pixel_exports = HashMap::new();
+    let mut exports = Vec::new();
+    let placements = placements
+        .into_iter()
+        .map(|placement| {
+            let key = TermyFfiKittyImageKey {
+                image_id: placement.image_id,
+                image_generation: placement.image_generation,
+            };
+            let empty = (TermyFfiBytes::default(), TermyFfiBytes::default());
+            let (png, rgba) = if known.is_some_and(|known| known.contains(&key)) {
+                empty
+            } else {
+                *pixel_exports
+                    .entry(std::sync::Arc::as_ptr(&placement.image))
+                    .or_insert_with(|| match placement.image.rgba() {
+                        Some(rgba) if known.is_some() => {
+                            (empty.0, ffi_bytes_from_vec(rgba.to_vec()))
+                        }
+                        _ => {
+                            let png = placement.image.png();
+                            let bytes = ffi_bytes_from_vec(png.to_vec());
+                            exports.push(png);
+                            (bytes, empty.1)
+                        }
+                    })
+            };
+            ffi_kitty_graphics_placement_from_placement(placement, png, rgba)
+        })
+        .collect::<Vec<_>>();
+    // Hold the encodings of images still placed until the next batch.
+    terminal.kitty_png_exports = exports;
+    let (placements_ptr, placements_len, placements_capacity) = leak_vec(placements);
+    TermyFfiKittyGraphicsBatch {
+        revision,
+        placements_ptr,
+        placements_len,
+        placements_capacity,
+        cell_width: size.cell_width,
+        cell_height: size.cell_height,
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -3887,8 +3959,10 @@ pub unsafe extern "C" fn termy_kitty_graphics_batch_free(
             // Placements of one image share a buffer; free each one once.
             let mut freed = std::collections::HashSet::new();
             for placement in placements {
-                if freed.insert(placement.png.ptr) {
-                    free_bytes(placement.png);
+                for bytes in [placement.png, placement.rgba] {
+                    if freed.insert(bytes.ptr) {
+                        free_bytes(bytes);
+                    }
                 }
             }
         }
@@ -4392,6 +4466,57 @@ mod tests {
             unsafe { termy_terminal_kitty_graphics_placements(terminal, &mut batch) },
             TermyFfiStatus::Ok
         );
+        assert_eq!(image.png_encoding_count(), 1);
+        assert_eq!(
+            unsafe { termy_kitty_graphics_batch_free(&mut batch) },
+            TermyFfiStatus::Ok
+        );
+
+        // The RGBA export never encodes, shares one copy per image, and
+        // leaves out the pixels of images the host already holds.
+        assert_eq!(
+            unsafe {
+                termy_terminal_kitty_graphics_placements_rgba(
+                    terminal,
+                    std::ptr::null(),
+                    0,
+                    &mut batch,
+                )
+            },
+            TermyFfiStatus::Ok
+        );
+        let placements =
+            unsafe { slice::from_raw_parts(batch.placements_ptr, batch.placements_len) };
+        assert_eq!(placements.len(), 2);
+        assert!(placements[0].png.ptr.is_null());
+        let rgba = unsafe { slice::from_raw_parts(placements[0].rgba.ptr, placements[0].rgba.len) };
+        assert_eq!(rgba, [1, 2, 3, 255]);
+        assert_eq!(placements[0].rgba, placements[1].rgba);
+        let known = [TermyFfiKittyImageKey {
+            image_id: placements[0].image_id,
+            image_generation: placements[0].image_generation,
+        }];
+        assert_eq!(
+            unsafe { termy_kitty_graphics_batch_free(&mut batch) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                termy_terminal_kitty_graphics_placements_rgba(
+                    terminal,
+                    known.as_ptr(),
+                    known.len(),
+                    &mut batch,
+                )
+            },
+            TermyFfiStatus::Ok
+        );
+        let placements =
+            unsafe { slice::from_raw_parts(batch.placements_ptr, batch.placements_len) };
+        assert_eq!(placements.len(), 2);
+        for placement in placements {
+            assert!(placement.png.ptr.is_null() && placement.rgba.ptr.is_null());
+        }
         assert_eq!(image.png_encoding_count(), 1);
         assert_eq!(
             unsafe { termy_kitty_graphics_batch_free(&mut batch) },

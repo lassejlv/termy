@@ -178,6 +178,69 @@ struct MetalRendererTests {
         #expect(below.r < 100)
     }
 
+    @Test func imageOnlyChangesReachTheView() throws {
+        // C=1 leaves the cursor where it was and no cell changes, so the
+        // frame reports no damage; a deletion changes no cell either.
+        let view = try makeView(feeding: "x")
+        try view.session.feed(Data("\u{1b}_Ga=T,f=32,s=1,v=1,i=1,c=2,r=1,C=1,q=2;/wAA/w==\u{1b}\\".utf8))
+        #expect(view.images.count == 1)
+        try view.session.feed(Data("\u{1b}_Ga=d,d=A,q=2\u{1b}\\".utf8))
+        #expect(view.images.isEmpty)
+    }
+
+    @Test func directPlacementsStretchOverTheirBox() throws {
+        // A 4x1 image over two columns and two rows fills the box, as in kitty.
+        let pixels = Data(repeating: 255, count: 16).base64EncodedString()
+        let view = try makeView(feeding: "\u{1b}_Ga=T,f=32,s=4,v=1,i=1,c=2,r=2,q=2;\(pixels)\u{1b}\\")
+        let placement = try #require(view.images.first?.placement)
+        let geometry = KittyPlacementGeometry(placement, cellWidth: 10, cellHeight: 20)
+        #expect(geometry.image == CGRect(x: 0, y: 0, width: 20, height: 40))
+        #expect(geometry.clip == geometry.image)
+    }
+
+    @Test func imagesAreMeasuredInTheTerminalsPixels() throws {
+        // On a Retina display the terminal's cells are twice as many pixels
+        // as points, so a 4x2 image with no size covers 2x1 points.
+        let pixels = Data(repeating: 255, count: 32).base64EncodedString()
+        let view = try makeView(feeding: "\u{1b}_Ga=T,f=32,s=4,v=2,i=1,X=2,q=2;\(pixels)\u{1b}\\")
+        let placement = try #require(view.images.first?.placement)
+        let geometry = KittyPlacementGeometry(
+            placement, cellWidth: 10, cellHeight: 20, pixelsPerPoint: CGSize(width: 2, height: 2))
+        #expect(geometry.image == CGRect(x: 1, y: 0, width: 2, height: 1))
+    }
+
+    @Test func placeholderBoxesAreWholeCellsWithTheImageCentered() throws {
+        // A 4x1 image over two columns: one row tall, and centered in it.
+        let pixels = Data(repeating: 255, count: 16).base64EncodedString()
+        let view = try makeView(feeding:
+            "\u{1b}_Ga=T,f=32,s=4,v=1,i=7,U=1,c=2,q=2;\(pixels)\u{1b}\\"
+            + "\u{1b}[38;5;7m\u{10EEEE}\u{0305}\u{0305}\u{1b}[39m")
+        let placement = try #require(view.images.first?.placement)
+        let geometry = KittyPlacementGeometry(placement, cellWidth: 10, cellHeight: 20)
+        #expect(geometry.image == CGRect(x: 0, y: 7.5, width: 20, height: 5))
+        #expect(geometry.clip == CGRect(x: 0, y: 0, width: 10, height: 20))
+    }
+
+    @Test func placeholderCellsDrawNoGlyph() throws {
+        let view = try makeView()
+        // Font fallback ends at LastResort, which has a box for every scalar.
+        #expect(view.renderer.fonts.glyph(for: 0x10EEEE, style: .init(bold: false, italic: false)) == nil)
+    }
+
+    @Test func veryNegativeZIndexDrawsUnderCellBackgrounds() throws {
+        // Red images under two blue cells: z=-1 covers the background, a
+        // z-index below Int32.min / 2 goes under it.
+        for (z, covered) in [(-1, true), (-1_073_741_825, false)] {
+            let view = try makeView(feeding:
+                "\u{1b}_Ga=T,f=32,s=1,v=1,c=2,r=1,C=1,z=\(z),q=2;/wAA/w==\u{1b}\\\u{1b}[44m  \u{1b}[0m")
+            let pixels = try render(view)
+            let cell = cellPixels(view, row: 0, col: 0)
+            let pixel = pixels.rgb(x: Int(cell.midX), y: Int(cell.midY))
+            #expect((pixel.r > 200) == covered)
+            #expect((pixel.b > 150) == !covered)
+        }
+    }
+
     @Test func glyphAtlasGrowsBeforeStartingOver() throws {
         let device = try #require(MTLCreateSystemDefaultDevice())
         let atlas = try #require(GlyphAtlas(device: device, initialSize: 64, maxSize: 128))

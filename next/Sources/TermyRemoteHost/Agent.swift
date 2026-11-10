@@ -286,6 +286,8 @@ final class Peer {
     private var streams: [Int: Stream] = [:]
     private var active = true
     private var clientVersion = 1
+    /// Whether the phone understands `HostMessage.image` and `.images`.
+    var showsImages: Bool { clientVersion >= 3 }
 
     init(id: UUID, name: String, channel: SecureChannel, agent: RemoteHostAgent) {
         self.id = id
@@ -411,6 +413,8 @@ final class Stream {
     private var dirty: Set<Int>? = nil
     private var pendingFull = true
     private var sendScheduled = false
+    private var images = ImageEncoder()
+    private var imagesChanged = true
 
     init(id: Int, session: TerminalSession, peer: Peer) {
         self.id = id
@@ -418,6 +422,10 @@ final class Stream {
         self.peer = peer
         originalSize = session.size
         session.onFrameChange = { [weak self] change in self?.changed(change) }
+        session.onGraphicsChange = { [weak self] in
+            self?.imagesChanged = true
+            self?.scheduleSend()
+        }
         session.onEvent = { [weak self] event in self?.event(event) }
         session.poll(forceFull: true)
         scheduleSend()
@@ -425,6 +433,7 @@ final class Stream {
 
     func close() {
         session.onFrameChange = nil
+        session.onGraphicsChange = nil
         session.onEvent = nil
         if session.size != originalSize { try? session.resize(originalSize) }
         session.stop()
@@ -544,6 +553,13 @@ final class Stream {
         frame.displayOffset = store.displayOffset
         frame.historySize = store.historySize
         peer?.send(.frame(frame))
+        // After the frame, so an image never shows over the text it replaced.
+        if imagesChanged || full, let peer, peer.showsImages {
+            imagesChanged = false
+            for message in images.update(stream: id, terminal: session.terminal, configuration: config) {
+                peer.send(message)
+            }
+        }
     }
 }
 

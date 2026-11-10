@@ -4,27 +4,39 @@ import Termy
 
 /// Where a Kitty placement draws, in points from the grid's top-left corner
 /// (before padding). Mirrors libtermy's `graphics_display_layout`, which the
-/// desktop app uses too.
-struct KittyPlacementGeometry: Equatable {
-    /// Where the whole source crop is drawn. With both `c` and `r` the image
-    /// is fitted inside that box with its aspect ratio kept, and centered.
-    var image: CGRect
+/// desktop app uses too. `TerminalView` draws with it; use it to draw
+/// placements anywhere else.
+public struct KittyPlacementGeometry: Equatable, Sendable {
+    /// Where the whole source crop is drawn. A direct placement fills its
+    /// box, stretching when both `c` and `r` are given, as in kitty. A Unicode
+    /// placeholder's image keeps its aspect ratio, centered in its cell box.
+    public var image: CGRect
     /// The part of the grid the placement may paint: its box after margin
     /// clipping, or the single cell of a Unicode placeholder.
-    var clip: CGRect
+    public var clip: CGRect
 
     /// The visible part of `image`.
-    var visible: CGRect { image.intersection(clip) }
+    public var visible: CGRect { image.intersection(clip) }
 
-    init(_ placement: KittyGraphicsPlacement, cellWidth: CGFloat, cellHeight: CGFloat) {
-        let sourceWidth = CGFloat(placement.sourceWidth > 0 ? placement.sourceWidth : placement.imageWidth)
-        let sourceHeight = CGFloat(placement.sourceHeight > 0 ? placement.sourceHeight : placement.imageHeight)
+    /// `pixelsPerPoint` is the cell size the terminal was given, over the
+    /// cell size drawn: image pixels and pixel offsets are in the terminal's
+    /// units, which are device pixels for a view on a Retina display.
+    public init(
+        _ placement: KittyGraphicsPlacement, cellWidth: CGFloat, cellHeight: CGFloat,
+        pixelsPerPoint: CGSize = CGSize(width: 1, height: 1)
+    ) {
+        let scaleX = pixelsPerPoint.width > 0 ? pixelsPerPoint.width : 1
+        let scaleY = pixelsPerPoint.height > 0 ? pixelsPerPoint.height : 1
+        let crop = placement.sourceCrop
+        let natural = CGSize(width: crop.width / scaleX, height: crop.height / scaleY)
+        let aspectWidth = max(natural.width, .leastNonzeroMagnitude)
+        let aspectHeight = max(natural.height, .leastNonzeroMagnitude)
         let isVirtual = placement.virtualCell != nil
         // Virtual placements ignore pixel offsets, as the protocol requires.
-        let offsetX = isVirtual ? 0 : CGFloat(placement.xOffset)
-        let offsetY = isVirtual ? 0 : CGFloat(placement.yOffset)
+        let offsetX = isVirtual ? 0 : CGFloat(placement.xOffset) / scaleX
+        let offsetY = isVirtual ? 0 : CGFloat(placement.yOffset) / scaleY
 
-        let box: CGSize
+        var box: CGSize
         switch (placement.displayCols, placement.displayRows) {
         case let (cols?, rows?):
             box = CGSize(
@@ -32,17 +44,25 @@ struct KittyPlacementGeometry: Equatable {
                 height: max(0, CGFloat(rows) * cellHeight - offsetY))
         case let (cols?, nil):
             let width = max(0, CGFloat(cols) * cellWidth - offsetX)
-            box = CGSize(width: width, height: width * sourceHeight / max(sourceWidth, 1))
+            box = CGSize(width: width, height: width * natural.height / aspectWidth)
         case let (nil, rows?):
             let height = max(0, CGFloat(rows) * cellHeight - offsetY)
-            box = CGSize(width: height * sourceWidth / max(sourceHeight, 1), height: height)
+            box = CGSize(width: height * natural.width / aspectHeight, height: height)
         case (nil, nil):
-            box = CGSize(width: sourceWidth, height: sourceHeight)
+            box = natural
         }
         var fitted = box
-        if placement.displayCols != nil, placement.displayRows != nil {
-            let scale = min(box.width / max(sourceWidth, 1), box.height / max(sourceHeight, 1))
-            fitted = CGSize(width: sourceWidth * scale, height: sourceHeight * scale)
+        if isVirtual {
+            // A placeholder's box is whole cells: the count given, or enough
+            // for the image. The image is fitted inside it.
+            func cells(_ count: Int?, _ extent: CGFloat, _ cell: CGFloat) -> CGFloat {
+                (count.map { CGFloat($0) } ?? max(1, (extent / max(cell, 1) - 1e-3).rounded(.up))) * cell
+            }
+            box = CGSize(
+                width: cells(placement.displayCols, box.width, cellWidth),
+                height: cells(placement.displayRows, box.height, cellHeight))
+            let scale = min(box.width / aspectWidth, box.height / aspectHeight)
+            fitted = CGSize(width: natural.width * scale, height: natural.height * scale)
         }
 
         let left = CGFloat(placement.col + placement.colOffset) * cellWidth + offsetX
@@ -63,7 +83,7 @@ struct KittyPlacementGeometry: Equatable {
 
     /// The source rectangle, in image pixels, that lands in `rect` (a part of
     /// `image`).
-    func source(for rect: CGRect, crop: CGRect) -> CGRect {
+    public func source(for rect: CGRect, crop: CGRect) -> CGRect {
         guard image.width > 0, image.height > 0 else { return .zero }
         let scaleX = crop.width / image.width
         let scaleY = crop.height / image.height
@@ -76,11 +96,23 @@ struct KittyPlacementGeometry: Equatable {
 
 extension KittyGraphicsPlacement {
     /// The source crop in image pixels; zero sizes mean the whole image.
-    var sourceCrop: CGRect {
+    public var sourceCrop: CGRect {
         CGRect(
             x: sourceX, y: sourceY,
             width: sourceWidth > 0 ? sourceWidth : imageWidth,
             height: sourceHeight > 0 ? sourceHeight : imageHeight)
     }
+
+    /// Where the image draws among text and cell backgrounds. As in kitty, a
+    /// negative z-index goes under text, and one below `Int32.min / 2` under
+    /// cells with a background color of their own too.
+    var layer: KittyImageLayer {
+        if zIndex < Int32.min / 2 { return .belowBackgrounds }
+        return zIndex < 0 ? .belowText : .aboveText
+    }
+}
+
+enum KittyImageLayer {
+    case belowBackgrounds, belowText, aboveText
 }
 #endif

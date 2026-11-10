@@ -765,6 +765,62 @@ impl KittyGraphicsState {
         self.clear_visible_on_screen(KittyGraphicsScreen::Primary)
     }
 
+    /// The primary screen's rows that images are placed at, counted from the
+    /// oldest history row, ascending and without repeats. A width change
+    /// rewraps text, and [`Self::move_primary_rows`] moves the images with it.
+    pub(crate) fn primary_rows(&self) -> Vec<usize> {
+        let mut rows = self
+            .placements
+            .iter()
+            .filter(|placement| placement.screen == KittyGraphicsScreen::Primary)
+            .filter_map(|placement| match placement.location {
+                // An image partly above the oldest row follows that row.
+                PlacementLocation::Direct { anchor_line, .. } => {
+                    Some(usize::try_from(anchor_line.max(0)).unwrap_or(usize::MAX))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        rows.sort_unstable();
+        rows.dedup();
+        rows
+    }
+
+    /// Move the primary screen's images from each row in `moves` (as
+    /// [`Self::primary_rows`] listed them, ascending) to the row its text
+    /// was rewrapped to.
+    pub(crate) fn move_primary_rows(&mut self, moves: &[(usize, i64)]) -> bool {
+        let mut changed = false;
+        for placement in &mut self.placements {
+            if placement.screen != KittyGraphicsScreen::Primary {
+                continue;
+            }
+            let PlacementLocation::Direct { anchor_line, .. } = &mut placement.location else {
+                continue;
+            };
+            let above = (*anchor_line).min(0);
+            let row = usize::try_from((*anchor_line).max(0)).unwrap_or(usize::MAX);
+            if let Ok(index) = moves.binary_search_by_key(&row, |(from, _)| *from) {
+                let moved = moves[index].1.saturating_add(above);
+                changed |= moved != *anchor_line;
+                *anchor_line = moved;
+            }
+        }
+        if changed {
+            // An image whose rows were all evicted with their text is gone.
+            self.retain_placements(|placement| {
+                placement.screen != KittyGraphicsScreen::Primary
+                    || !matches!(
+                        placement.location,
+                        PlacementLocation::Direct { anchor_line, .. }
+                            if anchor_line.saturating_add(i64::from(placement.occupied_rows)) <= 0
+                    )
+            });
+            self.remove_orphaned_relative_placements();
+        }
+        changed
+    }
+
     pub(crate) fn needs_grid_effects(&self) -> bool {
         self.has_placements() || self.pending.is_some()
     }

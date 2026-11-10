@@ -39,7 +39,7 @@ checkout with `cargo doc -p termy_core --no-deps`.
 | Change history limit | `set_scrollback_history` | `termy_terminal_set_scrollback_history` |
 | Clear history | `clear_scrollback` | `termy_terminal_clear_scrollback` |
 | Plan special glyphs | `terminal_glyph_plan` | `termy_cells_build_glyph_render_plan` |
-| Read image placements | `kitty_graphics_snapshot` | `termy_terminal_kitty_graphics_placements` |
+| Read image placements | `kitty_graphics_snapshot` | `termy_terminal_kitty_graphics_placements`, `termy_terminal_kitty_graphics_placements_rgba` |
 
 C constructors without a config use runtime defaults; they do not implicitly
 load all of the user's application settings. Choose the config-aware

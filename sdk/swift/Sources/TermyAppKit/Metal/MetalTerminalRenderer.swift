@@ -60,9 +60,14 @@ final class MetalTerminalRenderer {
     private var rows: [RowQuads?] = []
     private var rowCols = 0
     private var atlasGeneration = 0
-    private var imageTextures: [String: MTLTexture] = [:]
+    /// Image textures and the frame that last drew each. Textures no frame
+    /// draws are kept up to `idleImageBytes`, most recently drawn first, so a
+    /// looping animation or an image scrolled back into view isn't uploaded again.
+    private var imageTextures: [KittyImageKey: (texture: MTLTexture, frame: UInt64)] = [:]
+    private var imageFrame: UInt64 = 0
+    static let idleImageBytes = 64 * 1024 * 1024
     /// Images whose texture couldn't be created, so they aren't retried every frame.
-    private var failedImages: Set<String> = []
+    private var failedImages: Set<KittyImageKey> = []
     /// The largest texture side this GPU supports. Larger images are downscaled.
     let maxTextureDimension: Int
     private var markedText: (key: String, texture: MTLTexture, width: Int)?
@@ -283,14 +288,15 @@ final class MetalTerminalRenderer {
             rows[row] = buildRow(row, state: state)
         }
         let texture = atlas.texture
+        imageFrame &+= 1
+        var failed: Set<KittyImageKey> = []
+        appendImages(state, layer: .belowBackgrounds, to: &frame, failed: &failed)
         frame.append(rows.flatMap { $0?.backgrounds ?? [] }, texture: texture)
         frame.append(selectionQuads(state), texture: texture)
-        var liveImages: [String: MTLTexture] = [:]
-        var failed: Set<String> = []
-        appendImages(state.images.filter { $0.placement.zIndex < 0 }, to: &frame, live: &liveImages, failed: &failed)
+        appendImages(state, layer: .belowText, to: &frame, failed: &failed)
         frame.append(rows.flatMap { $0?.foreground ?? [] }, texture: texture)
-        appendImages(state.images.filter { $0.placement.zIndex >= 0 }, to: &frame, live: &liveImages, failed: &failed)
-        imageTextures = liveImages
+        appendImages(state, layer: .aboveText, to: &frame, failed: &failed)
+        evictIdleImageTextures()
         failedImages = failed
         frame.append(cursorQuads(state), texture: atlas.texture)
         if let marked = state.markedText, !marked.isEmpty {
@@ -435,25 +441,41 @@ final class MetalTerminalRenderer {
         return quads
     }
 
+    /// Drops the least recently drawn textures no frame draws now, once
+    /// they hold more than `idleImageBytes`.
+    private func evictIdleImageTextures() {
+        var idle = imageTextures.filter { $0.value.frame != imageFrame }
+            .map { (key: $0.key, frame: $0.value.frame, bytes: $0.value.texture.width * $0.value.texture.height * 4) }
+        var bytes = idle.reduce(0) { $0 + $1.bytes }
+        guard bytes > Self.idleImageBytes else { return }
+        idle.sort { $0.frame < $1.frame }
+        for entry in idle where bytes > Self.idleImageBytes {
+            imageTextures[entry.key] = nil
+            bytes -= entry.bytes
+        }
+    }
+
     private func appendImages(
-        _ images: [KittyImage], to frame: inout Frame, live: inout [String: MTLTexture], failed: inout Set<String>
+        _ state: RenderState, layer: KittyImageLayer, to frame: inout Frame, failed: inout Set<KittyImageKey>
     ) {
+        let images = state.images.filter { $0.placement.layer == layer }
         for image in images.sorted(by: { $0.placement.zIndex < $1.placement.zIndex }) {
             let placement = image.placement
-            let key = "\(placement.imageID):\(placement.imageGeneration)"
+            let key = placement.imageKey
             if failed.contains(key) || failedImages.contains(key) {
                 failed.insert(key)
                 continue
             }
-            guard let texture = live[key] ?? imageTextures[key] ?? makeTexture(image.image) else {
+            guard let texture = imageTextures[key]?.texture ?? makeTexture(image.image) else {
                 failed.insert(key)
                 continue
             }
-            live[key] = texture
+            imageTextures[key] = (texture, imageFrame)
             // One quad covering only the visible part, sampling the matching
             // part of the source, so placeholder cells and partly clipped
             // images need no scissor and batch with each other.
-            let geometry = KittyPlacementGeometry(placement, cellWidth: cellWidth, cellHeight: cellHeight)
+            let geometry = KittyPlacementGeometry(
+                placement, cellWidth: cellWidth, cellHeight: cellHeight, pixelsPerPoint: state.imagePixelsPerPoint)
             let visible = geometry.visible
             guard !visible.isNull, visible.width > 0, visible.height > 0 else { continue }
             let padding = CGPoint(x: CGFloat(config?.paddingX ?? 0), y: CGFloat(config?.paddingY ?? 0))

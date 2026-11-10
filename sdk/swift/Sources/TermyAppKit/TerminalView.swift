@@ -106,7 +106,14 @@ public final class TerminalView: NSView {
     }
     var linkUnderline: LinkUnderlineView?
     private var imageRevision: UInt64?
-    private var decodedImages: [String: CGImage] = [:]
+    /// Decoded images and the reload that last showed each. Images nothing
+    /// shows are kept up to `idleImageBytes`, most recently shown first, so
+    /// the terminal sends an animation's frames and a scrolled-away image once.
+    private var decodedImages: [KittyImageKey: (image: CGImage, reload: UInt64)] = [:]
+    private var imageReload: UInt64 = 0
+    /// The terminal's cell size when `images` were read; zero before then.
+    private var imageCellSize = CGSize.zero
+    private static let idleImageBytes = 64 * 1024 * 1024
     private var blinkTimer: Timer?
     private var metalFrameScheduled = false
     /// The scheduled frame draws in this run-loop turn, not at the display link.
@@ -117,12 +124,16 @@ public final class TerminalView: NSView {
     /// later), paused while idle.
     private var frameLink: NSObject?
     private var animationTimer: Timer?
+    /// How long to wait before checking again for a frame that was due but
+    /// hasn't arrived: an attached pane's frames come from its host.
+    private var animationRetryDelay: TimeInterval = 0
     /// An animation frame came due while the window was hidden.
     private var animationPaused = false
     private var windowObservers: [NSObjectProtocol] = []
 
     /// Kitty animations are capped at this rate however short their frame delay.
     private static let minimumAnimationDelay: TimeInterval = 1.0 / 60
+    private static let maximumAnimationRetryDelay: TimeInterval = 0.25
 
     /// Wraps an existing session.
     public init(session: TerminalSession, renderConfig: RenderConfig, backend: TerminalRenderingBackend = .automatic) {
@@ -135,6 +146,7 @@ public final class TerminalView: NSView {
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         session.onFrameChange = { [weak self] change in self?.frameDidChange(change) }
+        session.onGraphicsChange = { [weak self] in self?.refreshImagesIfNeeded() }
         session.onEvent = { [weak self] event in self?.handle(event) }
         session.poll(forceFull: true)
         registerForDraggedTypes(Self.droppableTypes)
@@ -178,9 +190,26 @@ public final class TerminalView: NSView {
         return layer
     }
 
-    /// The grid size that fits the current bounds.
+    /// The grid size that fits the current bounds. Its cell size is in the
+    /// window's device pixels, which is what programs measure images in: on
+    /// a Retina display they then send, and the view draws, every pixel.
     public var fittingGridSize: TerminalSize {
-        TerminalSize.fitting(width: bounds.width, height: bounds.height, renderConfig: renderConfig)
+        var size = TerminalSize.fitting(width: bounds.width, height: bounds.height, renderConfig: renderConfig)
+        let scale = Float(window?.backingScaleFactor ?? 1)
+        size.cellWidth *= scale
+        size.cellHeight *= scale
+        return size
+    }
+
+    /// The terminal's pixels per point, by axis: the cell size its images
+    /// were laid out for over the cell size drawn. Images are drawn with it,
+    /// so they cover the cells the terminal counted, whoever sized it.
+    private var imagePixelsPerPoint: CGSize {
+        guard renderConfig.cellWidth > 0, renderConfig.cellHeight > 0, imageCellSize.width > 0, imageCellSize.height > 0
+        else { return CGSize(width: 1, height: 1) }
+        return CGSize(
+            width: imageCellSize.width / CGFloat(renderConfig.cellWidth),
+            height: imageCellSize.height / CGFloat(renderConfig.cellHeight))
     }
 
     /// The view size that fits a grid exactly, for sizing windows.
@@ -211,6 +240,8 @@ public final class TerminalView: NSView {
     public override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         layer?.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        // The cell size in device pixels changed with the display.
+        resizeGridToFit()
         needsDisplay = true
     }
 
@@ -236,7 +267,7 @@ public final class TerminalView: NSView {
     var renderState: RenderState {
         RenderState(
             frame: session.frame, config: renderConfig, glyphPlan: glyphPlan, selection: selection,
-            images: images, isFocused: hasKeyboardFocus,
+            images: images, imagePixelsPerPoint: imagePixelsPerPoint, isFocused: hasKeyboardFocus,
             cursorBlinkVisible: cursorBlinkVisible, markedText: markedText)
     }
 
@@ -498,35 +529,86 @@ public final class TerminalView: NSView {
     }
 
     private func reloadImages() {
-        guard let snapshot = try? session.terminal.kittyGraphics() else { return }
-        var live: [String: CGImage] = [:]
+        guard let snapshot = try? session.terminal.kittyGraphics(holding: Set(decodedImages.keys)) else { return }
+        imageReload &+= 1
+        imageCellSize = CGSize(width: CGFloat(snapshot.cellWidth), height: CGFloat(snapshot.cellHeight))
         images = snapshot.placements.compactMap { placement in
-            let key = "\(placement.imageID):\(placement.imageGeneration)"
-            guard let image = decodedImages[key] ?? Self.decodePNG(placement.png) else { return nil }
-            live[key] = image
+            let key = placement.imageKey
+            guard let image = decodedImages[key]?.image ?? Self.decode(placement) else { return nil }
+            decodedImages[key] = (image, imageReload)
             return KittyImage(placement: placement, image: image)
         }
-        decodedImages = live
+        evictIdleImages()
         needsDisplay = true
+        animationRetryDelay = 0
+        scheduleAnimation(after: snapshot.nextFrameDelay.map { Double($0 + 1) / 1000 })
+    }
 
+    /// Drops the least recently shown images nothing shows now, once they
+    /// hold more than `idleImageBytes`.
+    private func evictIdleImages() {
+        var idle = decodedImages.filter { $0.value.reload != imageReload }
+            .map { (key: $0.key, reload: $0.value.reload, bytes: $0.value.image.width * $0.value.image.height * 4) }
+        var bytes = idle.reduce(0) { $0 + $1.bytes }
+        guard bytes > Self.idleImageBytes else { return }
+        idle.sort { $0.reload < $1.reload }
+        for entry in idle where bytes > Self.idleImageBytes {
+            decodedImages[entry.key] = nil
+            bytes -= entry.bytes
+        }
+    }
+
+    /// Wakes for the next animation frame, `delay` seconds from now.
+    private func scheduleAnimation(after delay: TimeInterval?) {
         animationTimer?.invalidate()
         animationTimer = nil
         animationPaused = false
-        guard let delay = snapshot.nextFrameDelay else { return }
+        guard let delay else { return }
         // Don't advance animations nobody can see; resume when visible.
         guard isOnScreen else {
             animationPaused = true
             return
         }
-        let interval = max(Double(delay) / 1000, Self.minimumAnimationDelay)
-        animationTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reloadImages() }
+        let timer = Timer(timeInterval: max(delay, Self.minimumAnimationDelay), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.animationFrameIsDue() }
         }
+        // Common modes keep animations running during scrolling and menus.
+        RunLoop.main.add(timer, forMode: .common)
+        animationTimer = timer
     }
 
-    private static func decodePNG(_ data: Data) -> CGImage? {
-        guard let provider = CGDataProvider(data: data as CFData) else { return nil }
+    private func animationFrameIsDue() {
+        animationTimer = nil
+        let shown = imageRevision
+        // Asking for the revision advances a local terminal's animations.
+        refreshImagesIfNeeded()
+        guard imageRevision == shown, animationTimer == nil else { return }
+        // No new frame yet: an attached pane's host sends it, which reloads
+        // the images by itself. Look again later, less and less often, and
+        // then ask whether the animation is still running at all.
+        guard animationRetryDelay < Self.maximumAnimationRetryDelay else { return reloadImages() }
+        animationRetryDelay = min(
+            max(animationRetryDelay * 2, Self.minimumAnimationDelay), Self.maximumAnimationRetryDelay)
+        scheduleAnimation(after: animationRetryDelay)
+    }
+
+    private static func decode(_ placement: KittyGraphicsPlacement) -> CGImage? {
+        if let rgba = placement.rgba {
+            return image(rgba: rgba, width: placement.imageWidth, height: placement.imageHeight)
+        }
+        guard !placement.png.isEmpty, let provider = CGDataProvider(data: placement.png as CFData) else { return nil }
         return CGImage(pngDataProviderSource: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+
+    /// An image over straight-alpha RGBA8 pixels, without copying them.
+    private static func image(rgba: Data, width: Int, height: Int) -> CGImage? {
+        guard width > 0, height > 0, rgba.count == width * height * 4,
+              let provider = CGDataProvider(data: rgba as CFData) else { return nil }
+        return CGImage(
+            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: width * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
     }
 
     // MARK: - Focus and blink

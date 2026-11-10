@@ -221,3 +221,49 @@ fn anonymous_uploads_stay_silent_and_numbered_uploads_reply() {
             .contains("ENOENT")
     );
 }
+
+#[test]
+fn images_follow_their_text_through_a_width_change() {
+    let mut terminal = terminal();
+    for _ in 0..5 {
+        terminal.feed_output(format!("{}\r\n", "x".repeat(70)).as_bytes());
+    }
+    terminal.feed_output(b"\x1b_Ga=T,i=1,f=32,s=1,v=1,c=4,r=2,C=1,q=2;AQID/w==\x1b\\");
+    assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 5);
+    // Each 70-column line above the image now takes two rows.
+    terminal.resize(TerminalSize {
+        cols: 40,
+        rows: 24,
+        cell_width: 10.0,
+        cell_height: 20.0,
+    });
+    assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 10);
+    terminal.resize(TerminalSize {
+        cols: 80,
+        rows: 24,
+        cell_width: 10.0,
+        cell_height: 20.0,
+    });
+    assert_eq!(terminal.kitty_graphics_placements()[0].viewport_row, 5);
+}
+
+#[test]
+fn fractional_cells_count_the_rows_an_image_covers() {
+    let terminal = Terminal::new_display(
+        TerminalSize {
+            cols: 80,
+            rows: 60,
+            cell_width: 8.6,
+            cell_height: 17.5,
+        },
+        None,
+    );
+    // 700 pixels are exactly 40 rows of 17.5; whole-pixel cells said 39.
+    let pixels = "AAAA".repeat(700);
+    terminal.feed_output(format!("\x1b_Ga=T,i=1,f=24,s=1,v=700,q=2;{pixels}\x1b\\").as_bytes());
+    let placements = terminal.kitty_graphics_placements();
+    assert_eq!(placements[0].occupied_rows, 40);
+    // The reported window is the unrounded grid, as TIOCGWINSZ has it.
+    let replies = terminal.feed_output_with_replies(b"\x1b[14t\x1b[16t");
+    assert_eq!(replies, b"\x1b[4;1050;688t\x1b[6;18;9t");
+}

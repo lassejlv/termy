@@ -10,6 +10,8 @@ struct RenderState {
     var glyphPlan: [Int: GlyphPlanEntry]
     var selection: TerminalSelection?
     var images: [KittyImage]
+    /// Image pixels per point, by axis: see `KittyPlacementGeometry`.
+    var imagePixelsPerPoint = CGSize(width: 1, height: 1)
     var isFocused: Bool
     var cursorBlinkVisible: Bool
     var markedText: String?
@@ -94,9 +96,10 @@ final class TerminalRenderer {
         guard firstRow <= lastRow else { return }
         let rows = firstRow...lastRow
 
+        drawImages(state, layer: .belowBackgrounds, in: context)
         drawBackgrounds(state, rows: rows, in: context)
         drawSelection(state, rows: rows, in: context)
-        drawImages(state.images.filter { $0.placement.zIndex < 0 }, in: context)
+        drawImages(state, layer: .belowText, in: context)
         let cursor = cursorDrawing(state)
         if let cursor, cursor.style == .block, cursor.filled {
             context.setFillColor(color(config.cursorColor))
@@ -104,7 +107,7 @@ final class TerminalRenderer {
         }
         drawText(state, rows: rows, invertedCursorCell: cursor?.filled == true ? cursor?.cell : nil, in: context)
         drawGlyphGeometry(state, rows: rows, in: context)
-        drawImages(state.images.filter { $0.placement.zIndex >= 0 }, in: context)
+        drawImages(state, layer: .aboveText, in: context)
         if let cursor { drawCursorOutline(cursor, config: config, in: context) }
         if let marked = state.markedText, !marked.isEmpty { drawMarkedText(marked, state: state, in: context) }
     }
@@ -259,11 +262,13 @@ final class TerminalRenderer {
         return CGRect(x: left, y: top, width: max(right - left, 1 / scale), height: max(bottom - top, 1 / scale))
     }
 
-    private func drawImages(_ images: [KittyImage], in context: CGContext) {
+    private func drawImages(_ state: RenderState, layer: KittyImageLayer, in context: CGContext) {
         let origin = cellRect(row: 0, col: 0).origin
+        let images = state.images.filter { $0.placement.layer == layer }
         for image in images.sorted(by: { $0.placement.zIndex < $1.placement.zIndex }) {
             let placement = image.placement
-            let geometry = KittyPlacementGeometry(placement, cellWidth: cellWidth, cellHeight: cellHeight)
+            let geometry = KittyPlacementGeometry(
+                placement, cellWidth: cellWidth, cellHeight: cellHeight, pixelsPerPoint: state.imagePixelsPerPoint)
             let clip = geometry.clip.offsetBy(dx: origin.x, dy: origin.y)
             let target = geometry.image.offsetBy(dx: origin.x, dy: origin.y)
             guard !geometry.visible.isNull, let cropped = image.image.cropping(to: placement.sourceCrop) else { continue }

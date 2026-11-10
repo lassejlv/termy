@@ -69,7 +69,9 @@ final class TerminalFonts {
         }
 
         private func resolve(_ codepoint: UInt32, style: Style) -> Glyph? {
-            guard let scalar = Unicode.Scalar(codepoint) else { return nil }
+            // A Kitty graphics placeholder marks a cell that shows part of an
+            // image; fallback would draw LastResort's box in the image id's color.
+            guard codepoint != 0x10EEEE, let scalar = Unicode.Scalar(codepoint) else { return nil }
             let string = String(Character(scalar))
             let utf16 = Array(string.utf16)
             let primaryIndex = fontIndex(style)
