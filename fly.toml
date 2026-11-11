@@ -1,41 +1,38 @@
-# Fly.io config for the relay (crates/relay).
-# Deploy from the repository root so the whole workspace is the build context:
-#   fly deploy
-# Required secret: fly secrets set DATABASE_URL=postgresql://…
-# Keep a single machine (fly scale count 1): the socket hub and the
-# registration limiter live in memory.
+# fly.toml app configuration file generated for termy on 2026-11-11T08:48:09Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "termy-relay"
-primary_region = "arn"
+app = 'termy'
+primary_region = 'arn'
 
 [build]
-  dockerfile = "crates/relay/Dockerfile"
+  dockerfile = 'crates/relay/Dockerfile'
 
 [env]
-  HOST = "0.0.0.0"
-  PORT = "8080"
-  RUST_LOG = "info,sqlx=warn"
+  HOST = '0.0.0.0'
+  PORT = '8080'
+  RUST_LOG = 'info,sqlx=warn'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  # Long-lived WebSocket connections are held in memory; don't stop the machine.
-  auto_stop_machines = "off"
+  auto_stop_machines = 'off'
   auto_start_machines = true
   min_machines_running = 1
 
   [http_service.concurrency]
-    type = "connections"
-    soft_limit = 1000
+    type = 'connections'
     hard_limit = 2000
+    soft_limit = 1000
 
   [[http_service.checks]]
-    grace_period = "30s"
-    interval = "15s"
-    timeout = "5s"
-    method = "GET"
-    path = "/health"
+    interval = '15s'
+    timeout = '5s'
+    grace_period = '30s'
+    method = 'GET'
+    path = '/health'
 
 [[vm]]
-  size = "shared-cpu-1x"
-  memory = "512mb"
+  size = 'shared-cpu-1x'
+  memory = '512mb'
