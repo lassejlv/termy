@@ -5,7 +5,7 @@
 # Keep a single machine (fly scale count 1): the socket hub and the
 # registration limiter live in memory.
 
-app = "termy-relay"
+app = "termy"
 primary_region = "arn"
 
 [build]
