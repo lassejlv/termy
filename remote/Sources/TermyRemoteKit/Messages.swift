@@ -157,9 +157,16 @@ public struct RemoteImagePlacement: Codable, Hashable, Sendable {
     }
 
     public var isValid: Bool {
-        key.count <= 64 && [frame, clip, crop].allSatisfy { rect in
-            rect.count == 4 && rect.allSatisfy { $0.isFinite && abs($0) <= 100_000 } && rect[2] >= 0 && rect[3] >= 0
+        guard key.count <= 64 else { return false }
+        return Self.isValidRect(frame) && Self.isValidRect(clip) && Self.isValidRect(crop)
+    }
+
+    private static func isValidRect(_ rect: [Double]) -> Bool {
+        guard rect.count == 4 else { return false }
+        for value in rect where !value.isFinite || abs(value) > 100_000 {
+            return false
         }
+        return rect[2] >= 0 && rect[3] >= 0
     }
 }
 
