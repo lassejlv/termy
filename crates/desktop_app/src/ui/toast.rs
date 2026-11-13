@@ -74,8 +74,7 @@ impl Toast {
         let total = now.duration_since(self.created_at);
         let active_pause = self
             .paused_at
-            .map(|paused_at| now.duration_since(paused_at))
-            .unwrap_or_default();
+            .map_or_default(|paused_at| now.duration_since(paused_at));
         total.saturating_sub(self.paused_total + active_pause)
     }
 

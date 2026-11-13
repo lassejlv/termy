@@ -406,7 +406,7 @@ impl SettingsWindow {
         let mut list = div().flex().flex_col().py_1();
         for (index, option) in options.into_iter().enumerate() {
             let option_label = option.display_text();
-            let option_value = option.value.clone();
+            let option_value = option.value;
             list = list.child(
                 div()
                     .id(SharedString::from(format!(

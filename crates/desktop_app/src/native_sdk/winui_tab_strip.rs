@@ -296,7 +296,7 @@ impl WinUiTabStrip {
     }
 
     pub fn hide(&mut self) {
-        let lane = self.lane.map(|(lane, _)| lane).unwrap_or_default();
+        let lane = self.lane.map_or_default(|(lane, _)| lane);
         self.set_lane(lane, false);
     }
 

@@ -553,8 +553,7 @@ impl SettingsWindow {
         let active_input_query = self
             .active_input
             .as_ref()
-            .map(|input| input.state.text().to_string())
-            .unwrap_or_default();
+            .map_or_default(|input| input.state.text().to_string());
         let allow_text_editing = active_field.is_some_and(Self::uses_text_input_for_field);
 
         if Self::cmd_only(event.keystroke.modifiers)

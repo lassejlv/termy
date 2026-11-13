@@ -134,8 +134,7 @@ impl PluginUiView {
                 let value = if active {
                     self.active_input
                         .as_ref()
-                        .map(|input| input.state.text().to_string())
-                        .unwrap_or_default()
+                        .map_or_default(|input| input.state.text().to_string())
                 } else {
                     self.values
                         .get(id)
@@ -267,8 +266,7 @@ impl PluginUiView {
                 let value = if active {
                     self.active_input
                         .as_ref()
-                        .map(|input| input.state.text().to_string())
-                        .unwrap_or_default()
+                        .map_or_default(|input| input.state.text().to_string())
                 } else {
                     self.values
                         .get(id)

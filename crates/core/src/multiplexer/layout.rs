@@ -66,8 +66,7 @@ impl SessionClient {
                 layout.remove_pane(id);
                 Ok(sibling
                     .and_then(|sibling| find_tab_mut(layout, &sibling))
-                    .map(|tab| tab.panes.clone())
-                    .unwrap_or_default())
+                    .map_or_default(|tab| tab.panes.clone()))
             })?
             .value;
         self.close(id)?;

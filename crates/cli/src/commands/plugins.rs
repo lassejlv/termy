@@ -238,8 +238,7 @@ fn status(selected_id: Option<&str>) -> Result<(), String> {
         let version = plugin
             .version
             .as_deref()
-            .map(|version| format!(" v{version}"))
-            .unwrap_or_default();
+            .map_or_default(|version| format!(" v{version}"));
         println!("{}{}  {}  {}", plugin.id, version, status, plugin.name);
         if let Some(source) = plugin.source {
             println!(
@@ -390,8 +389,7 @@ fn title_from_id(id: &str) -> String {
             let mut characters = part.chars();
             let first = characters
                 .next()
-                .map(|character| character.to_ascii_uppercase())
-                .unwrap_or_default();
+                .map_or_default(|character| character.to_ascii_uppercase());
             format!("{first}{}", characters.as_str())
         })
         .collect::<Vec<_>>()

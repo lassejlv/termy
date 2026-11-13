@@ -1949,11 +1949,11 @@ impl TerminalGrid {
             },
             window,
         );
-        for row in 0..self.rows {
+        for (row, row_ops) in cache.row_ops.iter_mut().enumerate().take(self.rows) {
             let row_origin = point(origin.x, origin.y + self.cell_size.height * row as f32);
             self.paint_cached_row_ops(
                 row,
-                &mut cache.row_ops[row],
+                row_ops,
                 row_origin,
                 window,
                 cx,

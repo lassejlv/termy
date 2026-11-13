@@ -572,8 +572,7 @@ impl TerminalView {
 
     fn pane_keyboard_mode(&self, pane_id: &str) -> TerminalKeyboardMode {
         self.pane_terminal_by_id(pane_id)
-            .map(Terminal::keyboard_mode)
-            .unwrap_or_default()
+            .map_or_default(Terminal::keyboard_mode)
     }
 
     fn prompt_shortcuts_enabled_for_pane(&self, pane_id: &str) -> bool {

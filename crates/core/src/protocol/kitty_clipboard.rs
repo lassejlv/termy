@@ -541,7 +541,7 @@ impl KittyClipboardHostState {
                 if matches!(operation, Operation::WriteData | Operation::WriteAlias)
                     && self.write.is_some() =>
             {
-                let id = self.write.take().map(|write| write.id).unwrap_or_default();
+                let id = self.write.take().map_or_default(|write| write.id);
                 self.ignore_write_packets = true;
                 return KittyClipboardStep::Replies(vec![response(
                     "write",
@@ -882,7 +882,7 @@ impl KittyClipboardHostState {
         status: &str,
         terminator: KittyClipboardOscTerminator,
     ) -> Vec<Vec<u8>> {
-        let id = self.write.take().map(|write| write.id).unwrap_or_default();
+        let id = self.write.take().map_or_default(|write| write.id);
         self.ignore_write_packets = true;
         vec![response("write", status, &id, &[], None, terminator)]
     }
