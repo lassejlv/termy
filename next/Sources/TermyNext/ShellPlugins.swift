@@ -245,7 +245,9 @@ final class ShellConnection {
             }
         }
         while let newline = pending.firstIndex(of: 0x0A) {
-            let message = String(decoding: pending[pending.startIndex..<newline], as: UTF8.self)
+            // Bytes, not a String: the cursor is a byte offset into the line,
+            // which may not be UTF-8 at all.
+            let message = Array(pending[pending.startIndex..<newline])
             pending.removeSubrange(pending.startIndex...newline)
             if let parsed = ShellProtocol.parse(message) { onMessage?(self, parsed) }
         }

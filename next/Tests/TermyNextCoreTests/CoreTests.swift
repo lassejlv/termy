@@ -122,6 +122,7 @@ import Testing
         #expect(empty == .line(ShellLine(buffer: "", cursor: 0)))
     }
 
+    /// The bare cursor of plugin scripts from before the byte offset: code points.
     @Test func cursorFromZshCountsCharacters() {
         let accent = "cafe\u{301}"  // é as e + combining acute: 5 code points, 4 characters
         #expect(ShellProtocol.characterOffset(ofScalarOffset: 5, in: accent) == 4)
@@ -144,6 +145,59 @@ import Testing
             return
         }
         #expect(line.cursor == 4)
+        #expect(line.suggestions.history == ["cafe\u{301} au lait"])
+    }
+
+    /// A `line` message as zsh sends it today, the cursor a byte offset.
+    private func lineCursor(_ buffer: [UInt8], at bytes: Int) -> (buffer: String, cursor: Int)? {
+        let message = Array("line\u{1F}b\(bytes)\u{1F}".utf8) + buffer + Array("\u{1F}\u{1F}".utf8)
+        guard case .line(let line)? = ShellProtocol.parse(message) else { return nil }
+        return (line.buffer, line.cursor)
+    }
+
+    private func lineCursor(_ buffer: String, at bytes: Int) -> Int? {
+        lineCursor(Array(buffer.utf8), at: bytes)?.cursor
+    }
+
+    @Test func byteCursorFromZsh() {
+        // ASCII: bytes are characters.
+        #expect(lineCursor("ls -la", at: 6) == 6)
+        #expect(lineCursor("ls -la", at: 2) == 2)
+        #expect(lineCursor("ls -la", at: 0) == 0)
+        // é as e + combining acute (2 bytes): 6 bytes, 4 characters.
+        #expect(lineCursor("cafe\u{301}", at: 6) == 4)
+        // Before the accent, or inside its two bytes, is before the é.
+        #expect(lineCursor("cafe\u{301}", at: 4) == 3)
+        #expect(lineCursor("cafe\u{301}", at: 5) == 3)
+        // Thumbs up (4 bytes) + skin tone (4 bytes) is one character.
+        #expect(lineCursor("ls 👍🏽", at: 11) == 4)
+        #expect(lineCursor("ls 👍🏽", at: 7) == 3)
+        #expect(lineCursor("ls 👍🏽", at: 5) == 3)
+        // CJK: 3 bytes each; inside one rounds down to the one before.
+        #expect(lineCursor("cd 日本", at: 9) == 5)
+        #expect(lineCursor("cd 日本", at: 6) == 4)
+        #expect(lineCursor("cd 日本", at: 7) == 4)
+        #expect(lineCursor("cd 日本", at: 99) == 5)
+        // An escaped newline counts as the one byte zsh measured.
+        #expect(lineCursor("a\\nb", at: 3) == 3)
+
+        // Bytes that aren't UTF-8 (zsh in another locale): each reads as
+        // U+FFFD and the line still comes through.
+        let latin1: [UInt8] = [0x63, 0x61, 0x66, 0xE9]  // "café" in Latin-1
+        #expect(lineCursor(latin1, at: 4)?.buffer == "caf\u{FFFD}")
+        #expect(lineCursor(latin1, at: 4)?.cursor == 4)
+        #expect(lineCursor(latin1, at: 3)?.cursor == 3)
+        let broken: [UInt8] = [0x61, 0xE6, 0x97, 0x62]  // a, a cut-off 日, b
+        #expect(lineCursor(broken, at: 4)?.buffer == "a\u{FFFD}\u{FFFD}b")
+        #expect(lineCursor(broken, at: 4)?.cursor == 4)
+        #expect(lineCursor([0xED, 0xA0, 0x80], at: 3)?.buffer == "\u{FFFD}\u{FFFD}\u{FFFD}")  // a surrogate
+        #expect(lineCursor([0xC0, 0xAF], at: 2)?.buffer == "\u{FFFD}\u{FFFD}")  // an overlong "/"
+
+        // At the end of a line ending in an accent, it gets suggestions.
+        guard case .line(let line)? = ShellProtocol.parse("line\u{1F}b6\u{1F}cafe\u{301}\u{1F}cafe\u{301} au lait\u{1F}") else {
+            Issue.record("line not parsed")
+            return
+        }
         #expect(line.suggestions.history == ["cafe\u{301} au lait"])
     }
 

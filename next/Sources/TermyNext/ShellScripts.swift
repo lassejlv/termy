@@ -138,13 +138,19 @@ enum ShellScripts {
           cmds=(${cmds[1,5]})
         fi
       fi
+      # The cursor as a byte offset: $CURSOR counts characters only in a
+      # UTF-8 locale. Bytes are counted with multibyte off in an anonymous
+      # function, whose local options leave the shell's as they were.
+      local left=${BUFFER[1,CURSOR]} cursor_bytes
+      () { setopt localoptions nomultibyte; REPLY=${#1} } "$left"
+      cursor_bytes=$REPLY
       for item in $hist; do _termy_next_escape "$item"; out+=($REPLY); done
       history_field=${(pj:$_termy_next_rs:)out}
       out=()
       for item in $cmds; do _termy_next_escape "$item"; out+=($REPLY); done
       command_field=${(pj:$_termy_next_rs:)out}
       _termy_next_escape "$BUFFER"
-      _termy_next_send "line$_termy_next_us$CURSOR$_termy_next_us$REPLY$_termy_next_us$history_field$_termy_next_us$command_field"
+      _termy_next_send "line${_termy_next_us}b$cursor_bytes$_termy_next_us$REPLY$_termy_next_us$history_field$_termy_next_us$command_field"
     }
 
     _termy_next_finish() {

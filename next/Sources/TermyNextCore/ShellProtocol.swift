@@ -8,8 +8,12 @@ import Foundation
 /// From zsh:
 ///
 ///     hello US <pane> US <pid> US <PATH>
-///     line  US <cursor> US <buffer> US <history RS …> US <commands RS …>
+///     line  US b<cursor> US <buffer> US <history RS …> US <commands RS …>
 ///     done
+///
+/// The cursor is a byte offset into the buffer after `b`, which reads the
+/// same whatever zsh's locale. Scripts from before had a bare number, zsh's
+/// `$CURSOR` (code points in a UTF-8 locale); shells started then still send it.
 ///
 /// To zsh: `set US <text>` replaces the command line, and zsh reports the
 /// new line back. To run it, Termy Next types Return after that report.
@@ -52,14 +56,29 @@ public enum ShellProtocol {
     static let itemSeparator: Character = "\u{1E}"
 
     public static func parse(_ message: String) -> ShellMessage? {
-        let fields = message.split(separator: fieldSeparator, omittingEmptySubsequences: false).map(String.init)
+        parse(Array(message.utf8))
+    }
+
+    /// A message as the bytes zsh sent. zsh in a locale other than UTF-8 can
+    /// send bytes that aren't UTF-8; each such byte reads as U+FFFD.
+    public static func parse(_ message: [UInt8]) -> ShellMessage? {
+        let raw = message.split(separator: 0x1F, omittingEmptySubsequences: false)
+        let fields = raw.map { String(decoding: $0, as: UTF8.self) }
         switch fields.first {
         case "hello" where fields.count >= 4:
             return .hello(pane: unescape(fields[1]), pid: Int32(fields[2]) ?? 0, path: unescape(fields[3]))
         case "line" where fields.count >= 5:
-            let buffer = unescape(fields[2])
-            return .line(ShellLine(buffer: buffer, cursor: characterOffset(ofScalarOffset: Int(fields[1]) ?? 0, in: buffer),
-                                   history: list(fields[3]), commands: list(fields[4])))
+            let buffer: String
+            let cursor: Int
+            if fields[1].hasPrefix("b") {
+                let decoded = decodeUTF8(unescape(bytes: Array(raw[2])))
+                buffer = decoded.text
+                cursor = characterOffset(ofByteOffset: Int(fields[1].dropFirst()) ?? 0, in: decoded)
+            } else {
+                buffer = unescape(fields[2])
+                cursor = characterOffset(ofScalarOffset: Int(fields[1]) ?? 0, in: buffer)
+            }
+            return .line(ShellLine(buffer: buffer, cursor: cursor, history: list(fields[3]), commands: list(fields[4])))
         case "done":
             return .done
         default:
@@ -106,7 +125,93 @@ public enum ShellProtocol {
         return out
     }
 
-    /// zsh's `$CURSOR` counts code points; Swift strings count characters
+    /// `unescape(_:)` on bytes, so offsets into what zsh measured still hold.
+    static func unescape(bytes: [UInt8]) -> [UInt8] {
+        var out: [UInt8] = []
+        out.reserveCapacity(bytes.count)
+        var escaping = false
+        for byte in bytes {
+            if escaping {
+                switch byte {
+                case UInt8(ascii: "n"): out.append(0x0A)
+                case UInt8(ascii: "\\"): out.append(byte)
+                default: out += [UInt8(ascii: "\\"), byte]
+                }
+                escaping = false
+            } else if byte == UInt8(ascii: "\\") {
+                escaping = true
+            } else {
+                out.append(byte)
+            }
+        }
+        if escaping { out.append(UInt8(ascii: "\\")) }
+        return out
+    }
+
+    /// Text decoded from bytes, and how many bytes each of its scalars took.
+    struct DecodedText {
+        var text: String
+        var scalarWidths: [Int]
+    }
+
+    /// Decodes UTF-8, a byte that doesn't begin a valid sequence becoming one
+    /// U+FFFD, and remembers each scalar's width in the input.
+    static func decodeUTF8(_ bytes: [UInt8]) -> DecodedText {
+        var scalars = String.UnicodeScalarView()
+        var widths: [Int] = []
+        var index = 0
+        while index < bytes.count {
+            let lead = bytes[index]
+            let (length, minimum): (Int, UInt32) = switch lead {
+            case 0x00...0x7F: (1, 0)
+            case 0xC2...0xDF: (2, 0x80)
+            case 0xE0...0xEF: (3, 0x800)
+            case 0xF0...0xF4: (4, 0x10000)
+            default: (0, 0)
+            }
+            var value: UInt32? = length == 1 ? UInt32(lead) : nil
+            if length > 1, index + length <= bytes.count {
+                var decoded = UInt32(lead) & (0xFF >> (length + 1))
+                var valid = true
+                for byte in bytes[(index + 1)..<(index + length)] {
+                    guard byte & 0xC0 == 0x80 else { valid = false; break }
+                    decoded = decoded << 6 | UInt32(byte & 0x3F)
+                }
+                // No overlong forms or surrogates.
+                if valid, decoded >= minimum, Unicode.Scalar(decoded) != nil { value = decoded }
+            }
+            if let value, let scalar = Unicode.Scalar(value) {
+                scalars.append(scalar)
+                widths.append(length)
+                index += length
+            } else {
+                scalars.append("\u{FFFD}")
+                widths.append(1)
+                index += 1
+            }
+        }
+        return DecodedText(text: String(scalars), scalarWidths: widths)
+    }
+
+    /// The number of whole characters in the first `offset` bytes of `text`:
+    /// a cursor inside a character, between its bytes or before its accent,
+    /// stays before it.
+    static func characterOffset(ofByteOffset offset: Int, in text: DecodedText) -> Int {
+        guard offset > 0 else { return 0 }
+        var bytes = 0
+        var scalar = 0
+        var characters = 0
+        for character in text.text {
+            let count = character.unicodeScalars.count
+            bytes += text.scalarWidths[scalar..<(scalar + count)].reduce(0, +)
+            scalar += count
+            guard bytes <= offset else { break }
+            characters += 1
+        }
+        return characters
+    }
+
+    /// Old plugin scripts: zsh's `$CURSOR` counts code points; Swift strings count characters
     /// (an accented letter or a flag can be several code points). The number
     /// of whole characters before the cursor, so a cursor inside one isn't
     /// taken for the end of the line.
