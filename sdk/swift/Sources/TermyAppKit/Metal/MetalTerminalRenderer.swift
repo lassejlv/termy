@@ -18,11 +18,37 @@ final class MetalTerminalRenderer {
         var backgrounds: [MetalQuad] = []
         /// Glyphs, decorations and special-glyph geometry.
         var foreground: [MetalQuad] = []
+        /// How each quad's vertical position follows from its row's origin.
+        var backgroundPlacements: [Vertical] = []
+        var foregroundPlacements: [Vertical] = []
+    }
 
-        mutating func shift(by pixels: Float) {
-            for index in backgrounds.indices { backgrounds[index].rect.y += pixels }
-            for index in foreground.indices { foreground[index].rect.y += pixels }
-        }
+    /// A row's origin, in the forms its quads are placed from. Every vertical
+    /// position in a row is computed from these alone (`place`), so a row
+    /// moved to another index lands exactly where one built there would.
+    private struct RowOrigin {
+        /// The row's top, in points.
+        var top: CGFloat
+        /// The text baseline, in whole pixels.
+        var baseline: CGFloat
+        /// The row's top in pixels, before rounding.
+        var pixelTop: CGFloat
+    }
+
+    /// Where a quad sits vertically, relative to its row.
+    private enum Vertical {
+        /// A cell's full height: backgrounds.
+        case cell
+        /// A glyph bitmap, this far from the baseline.
+        case glyph(Float)
+        /// An underline, rounded this far below the baseline.
+        case below(CGFloat)
+        /// A strikethrough, rounded this far above the baseline.
+        case above(CGFloat)
+        /// A special-glyph rectangle, its edges as fractions of the cell.
+        case geometry(top: Float, bottom: Float, outward: Bool)
+        /// A stroked special glyph's bitmap, this far from the rounded top.
+        case stroke(Float)
     }
 
     private struct Batch {
@@ -141,27 +167,62 @@ final class MetalTerminalRenderer {
     /// number of pixels, so a scroll by any other distance has the rows of
     /// its region rebuilt instead.
     func replay(_ scrolls: [ViewportScroll], rowCount: Int) {
-        let step = Float(cellHeight * scale)
-        guard rows.count == rowCount, step > 0,
+        guard rows.count == rowCount,
               scrolls.allSatisfy({ $0.top >= 0 && $0.top <= $0.bottom && $0.bottom < rows.count
                   && $0.count > 0 && $0.count <= $0.bottom - $0.top + 1 })
         else { return invalidateAll() }
         for scroll in scrolls {
             let region = scroll.top...scroll.bottom
-            let distance = step * Float(scroll.count)
-            guard distance == distance.rounded() else {
-                rows.replaceSubrange(region, with: Array(repeating: nil, count: region.count))
-                continue
-            }
-            let offset = scroll.direction == .up ? -distance : distance
             let kept = region.count - scroll.count
             var moved = Array(rows[region])
             moved = scroll.direction == .up
                 ? Array(moved[scroll.count...]) + Array(repeating: nil, count: scroll.count)
                 : Array(repeating: nil, count: scroll.count) + Array(moved[..<kept])
-            for index in moved.indices { moved[index]?.shift(by: offset) }
-            movedRows += moved.lazy.filter { $0 != nil }.count
+            for (offset, index) in zip(moved.indices, region) where moved[offset] != nil {
+                place(&moved[offset]!, at: origin(ofRow: index))
+                movedRows += 1
+            }
             rows.replaceSubrange(region, with: moved)
+        }
+    }
+
+    private func origin(ofRow row: Int) -> RowOrigin {
+        let paddingY = CGFloat(config?.paddingY ?? 0)
+        return RowOrigin(
+            top: paddingY + CGFloat(row) * cellHeight,
+            baseline: pixel(paddingY + CGFloat(row) * cellHeight + baselineOffset),
+            pixelTop: paddingY * scale + CGFloat(row) * cellHeight * scale)
+    }
+
+    /// Sets every quad's vertical position for a row at `origin`. Building a
+    /// row and moving one both place its quads here, and nowhere else.
+    private func place(_ row: inout RowQuads, at origin: RowOrigin) {
+        for index in row.backgrounds.indices { place(&row.backgrounds[index], row.backgroundPlacements[index], origin) }
+        for index in row.foreground.indices { place(&row.foreground[index], row.foregroundPlacements[index], origin) }
+    }
+
+    private func place(_ quad: inout MetalQuad, _ vertical: Vertical, _ origin: RowOrigin) {
+        switch vertical {
+        case .cell:
+            let y0 = pixel(origin.top)
+            quad.rect.y = Float(y0)
+            quad.rect.w = Float(pixel(origin.top + cellHeight) - y0)
+        case .glyph(let offset):
+            quad.rect.y = Float(origin.baseline) + offset
+        case .below(let distance):
+            quad.rect.y = Float((origin.baseline + distance).rounded())
+        case .above(let distance):
+            quad.rect.y = Float((origin.baseline - distance).rounded())
+        case .geometry(let top, let bottom, let outward):
+            let height = cellHeight * scale
+            let low = origin.pixelTop + CGFloat(top) * height
+            let high = origin.pixelTop + CGFloat(bottom) * height
+            let y0 = outward ? low.rounded(.down) : low.rounded()
+            let y1 = outward ? high.rounded(.up) : high.rounded()
+            quad.rect.y = Float(y0)
+            quad.rect.w = Float(max(y1 - y0, 1))
+        case .stroke(let offset):
+            quad.rect.y = Float(origin.pixelTop.rounded()) + offset
         }
     }
 
@@ -357,6 +418,8 @@ final class MetalTerminalRenderer {
         var quads = RowQuads()
         let cellAlpha = config.backgroundOpacityAffectsCells ? config.backgroundOpacity : 1
 
+        // Quads are made with only their horizontal extent; `place` sets
+        // where they sit vertically, from the row's origin.
         var col = 0
         while col < store.cols {
             let cell = store[row, col]
@@ -368,33 +431,37 @@ final class MetalTerminalRenderer {
                 end += 1
             }
             quads.backgrounds.append(solid(cellPixels(row: row, col: col, width: end - col), cell.background, alpha: cellAlpha))
+            quads.backgroundPlacements.append(.cell)
             col = end
         }
 
-        let baseline = pixel(CGFloat(config.paddingY) + CGFloat(row) * cellHeight + baselineOffset)
         for col in 0..<store.cols {
             let cell = store[row, col]
             if let entry = state.glyphPlan[row * store.cols + col] {
-                appendGeometry(entry, cell: cell, row: row, col: col, to: &quads.foreground)
-            } else if cell.text != nil, let quad = glyphQuad(cell, color: cell.foreground, row: row, col: col, baseline: baseline) {
+                appendGeometry(entry, cell: cell, col: col, to: &quads)
+            } else if cell.text != nil, let (quad, offset) = glyphQuad(cell, color: cell.foreground, col: col) {
                 quads.foreground.append(quad)
+                quads.foregroundPlacements.append(.glyph(offset))
             }
             guard cell.isUnderlined || cell.isStrikethrough, !cell.isWideCharacterSpacer else { continue }
             let rect = cellPixels(row: row, col: col)
             let thickness = max(1, scale.rounded())
             if cell.isUnderlined {
-                let y = (baseline + max(fonts.underlinePosition * scale, thickness)).rounded()
-                quads.foreground.append(solid(SIMD4(rect.x, Float(y), rect.z, Float(thickness)), cell.foreground))
+                quads.foreground.append(solid(SIMD4(rect.x, 0, rect.z, Float(thickness)), cell.foreground))
+                quads.foregroundPlacements.append(.below(max(fonts.underlinePosition * scale, thickness)))
             }
             if cell.isStrikethrough {
-                let y = (baseline - fonts.ascent * 0.35 * scale).rounded()
-                quads.foreground.append(solid(SIMD4(rect.x, Float(y), rect.z, Float(thickness)), cell.foreground))
+                quads.foreground.append(solid(SIMD4(rect.x, 0, rect.z, Float(thickness)), cell.foreground))
+                quads.foregroundPlacements.append(.above(fonts.ascent * 0.35 * scale))
             }
         }
+        place(&quads, at: origin(ofRow: row))
         return quads
     }
 
-    private func glyphQuad(_ cell: Cell, color: TermyColor, row: Int, col: Int, baseline: CGFloat) -> MetalQuad? {
+    /// A glyph's quad, without its vertical position, and its bitmap's
+    /// offset from the baseline.
+    private func glyphQuad(_ cell: Cell, color: TermyColor, col: Int) -> (MetalQuad, Float)? {
         guard let glyph = fonts.glyph(for: cell.codepoint, style: .init(bold: cell.isBold, italic: cell.isItalic))
         else { return nil }
         let font = fonts.font(at: glyph.fontIndex)
@@ -403,16 +470,15 @@ final class MetalTerminalRenderer {
             GlyphRasterizer.glyph(glyph.glyph, font: font, scale: scale)
         }) else { return nil }
         let penX = pixel(CGFloat(config?.paddingX ?? 0) + CGFloat(col) * cellWidth)
-        let origin = SIMD2(Float(penX), Float(baseline)) + entry.offset
-        return MetalQuad(
-            rect: SIMD4(origin.x, origin.y, entry.rect.z, entry.rect.w),
+        let quad = MetalQuad(
+            rect: SIMD4(Float(penX) + entry.offset.x, 0, entry.rect.z, entry.rect.w),
             uv: SIMD4(entry.rect.x, entry.rect.y, entry.rect.x + entry.rect.z, entry.rect.y + entry.rect.w),
             color: rgba(color), mode: glyph.isColor ? .colorGlyph : .mask)
+        return (quad, entry.offset.y)
     }
 
-    private func appendGeometry(_ entry: GlyphPlanEntry, cell: Cell, row: Int, col: Int, to quads: inout [MetalQuad]) {
+    private func appendGeometry(_ entry: GlyphPlanEntry, cell: Cell, col: Int, to quads: inout RowQuads) {
         let left = CGFloat(config?.paddingX ?? 0) * scale + CGFloat(col) * cellWidth * scale
-        let top = CGFloat(config?.paddingY ?? 0) * scale + CGFloat(row) * cellHeight * scale
         let width = cellWidth * scale
         let height = cellHeight * scale
         for rect in entry.rects {
@@ -420,23 +486,21 @@ final class MetalTerminalRenderer {
                 rect.snap == .outward ? value.rounded(up ? .up : .down) : value.rounded()
             }
             let x0 = snap(left + CGFloat(rect.left) * width, up: false)
-            let y0 = snap(top + CGFloat(rect.top) * height, up: false)
             let x1 = snap(left + CGFloat(rect.right) * width, up: true)
-            let y1 = snap(top + CGFloat(rect.bottom) * height, up: true)
-            quads.append(solid(
-                SIMD4(Float(x0), Float(y0), Float(max(x1 - x0, 1)), Float(max(y1 - y0, 1))),
-                cell.foreground, alpha: rect.alpha))
+            quads.foreground.append(solid(
+                SIMD4(Float(x0), 0, Float(max(x1 - x0, 1)), 0), cell.foreground, alpha: rect.alpha))
+            quads.foregroundPlacements.append(.geometry(top: rect.top, bottom: rect.bottom, outward: rect.snap == .outward))
         }
         guard !entry.strokes.isEmpty else { return }
         let size = CGSize(width: width, height: height)
         guard let stroke = atlas.entry(for: .strokes(entry.strokes), rasterize: {
             GlyphRasterizer.strokes(entry.strokes, cellSize: size)
         }) else { return }
-        let origin = SIMD2(Float(left.rounded()), Float(top.rounded())) + stroke.offset
-        quads.append(MetalQuad(
-            rect: SIMD4(origin.x, origin.y, stroke.rect.z, stroke.rect.w),
+        quads.foreground.append(MetalQuad(
+            rect: SIMD4(Float(left.rounded()) + stroke.offset.x, 0, stroke.rect.z, stroke.rect.w),
             uv: SIMD4(stroke.rect.x, stroke.rect.y, stroke.rect.x + stroke.rect.z, stroke.rect.y + stroke.rect.w),
             color: rgba(cell.foreground), mode: .mask))
+        quads.foregroundPlacements.append(.stroke(stroke.offset.y))
     }
 
     private func selectionQuads(_ state: RenderState) -> [MetalQuad] {
@@ -478,9 +542,10 @@ final class MetalTerminalRenderer {
         var quads = [solid(rect, config.cursorColor)]
         let cell = store[cursor.row, cursor.col]
         if cell.text != nil, state.glyphPlan[cursor.row * store.cols + cursor.col] == nil {
-            let baseline = pixel(CGFloat(config.paddingY) + CGFloat(cursor.row) * cellHeight + baselineOffset)
             let color = cell.usesDefaultBackground ? config.background : cell.background
-            if let glyph = glyphQuad(cell, color: color, row: cursor.row, col: cursor.col, baseline: baseline) {
+            if var (glyph, offset) = glyphQuad(cell, color: color, col: cursor.col) {
+                // Where the row's own glyph is placed.
+                place(&glyph, .glyph(offset), origin(ofRow: cursor.row))
                 quads.append(glyph)
             }
         }
