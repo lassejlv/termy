@@ -575,6 +575,11 @@ fn read_lines_caps_rows_to_the_frame_row_type() {
         frame.cells_len,
         usize::from(frame.rows) * usize::from(frame.cols)
     );
+    // A first line past the end reads nothing instead of overflowing.
+    // SAFETY: live handle and out struct.
+    let status = unsafe { termy_engine_read_lines(engine.0, i64::MAX, 10, &raw mut frame) };
+    assert_eq!(status, TermyEngineStatus::Ok);
+    assert_eq!((frame.rows, frame.cells_len), (0, 0));
 }
 
 #[test]

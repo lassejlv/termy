@@ -116,8 +116,16 @@ final class ShellAgentRun {
             process.currentDirectoryURL = URL(fileURLWithPath: directory)
         }
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = try? FileHandle(forWritingTo: stdout)
-        process.standardError = try? FileHandle(forWritingTo: stderr)
+        let outHandle = try? FileHandle(forWritingTo: stdout)
+        let errHandle = try? FileHandle(forWritingTo: stderr)
+        process.standardOutput = outHandle
+        process.standardError = errHandle
+        // The agent has its own copies once started; ours would stay open as
+        // long as the run object lives.
+        defer {
+            try? outHandle?.close()
+            try? errHandle?.close()
+        }
         process.terminationHandler = { [weak self] process in
             let status = process.terminationStatus
             let reason = process.terminationReason
@@ -134,7 +142,7 @@ final class ShellAgentRun {
         let timeout = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 guard let self, self.process.isRunning else { return }
-                self.process.terminate()
+                Self.end(self.process)
                 self.finish(.failure(ShellAgentError(message: "\(agent.title) took too long")))
             }
         }
@@ -145,8 +153,30 @@ final class ShellAgentRun {
     /// Stops the agent; the completion isn't called.
     func cancel() {
         completion = nil
-        if process.isRunning { process.terminate() }
+        if process.isRunning { Self.end(process) }
         cleanUp()
+    }
+
+    /// Agents told to stop that haven't exited yet. Holding them until they
+    /// do keeps Foundation reaping them after the run that started them is gone.
+    private static var ending: Set<Process> = []
+
+    /// Asks the agent to quit, kills it if it's still there a few seconds
+    /// later, and keeps it until it has exited and been reaped.
+    private static func end(_ process: Process) {
+        ending.insert(process)
+        process.terminationHandler = { process in
+            DispatchQueue.main.async { MainActor.assumeIsolated { _ = ShellAgentRun.ending.remove(process) } }
+        }
+        process.terminate()
+        let pid = process.processIdentifier
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            MainActor.assumeIsolated {
+                if ShellAgentRun.ending.contains(process), process.isRunning { kill(pid, SIGKILL) }
+            }
+        }
+        // It may have exited before the handler was replaced.
+        if !process.isRunning { ending.remove(process) }
     }
 
     private func exited(status: Int32, reason: Process.TerminationReason, agent: ShellAgent, stdout: URL, stderr: URL, reply: URL) {

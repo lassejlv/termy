@@ -34,7 +34,9 @@ final class GlyphAtlas {
         var offset: SIMD2<Float>
     }
 
-    static let initialSize = 2048
+    /// Every view has an atlas, so it starts at 4 MB, which holds a font's
+    /// ASCII in four styles at Retina sizes, and doubles when that fills.
+    static let initialSize = 1024
     /// 8192² BGRA is 256 MB, so the atlas stops growing there even when the
     /// GPU allows larger textures.
     static let maxSize = 8192

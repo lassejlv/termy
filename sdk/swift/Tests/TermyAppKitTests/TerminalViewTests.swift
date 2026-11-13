@@ -137,6 +137,28 @@ struct TerminalViewTests {
         #expect(!sent.isEmpty)
     }
 
+    @Test func onlyKeysWhosePressWasSentReportARelease() throws {
+        let view = try makeView()
+        var sent: [Data] = []
+        view.session.terminal.onInput = { sent.append($0) }
+        // Kitty keyboard flags 1 | 2: disambiguate, and report releases.
+        try view.session.feed(Data("\u{1b}[>3u".utf8))
+        func key(_ type: NSEvent.EventType, _ code: UInt16, _ flags: NSEvent.ModifierFlags = [], _ text: String) throws -> NSEvent {
+            try #require(NSEvent.keyEvent(
+                with: type, location: .zero, modifierFlags: flags, timestamp: 0, windowNumber: 0,
+                context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code))
+        }
+        // A release whose press went elsewhere, such as ⌘C's, says nothing.
+        view.keyUp(with: try key(.keyUp, 8, .command, "c"))
+        #expect(sent.isEmpty)
+        view.keyDown(with: try key(.keyDown, 53, [], "\u{1b}"))
+        view.keyUp(with: try key(.keyUp, 53, [], "\u{1b}"))
+        #expect(sent.count == 2)
+        // Only once.
+        view.keyUp(with: try key(.keyUp, 53, [], "\u{1b}"))
+        #expect(sent.count == 2)
+    }
+
     @Test func rightClickOnALinkOffersToOpenAndCopyIt() throws {
         let view = try makeView(feeding: "\u{1b}]8;;https://termy.sh/\u{1b}\\link\u{1b}]8;;\u{1b}\\")
         view.pasteboard = privatePasteboard()
@@ -211,6 +233,25 @@ struct TerminalViewTests {
         window.contentView = nil
     }
 
+    @Test func viewsNobodyCanSeePauseTheirTerminalsWakeups() throws {
+        let view = try makeView()
+        _ = NSApplication.shared
+        // Not in a window yet: nothing has asked it to pause.
+        #expect(!view.wakeupsPaused)
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: view.frame.size),
+            styleMask: [.borderless], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        // A window that isn't on screen, like a background tab's.
+        window.contentView = view
+        #expect(view.wakeupsPaused)
+        window.contentView = nil
+        #expect(view.wakeupsPaused)
+        // Output is still read on demand while paused.
+        try view.session.feed(Data("still here".utf8))
+        #expect(view.session.frame.text(row: 0) == "still here")
+    }
+
     @Test func selectionCopiesText() throws {
         let view = try makeView(feeding: "hello world\r\nsecond")
         view.selection = TerminalSelection(
@@ -222,6 +263,36 @@ struct TerminalViewTests {
 
         view.selection = TerminalSelection(anchor: GridPosition(row: 1, col: 0), granularity: .line)
         #expect(view.selection?.text(in: view.session.frame) == "second")
+    }
+
+    @Test func selectionFollowsScrolledTextAndGoesWithIt() throws {
+        let view = try makeView(feeding: "zero\r\nhello\r\ntwo")
+        view.selection = TerminalSelection(anchor: GridPosition(row: 1, col: 0), head: GridPosition(row: 1, col: 4))
+        #expect(view.selection?.text(in: view.session.frame) == "hello")
+        // Output scrolls it up a row.
+        try view.session.feed(Data("\r\nthree\r\nfour\r\nfive".utf8))
+        #expect(view.selection?.start.row == 0)
+        #expect(view.selection?.text(in: view.session.frame) == "hello")
+        // Into history, and back into view by scrolling.
+        try view.session.feed(Data("\r\nsix\r\nseven".utf8))
+        #expect(view.selection?.start.row == -2)
+        view.session.scroll(lines: 3)
+        #expect(view.selection?.start.row == 1)
+        #expect(view.selection?.text(in: view.session.frame) == "hello")
+        view.session.scrollToBottom()
+        // Erasing the text it covered ends it.
+        view.session.scroll(lines: 2)
+        #expect(view.selection?.text(in: view.session.frame) == "hello")
+        view.session.scrollToBottom()
+        try view.session.feed(Data("\u{1b}[3J\u{1b}[2J".utf8))
+        #expect(view.selection == nil)
+
+        // So does a screen switch.
+        try view.session.feed(Data("\u{1b}[Hkeep".utf8))
+        view.selection = TerminalSelection(anchor: GridPosition(row: 0, col: 0), head: GridPosition(row: 0, col: 3))
+        #expect(view.selection?.text(in: view.session.frame) == "keep")
+        try view.session.feed(Data("\u{1b}[?1049h\u{1b}[Hother".utf8))
+        #expect(view.selection == nil)
     }
 
     @Test func copyReportsTextAndSelectionRects() throws {

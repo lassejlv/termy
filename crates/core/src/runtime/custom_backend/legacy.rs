@@ -620,13 +620,29 @@ fn legacy_render_cell(
 /// [`CustomBackend::frame_update`].
 pub(crate) fn legacy_frame_update(
     read: &TerminalRenderRead,
-    mut update: TerminalRenderDamageSnapshot,
+    update: TerminalRenderDamageSnapshot,
     fallback: TerminalQueryColors,
 ) -> TermyFrameUpdate {
+    legacy_frame_update_with_scrolls(read, update, fallback, false).0
+}
+
+/// [`legacy_frame_update`], returning replayable scrolls instead of damage on
+/// the rows they moved when `replay_scrolls` is set.
+pub(crate) fn legacy_frame_update_with_scrolls(
+    read: &TerminalRenderRead,
+    mut update: TerminalRenderDamageSnapshot,
+    fallback: TerminalQueryColors,
+    replay_scrolls: bool,
+) -> (TermyFrameUpdate, Vec<TerminalViewportScroll>) {
     let metadata = read.metadata;
     let cols = usize::from(metadata.cols);
     let rows = usize::from(metadata.rows);
-    expand_legacy_scroll_damage(&mut update, cols);
+    let mut scrolls = if replay_scrolls {
+        take_replayable_scrolls(&mut update, cols, rows)
+    } else {
+        expand_legacy_scroll_damage(&mut update, cols);
+        Vec::new()
+    };
     let mut damage = update.damage;
     // Damage that does not fit the read, or a read that does not cover the
     // viewport, cannot patch it: send the whole viewport.
@@ -639,6 +655,7 @@ pub(crate) fn legacy_frame_update(
         };
     if !fits {
         damage = TerminalDamageSnapshot::Full;
+        scrolls.clear();
     }
     let cells = match &damage {
         TerminalDamageSnapshot::Full => {
@@ -668,7 +685,7 @@ pub(crate) fn legacy_frame_update(
             cells
         }
     };
-    TermyFrameUpdate {
+    let update = TermyFrameUpdate {
         cols: metadata.cols,
         rows: metadata.rows,
         cells,
@@ -676,7 +693,8 @@ pub(crate) fn legacy_frame_update(
         display_offset: metadata.display_offset,
         history_size: metadata.history_size,
         damage,
-    }
+    };
+    (update, scrolls)
 }
 
 #[cfg(test)]

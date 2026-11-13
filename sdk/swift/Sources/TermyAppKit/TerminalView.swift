@@ -89,9 +89,24 @@ public final class TerminalView: NSView {
     public var pasteboard: NSPasteboard = .general
 
     public private(set) var renderConfig: RenderConfig
+    /// Follows the text it covers as output scrolls it or history is
+    /// scrolled, and goes away when that text does (erased, gone from
+    /// history, or a screen switch).
     public internal(set) var selection: TerminalSelection? {
-        didSet { if oldValue != selection { invalidateSelection(oldValue) } }
+        didSet {
+            guard oldValue != selection else { return }
+            invalidateSelection(oldValue)
+            selectedText = selection.flatMap { selection in
+                let frame = session.frame
+                return selection.start.row >= 0 && selection.end.row < frame.rows ? selection.text(in: frame) : nil
+            }
+        }
     }
+    /// The text the selection covered when last seen whole on screen.
+    private var selectedText: String?
+    /// The scrollback position of the frame the selection was placed on.
+    private var shownHistory = 0
+    private var shownOffset = 0
 
     let renderer = TerminalRenderer()
     let metalRenderer: MetalTerminalRenderer?
@@ -100,6 +115,8 @@ public final class TerminalView: NSView {
     var markedText: String?
     var gesture = MouseGestureState()
     var cursorBlinkVisible = true
+    /// Keys whose press went to the program, so only they report a release.
+    var pressedKeyCodes: Set<UInt16> = []
     /// The link underlined under the pointer while Command is held.
     var hoveredLink: LinkHit? {
         didSet { hoveredLinkDidChange(from: oldValue) }
@@ -129,6 +146,8 @@ public final class TerminalView: NSView {
     private var animationRetryDelay: TimeInterval = 0
     /// An animation frame came due while the window was hidden.
     private var animationPaused = false
+    /// Render wakeups are off because nobody can see the view.
+    private(set) var wakeupsPaused = false
     private var windowObservers: [NSObjectProtocol] = []
 
     /// Kitty animations are capped at this rate however short their frame delay.
@@ -145,6 +164,8 @@ public final class TerminalView: NSView {
         renderer.configure(renderConfig)
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
+        // The view moves drawn rows and glyph geometry along with scrolls.
+        session.replaysScrolls = true
         session.onFrameChange = { [weak self] change in self?.frameDidChange(change) }
         session.onGraphicsChange = { [weak self] in self?.refreshImagesIfNeeded() }
         session.onEvent = { [weak self] event in self?.handle(event) }
@@ -262,6 +283,26 @@ public final class TerminalView: NSView {
     public override func viewDidUnhide() {
         super.viewDidUnhide()
         resizeGridToFit()
+        updateWakeups()
+        // Frames were skipped while hidden.
+        needsDisplay = true
+    }
+
+    public override func viewDidHide() {
+        super.viewDidHide()
+        updateWakeups()
+    }
+
+    /// A view nobody can see (out of a window, hidden, or in a hidden or
+    /// covered window) takes no frames: a session host stops sending them and
+    /// a local terminal stops waking the main thread for output, while
+    /// titles, status and exit still arrive. Showing it again catches up.
+    private func updateWakeups() {
+        let visible = isOnScreen && !isHiddenOrHasHiddenAncestor
+        guard visible == wakeupsPaused else { return }
+        wakeupsPaused = !visible
+        try? session.terminal.setWakeupEnabled(visible)
+        if visible { needsDisplay = true }
     }
 
     var renderState: RenderState {
@@ -337,8 +378,9 @@ public final class TerminalView: NSView {
     }
 
     private func renderMetalFrame() {
-        // Hidden windows skip frames; becoming visible redraws everything.
-        guard let metalRenderer, let layer = layer as? CAMetalLayer, isOnScreen else { return }
+        // Hidden windows and views skip frames; becoming visible redraws.
+        guard let metalRenderer, let layer = layer as? CAMetalLayer, isOnScreen, !isHiddenOrHasHiddenAncestor
+        else { return }
         let size = fittingDrawableSize
         let resized = layer.drawableSize != size
         if resized { layer.drawableSize = size }
@@ -389,15 +431,22 @@ public final class TerminalView: NSView {
 
     private func frameDidChange(_ change: FrameChange) {
         if let hovered = hoveredLink, linkMayHaveMoved(hovered.link, by: change) { hoveredLink = nil }
+        followSelection(change)
         switch change.damage {
         case .full:
             rebuildGlyphPlan(spans: nil)
             metalRenderer?.invalidateAll()
             needsDisplay = true
         case .partial(let spans):
+            if !change.scrolls.isEmpty {
+                // Move what was built for the rows that scrolled, instead
+                // of building every row again.
+                moveGlyphPlan(change.scrolls)
+                metalRenderer?.replay(change.scrolls, rowCount: session.frame.rows)
+            }
             rebuildGlyphPlan(spans: spans)
             metalRenderer?.invalidate(rows: spans.map(\.row))
-            if change.resized || change.viewportChanged {
+            if change.resized || change.viewportChanged || !change.scrolls.isEmpty {
                 needsDisplay = true
             } else {
                 // Repaint whole rows: wide glyphs and glyph geometry can overhang.
@@ -406,7 +455,11 @@ public final class TerminalView: NSView {
                 }
             }
         case .none:
-            if change.resized || change.viewportChanged { needsDisplay = true }
+            if !change.scrolls.isEmpty {
+                moveGlyphPlan(change.scrolls)
+                metalRenderer?.replay(change.scrolls, rowCount: session.frame.rows)
+            }
+            if change.resized || change.viewportChanged || !change.scrolls.isEmpty { needsDisplay = true }
         }
         if change.cursorChanged {
             invalidateCursor(change.previousCursor)
@@ -416,9 +469,72 @@ public final class TerminalView: NSView {
         refreshImagesIfNeeded()
     }
 
+    /// Moves the selection with the text it covers. Rows count from the top
+    /// of the viewport; a selection may reach above it into history.
+    private func followSelection(_ change: FrameChange) {
+        let frame = session.frame
+        defer {
+            shownHistory = frame.historySize
+            shownOffset = frame.displayOffset
+        }
+        guard let current = selection else { return }
+        guard !change.resized else { return selection = nil }
+        // History rows above the viewport's top moved by this many: output
+        // scrolling into history, or the viewport scrolling through it.
+        let historyShift = (frame.historySize - frame.displayOffset) - (shownHistory - shownOffset)
+        var intoHistory = 0
+        var saturated = false
+        var moved: [ViewportScroll] = []
+        for scroll in change.scrolls {
+            if scroll.top == 0, scroll.bottom == frame.rows - 1, scroll.direction == .up, frame.displayOffset == 0 {
+                intoHistory += scroll.count
+                // Everything left the screen; how far isn't known.
+                saturated = saturated || scroll.count == frame.rows
+            } else {
+                moved.append(scroll)
+            }
+        }
+        // Lines a full history let go are counted by the scrolls, not the size.
+        let shift = historyShift + max(0, intoHistory - (frame.historySize - shownHistory))
+        func follow(_ position: GridPosition) -> GridPosition? {
+            var row = position.row
+            for scroll in moved {
+                guard let destination = scroll.destination(ofRow: row) else { return nil }
+                row = destination
+            }
+            return GridPosition(row: row - shift, col: position.col)
+        }
+        guard let anchor = follow(current.anchor), let head = follow(current.head) else { return selection = nil }
+        var next = current
+        next.anchor = anchor
+        next.head = head
+        let top = -(frame.historySize - frame.displayOffset)
+        // Gone from history, or below the screen, or too far to tell.
+        if next.end.row < top || next.start.row >= frame.rows || (saturated && next.end.row < 0) {
+            return selection = nil
+        }
+        // Still on screen: the text must be what was selected.
+        let touched: Bool = switch change.damage {
+        case .full: true
+        case .partial(let spans): shift != 0 || spans.contains { next.rows.contains($0.row) }
+        case .none: shift != 0
+        }
+        if touched, let selectedText, next.start.row >= 0, next.end.row < frame.rows,
+           next.text(in: frame) != selectedText {
+            return selection = nil
+        }
+        if let anchor = gesture.selectionAnchor { gesture.selectionAnchor = follow(anchor) }
+        if next != current {
+            let text = selectedText
+            selection = next
+            // A selection that scrolled partly off screen keeps the text it had.
+            if selectedText == nil { selectedText = text }
+        }
+    }
+
     /// Whether output or scrolling may have changed the text under a link.
     private func linkMayHaveMoved(_ link: TerminalLink, by change: FrameChange) -> Bool {
-        if change.resized || change.viewportChanged { return true }
+        if change.resized || change.viewportChanged || !change.scrolls.isEmpty { return true }
         switch change.damage {
         case .full: return true
         case .partial(let spans): return spans.contains { (link.start.row...link.end.row).contains($0.row) }
@@ -478,6 +594,24 @@ public final class TerminalView: NSView {
         let rows = [previous?.rows, selection?.rows].compactMap { $0 }
         for range in rows {
             for row in range { setNeedsDisplay(renderer.rowRect(row, cols: session.frame.cols)) }
+        }
+    }
+
+    /// Moves the special-glyph geometry of rows that scrolled with them. A
+    /// row's geometry depends only on that row's cells.
+    private func moveGlyphPlan(_ scrolls: [ViewportScroll]) {
+        let cols = session.frame.cols
+        guard cols > 0 else { return }
+        for scroll in scrolls {
+            var moved: [Int: GlyphPlanEntry] = [:]
+            moved.reserveCapacity(glyphPlan.count)
+            for (index, entry) in glyphPlan {
+                guard let row = scroll.destination(ofRow: index / cols) else { continue }
+                var entry = entry
+                entry.cellIndex = row * cols + index % cols
+                moved[entry.cellIndex] = entry
+            }
+            glyphPlan = moved
         }
     }
 
@@ -621,6 +755,8 @@ public final class TerminalView: NSView {
     }
 
     public override func resignFirstResponder() -> Bool {
+        // Releases of keys still held go to whatever takes the focus.
+        pressedKeyCodes.removeAll()
         blinkTimer?.invalidate()
         blinkTimer = nil
         cursorBlinkVisible = true
@@ -641,6 +777,7 @@ public final class TerminalView: NSView {
         observeWindow()
         resizeGridToFit()
         restartBlinkTimer()
+        updateWakeups()
     }
 
     /// Whether the view is in a window that is at least partly visible.
@@ -674,6 +811,7 @@ public final class TerminalView: NSView {
         resizeGridToFit()
         restartBlinkTimer()
         invalidateCursor(session.frame.cursor)
+        updateWakeups()
         if isOnScreen {
             needsDisplay = true
             if animationPaused { reloadImages() }

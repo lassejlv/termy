@@ -85,7 +85,28 @@ final class SidebarView: GlassPanel {
     func advanceSpinner() {
         guard Workspace.shared.sessions.contains(where: { $0.activity == .working }) else { return }
         phase = (phase - 24).truncatingRemainder(dividingBy: 360)
-        if StatusIndicator.hostAnimatesWorking || drawnLoader != Preferences.shared.tabLoader { needsDisplay = true }
+        if drawnLoader != Preferences.shared.tabLoader {
+            needsDisplay = true
+        } else if StatusIndicator.hostAnimatesWorking {
+            // Only the dots move: redraw them, not the whole sidebar.
+            for rect in workingDotsRects() { overlay.setNeedsDisplay(rect.insetBy(dx: -2, dy: -2)) }
+        }
+    }
+
+    /// Where the three dots of each working row are drawn (see `drawContent`).
+    private func workingDotsRects() -> [NSRect] {
+        rows.compactMap { row, frame in
+            switch row {
+            case .tab(let tab, _) where tab.activity == .working:
+                return NSRect(x: frame.maxX - 10 - StatusIndicator.dotsWidth, y: frame.minY, width: StatusIndicator.dotsWidth, height: frame.height)
+            case .session(let session, _) where session !== navigator?.session && session.activity == .working:
+                // The dots are centered on this spot and wider than it.
+                let spot = NSRect(x: frame.maxX - 38, y: frame.midY - 5, width: 10, height: 10)
+                return NSRect(x: spot.midX - StatusIndicator.dotsWidth / 2, y: spot.minY, width: StatusIndicator.dotsWidth, height: spot.height)
+            default:
+                return nil
+            }
+        }
     }
 
     override func layout() {
@@ -173,6 +194,8 @@ final class SidebarView: GlassPanel {
         let theme = AppConfig.shared.theme
         if rows.isEmpty { rebuildRows() }
         for (i, (row, frame)) in rows.enumerated() {
+            // A spinner tick redraws only the dots; see `TabStripView.drawContent`.
+            if StatusIndicator.hostAnimatesWorking, !frame.intersects(dirtyRect) { continue }
             switch row {
             case .host:
                 let text = NSAttributedString(string: "This Mac", attributes: [
@@ -188,8 +211,8 @@ final class SidebarView: GlassPanel {
                 ])
                 name.draw(with: NSRect(x: frame.minX + 8, y: frame.midY - 8, width: frame.width - 70, height: 16),
                           options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
-                let chevron = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil)?
-                    .withSymbolConfiguration(.init(pointSize: 9, weight: .semibold))?.tinted(theme.textTertiary)
+                let chevron = SymbolImages.tinted(expanded ? "chevron.down" : "chevron.right", pointSize: 9, weight: .semibold,
+                                                  color: theme.textTertiary)
                 chevron?.drawUpright(at: NSPoint(x: frame.maxX - 18, y: frame.midY - 5))
                 if !current, session.activity.urgency >= PaneActivity.working.urgency {
                     StatusIndicator.draw(session.activity, in: NSRect(x: frame.maxX - 38, y: frame.midY - 5, width: 10, height: 10), theme: theme, phase: phase, spots: loaderSpots)

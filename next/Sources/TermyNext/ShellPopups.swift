@@ -195,6 +195,12 @@ final class PaneShellUI: NSObject, NSTextFieldDelegate {
         ShellAgent.with(id: Preferences.shared.shellAgent) ?? ShellAgent.all[0]
     }
 
+    /// The pane is going away: an agent still writing a command stops too.
+    func stopAgent() {
+        run?.cancel()
+        run = nil
+    }
+
     private func closeAsk() {
         run?.cancel()
         run = nil

@@ -290,6 +290,47 @@ struct MetalRendererTests {
         #expect(cleared.brightest(in: cellPixels(view, row: 1, col: 0, width: 6)) < 64)
     }
 
+    /// Rows moved by a scroll keep the quads built for them and are placed
+    /// from their new row's origin, so they draw as rows rebuilt there do,
+    /// whether or not rows are a whole number of pixels tall.
+    @Test(arguments: [Float(20), 19.6, 17.3], [CGFloat(1), 2])
+    func scrolledRowsDrawLikeRebuiltOnes(cellHeight: Float, scale: CGFloat) throws {
+        let config = try TermyConfig(contents: "padding_x = 3\npadding_y = 5\ncursor_blink = false\n")
+        var renderConfig = try config.renderConfig(for: .dark)
+        renderConfig.cellHeight = cellHeight
+        let session = try TerminalSession.display(
+            size: TerminalSize(cols: 24, rows: 10, cellWidth: renderConfig.cellWidth, cellHeight: cellHeight))
+        let view = TerminalView(session: session, renderConfig: renderConfig, backend: .metal)
+        view.frame = NSRect(origin: .zero, size: view.size(cols: 24, rows: 10))
+        let renderer = try #require(view.metalRenderer)
+        func render() throws -> [UInt8] {
+            let width = Int((view.bounds.width * scale).rounded())
+            let height = Int((view.bounds.height * scale).rounded())
+            return try #require(renderer.renderPixels(view.renderState, width: width, height: height, scale: scale))
+        }
+        // Backgrounds, box drawing, blocks, Braille, rounded corners, wide
+        // text, underline and strikethrough: every way a row places quads.
+        let line = "\u{1b}[44mbg\u{1b}[0m\u{2500}\u{2502}\u{250c} \u{1b}[4mu\u{1b}[9ms\u{1b}[0m \u{754c}\u{28ff}\u{2588}\u{2584}\u{256d}"
+        try session.feed(Data((0..<10).map { "\($0)\(line)" }.joined(separator: "\r\n").utf8))
+        _ = try render()
+        let steps: [(name: String, output: String)] = [
+            ("up", "\r\n\u{1b}[32mup\u{1b}[0m \(line)\r\ntwo"),
+            ("region up", "\u{1b}[2;6r\u{1b}[6;1H\r\nin \(line)\u{1b}[r"),
+            ("region down", "\u{1b}[3;8r\u{1b}[3;1H\u{1b}[2L\u{1b}[r\u{1b}[3;1Hdown \(line)"),
+            ("down", "\u{1b}[1T"),
+            ("several", "\u{1b}[2;4r\u{1b}[4;1H\r\na\u{1b}[5;9r\u{1b}[9;1H\r\nb\r\nc\u{1b}[r\u{1b}[10;1H\r\nend"),
+        ]
+        for step in steps {
+            let before = renderer.movedRows
+            try session.feed(Data(step.output.utf8))
+            let scrolled = try render()
+            // The rows were moved, not rebuilt.
+            #expect(renderer.movedRows > before, "\(step.name): no row was moved")
+            renderer.invalidateAll()
+            #expect(scrolled == (try render()), "\(step.name) at \(cellHeight) pt, \(scale)x")
+        }
+    }
+
     @Test func drawsAHollowCursorWhenUnfocused() throws {
         let view = try makeView()
         let pixels = try render(view)

@@ -324,6 +324,16 @@ impl RemoteTransport for ClientTerminal {
             _ => bail!("invalid terminal response"),
         }
     }
+    fn request_query(&self, command: RemoteCommand) -> anyhow::Result<RemoteReply> {
+        self.ensure_connected()?;
+        match self.queries.request(Request::Command {
+            pane: self.id.clone(),
+            command,
+        })? {
+            Response::Reply(reply) => Ok(reply),
+            _ => bail!("invalid terminal response"),
+        }
+    }
     fn send(&self, command: RemoteCommand) {
         self.shared.remember_setting(&command);
         if let RemoteCommand::Resize(size) = &command {

@@ -24,14 +24,53 @@ struct ImageEncoder {
     private var skipped: Set<KittyImageKey> = []
     private var sentList = false
 
+    /// What `finish` needs: the snapshot, read on the terminal's thread, and
+    /// the images in it the phone hasn't got, to encode on any thread.
+    struct Pending: @unchecked Sendable {
+        var stream: Int
+        var snapshot: KittyGraphicsSnapshot
+        var cell: CGSize
+        var pixelsPerPoint: CGSize
+        var missing: [KittyImageKey: KittyGraphicsPlacement]
+    }
+
     /// The messages that bring the phone's images up to date with `terminal`.
     mutating func update(stream: Int, terminal: Terminal, configuration: RemoteConfiguration) -> [HostMessage] {
+        guard let pending = prepare(stream: stream, terminal: terminal, configuration: configuration) else { return [] }
+        return finish(pending, pngs: Self.encode(pending))
+    }
+
+    /// Reads the placements. Call on the terminal's thread.
+    func prepare(stream: Int, terminal: Terminal, configuration: RemoteConfiguration) -> Pending? {
         let known = Set(held.map(\.key)).union(skipped)
-        guard let snapshot = try? terminal.kittyGraphics(holding: known) else { return [] }
+        guard let snapshot = try? terminal.kittyGraphics(holding: known) else { return nil }
         let cell = CGSize(width: max(1, configuration.cellWidth), height: max(1, configuration.cellHeight))
         let pixelsPerPoint = CGSize(
             width: snapshot.cellWidth > 0 ? CGFloat(snapshot.cellWidth) / cell.width : 1,
             height: snapshot.cellHeight > 0 ? CGFloat(snapshot.cellHeight) / cell.height : 1)
+        var missing: [KittyImageKey: KittyGraphicsPlacement] = [:]
+        for placement in snapshot.placements.prefix(RemoteImages.maxPlacements)
+        where !known.contains(placement.imageKey) && missing[placement.imageKey] == nil {
+            missing[placement.imageKey] = placement
+        }
+        return Pending(stream: stream, snapshot: snapshot, cell: cell, pixelsPerPoint: pixelsPerPoint, missing: missing)
+    }
+
+    /// Encodes the images the phone hasn't got. Runs on any thread.
+    static func encode(_ pending: Pending) -> [KittyImageKey: Data] {
+        var pngs: [KittyImageKey: Data] = [:]
+        for (key, placement) in pending.missing {
+            if let png = png(placement) { pngs[key] = png }
+        }
+        return pngs
+    }
+
+    /// The messages for `pending`, with the PNGs `encode` made.
+    mutating func finish(_ pending: Pending, pngs: [KittyImageKey: Data]) -> [HostMessage] {
+        let stream = pending.stream
+        let snapshot = pending.snapshot
+        let cell = pending.cell
+        let pixelsPerPoint = pending.pixelsPerPoint
 
         var messages: [HostMessage] = []
         var placed: Set<KittyImageKey> = []
@@ -42,7 +81,7 @@ struct ImageEncoder {
             if let index = held.firstIndex(where: { $0.key == key }) {
                 if placed.insert(key).inserted { held.append(held.remove(at: index)) }
             } else {
-                guard let png = Self.png(placement) else {
+                guard let png = pngs[key] else {
                     skipped.insert(key)
                     continue
                 }

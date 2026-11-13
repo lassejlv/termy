@@ -167,6 +167,9 @@ public struct RelayAPI: Sendable {
 /// sender when received), then the packet. Text frames are relay events.
 public enum RelayWire {
     public static let dataKind: UInt8 = 1
+    /// The largest binary message the relay accepts. A larger one closes the
+    /// sender's socket, and with it every session on that device.
+    public static let maxMessageBytes = 4 * 1024 * 1024
 
     public static func encode(peer: UUID, packet: Data) -> Data {
         var out = Data([dataKind])
@@ -223,9 +226,21 @@ public final class RelayConnection: NSObject, @unchecked Sendable, URLSessionWeb
         startPing()
     }
 
+    /// Bytes handed to `send` that the socket hasn't taken yet. URLSession
+    /// queues sends without limit, so a sender on a slow link checks this
+    /// and holds back what it can send later in one piece (screen updates).
+    public var pendingSendBytes: Int { lock.withLock { queuedBytes } }
+    private var queuedBytes = 0
+
     public func send(_ packet: Data, to peer: UUID) {
-        task?.send(.data(RelayWire.encode(peer: peer, packet: packet))) { [weak self] error in
-            if let error { self?.finish(error) }
+        guard let task else { return }
+        let frame = RelayWire.encode(peer: peer, packet: packet)
+        let size = frame.count
+        lock.withLock { queuedBytes += size }
+        task.send(.data(frame)) { [weak self] error in
+            guard let self else { return }
+            self.lock.withLock { self.queuedBytes -= size }
+            if let error { self.finish(error) }
         }
     }
 

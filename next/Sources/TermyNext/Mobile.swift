@@ -118,6 +118,9 @@ final class MobileController {
                         do {
                             try await Task.sleep(for: .seconds(3))
                             try Task.checkCancellation()
+                            // Only Settings shows the list: don't ask the relay every
+                            // 3 s, day and night, while nobody is looking at it.
+                            guard SettingsWindowController.isShowingMobile else { continue }
                             self?.devices = try self?.localNames(try await c.api.devices(), relay: relay) ?? []
                         } catch is CancellationError { return } catch {
                             self?.error = error.localizedDescription

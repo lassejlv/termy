@@ -183,8 +183,20 @@ public final class Terminal {
     @discardableResult
     public func send(_ mouse: MouseInput) throws(TermyError) -> Bool {
         let bytes = try encode(mouse)
-        try write(bytes)
-        return !bytes.isEmpty
+        guard mode == .pty, !bytes.isEmpty else {
+            try write(bytes)
+            return !bytes.isEmpty
+        }
+        switch mouse.kind {
+        case .move, .drag:
+            // Motion may use only part of the input backlog, so a program
+            // that stops reading can't make the pointer starve later keys.
+            let status = withBytes(bytes) { termy_terminal_write_mouse_motion(handle, $0, $1) }
+            try check(status, "termy_terminal_write_mouse_motion")
+        default:
+            try write(bytes)
+        }
+        return true
     }
 
     /// Whether the program asked for bracketed paste (mode 2004).
@@ -214,6 +226,15 @@ public final class Terminal {
         try checkNotDraining("termy_terminal_paste")
         if try sendKittyClipboardPasteEvent(location: .clipboard, availableFormats: availableFormats) { return }
         try write(encodePaste(text))
+    }
+
+    /// The process ID of the program this terminal started in its own PTY.
+    /// Nil for display terminals, for session-host panes (the host runs
+    /// their program; ask `Multiplexer.panes()`), and once the PTY is gone.
+    public var childPID: Int32? {
+        var pid: Int32 = 0
+        guard termy_terminal_child_pid(handle, &pid) == TERMY_FFI_OK, pid > 0 else { return nil }
+        return pid
     }
 
     // MARK: - Size and scrollback
@@ -274,24 +295,47 @@ public final class Terminal {
     /// Takes a frame update and applies it to `store` without copying cells
     /// through Swift values. Recovers with a forced full frame when the store
     /// cannot apply a partial update.
+    ///
+    /// With `replayingScrolls`, output that scrolled is replayed on the store
+    /// and reported in `FrameChange.scrolls`, and `damage` names only the
+    /// cells patched after it: rows the scroll moved are not in it. Pass it
+    /// when you keep per-row work, such as drawn rows, that you can move too.
     @discardableResult
-    public func updateFrame(_ store: FrameStore, forceFull: Bool = false) throws(TermyError) -> FrameChange {
+    public func updateFrame(
+        _ store: FrameStore, forceFull: Bool = false, replayingScrolls: Bool = false
+    ) throws(TermyError) -> FrameChange {
         let force = forceFull || store.isEmpty
-        if let change = try applyUpdate(to: store, forceFull: force) {
+        if let change = try applyUpdate(to: store, forceFull: force, replayingScrolls: replayingScrolls) {
             return change
         }
-        guard let change = try applyUpdate(to: store, forceFull: true) else {
+        guard let change = try applyUpdate(to: store, forceFull: true, replayingScrolls: false) else {
             throw TermyError(code: .invalidArgument, operation: "termy_terminal_take_frame_update")
         }
         return change
     }
 
-    private func applyUpdate(to store: FrameStore, forceFull: Bool) throws(TermyError) -> FrameChange? {
+    private func applyUpdate(
+        to store: FrameStore, forceFull: Bool, replayingScrolls: Bool
+    ) throws(TermyError) -> FrameChange? {
         var update = TermyFfiFrameUpdate()
-        let status = termy_terminal_take_frame_update(handle, forceFull, &update)
-        defer { termy_frame_update_free(&update) }
-        try check(status, "termy_terminal_take_frame_update")
-        return try? store.apply(update)
+        guard replayingScrolls else {
+            let status = termy_terminal_take_frame_update(handle, forceFull, &update)
+            defer { termy_frame_update_free(&update) }
+            try check(status, "termy_terminal_take_frame_update")
+            return try? store.apply(update)
+        }
+        var batch = TermyFfiViewportScrollBatch()
+        let status = termy_terminal_take_frame_update_with_scrolls(handle, forceFull, &update, &batch)
+        defer {
+            termy_frame_update_free(&update)
+            termy_viewport_scrolls_free(&batch)
+        }
+        try check(status, "termy_terminal_take_frame_update_with_scrolls")
+        let raw = UnsafeBufferPointer(start: batch.scrolls_ptr, count: batch.scrolls_len)
+        let scrolls = raw.compactMap(ViewportScroll.init)
+        // A scroll this SDK can't read can't be replayed: start over.
+        guard scrolls.count == raw.count else { return nil }
+        return try? store.apply(update, scrolls: scrolls)
     }
 
     // MARK: - Events

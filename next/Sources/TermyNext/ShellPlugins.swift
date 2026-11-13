@@ -245,7 +245,9 @@ final class ShellConnection {
             }
         }
         while let newline = pending.firstIndex(of: 0x0A) {
-            let message = String(decoding: pending[pending.startIndex..<newline], as: UTF8.self)
+            // Bytes, not a String: the cursor is a byte offset into the line,
+            // which may not be UTF-8 at all.
+            let message = Array(pending[pending.startIndex..<newline])
             pending.removeSubrange(pending.startIndex...newline)
             if let parsed = ShellProtocol.parse(message) { onMessage?(self, parsed) }
         }
@@ -268,6 +270,10 @@ final class ShellConnection {
                 continue
             } else {
                 // A full buffer means the shell stopped reading; it isn't at a prompt.
+                // Half a line would run into the next message and set a garbled
+                // command line, so a cut-off message ends the connection; zsh
+                // connects again at its next prompt.
+                if offset > 0 { close() }
                 return
             }
         }

@@ -19,6 +19,8 @@ final class GeneratorRunner {
     /// Most output a generator may print; `brew formulae` is around 100 KB.
     nonisolated private static let outputLimit = 2_000_000
     nonisolated private static let timeout: TimeInterval = 2
+    /// How long past its lifetime a result is kept to show while it refreshes.
+    private static let staleGrace: TimeInterval = 300
 
     func items(_ generator: Generator, word: String, directory: String, searchPath: String,
                onUpdate: @escaping () -> Void) -> [SpecCompletion.Item] {
@@ -46,7 +48,16 @@ final class GeneratorRunner {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.running.remove(key)
-                    self.cache[key] = (items, Date())
+                    let now = Date()
+                    // Results are kept per directory, so every folder completed in
+                    // (with `brew formulae`'s thousands of names) stayed forever.
+                    // An expired one only stands in while it refreshes; after a
+                    // few idle minutes it goes.
+                    self.cache = self.cache.filter { entry in
+                        self.running.contains(entry.key)
+                            || now.timeIntervalSince(entry.value.at) < entry.key.generator.lifetime + Self.staleGrace
+                    }
+                    self.cache[key] = (items, now)
                     onUpdate()
                 }
             }

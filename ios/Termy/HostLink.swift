@@ -37,6 +37,9 @@ final class HostLink {
     @ObservationIgnored private var handshake: SecureChannel.ClientHandshake?
     @ObservationIgnored private var channel: SecureChannel?
     @ObservationIgnored private var nextStream = 1
+    /// Glyphs the host sent before, which later frames name by key only.
+    /// Every frame goes through it, whichever screen it is for.
+    @ObservationIgnored private let glyphs = GlyphCache()
     @ObservationIgnored private var timeout: Task<Void, Never>?
     /// Whether a view wants this link open.
     @ObservationIgnored private var wanted = false
@@ -161,7 +164,8 @@ final class HostLink {
             if version >= 2 { send(.clientHello(version: RemoteProtocol.version)) }
         case .sessions(let list):
             sessions = list
-        case .frame(let frame):
+        case .frame(var frame):
+            glyphs.resolve(&frame)
             screens[frame.stream]?.apply(frame)
         case .title(let stream, let title):
             screens[stream]?.title = title

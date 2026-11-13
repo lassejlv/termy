@@ -413,3 +413,26 @@ fn ctrl_digits_and_symbols_use_xterm_control_bytes() {
         );
     }
 }
+
+#[test]
+fn kitty_modes_report_keypad_keys_as_the_main_keys_they_type() {
+    for flags in [
+        (false, true, false, false, false, false),
+        (false, true, true, false, true, true),
+    ] {
+        let mode =
+            TerminalKeyboardMode::from_flags(flags.0, flags.1, flags.2, flags.3, flags.4, flags.5)
+                .with_application_keypad(true);
+        for (keypad, main, text) in [
+            ("kp_1", "1", "1"),
+            ("kp_add", "+", "+"),
+            ("kp_enter", "enter", "\r"),
+        ] {
+            assert_eq!(
+                encode(&keystroke(keypad, Some(text), Modifiers::default()), mode),
+                encode(&keystroke(main, Some(text), Modifiers::default()), mode),
+                "{keypad} in {flags:?}"
+            );
+        }
+    }
+}

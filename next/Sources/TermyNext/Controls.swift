@@ -110,6 +110,39 @@ extension NSImage {
     }
 }
 
+/// Tinted SF Symbols for views that redraw often (the tab strip and sidebar
+/// redraw 15 times a second while a tab works), so each frame doesn't build
+/// new images. Theme and appearance changes drop them.
+@MainActor
+enum SymbolImages {
+    private struct Key: Hashable {
+        var name: String
+        var pointSize: CGFloat
+        var weight: NSFont.Weight
+        var color: NSColor
+    }
+
+    private static var cache: [Key: NSImage] = [:]
+    private static var observer: NSObjectProtocol?
+
+    static func tinted(_ name: String, pointSize: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSImage? {
+        if observer == nil {
+            observer = NotificationCenter.default.addObserver(forName: Preferences.didChange, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { SymbolImages.cache.removeAll() }
+            }
+        }
+        let key = Key(name: name, pointSize: pointSize, weight: weight, color: color)
+        if let image = cache[key] { return image }
+        guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: pointSize, weight: weight))?.tinted(color)
+        else { return nil }
+        // Colors come from the theme, so this stays small; a cap keeps it so.
+        if cache.count > 256 { cache.removeAll() }
+        cache[key] = image
+        return image
+    }
+}
+
 /// The small icon tile shown before a pane or tab title, chosen from the
 /// program in front.
 @MainActor
@@ -164,9 +197,8 @@ enum ProgramIcon {
         NSColor.white.withAlphaComponent(0.12).setStroke()
         tile.lineWidth = 0.5
         tile.stroke()
-        let config = NSImage.SymbolConfiguration(pointSize: rect.height * 0.5, weight: .bold)
-        guard let image = NSImage(systemSymbolName: symbol(for: program), accessibilityDescription: nil)?
-            .withSymbolConfiguration(config)?.tinted(color(for: program, theme: theme)) else { return }
+        guard let image = SymbolImages.tinted(symbol(for: program), pointSize: rect.height * 0.5, weight: .bold,
+                                              color: color(for: program, theme: theme)) else { return }
         let size = image.size
         image.drawUpright(in: NSRect(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2, width: size.width, height: size.height))
     }

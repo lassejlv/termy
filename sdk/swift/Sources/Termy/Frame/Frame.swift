@@ -104,6 +104,70 @@ extension FrameDamage {
     }
 }
 
+/// Output scrolled viewport rows `top...bottom` by `count` rows. A partial
+/// update that carries scrolls is applied by replaying them on the frame
+/// shown, in order, and then patching its spans.
+public struct ViewportScroll: Hashable, Sendable {
+    public enum Direction: Hashable, Sendable {
+        /// Content moved toward row 0, as when output scrolls into history.
+        case up
+        case down
+    }
+
+    public var top: Int
+    /// Inclusive.
+    public var bottom: Int
+    public var count: Int
+    public var direction: Direction
+
+    public init(top: Int, bottom: Int, count: Int, direction: Direction) {
+        self.top = top
+        self.bottom = bottom
+        self.count = count
+        self.direction = direction
+    }
+
+    /// Where the content of viewport row `row` is after the scroll, or nil
+    /// when it scrolled out of the region.
+    public func destination(ofRow row: Int) -> Int? {
+        guard (top...bottom).contains(row) else { return row }
+        let moved = direction == .up ? row - count : row + count
+        return (top...bottom).contains(moved) ? moved : nil
+    }
+
+    /// Whether it fits a viewport of `rows` rows.
+    func fits(rows: Int) -> Bool {
+        top >= 0 && top <= bottom && bottom < rows && count > 0 && count <= bottom - top + 1
+    }
+
+    init?(_ scroll: TermyFfiViewportScroll) {
+        switch scroll.direction {
+        case 1: direction = .up
+        case 2: direction = .down
+        default: return nil
+        }
+        top = scroll.top
+        bottom = scroll.bottom
+        count = scroll.count
+    }
+}
+
+extension Array {
+    /// Replays `scroll` on row-major rows of `width` elements, moving each
+    /// row's elements where its content went; rows the scroll exposes keep
+    /// what scrolled out, for the caller to replace.
+    mutating func replay(_ scroll: ViewportScroll, width: Int) {
+        let start = scroll.top * width
+        let end = (scroll.bottom + 1) * width
+        let shift = scroll.count * width
+        let region = self[start..<end]
+        let rotated = scroll.direction == .up
+            ? region[(start + shift)...] + region[..<(start + shift)]
+            : region[(end - shift)...] + region[..<(end - shift)]
+        replaceSubrange(start..<end, with: rotated)
+    }
+}
+
 func rowText(_ cells: some Collection<Cell>) -> String {
     var text = ""
     var pendingSpaces = 0

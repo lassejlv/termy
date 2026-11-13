@@ -1,3 +1,4 @@
+import Compression
 import Foundation
 
 /// What travels inside a `SecureChannel`. The relay never sees any of it.
@@ -37,6 +38,10 @@ public struct CellRun: Codable, Hashable, Sendable {
     public var fg: UInt32
     public var bg: UInt32
     public var glyphPNG: Data? = nil
+    /// Names `glyphPNG` by its content, for phones that keep glyphs
+    /// (protocol 4): a run whose glyph the phone was sent before carries the
+    /// key without the PNG. Older phones never get one.
+    public var glyphKey: String? = nil
     public var flags: UInt8
 
     public static let bold: UInt8 = 1
@@ -63,6 +68,7 @@ public struct CellRun: Codable, Hashable, Sendable {
         case bg = "b"
         case flags = "a"
         case glyphPNG = "g"
+        case glyphKey = "k"
     }
 }
 
@@ -79,6 +85,8 @@ public struct RowUpdate: Codable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case row = "r"
         case runs = "u"
+        /// Optional, so frames from hosts that never sent it still decode.
+        case wrapped = "w"
     }
 }
 
@@ -295,7 +303,9 @@ public enum HostMessage: Codable, Hashable, Sendable {
 
 public enum RemoteProtocol {
     /// 3 adds Kitty graphics: `HostMessage.image` and `.images`.
-    public static let version = 3
+    /// 4: the phone keeps glyphs by `CellRun.glyphKey` (see `GlyphCache`),
+    /// and takes grids up to `RemoteFrame.maxCols` by `maxRows`.
+    public static let version = 4
 }
 
 /// JSON, deflated when that saves space. The first byte says which.
@@ -316,15 +326,171 @@ public enum MessageCodec {
         return Data([0]) + json
     }
 
+    /// The most a deflated message may inflate to. A relay message is at most
+    /// 4 MiB; text inflates about tenfold, so a real message stays well
+    /// below this, while a message built to inflate without end is refused.
+    public static let maxInflatedBytes = 64 * 1024 * 1024
+
     public static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         guard let flag = data.first else { throw ChannelError.malformed }
         var body = Data(data.dropFirst())
         if flag == 1 {
-            body = try (body as NSData).decompressed(using: .zlib) as Data
+            body = try inflate(body, limit: maxInflatedBytes)
         } else if flag != 0 {
             throw ChannelError.malformed
         }
         return try JSONDecoder().decode(type, from: body)
+    }
+}
+
+extension MessageCodec {
+    /// Inflates what `NSData.compressed(using: .zlib)` deflated, giving up as
+    /// soon as the output passes `limit` bytes.
+    static func inflate(_ data: Data, limit: Int) throws -> Data {
+        guard !data.isEmpty else { throw ChannelError.malformed }
+        let stream = UnsafeMutablePointer<compression_stream>.allocate(capacity: 1)
+        defer { stream.deallocate() }
+        guard compression_stream_init(stream, COMPRESSION_STREAM_DECODE, COMPRESSION_ZLIB) == COMPRESSION_STATUS_OK
+        else { throw ChannelError.malformed }
+        defer { compression_stream_destroy(stream) }
+        let chunk = 64 * 1024
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: chunk)
+        defer { buffer.deallocate() }
+        var output = Data()
+        var status = COMPRESSION_STATUS_OK
+        try data.withUnsafeBytes { (source: UnsafeRawBufferPointer) in
+            stream.pointee.src_ptr = source.bindMemory(to: UInt8.self).baseAddress!
+            stream.pointee.src_size = source.count
+            repeat {
+                stream.pointee.dst_ptr = buffer
+                stream.pointee.dst_size = chunk
+                status = compression_stream_process(stream, Int32(COMPRESSION_STREAM_FINALIZE.rawValue))
+                guard status != COMPRESSION_STATUS_ERROR else { throw ChannelError.malformed }
+                let produced = chunk - stream.pointee.dst_size
+                guard output.count + produced <= limit else { throw ChannelError.malformed }
+                output.append(buffer, count: produced)
+            } while status == COMPRESSION_STATUS_OK
+        }
+        guard status == COMPRESSION_STATUS_END else { throw ChannelError.malformed }
+        return output
+    }
+}
+
+extension RemoteFrame {
+    /// The frame cut to its top-left `cols` by `rows` cells, for a phone that
+    /// drops larger ones: it then shows the part that fits instead of nothing.
+    /// Row and column numbers stay those of the pane.
+    public func clipped(cols maxCols: Int, rows maxRows: Int) -> RemoteFrame {
+        guard cols > maxCols || rows > maxRows else { return self }
+        var frame = self
+        frame.cols = min(cols, maxCols)
+        frame.rows = min(rows, maxRows)
+        frame.updates = updates.filter { $0.row < frame.rows }.map { update in
+            var update = update
+            update.runs = update.runs.compactMap { run in
+                guard run.col < frame.cols else { return nil }
+                guard run.col + run.cells > frame.cols else { return run }
+                // A wide glyph or an image run doesn't split; text does.
+                let fits = frame.cols - run.col
+                guard run.glyphPNG == nil, run.glyphKey == nil, run.text.unicodeScalars.count == run.cells
+                else { return nil }
+                var cut = run
+                cut.cells = fits
+                cut.text = String(String.UnicodeScalarView(run.text.unicodeScalars.prefix(fits)))
+                return cut
+            }
+            return update
+        }
+        if cursor.row >= frame.rows || cursor.col >= frame.cols { frame.cursor.visible = false }
+        frame.cursor.row = min(cursor.row, frame.rows - 1)
+        frame.cursor.col = min(cursor.col, frame.cols - 1)
+        return frame
+    }
+}
+
+/// The host's record of the glyphs a phone keeps, kept in step with the
+/// phone's `GlyphCache`: every run's key is seen by both in the same order,
+/// and the phone keeps twice as many, so it holds every glyph this says it
+/// does. A run whose glyph the phone holds goes without its PNG.
+public struct GlyphLedger: Sendable {
+    public let capacity: Int
+    private var tick: UInt64 = 0
+    private var held: [String: UInt64] = [:]
+
+    public init(capacity: Int = GlyphCache.defaultCapacity / 2) {
+        self.capacity = capacity
+    }
+
+    public var count: Int { held.count }
+
+    /// Leaves out the PNGs the phone holds and records the ones sent.
+    public mutating func prepare(_ frame: inout RemoteFrame) {
+        for update in frame.updates.indices {
+            for index in frame.updates[update].runs.indices {
+                guard let key = frame.updates[update].runs[index].glyphKey else { continue }
+                tick += 1
+                if held[key] != nil {
+                    held[key] = tick
+                    frame.updates[update].runs[index].glyphPNG = nil
+                } else if let png = frame.updates[update].runs[index].glyphPNG {
+                    // One the phone won't keep goes inline every time.
+                    if png.count <= GlyphCache.maxGlyphBytes {
+                        held[key] = tick
+                    } else {
+                        frame.updates[update].runs[index].glyphKey = nil
+                    }
+                } else {
+                    // Nothing to send and the phone hasn't got it.
+                    frame.updates[update].runs[index].glyphKey = nil
+                }
+            }
+        }
+        if held.count > capacity {
+            let keep = held.sorted { $0.value > $1.value }.prefix(capacity)
+            held = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        }
+    }
+
+    /// Forgets everything, so the next frames send each glyph again.
+    public mutating func reset() { held.removeAll() }
+}
+
+/// The glyphs a phone was sent, by key. It fills in the PNG of each run that
+/// names a glyph it holds, so drawing needs nothing else.
+public final class GlyphCache {
+    public static let defaultCapacity = 2048
+    /// Larger PNGs are not kept: a glyph is one or two cells.
+    public static let maxGlyphBytes = 256 * 1024
+
+    public let capacity: Int
+    private var tick: UInt64 = 0
+    private var glyphs: [String: (png: Data, used: UInt64)] = [:]
+
+    public init(capacity: Int = GlyphCache.defaultCapacity) {
+        self.capacity = capacity
+    }
+
+    public var count: Int { glyphs.count }
+
+    /// Call for every frame from the host, in order, whatever it is for.
+    public func resolve(_ frame: inout RemoteFrame) {
+        for update in frame.updates.indices {
+            for index in frame.updates[update].runs.indices {
+                let run = frame.updates[update].runs[index]
+                guard let key = run.glyphKey, key.utf8.count <= 64 else { continue }
+                tick += 1
+                if let png = run.glyphPNG {
+                    if png.count <= Self.maxGlyphBytes { glyphs[key] = (png, tick) }
+                } else if let held = glyphs[key] {
+                    glyphs[key] = (held.png, tick)
+                    frame.updates[update].runs[index].glyphPNG = held.png
+                }
+            }
+        }
+        if glyphs.count > capacity {
+            let keep = glyphs.sorted { $0.value.used > $1.value.used }.prefix(capacity)
+            glyphs = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+        }
     }
 }
 
@@ -342,9 +508,16 @@ public struct RemoteSearchMatch: Codable, Hashable, Sendable {
 }
 
 extension RemoteFrame {
+    /// The largest grid a phone of protocol 4 or later takes.
+    public static let maxCols = 1000
+    public static let maxRows = 500
+    /// What phones before protocol 4 take: they drop larger frames.
+    public static let legacyMaxCols = 500
+    public static let legacyMaxRows = 300
+
     /// Reject invalid dimensions/indices before allocating or drawing untrusted frames.
     public var isValid: Bool {
-        (1...500).contains(cols) && (1...300).contains(rows) && updates.count <= rows
+        (1...Self.maxCols).contains(cols) && (1...Self.maxRows).contains(rows) && updates.count <= rows
             && updates.allSatisfy { update in
                 (0..<rows).contains(update.row) && update.runs.count <= cols
                     && update.runs.allSatisfy {

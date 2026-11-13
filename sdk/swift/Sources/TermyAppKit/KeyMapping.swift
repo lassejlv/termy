@@ -46,6 +46,32 @@ public enum KeyMapping {
         }
     }
 
+    /// libtermy's name for a numeric keypad key, by macOS virtual key code.
+    /// Programs in application keypad mode (DECKPAM) tell these apart from
+    /// the main keys; otherwise they type the same.
+    public static func keypadKey(forKeyCode keyCode: UInt16) -> String? {
+        switch keyCode {
+        case 82: "kp_0"
+        case 83: "kp_1"
+        case 84: "kp_2"
+        case 85: "kp_3"
+        case 86: "kp_4"
+        case 87: "kp_5"
+        case 88: "kp_6"
+        case 89: "kp_7"
+        case 91: "kp_8"
+        case 92: "kp_9"
+        case 65: "kp_decimal"
+        case 67: "kp_multiply"
+        case 69: "kp_add"
+        case 75: "kp_divide"
+        case 78: "kp_subtract"
+        case 81: "kp_equal"
+        case 76: "kp_enter"
+        default: nil
+        }
+    }
+
     public static func modifiers(_ flags: NSEvent.ModifierFlags) -> KeyModifiers {
         var modifiers: KeyModifiers = []
         if flags.contains(.control) { modifiers.insert(.control) }
@@ -66,6 +92,14 @@ public enum KeyMapping {
     ) -> Keystroke? {
         let modifiers = modifiers(modifierFlags)
         let kind: KeyEventKind = isRepeat ? .repeat : .press
+        // Keypad keys keep their identity; the text they type comes along
+        // for the modes that send it.
+        if let name = keypadKey(forKeyCode: keyCode) {
+            let text = characters.flatMap { text -> String? in
+                text.isEmpty || text.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F }) ? nil : text
+            }
+            return Keystroke(key: name, text: text, modifiers: modifiers, kind: kind)
+        }
         if let name = namedKey(forKeyCode: keyCode) {
             return Keystroke(key: name, modifiers: modifiers, kind: kind)
         }

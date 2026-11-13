@@ -520,15 +520,25 @@ impl AppLayout {
                         .session
                         .workspaces
                         .iter()
-                        .map(|workspace| AppWorkspace {
-                            name: workspace.name.clone(),
-                            pinned: workspace.pinned,
-                            active_tab: workspace.active_tab,
-                            tabs: workspace
-                                .tabs
-                                .iter()
-                                .filter_map(AppTab::from_stored)
-                                .collect(),
+                        .map(|workspace| {
+                            // Tabs without live panes are left out, so the
+                            // active index counts only the tabs that remain.
+                            let mut tabs = Vec::new();
+                            let mut active_tab = 0;
+                            for (index, tab) in workspace.tabs.iter().enumerate() {
+                                if let Some(tab) = AppTab::from_stored(tab) {
+                                    if index <= workspace.active_tab {
+                                        active_tab = tabs.len();
+                                    }
+                                    tabs.push(tab);
+                                }
+                            }
+                            AppWorkspace {
+                                name: workspace.name.clone(),
+                                pinned: workspace.pinned,
+                                active_tab,
+                                tabs,
+                            }
                         })
                         .collect(),
                 })
@@ -716,7 +726,36 @@ pub type TermyFfiLayoutChangedCallback = unsafe extern "C" fn(context: *mut c_vo
 /// A running layout watch; free it to stop.
 pub struct TermyFfiLayoutWatch {
     close: Box<dyn Fn() + Send + Sync>,
+    /// Set when the watch is freed; the thread calls back no more after it.
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Runs the watch thread: calls `callback` with each revision `next` returns,
+/// then once with `u64::MAX`, unless the watch was freed meanwhile.
+fn spawn_layout_watch_thread(
+    mut next: impl FnMut() -> Option<u64> + Send + 'static,
+    callback: TermyFfiLayoutChangedCallback,
+    context: TermyFfiUserData,
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    // The pointer crosses to the watch thread; the caller keeps it valid
+    // until the watch is freed.
+    let context = context as usize;
+    std::thread::Builder::new()
+        .name("termy-layout-watch".into())
+        .spawn(move || {
+            let live = || !stopped.load(std::sync::atomic::Ordering::Acquire);
+            while let Some(revision) = next() {
+                if !live() {
+                    return;
+                }
+                unsafe { callback(context as *mut c_void, revision) };
+            }
+            if live() {
+                unsafe { callback(context as *mut c_void, u64::MAX) };
+            }
+        })
 }
 
 /// Calls `callback` with `context` whenever the shared layout changes, from
@@ -743,22 +782,18 @@ pub unsafe extern "C" fn termy_multiplexer_watch_layout(
             Ok(close) => close,
             Err(error) => return status_for(&error),
         };
-        // The pointer crosses to the watch thread; the caller keeps it valid
-        // until the watch is freed.
-        let context = context as usize;
-        let thread = std::thread::Builder::new()
-            .name("termy-layout-watch".into())
-            .spawn(move || {
-                while let Ok(revision) = watch.recv() {
-                    unsafe { callback(context as *mut c_void, revision) };
-                }
-                unsafe { callback(context as *mut c_void, u64::MAX) };
-            });
-        let Ok(thread) = thread else {
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let Ok(thread) = spawn_layout_watch_thread(
+            move || watch.recv().ok(),
+            callback,
+            context,
+            std::sync::Arc::clone(&stopped),
+        ) else {
             return TermyFfiStatus::WriteFailed;
         };
         let watch = TermyFfiLayoutWatch {
             close: Box::new(close),
+            stopped,
             thread: Some(thread),
         };
         unsafe { *out_watch = Box::into_raw(Box::new(watch)) };
@@ -767,7 +802,9 @@ pub unsafe extern "C" fn termy_multiplexer_watch_layout(
 }
 
 /// Stops a layout watch and waits for its thread; the callback is not
-/// called after this returns.
+/// called after this returns. Freeing it from inside its own callback is
+/// allowed: the thread then ends once the callback returns, without calling
+/// back again.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn termy_layout_watch_free(
     watch: *mut TermyFfiLayoutWatch,
@@ -777,8 +814,13 @@ pub unsafe extern "C" fn termy_layout_watch_free(
             return TermyFfiStatus::Null;
         }
         let mut watch = unsafe { Box::from_raw(watch) };
+        watch
+            .stopped
+            .store(true, std::sync::atomic::Ordering::Release);
         (watch.close)();
-        if let Some(thread) = watch.thread.take() {
+        if let Some(thread) = watch.thread.take()
+            && thread.thread().id() != std::thread::current().id()
+        {
             let _ = thread.join();
         }
         TermyFfiStatus::Ok
@@ -848,6 +890,98 @@ mod layout_tests {
             back.windows[0].workspaces[0].tabs[0].active_pane.as_deref(),
             Some("b")
         );
+    }
+
+    /// What a test watch's callback saw, and the watch it frees itself.
+    struct WatchProbe {
+        watch: std::sync::Mutex<*mut TermyFfiLayoutWatch>,
+        calls: std::sync::Mutex<Vec<u64>>,
+        done: std::sync::mpsc::Sender<()>,
+    }
+
+    unsafe extern "C" fn free_watch_from_callback(context: *mut c_void, revision: u64) {
+        let probe = unsafe { &*context.cast::<WatchProbe>() };
+        probe.calls.lock().unwrap().push(revision);
+        let watch = std::mem::replace(&mut *probe.watch.lock().unwrap(), ptr::null_mut());
+        if !watch.is_null() {
+            assert_eq!(
+                unsafe { termy_layout_watch_free(watch) },
+                TermyFfiStatus::Ok
+            );
+            let _ = probe.done.send(());
+        }
+    }
+
+    #[test]
+    fn a_watch_freed_from_its_own_callback_calls_back_no_more() {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let probe = Box::into_raw(Box::new(WatchProbe {
+            watch: std::sync::Mutex::new(ptr::null_mut()),
+            calls: std::sync::Mutex::new(Vec::new()),
+            done: done_tx,
+        }));
+        let (revisions_tx, revisions_rx) = std::sync::mpsc::channel::<u64>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let stopped = std::sync::Arc::new(AtomicBool::new(false));
+        let thread = spawn_layout_watch_thread(
+            move || {
+                let revision = revisions_rx.recv().ok();
+                // Hold the first revision back until the watch is in place.
+                let _ = release_rx.recv();
+                revision
+            },
+            free_watch_from_callback,
+            probe.cast(),
+            std::sync::Arc::clone(&stopped),
+        )
+        .unwrap();
+        let watch = Box::into_raw(Box::new(TermyFfiLayoutWatch {
+            close: Box::new(|| {}),
+            stopped,
+            thread: Some(thread),
+        }));
+        unsafe { *(*probe).watch.lock().unwrap() = watch };
+        revisions_tx.send(7).unwrap();
+        revisions_tx.send(8).unwrap();
+        release_tx.send(()).unwrap();
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the callback freed its watch without deadlocking");
+        // Later revisions and the end of the stream reach nobody.
+        release_tx.send(()).unwrap();
+        drop(revisions_tx);
+        drop(release_tx);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(*unsafe { &*probe }.calls.lock().unwrap(), [7]);
+        drop(unsafe { Box::from_raw(probe) });
+    }
+
+    #[test]
+    fn active_tab_counts_only_tabs_with_live_panes() {
+        let leaf = |id: &str| AppNode::Leaf { leaf: id.into() };
+        let app = AppLayout {
+            revision: 0,
+            windows: vec![AppWindow {
+                id: "w1".into(),
+                active_workspace: 0,
+                workspaces: vec![AppWorkspace {
+                    name: "n".into(),
+                    pinned: false,
+                    active_tab: 2,
+                    tabs: vec![tab(leaf("a")), tab(leaf("b")), tab(leaf("c"))],
+                }],
+            }],
+        };
+        let mut stored = app.to_stored(&StoredMultiplexer::empty()).expect("stored");
+        // A tab whose panes the host doesn't run, as a local desktop tab is.
+        for pane in &mut stored.windows[0].session.workspaces[0].tabs[0].panes {
+            pane.session_id = None;
+        }
+        let back = AppLayout::from_stored(&stored, 1);
+        let workspace = &back.windows[0].workspaces[0];
+        assert_eq!(workspace.tabs.len(), 2);
+        assert_eq!(workspace.active_tab, 1);
+        assert_eq!(workspace.tabs[1].tree, leaf("c"));
     }
 
     #[test]

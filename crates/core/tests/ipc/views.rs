@@ -504,3 +504,34 @@ fn command_finish_and_exit_wake_a_hidden_view() {
     drop(terminal);
     host.client.close(&id).unwrap();
 }
+
+/// A searcher asks the host on a connection of its own, from another
+/// thread, while the view keeps reading frames and scrolling.
+#[test]
+fn searchers_query_the_host_from_another_thread() {
+    let host = Host::new();
+    let (id, terminal) = shell_pane(
+        &host,
+        "stty -echo; i=0; while [ $i -lt 200 ]; do printf 'found-%s\\r\\n' \"$i\"; i=$((i+1)); done; printf READY; read done",
+    );
+    wait_for_text(&terminal, "READY");
+    let searcher = terminal.searcher();
+    let worker = std::thread::spawn(move || {
+        (0..10)
+            .map(|_| {
+                searcher
+                    .search("found-1", termy_core::TermySearchOptions::default())
+                    .len()
+            })
+            .collect::<Vec<_>>()
+    });
+    for _ in 0..10 {
+        terminal.scroll_display(2);
+        terminal.render_read(false);
+        terminal.scroll_to_bottom();
+    }
+    let counts = worker.join().unwrap();
+    // found-1, found-10..19 and found-100..199.
+    assert!(counts.iter().all(|count| *count == 111), "{counts:?}");
+    host.client.close(&id).unwrap();
+}

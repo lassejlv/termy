@@ -253,11 +253,16 @@ final class PaneDragCard: NSView {
         self.badge = badge
         program = pane.foregroundProgram
         executable = pane.foregroundExecutable
+        // A tab pulled out of the tab bar is hidden before its card is made, and
+        // one pressed out of the background may not have caught up yet: hidden
+        // panes take no frames, so take the latest now.
+        pane.terminal.session.poll()
         let frame = pane.terminal.session.frame
         let rows = (0..<frame.rows).map { frame.text(row: $0).replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression) }
         // The last screenful of text that has anything on it.
         let used = rows.lastIndex { !$0.isEmpty } ?? 0
-        lines = Array(rows[max(0, used - 13)...used])
+        // A frame never filled (its terminal failed to update) has no rows.
+        lines = rows.isEmpty ? [] : Array(rows[max(0, used - 13)...used])
         let aspect = pane.bounds.height / max(pane.bounds.width, 1)
         let width: CGFloat = 300
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: min(230, max(150, width * aspect))))

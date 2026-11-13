@@ -115,8 +115,8 @@ pub use runtime::{
     MAX_TERMINAL_SCROLLBACK_HISTORY, ResolvedTerminalLaunch, TabTitleShellIntegration, TermProgram,
     Terminal, TerminalCursorState, TerminalCursorStyle, TerminalDamageCells,
     TerminalDamageSnapshot, TerminalDirtySpan, TerminalEvent, TerminalLaunch, TerminalOptions,
-    TerminalRuntimeConfig, TerminalWakeupNotifier, WindowsShell, WorkingDirFallback,
-    normalize_working_directory_candidate, resolve_launch_working_directory,
+    TerminalRuntimeConfig, TerminalSearcher, TerminalWakeupNotifier, WindowsShell,
+    WorkingDirFallback, normalize_working_directory_candidate, resolve_launch_working_directory,
     resolve_terminal_launch, resolve_working_directory_path, terminal_environment_overrides,
 };
 #[cfg(feature = "native")]

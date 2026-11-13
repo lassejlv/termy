@@ -8,7 +8,7 @@ pub(crate) mod serde_image;
 pub(crate) mod serde_palette;
 
 use crate::*;
-pub(crate) use backend::RemoteBackend;
+pub(crate) use backend::{RemoteBackend, search_from_any_thread};
 pub use frame::RemoteDamage;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -400,6 +400,13 @@ pub trait RemoteTransport: Send + Sync {
         (self.state(), None)
     }
     fn request(&self, command: RemoteCommand) -> anyhow::Result<RemoteReply>;
+    /// [`Self::request`] for a query that can take a while, such as a
+    /// search of the whole history, made from another thread than the
+    /// view's: a transport may answer it on a connection of its own, so the
+    /// view's requests don't wait behind it.
+    fn request_query(&self, command: RemoteCommand) -> anyhow::Result<RemoteReply> {
+        self.request(command)
+    }
     fn send(&self, command: RemoteCommand);
     /// Sends a command behind the commands queued by [`Self::send`] and
     /// waits for its reply, for commands that write to the PTY and must not

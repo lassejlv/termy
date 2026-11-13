@@ -11,13 +11,15 @@ extension TerminalView: @preconcurrency NSTextInputClient {
             return
         }
         guard let keystroke = KeyMapping.keystroke(for: event) else { return }
-        send(keystroke)
+        sendPress(keystroke, keyCode: event.keyCode)
     }
 
     public override func keyUp(with event: NSEvent) {
         // Release events are only reported in Kitty keyboard modes; the encoder
-        // returns nothing otherwise.
-        guard markedText == nil, var keystroke = KeyMapping.keystroke(for: event) else { return }
+        // returns nothing otherwise. A key whose press didn't reach the
+        // program, such as a shortcut, has nothing to release.
+        guard pressedKeyCodes.remove(event.keyCode) != nil, markedText == nil,
+              var keystroke = KeyMapping.keystroke(for: event) else { return }
         keystroke.kind = .release
         send(keystroke)
     }
@@ -45,6 +47,12 @@ extension TerminalView: @preconcurrency NSTextInputClient {
 
     func send(_ keystroke: Keystroke) {
         try? session.send(keystroke, optionAsAlt: optionAsAlt)
+    }
+
+    /// Sends a key's press and remembers it, so its release is reported.
+    private func sendPress(_ keystroke: Keystroke, keyCode: UInt16) {
+        pressedKeyCodes.insert(keyCode)
+        send(keystroke)
     }
 
     // MARK: Edit actions
@@ -103,7 +111,7 @@ extension TerminalView: @preconcurrency NSTextInputClient {
         // so enhanced keyboard modes report it accurately.
         if let event = NSApp.currentEvent, event.type == .keyDown, event.characters == text,
            let keystroke = KeyMapping.keystroke(for: event) {
-            send(keystroke)
+            sendPress(keystroke, keyCode: event.keyCode)
         } else {
             send(.text(text))
         }
@@ -154,7 +162,14 @@ extension TerminalView: @preconcurrency NSTextInputClient {
     }
 
     public override func doCommand(by selector: Selector) {
-        // Non-text keys are encoded in keyDown; ignore AppKit text commands.
+        // Non-text keys are encoded in keyDown, except while text is being
+        // composed: the input method then gets them, and passes back the ones
+        // it doesn't use, such as Return or Tab after a dead key.
+        guard let event = NSApp.currentEvent, event.type == .keyDown,
+              KeyMapping.namedKey(forKeyCode: event.keyCode) != nil,
+              let keystroke = KeyMapping.keystroke(for: event)
+        else { return }
+        sendPress(keystroke, keyCode: event.keyCode)
     }
 }
 #endif

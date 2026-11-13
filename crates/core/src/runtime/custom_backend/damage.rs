@@ -112,6 +112,29 @@ impl State {
     }
 }
 
+/// For frame consumers that replay scrolls: takes the update's scrolls when
+/// every one fits a `rows`-row viewport and its damage is partial, leaving
+/// the spans to patch after replaying them. Otherwise the scrolls become
+/// damage as for legacy consumers, and none are returned.
+pub(crate) fn take_replayable_scrolls(
+    update: &mut TerminalRenderDamageSnapshot,
+    cols: usize,
+    rows: usize,
+) -> Vec<TerminalViewportScroll> {
+    let replayable = matches!(update.damage, TerminalDamageSnapshot::Partial(_))
+        && update.scrolls.iter().all(|scroll| {
+            scroll.top <= scroll.bottom
+                && scroll.bottom < rows
+                && scroll.count > 0
+                && scroll.count <= scroll.bottom - scroll.top + 1
+        });
+    if !replayable {
+        expand_legacy_scroll_damage(update, cols);
+        return Vec::new();
+    }
+    std::mem::take(&mut update.scrolls)
+}
+
 // Legacy frame consumers replay only cell patches, so include the rows moved
 // by scroll operations rather than silently dropping that part of the update.
 pub(super) fn expand_legacy_scroll_damage(update: &mut TerminalRenderDamageSnapshot, cols: usize) {

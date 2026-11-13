@@ -153,6 +153,22 @@ impl Backend {
         }
     }
 
+    /// The child of a terminal with its own PTY; none for a session-host
+    /// pane, whose program runs under the host.
+    pub(super) fn searcher(&self) -> super::TerminalSearcher {
+        super::TerminalSearcher(match self {
+            Self::Custom(backend) => super::SearcherBackend::Local(backend.searcher()),
+            Self::Remote(backend) => super::SearcherBackend::Remote(backend.transport()),
+        })
+    }
+
+    pub(super) fn local_child_pid(&self) -> Option<u32> {
+        match self {
+            Self::Custom(backend) => backend.child_pid(),
+            Self::Remote(_) => None,
+        }
+    }
+
     pub(super) fn terminate_and_wait(&self) {
         if let Self::Custom(backend) = self {
             backend.terminate_and_wait();
@@ -370,6 +386,16 @@ impl Backend {
         match self {
             Self::Custom(backend) => backend.frame_update(force_full),
             Self::Remote(backend) => backend.frame_update(force_full),
+        }
+    }
+
+    pub(super) fn frame_update_with_scrolls(
+        &self,
+        force_full: bool,
+    ) -> (TermyFrameUpdate, Vec<crate::TerminalViewportScroll>) {
+        match self {
+            Self::Custom(backend) => backend.frame_update_with_scrolls(force_full, true),
+            Self::Remote(backend) => backend.frame_update_with_scrolls(force_full),
         }
     }
 

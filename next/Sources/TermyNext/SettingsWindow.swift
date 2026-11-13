@@ -171,24 +171,42 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         configureControls()
         for pane in Pane.allCases { paneViews[pane] = build(pane) }
 
-        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Preferences.didChange, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Workspace.didChange, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(refresh), name: Updates.didChange, object: nil)
+        // Once opened, Settings stays alive closed; these refresh it only while
+        // it shows (`show()` and becoming key catch up), since a refresh asks
+        // the session host for its panes and rebuilds menus.
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshIfShown), name: Preferences.didChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshIfShown), name: Workspace.didChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshIfShown), name: Updates.didChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(fontsChanged), name: NSFont.fontSetChangedNotification, object: nil)
         updateSidebar()
         select(.general)
         window.center()
         window.setFrameAutosaveName("TermyNextSettings")
+        Self.current = self
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    private static weak var current: SettingsWindowController?
+
+    /// Whether the Mobile pane is on screen, without opening Settings to ask.
+    static var isShowingMobile: Bool {
+        guard let current, let window = current.window else { return false }
+        return current.pane == .mobile && window.isVisible
+    }
 
     func show() {
         refresh()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
     }
+
+    @objc private func refreshIfShown() {
+        if window?.isVisible == true { refresh() }
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) { refresh() }
 
     // MARK: Chrome
 
@@ -747,7 +765,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
 
     @objc private func fontsChanged() {
         localFonts = nil
-        refresh()
+        refreshIfShown()
     }
 
     /// Puts every control in step with the current preferences and config.

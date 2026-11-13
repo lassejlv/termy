@@ -46,9 +46,9 @@ mod maintenance;
 mod remote;
 mod replica;
 mod viewport;
-use damage::expand_legacy_scroll_damage;
+use damage::{expand_legacy_scroll_damage, take_replayable_scrolls};
 use legacy::LegacyCells;
-pub(crate) use legacy::legacy_frame_update;
+pub(crate) use legacy::{legacy_frame_update, legacy_frame_update_with_scrolls};
 
 const EVENT_BATCH: usize = 2048;
 const MAX_EVENTS: usize = 65_536;
@@ -1061,9 +1061,25 @@ impl CustomBackend {
         }
     }
     pub(super) fn frame_update(&self, force_full: bool) -> TermyFrameUpdate {
+        self.frame_update_with_scrolls(force_full, false).0
+    }
+    /// With `replay_scrolls`, scrolls come back to be replayed on the frame
+    /// shown before the update's spans patch it, instead of as damage on
+    /// every row they moved.
+    pub(super) fn frame_update_with_scrolls(
+        &self,
+        force_full: bool,
+        replay_scrolls: bool,
+    ) -> (TermyFrameUpdate, Vec<TerminalViewportScroll>) {
         let mut state = self.shared.state();
         let mut update = state.take_damage(force_full);
-        expand_legacy_scroll_damage(&mut update, usize::from(state.size.cols));
+        let cols = usize::from(state.size.cols);
+        let scrolls = if replay_scrolls {
+            take_replayable_scrolls(&mut update, cols, usize::from(state.size.rows))
+        } else {
+            expand_legacy_scroll_damage(&mut update, cols);
+            Vec::new()
+        };
         let palette = state.palette();
         let full_rows: Vec<_>;
         let spans = match &update.damage {
@@ -1108,7 +1124,7 @@ impl CustomBackend {
                 },
             );
         }
-        TermyFrameUpdate {
+        let update = TermyFrameUpdate {
             cols: state.size.cols,
             rows: state.size.rows,
             cells,
@@ -1116,7 +1132,8 @@ impl CustomBackend {
             display_offset: state.engine.display_offset(),
             history_size: state.engine.history_size(),
             damage: update.damage,
-        }
+        };
+        (update, scrolls)
     }
     pub(super) fn take_render_damage_snapshot(&self) -> TerminalRenderDamageSnapshot {
         self.shared.state().take_damage(false)
@@ -1151,39 +1168,12 @@ impl CustomBackend {
         query: &str,
         options: TermySearchOptions,
     ) -> Vec<TermySharedSearchMatch> {
-        if query.is_empty() {
-            return Vec::new();
-        }
-        // Copy the text under the engine lock, then compile the pattern and
-        // match without it, so a long search doesn't stall PTY output.
-        let state = self.shared.state();
-        let history = state.engine.history_size() as i32;
-        let mut scratch = Vec::new();
-        let lines = (-history..i32::from(state.size.rows))
-            .filter_map(|line| {
-                state.engine.with_line(line, &mut scratch, |cells| {
-                    let mut text = String::with_capacity(cells.len());
-                    let mut mapping = SearchLineMapping::default();
-                    for (col, cell) in cells.iter().enumerate() {
-                        if cell.flags & engine::Cell::WIDE_SPACER != 0 {
-                            continue;
-                        }
-                        let start = text.len();
-                        append_search_cell(&mut text, cell, cells.combining(col));
-                        mapping.record_cell(
-                            &text,
-                            start,
-                            col,
-                            1 + usize::from(cell.flags & engine::Cell::WIDE != 0),
-                        );
-                    }
-                    text.truncate(text.trim_end().len());
-                    ((line + history) as usize, text, mapping)
-                })
-            })
-            .collect::<Vec<_>>();
-        drop(state);
-        search_lines_shared(lines, query, options)
+        self.searcher().search(query, options)
+    }
+    /// A search that holds its own reference to the engine, so it may run on
+    /// any thread while this terminal is driven from another.
+    pub(crate) fn searcher(&self) -> LocalSearcher {
+        LocalSearcher(Arc::clone(&self.shared))
     }
     pub(super) fn hyperlink_at(&self, row: usize, col: usize) -> Option<DetectedLink> {
         crate::links::hyperlink_at_viewport_cell(&self.shared.state().engine, row, col)
@@ -1375,6 +1365,83 @@ fn append_search_cell(text: &mut String, cell: &engine::Cell, combining: &str) {
     } else {
         text.push(cell.character);
         text.push_str(combining);
+    }
+}
+
+/// Searches a local terminal's history and screen from any thread.
+#[derive(Clone)]
+pub(crate) struct LocalSearcher(Arc<Shared>);
+
+/// Lines copied per hold of the engine lock, so a search of a long history
+/// lets output parse between chunks.
+const SEARCH_CHUNK_LINES: i32 = 2048;
+
+impl LocalSearcher {
+    /// Copies the text a chunk at a time under the engine lock, then
+    /// compiles the pattern and matches without it. Lines are numbered as
+    /// when the search began; ones that output pushed out of history
+    /// meanwhile are skipped.
+    pub(crate) fn search(
+        &self,
+        query: &str,
+        options: TermySearchOptions,
+    ) -> Vec<TermySharedSearchMatch> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let (start_scrolled, history, rows) = {
+            let state = self.0.state();
+            (
+                state.engine.scrolled_into_history(),
+                state.engine.history_size() as i32,
+                i32::from(state.size.rows),
+            )
+        };
+        let mut scratch = Vec::new();
+        let mut lines = Vec::new();
+        let mut next = -history;
+        while next < rows {
+            let end = next.saturating_add(SEARCH_CHUNK_LINES).min(rows);
+            let state = self.0.state();
+            let moved = i32::try_from(
+                state
+                    .engine
+                    .scrolled_into_history()
+                    .saturating_sub(start_scrolled),
+            )
+            .unwrap_or(i32::MAX);
+            let current_history = state.engine.history_size() as i32;
+            let current_rows = i32::from(state.size.rows);
+            for line in next..end {
+                let now = line.saturating_sub(moved);
+                if now < -current_history || now >= current_rows {
+                    continue;
+                }
+                let found = state.engine.with_line(now, &mut scratch, |cells| {
+                    let mut text = String::with_capacity(cells.len());
+                    let mut mapping = SearchLineMapping::default();
+                    for (col, cell) in cells.iter().enumerate() {
+                        if cell.flags & engine::Cell::WIDE_SPACER != 0 {
+                            continue;
+                        }
+                        let start = text.len();
+                        append_search_cell(&mut text, cell, cells.combining(col));
+                        mapping.record_cell(
+                            &text,
+                            start,
+                            col,
+                            1 + usize::from(cell.flags & engine::Cell::WIDE != 0),
+                        );
+                    }
+                    text.truncate(text.trim_end().len());
+                    ((line + history) as usize, text, mapping)
+                });
+                lines.extend(found);
+            }
+            drop(state);
+            next = end;
+        }
+        search_lines_shared(lines, query, options)
     }
 }
 
