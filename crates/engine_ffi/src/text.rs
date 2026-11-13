@@ -314,56 +314,67 @@ pub(crate) fn read_text(
     let first = start.0.max(top);
     let last = end.0.min(bottom);
     let mut line = first;
+    // Packed history is decoded into scratch: `Engine::line` would keep a
+    // dense copy of every row it expands until the next output, so a
+    // whole-buffer capture would leave all of scrollback expanded.
+    let mut scratch = Vec::new();
     while line <= last {
-        let Some(cells) = get_line(engine, line) else {
+        let Some(number) = i32::try_from(line).ok() else {
             break;
         };
-        let (from, to) = if range.rectangular != 0 {
-            (left, right)
-        } else {
-            (
-                if line == start.0 { start.1 } else { 0 },
-                if line == end.0 { end.1 } else { usize::MAX },
-            )
-        };
-        let to = to.min(cells.len().saturating_sub(1));
-        let soft_wrapped = wrapped(engine, line) && range.rectangular == 0;
-        // Trailing blanks of a hard line end are padding, not text.
-        let mut stop = to + 1;
-        if options & TEXT_TRIM != 0 && !(soft_wrapped && to + 1 == cells.len()) {
-            while stop > from
-                && cells[stop - 1].character == ' '
-                && cells.extra(stop - 1).is_none()
-                && (format == FORMAT_PLAIN || cells[stop - 1].style.background == Color::DEFAULT)
-            {
-                stop -= 1;
-            }
-        }
-        for col in from..stop.max(from) {
-            let Some(cell) = cells.get(col) else {
-                break;
+        let read = engine.with_line(number, &mut scratch, |cells| {
+            let (from, to) = if range.rectangular != 0 {
+                (left, right)
+            } else {
+                (
+                    if line == start.0 { start.1 } else { 0 },
+                    if line == end.0 { end.1 } else { usize::MAX },
+                )
             };
-            if cell.flags & (Cell::WIDE_SPACER | Cell::LEADING_WIDE_SPACER) != 0 {
-                continue;
+            let to = to.min(cells.len().saturating_sub(1));
+            let soft_wrapped = wrapped(engine, line) && range.rectangular == 0;
+            // Trailing blanks of a hard line end are padding, not text.
+            let mut stop = to + 1;
+            if options & TEXT_TRIM != 0 && !(soft_wrapped && to + 1 == cells.len()) {
+                while stop > from
+                    && cells[stop - 1].character == ' '
+                    && cells.extra(stop - 1).is_none()
+                    && (format == FORMAT_PLAIN
+                        || cells[stop - 1].style.background == Color::DEFAULT)
+                {
+                    stop -= 1;
+                }
             }
-            let extra = cells.extra(col);
-            formatter.set(
-                Pen {
-                    style: cell.style,
-                    underline_color: extra.map_or(Color::DEFAULT, |extra| extra.underline_color),
-                },
-                extra
-                    .and_then(|extra| extra.hyperlink.as_ref())
-                    .map(|link| link.uri.as_str()),
-            );
-            formatter.text(cell.character);
-            if let Some(extra) = extra {
-                extra.combining.chars().for_each(|c| formatter.text(c));
+            for col in from..stop.max(from) {
+                let Some(cell) = cells.get(col) else {
+                    break;
+                };
+                if cell.flags & (Cell::WIDE_SPACER | Cell::LEADING_WIDE_SPACER) != 0 {
+                    continue;
+                }
+                let extra = cells.extra(col);
+                formatter.set(
+                    Pen {
+                        style: cell.style,
+                        underline_color: extra
+                            .map_or(Color::DEFAULT, |extra| extra.underline_color),
+                    },
+                    extra
+                        .and_then(|extra| extra.hyperlink.as_ref())
+                        .map(|link| link.uri.as_str()),
+                );
+                formatter.text(cell.character);
+                if let Some(extra) = extra {
+                    extra.combining.chars().for_each(|c| formatter.text(c));
+                }
             }
-        }
-        let joined = options & TEXT_UNWRAP != 0 && soft_wrapped && to + 1 == cells.len();
-        if line != last && !joined {
-            formatter.newline();
+            let joined = options & TEXT_UNWRAP != 0 && soft_wrapped && to + 1 == cells.len();
+            if line != last && !joined {
+                formatter.newline();
+            }
+        });
+        if read.is_none() {
+            break;
         }
         line += 1;
     }

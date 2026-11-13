@@ -22,6 +22,9 @@ public final class RemoteHostAgent {
     private var lastConfiguration: RemoteConfiguration?
     var configuration: RemoteConfiguration { lastConfiguration ?? configurationProvider() }
     private var lastSessions: RemoteSessionList?
+    /// Pane sizes phones asked for, across every phone, so the last one to
+    /// leave a pane gives it back the size it had before any phone came.
+    let paneSizes = PaneSizes()
 
     public init(
         multiplexer: Multiplexer, credentials: DeviceCredentials, identity: DeviceIdentity, trustedDevices: [UUID: Data]
@@ -142,7 +145,7 @@ public final class RemoteHostAgent {
             peers[deviceID] = peer
             connection?.send(response, to: deviceID)
             peer.send(.hello(hostName: hostName, version: RemoteProtocol.version))
-            peer.send(.sessions(currentSessions()))
+            peer.send(.sessions(await currentSessions()))
             log("\(device.name) connected.")
         } catch {
             log("Handshake with a phone failed: \(error)")
@@ -154,6 +157,9 @@ public final class RemoteHostAgent {
     func send(_ packet: Data, to device: UUID) {
         connection?.send(packet, to: device)
     }
+
+    /// Bytes queued on the relay socket and not yet written.
+    var sendBacklog: Int { connection?.pendingSendBytes ?? 0 }
 
     func attach(paneID: String) async throws -> Terminal {
         // A new terminal has no other owner yet, so handing it over is safe.
@@ -228,9 +234,15 @@ public final class RemoteHostAgent {
         try await Task.detached { [multiplexer] in try multiplexer.close(paneID: paneID) }.value
     }
 
-    func currentSessions() -> RemoteSessionList {
-        let panes = (try? multiplexer.panes()) ?? []
-        let layout = try? multiplexer.layout()
+    /// The sessions as the host has them now. The host calls block, so they
+    /// run off the main actor.
+    func currentSessions() async -> RemoteSessionList {
+        await Task.detached { [multiplexer] in
+            Self.sessions(panes: (try? multiplexer.panes()) ?? [], layout: try? multiplexer.layout())
+        }.value
+    }
+
+    nonisolated static func sessions(panes: [MultiplexerPane], layout: MultiplexerLayout?) -> RemoteSessionList {
         var groups: [RemoteSessionGroup] = []
         for window in layout?.windows ?? [] {
             for workspace in window.workspaces {
@@ -264,12 +276,20 @@ public final class RemoteHostAgent {
                 lastConfiguration = configuration
                 for peer in peers.values { peer.configure(configuration) }
             }
-            broadcastSessionsIfChanged()
+            await broadcastSessionsIfChanged()
         }
     }
 
-    func broadcastSessionsIfChanged() {
-        let sessions = currentSessions()
+    private var sessionReads: UInt64 = 0
+    private var sessionReadShown: UInt64 = 0
+
+    func broadcastSessionsIfChanged() async {
+        sessionReads += 1
+        let read = sessionReads
+        let sessions = await currentSessions()
+        // Reads overlap; one that finished after a newer one is stale.
+        guard read > sessionReadShown else { return }
+        sessionReadShown = read
         guard sessions != lastSessions else { return }
         lastSessions = sessions
         for peer in peers.values { peer.send(.sessions(sessions)) }
@@ -284,10 +304,27 @@ final class Peer {
     var channel: SecureChannel
     private weak var agent: RemoteHostAgent?
     private var streams: [Int: Stream] = [:]
+    /// The attach each stream is waiting for. A detach, or a newer attach of
+    /// the same stream, replaces it, so the older one is dropped on arrival
+    /// instead of streaming a pane the phone no longer shows.
+    private var attaching: [Int: UUID] = [:]
+    /// Each stream's latest search, which the next one waits for.
+    private var searches: [Int: Task<Void, Never>] = [:]
+    /// The glyphs this phone keeps (protocol 4).
+    private var glyphs = GlyphLedger()
     private var active = true
+    var streamCount: Int { streams.count }
+    /// The largest payload sealed into one packet. The relay closes a socket
+    /// that sends a larger message, which would drop every phone.
+    static let maxPayloadBytes = RelayWire.maxMessageBytes - 1024
+    /// Screen updates wait while more than this is queued on the relay socket.
+    static let maxBacklogBytes = 1024 * 1024
+    var isCongested: Bool { (agent?.sendBacklog ?? 0) > Self.maxBacklogBytes }
     private var clientVersion = 1
     /// Whether the phone understands `HostMessage.image` and `.images`.
     var showsImages: Bool { clientVersion >= 3 }
+    /// Whether the phone keeps glyphs by key and takes larger grids.
+    var keepsGlyphs: Bool { clientVersion >= 4 }
 
     init(id: UUID, name: String, channel: SecureChannel, agent: RemoteHostAgent) {
         self.id = id
@@ -297,9 +334,31 @@ final class Peer {
     }
 
     func send(_ message: HostMessage) {
+        // A closed peer's channel is gone on the phone; its packets would
+        // only fail to open there.
+        guard active else { return }
+        var message = message
+        if case .frame(var frame) = message {
+            if keepsGlyphs {
+                frame = frame.clipped(cols: RemoteFrame.maxCols, rows: RemoteFrame.maxRows)
+                glyphs.prepare(&frame)
+            } else {
+                // Older phones drop larger grids and know no glyph keys.
+                frame = frame.clipped(cols: RemoteFrame.legacyMaxCols, rows: RemoteFrame.legacyMaxRows)
+                for update in frame.updates.indices {
+                    for run in frame.updates[update].runs.indices { frame.updates[update].runs[run].glyphKey = nil }
+                }
+            }
+            message = .frame(frame)
+        }
         do {
-            let packet = try channel.seal(try MessageCodec.encode(message))
-            agent?.send(packet, to: id)
+            var strippedGlyphs = false
+            let payloads = try FrameEncoder.payloads(for: message, limit: Self.maxPayloadBytes, strippedGlyphs: &strippedGlyphs)
+            // The phone didn't get the PNGs the ledger counted as sent.
+            if strippedGlyphs { glyphs.reset() }
+            for payload in payloads {
+                agent?.send(try channel.seal(payload), to: id)
+            }
         } catch {
             log("Couldn't send to \(name): \(error)")
         }
@@ -313,6 +372,9 @@ final class Peer {
         active = false
         for stream in streams.values { stream.close() }
         streams.removeAll()
+        attaching.removeAll()
+        for search in searches.values { search.cancel() }
+        searches.removeAll()
     }
 
     func handle(_ message: ClientMessage) {
@@ -322,10 +384,17 @@ final class Peer {
             clientVersion = max(1, min(RemoteProtocol.version, version))
             if clientVersion >= 2 { send(.configuration(configuration)) }
         case .listSessions:
-            if let agent { send(.sessions(agent.currentSessions())) }
+            Task {
+                guard let sessions = await agent?.currentSessions() else { return }
+                send(.sessions(sessions))
+            }
         case .attach(let stream, let paneID):
-            Task { await attach(stream: stream, paneID: paneID) }
+            let token = UUID()
+            attaching[stream] = token
+            streams.removeValue(forKey: stream)?.close()
+            Task { await attach(stream: stream, paneID: paneID, token: token) }
         case .detach(let stream):
+            attaching[stream] = nil
             streams.removeValue(forKey: stream)?.close()
         case .key(let stream, let key):
             streams[stream]?.send(key)
@@ -345,15 +414,29 @@ final class Peer {
         case .scrollToBottom(let id): streams[id]?.session.scrollToBottom()
         case .search(let id, let query):
             guard let stream = streams[id] else { return }
-            do {
-                let matches = query.isEmpty ? [] : try stream.session.terminal.search(String(query.prefix(512)))
-                send(
+            // Off the main actor, one after another, so results come back in
+            // the order the phone asked.
+            let previous = searches[id]
+            searches[id] = Task { [weak self] in
+                await previous?.value
+                let result: [SearchMatch]?
+                do {
+                    result = query.isEmpty ? [] : try await stream.session.search(String(query.prefix(512)))
+                } catch {
+                    result = nil
+                }
+                guard let self, self.active else { return }
+                guard let matches = result else { return self.send(.error("Couldn't search the terminal.")) }
+                self.send(
                     .searchResults(
                         stream: id,
                         matches: matches.prefix(500).map {
-                            RemoteSearchMatch(row: $0.row, startCol: $0.startCol, endCol: $0.endCol, line: $0.line)
+                            // The phone shows a few lines of each; full lines of a
+                            // wide pane could push the list past the relay's limit.
+                            RemoteSearchMatch(
+                                row: $0.row, startCol: $0.startCol, endCol: $0.endCol, line: String($0.line.prefix(512)))
                         }))
-            } catch { send(.error("Couldn't search the terminal.")) }
+            }
         case .revealSearch(let id, let bufferRow):
             guard let stream = streams[id], bufferRow >= 0 else { return }
             let frame = stream.session.frame
@@ -362,7 +445,7 @@ final class Peer {
         case .closePane(let paneID):
             Task {
                 do { try await agent?.closePane(paneID) } catch { send(.error("Couldn’t close the pane: \(error)")) }
-                agent?.broadcastSessionsIfChanged()
+                await agent?.broadcastSessionsIfChanged()
             }
         }
     }
@@ -372,31 +455,35 @@ final class Peer {
             do {
                 guard let id = try await agent?.create(destination) else { return }
                 send(.created(paneID: id))
-                agent?.broadcastSessionsIfChanged()
+                await agent?.broadcastSessionsIfChanged()
             } catch { send(.error("Couldn't create a terminal: \(error)")) }
         }
     }
     private func rename(_ pane: String, name: String, session: Bool) {
         do {
             try agent?.rename(pane: pane, name: name, session: session)
-            agent?.broadcastSessionsIfChanged()
+            Task { await agent?.broadcastSessionsIfChanged() }
         } catch { send(.error("Couldn't rename. The item may have moved or that name is already used.")) }
     }
     var configuration: RemoteConfiguration { agent?.configuration ?? RemoteConfiguration() }
     var configPath: String? { agent?.configPath }
-    private func attach(stream id: Int, paneID: String) async {
-        streams.removeValue(forKey: id)?.close()
+    private func attach(stream id: Int, paneID: String, token: UUID) async {
         do {
             guard let terminal = try await agent?.attach(paneID: paneID) else { return }
-            guard active else { return }
+            guard active, attaching[id] == token else { return }
             if let path = agent?.configPath {
                 try terminal.applyColors(
                     from: TermyConfig(path: path), appearance: configuration.appearance == "light" ? .light : .dark)
             }
             let frame = try terminal.snapshot()
             let size = TerminalSize(cols: UInt16(frame.cols), rows: UInt16(frame.rows))
-            streams[id] = Stream(id: id, session: TerminalSession(terminal: terminal, size: size), peer: self)
+            attaching[id] = nil
+            guard let sizes = agent?.paneSizes else { return }
+            streams[id] = Stream(
+                id: id, session: TerminalSession(terminal: terminal, size: size), peer: self, sizes: sizes)
         } catch {
+            guard attaching[id] == token else { return }
+            attaching[id] = nil
             send(.error("Couldn't open the session: \(error)"))
         }
     }
@@ -409,18 +496,25 @@ final class Stream {
     let id: Int
     let session: TerminalSession
     private weak var peer: Peer?
-    private let originalSize: TerminalSize
+    private let sizes: PaneSizes
+    private let paneID: String
     private var dirty: Set<Int>? = nil
     private var pendingFull = true
     private var sendScheduled = false
     private var images = ImageEncoder()
     private var imagesChanged = true
+    /// A frame's glyphs and images are being drawn off the main actor; the
+    /// next frame waits for it, so frames reach the phone in order.
+    private var encoding = false
+    private var closed = false
 
-    init(id: Int, session: TerminalSession, peer: Peer) {
+    init(id: Int, session: TerminalSession, peer: Peer, sizes: PaneSizes) {
         self.id = id
         self.session = session
         self.peer = peer
-        originalSize = session.size
+        self.sizes = sizes
+        paneID = session.terminal.paneID ?? "stream-\(id)"
+        sizes.join(pane: paneID, stream: ObjectIdentifier(self), size: session.size)
         session.onFrameChange = { [weak self] change in self?.changed(change) }
         session.onGraphicsChange = { [weak self] in
             self?.imagesChanged = true
@@ -432,10 +526,13 @@ final class Stream {
     }
 
     func close() {
+        closed = true
         session.onFrameChange = nil
         session.onGraphicsChange = nil
         session.onEvent = nil
-        if session.size != originalSize { try? session.resize(originalSize) }
+        // Another phone still on the pane keeps the size it asked for.
+        let size = sizes.leave(pane: paneID, stream: ObjectIdentifier(self))
+        if let size, session.size != size { try? session.resize(size) }
         session.stop()
     }
 
@@ -449,12 +546,11 @@ final class Stream {
 
     /// Fits the pane to the phone, or restores it when `cols` is nil.
     func resize(cols: Int?, rows: Int?) {
-        let size: TerminalSize
+        var requested: TerminalSize?
         if let cols, let rows, cols > 1, rows > 1 {
-            size = TerminalSize(cols: UInt16(min(cols, 500)), rows: UInt16(min(rows, 300)))
-        } else {
-            size = originalSize
+            requested = TerminalSize(cols: UInt16(min(cols, 500)), rows: UInt16(min(rows, 300)))
         }
+        let size = sizes.request(pane: paneID, stream: ObjectIdentifier(self), size: requested)
         try? session.resize(size)
         pendingFull = true
         scheduleSend()
@@ -520,6 +616,14 @@ final class Stream {
 
     private func flush() {
         sendScheduled = false
+        // On a slow link, sends queue in memory without limit and the phone
+        // falls further behind. Keep collecting dirty rows instead and send
+        // them as one frame once the socket catches up.
+        guard !closed else { return }
+        if encoding || peer?.isCongested == true {
+            scheduleSend()
+            return
+        }
         let store = session.frame
         guard !store.isEmpty else { return }
         let rows: [Int] = pendingFull ? Array(0..<store.rows) : (dirty ?? []).filter { $0 < store.rows }.sorted()
@@ -535,11 +639,13 @@ final class Stream {
                     fontSize: Float(config.fontSize)), spans: spans)) ?? []
         let glyphs = Dictionary(uniqueKeysWithValues: plans.map { ($0.cellIndex, $0) })
         let updates = rows.map { row in
+            let cells = store.cells(row: row)
             var update = RowUpdate(
                 row: row,
                 runs: FrameEncoder.runs(
-                    store.cells(row: row), configuration: config, row: row, cols: store.cols, glyphs: glyphs))
-            update.wrapped = store.cells(row: row).last?.isLineWrapped ?? false
+                    cells, configuration: config, row: row, cols: store.cols, glyphs: glyphs, rasterize: false))
+            // Phones read a missing flag as false; leave it out of most rows.
+            update.wrapped = cells.last?.isLineWrapped == true ? true : nil
             return update
         }
         let background =
@@ -552,14 +658,97 @@ final class Stream {
         )
         frame.displayOffset = store.displayOffset
         frame.historySize = store.historySize
-        peer?.send(.frame(frame))
-        // After the frame, so an image never shows over the text it replaced.
+        let slots = FrameEncoder.attachGlyphs(to: &frame, configuration: config, glyphs: glyphs)
+        var pendingImages: ImageEncoder.Pending?
         if imagesChanged || full, let peer, peer.showsImages {
             imagesChanged = false
-            for message in images.update(stream: id, terminal: session.terminal, configuration: config) {
-                peer.send(message)
-            }
+            pendingImages = images.prepare(stream: id, terminal: session.terminal, configuration: config)
         }
+        guard !slots.isEmpty || pendingImages?.missing.isEmpty == false else {
+            return send(frame, images: pendingImages, pngs: [:])
+        }
+        // New glyphs and images are drawn and encoded off the main actor.
+        encoding = true
+        let jobs = slots.map(\.job)
+        let work = Handoff((jobs, pendingImages))
+        Task { [weak self] in
+            let (drawn, pngs) = await Task.detached {
+                let (jobs, pending) = work.value
+                return Handoff((jobs.map(GlyphRasterizer.render), pending.map(ImageEncoder.encode) ?? [:]))
+            }.value.value
+            guard let self else { return }
+            self.encoding = false
+            guard !self.closed else { return }
+            var frame = frame
+            for (slot, png) in zip(slots, drawn) {
+                guard let png else { continue }
+                frame.updates[slot.update].runs[slot.run].glyphPNG = png
+                frame.updates[slot.update].runs[slot.run].glyphKey = GlyphRasterizer.glyphKey(slot.job.key)
+            }
+            self.send(frame, images: pendingImages, pngs: pngs)
+        }
+    }
+
+    private func send(_ frame: RemoteFrame, images pending: ImageEncoder.Pending?, pngs: [KittyImageKey: Data]) {
+        peer?.send(.frame(frame))
+        // After the frame, so an image never shows over the text it replaced.
+        if let pending, let peer {
+            for message in images.finish(pending, pngs: pngs) { peer.send(message) }
+        }
+    }
+}
+
+/// The size each pane had before phones resized it, and what each phone
+/// watching it asked for. Two phones can share a pane, and the second one
+/// attaches after the first already resized it, so neither stream alone
+/// knows the size to give back.
+@MainActor
+final class PaneSizes {
+    private struct Pane {
+        var original: TerminalSize
+        /// Streams in the order they joined, with the size each asked for.
+        var streams: [(id: ObjectIdentifier, size: TerminalSize?)]
+
+        /// The newest size a phone still asks for, else the original.
+        var current: TerminalSize {
+            streams.last(where: { $0.size != nil })?.size ?? original
+        }
+    }
+
+    private var panes: [String: Pane] = [:]
+
+    /// A stream starts watching `pane`, which is `size` now. The first one
+    /// records that as the size to give back.
+    func join(pane: String, stream: ObjectIdentifier, size: TerminalSize) {
+        panes[pane, default: Pane(original: size, streams: [])].streams.append((stream, nil))
+    }
+
+    /// A stream's phone asks for `size`, or nil to stop asking. Returns the
+    /// size the pane should have now.
+    func request(pane: String, stream: ObjectIdentifier, size: TerminalSize?) -> TerminalSize {
+        guard var entry = panes[pane], let index = entry.streams.firstIndex(where: { $0.id == stream })
+        else { return size ?? TerminalSize(cols: 80, rows: 24) }
+        entry.streams.remove(at: index)
+        entry.streams.append((stream, size))
+        panes[pane] = entry
+        return entry.current
+    }
+
+    /// A stream stops watching. Returns the size the pane should have now:
+    /// the newest one another phone asked for, or the original once no phone
+    /// is left. Nil when the stream was unknown.
+    func leave(pane: String, stream: ObjectIdentifier) -> TerminalSize? {
+        guard var entry = panes[pane], let index = entry.streams.firstIndex(where: { $0.id == stream })
+        else { return nil }
+        let asked = entry.streams[index].size != nil
+        entry.streams.remove(at: index)
+        if entry.streams.isEmpty {
+            panes[pane] = nil
+            return entry.original
+        }
+        panes[pane] = entry
+        // A stream that never resized leaves the size as the others set it.
+        return asked ? entry.current : nil
     }
 }
 

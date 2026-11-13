@@ -135,6 +135,26 @@ pub struct TermyFfiFrameUpdate {
     pub spans_capacity: usize,
 }
 
+/// One scroll of viewport rows `top..=bottom` (inclusive) by `count` rows:
+/// `TERMY_FFI_SCROLL_UP` (1) moves content toward row 0, `..._DOWN` (2)
+/// away from it. Rows a scroll exposes are in the update's damage.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiViewportScroll {
+    pub top: usize,
+    pub bottom: usize,
+    pub count: usize,
+    pub direction: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiViewportScrollBatch {
+    pub scrolls_ptr: *mut TermyFfiViewportScroll,
+    pub scrolls_len: usize,
+    pub scrolls_capacity: usize,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermyFfiBytes {
@@ -3083,6 +3103,58 @@ pub unsafe extern "C" fn termy_terminal_write(
     })
 }
 
+/// The process ID of the program a terminal started in its own PTY. Writes 0
+/// and returns `TERMY_FFI_NOT_FOUND` for a display terminal or a session-host
+/// pane, whose program the host runs, and once the PTY is gone.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_child_pid(
+    terminal: *mut TermyFfiTerminal,
+    out_pid: *mut i32,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_pid.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        let pid = unsafe { (*terminal).terminal.local_child_pid() }
+            .and_then(|pid| i32::try_from(pid).ok())
+            .filter(|pid| *pid > 0);
+        unsafe { *out_pid = pid.unwrap_or(0) };
+        if pid.is_some() {
+            TermyFfiStatus::Ok
+        } else {
+            TermyFfiStatus::NotFound
+        }
+    })
+}
+
+/// Writes a mouse motion or drag report. Motion may fill only half of the
+/// input backlog (see `Terminal::write_mouse_motion`), so a program that
+/// stops reading while the pointer moves cannot starve the keys typed next.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_write_mouse_motion(
+    terminal: *mut TermyFfiTerminal,
+    bytes_ptr: *const u8,
+    bytes_len: usize,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        if bytes_len == 0 {
+            return TermyFfiStatus::Ok;
+        }
+        if bytes_ptr.is_null() {
+            return TermyFfiStatus::Null;
+        }
+
+        let bytes = unsafe { slice::from_raw_parts(bytes_ptr, bytes_len) };
+        unsafe {
+            (*terminal).terminal.write_mouse_motion(bytes.to_vec());
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
 /// Advance a display-only terminal's grid with output bytes (e.g. tmux
 /// `%output`), without sending input to a PTY.
 #[unsafe(no_mangle)]
@@ -3644,6 +3716,74 @@ pub unsafe extern "C" fn termy_terminal_take_frame_update(
         unsafe {
             *out_update = ffi_frame_update_from_update(update);
         }
+        TermyFfiStatus::Ok
+    })
+}
+
+/// Like `termy_terminal_take_frame_update`, for a host that keeps the frame
+/// it shows: output that scrolled comes back as `out_scrolls`, to apply in
+/// order to that frame before the update's spans patch it, instead of as
+/// damage on every row it moved. Scrolls only accompany partial damage, and
+/// none come when they would not fit the viewport. Free the scrolls with
+/// `termy_viewport_scrolls_free` and the update as usual.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_take_frame_update_with_scrolls(
+    terminal: *mut TermyFfiTerminal,
+    force_full: bool,
+    out_update: *mut TermyFfiFrameUpdate,
+    out_scrolls: *mut TermyFfiViewportScrollBatch,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_update.is_null() || out_scrolls.is_null() {
+            return TermyFfiStatus::Null;
+        }
+
+        let (update, scrolls) =
+            unsafe { (*terminal).terminal.frame_update_with_scrolls(force_full) };
+        let scrolls = scrolls
+            .into_iter()
+            .map(|scroll| TermyFfiViewportScroll {
+                top: scroll.top,
+                bottom: scroll.bottom,
+                count: scroll.count,
+                direction: match scroll.direction {
+                    crate::TerminalViewportScrollDirection::Up => 1,
+                    crate::TerminalViewportScrollDirection::Down => 2,
+                },
+            })
+            .collect::<Vec<_>>();
+        let (scrolls_ptr, scrolls_len, scrolls_capacity) = leak_vec(scrolls);
+        unsafe {
+            *out_update = ffi_frame_update_from_update(update);
+            *out_scrolls = TermyFfiViewportScrollBatch {
+                scrolls_ptr,
+                scrolls_len,
+                scrolls_capacity,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_viewport_scrolls_free(
+    scrolls: *mut TermyFfiViewportScrollBatch,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if scrolls.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        let scrolls = unsafe { &mut *scrolls };
+        if !scrolls.scrolls_ptr.is_null() {
+            unsafe {
+                drop(Vec::from_raw_parts(
+                    scrolls.scrolls_ptr,
+                    scrolls.scrolls_len,
+                    scrolls.scrolls_capacity,
+                ));
+            }
+        }
+        *scrolls = TermyFfiViewportScrollBatch::default();
         TermyFfiStatus::Ok
     })
 }
@@ -4295,6 +4435,81 @@ pub unsafe extern "C" fn termy_terminal_search_with_options(
                 matches_capacity,
             };
         }
+        TermyFfiStatus::Ok
+    })
+}
+
+/// A search that may run on any thread; see `TerminalSearcher`.
+pub struct TermyFfiSearcher {
+    searcher: crate::TerminalSearcher,
+}
+
+/// Makes a search handle for `terminal`. This is a serialized terminal call;
+/// the handle's searches may then run on any thread, alongside any other call
+/// on the terminal, and after it is freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_terminal_searcher_new(
+    terminal: *mut TermyFfiTerminal,
+    out_searcher: *mut *mut TermyFfiSearcher,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if terminal.is_null() || out_searcher.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        let searcher = unsafe { (*terminal).terminal.searcher() };
+        unsafe { *out_searcher = Box::into_raw(Box::new(TermyFfiSearcher { searcher })) };
+        TermyFfiStatus::Ok
+    })
+}
+
+/// Searches like `termy_terminal_search_with_options`, from any thread. One
+/// handle may run several searches at once.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_searcher_search(
+    searcher: *const TermyFfiSearcher,
+    query_ptr: *const u8,
+    query_len: usize,
+    options: TermyFfiSearchOptions,
+    out_batch: *mut TermyFfiSearchBatch,
+) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if searcher.is_null() || out_batch.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        let query = match unsafe { contents_utf8(query_ptr, query_len) } {
+            Ok(query) => query,
+            Err(status) => return status,
+        };
+        let matches = unsafe { &(*searcher).searcher }
+            .search(
+                query,
+                TermySearchOptions {
+                    case_sensitive: options.case_sensitive,
+                    regex: options.regex,
+                },
+            )
+            .into_iter()
+            .map(ffi_search_match_from_match)
+            .collect::<Vec<_>>();
+        let (matches_ptr, matches_len, matches_capacity) = leak_vec(matches);
+        unsafe {
+            *out_batch = TermyFfiSearchBatch {
+                matches_ptr,
+                matches_len,
+                matches_capacity,
+            };
+        }
+        TermyFfiStatus::Ok
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn termy_searcher_free(searcher: *mut TermyFfiSearcher) -> TermyFfiStatus {
+    ffi_status_guard(|| {
+        if searcher.is_null() {
+            return TermyFfiStatus::Null;
+        }
+        drop(unsafe { Box::from_raw(searcher) });
         TermyFfiStatus::Ok
     })
 }
@@ -5303,6 +5518,444 @@ mod tests {
         );
         assert!(!woke);
 
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    /// The frame a host keeps, patched with updates that replay scrolls.
+    struct ScrollingReplica {
+        cols: usize,
+        cells: Vec<TermyFfiCell>,
+    }
+
+    impl ScrollingReplica {
+        /// Applies one update; returns its scrolls and the rows it patched.
+        fn update(
+            &mut self,
+            terminal: *mut TermyFfiTerminal,
+        ) -> (Vec<TermyFfiViewportScroll>, Vec<usize>) {
+            let mut update = TermyFfiFrameUpdate::default();
+            let mut batch = TermyFfiViewportScrollBatch::default();
+            assert_eq!(
+                unsafe {
+                    termy_terminal_take_frame_update_with_scrolls(
+                        terminal,
+                        self.cells.is_empty(),
+                        &mut update,
+                        &mut batch,
+                    )
+                },
+                TermyFfiStatus::Ok
+            );
+            let cells = unsafe { slice::from_raw_parts(update.cells_ptr, update.cells_len) };
+            let scrolls =
+                unsafe { slice::from_raw_parts(batch.scrolls_ptr, batch.scrolls_len) }.to_vec();
+            let mut rows = Vec::new();
+            match update.damage_kind {
+                1 => {
+                    assert!(scrolls.is_empty(), "full frames carry no scrolls");
+                    self.cols = usize::from(update.cols);
+                    self.cells = cells.to_vec();
+                    rows = (0..usize::from(update.rows)).collect();
+                }
+                2 => {
+                    for scroll in &scrolls {
+                        let region = &mut self.cells
+                            [scroll.top * self.cols..(scroll.bottom + 1) * self.cols];
+                        match scroll.direction {
+                            1 => region.rotate_left(scroll.count * self.cols),
+                            2 => region.rotate_right(scroll.count * self.cols),
+                            other => panic!("unknown direction {other}"),
+                        }
+                    }
+                    let spans =
+                        unsafe { slice::from_raw_parts(update.spans_ptr, update.spans_len) };
+                    let mut source = 0;
+                    for span in spans {
+                        let start = span.row * self.cols + span.left_col;
+                        let width = span.right_col - span.left_col + 1;
+                        self.cells[start..start + width]
+                            .copy_from_slice(&cells[source..source + width]);
+                        source += width;
+                        rows.push(span.row);
+                    }
+                }
+                _ => assert!(scrolls.is_empty()),
+            }
+            assert_eq!(
+                unsafe { termy_viewport_scrolls_free(&mut batch) },
+                TermyFfiStatus::Ok
+            );
+            assert_eq!(
+                unsafe { termy_frame_update_free(&mut update) },
+                TermyFfiStatus::Ok
+            );
+            rows.dedup();
+            (scrolls, rows)
+        }
+
+        fn matches_snapshot(&self, terminal: *mut TermyFfiTerminal) -> bool {
+            let mut frame = TermyFfiFrame::default();
+            assert_eq!(
+                unsafe { termy_terminal_snapshot(terminal, &mut frame) },
+                TermyFfiStatus::Ok
+            );
+            let same =
+                unsafe { slice::from_raw_parts(frame.cells_ptr, frame.cells_len) } == self.cells;
+            assert_eq!(unsafe { termy_frame_free(&mut frame) }, TermyFfiStatus::Ok);
+            same
+        }
+    }
+
+    fn scrolling_display_terminal(cols: u16, rows: u16) -> *mut TermyFfiTerminal {
+        let size = TermyFfiSize {
+            cols,
+            rows,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let mut terminal = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_display_terminal_new(size, &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+        terminal
+    }
+
+    fn feed(terminal: *mut TermyFfiTerminal, output: &[u8]) {
+        assert_eq!(
+            unsafe { termy_terminal_feed_output(terminal, output.as_ptr(), output.len()) },
+            TermyFfiStatus::Ok
+        );
+    }
+
+    #[test]
+    fn scrolled_output_sends_the_scroll_and_only_the_new_rows() {
+        let terminal = scrolling_display_terminal(10, 5);
+        let mut replica = ScrollingReplica {
+            cols: 0,
+            cells: Vec::new(),
+        };
+        feed(terminal, b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
+        replica.update(terminal);
+        feed(terminal, b"\r\nsix");
+        let (scrolls, rows) = replica.update(terminal);
+        assert_eq!(
+            scrolls,
+            [TermyFfiViewportScroll {
+                top: 0,
+                bottom: 4,
+                count: 1,
+                direction: 1,
+            }]
+        );
+        // The new bottom row, and the cursor's old row once it moved up.
+        assert!(rows.iter().all(|row| *row >= 3), "patched rows {rows:?}");
+        assert!(rows.contains(&4));
+        assert!(replica.matches_snapshot(terminal));
+
+        // The old path still reports the moved rows as damage instead.
+        feed(terminal, b"\r\nseven");
+        let mut update = TermyFfiFrameUpdate::default();
+        assert_eq!(
+            unsafe { termy_terminal_take_frame_update(terminal, false, &mut update) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(update.damage_kind, 2);
+        assert_eq!(update.spans_len, 5);
+        assert_eq!(
+            unsafe { termy_frame_update_free(&mut update) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn replayed_scrolls_keep_the_frame_equal_to_a_snapshot() {
+        let terminal = scrolling_display_terminal(12, 6);
+        let mut replica = ScrollingReplica {
+            cols: 0,
+            cells: Vec::new(),
+        };
+        replica.update(terminal);
+        // Lines, colors, wide text, scroll regions, scrolls both ways,
+        // inserted and deleted lines, erases and the alternate screen.
+        let steps: [&[u8]; 14] = [
+            b"a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh",
+            b"\x1b[31mred\x1b[0m\r\n\xe7\x95\x8c\xe7\x95\x8c\r\nx",
+            b"\x1b[2;5r\x1b[5;1Hin\r\nregion\r\nmore",
+            b"\x1b[2S",
+            b"\x1b[1T",
+            b"\x1b[3;1H\x1b[2L",
+            b"\x1b[2;1H\x1b[1M",
+            b"\x1b[r\x1b[6;1H\r\nfull\r\nwidth\r\nagain",
+            b"\x1b[?1049h\x1b[Halt\r\nscreen",
+            b"\r\n\r\n\r\n\r\n\r\n\r\nscrolled",
+            b"\x1b[?1049l",
+            b"\x1b[3;1H\x1b[J\r\nafter\r\nerase",
+            b"\x1b[4;6r\x1b[6;1H\x1b[44mblue\r\n\r\n\x1b[0m",
+            b"\x1b[r\r\n1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7",
+        ];
+        let mut scrolled = 0;
+        for (index, step) in steps.iter().enumerate() {
+            feed(terminal, step);
+            let (scrolls, _) = replica.update(terminal);
+            scrolled += scrolls.len();
+            assert!(replica.matches_snapshot(terminal), "step {index} diverged");
+        }
+        assert!(scrolled >= 4, "only {scrolled} scrolls replayed");
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    struct SendSearcher(*mut TermyFfiSearcher);
+    // SAFETY: a searcher may be used from any thread; see its docs.
+    unsafe impl Send for SendSearcher {}
+
+    #[test]
+    fn searchers_run_on_other_threads_while_the_terminal_is_fed_and_read() {
+        let terminal = scrolling_display_terminal(40, 10);
+        assert_eq!(
+            unsafe { termy_terminal_set_scrollback_history(terminal, 4_000) },
+            TermyFfiStatus::Ok
+        );
+        let history: Vec<u8> = (0..3000)
+            .flat_map(|line| format!("needle {line}\r\n").into_bytes())
+            .collect();
+        feed(terminal, &history);
+        let mut searcher = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_terminal_searcher_new(terminal, &mut searcher) },
+            TermyFfiStatus::Ok
+        );
+        let handle = SendSearcher(searcher);
+        let worker = std::thread::spawn(move || {
+            let handle = handle;
+            let mut counts = Vec::new();
+            for _ in 0..20 {
+                let query = b"needle";
+                let mut batch = TermyFfiSearchBatch::default();
+                assert_eq!(
+                    unsafe {
+                        termy_searcher_search(
+                            handle.0,
+                            query.as_ptr(),
+                            query.len(),
+                            TermyFfiSearchOptions::default(),
+                            &mut batch,
+                        )
+                    },
+                    TermyFfiStatus::Ok
+                );
+                counts.push(batch.matches_len);
+                assert_eq!(
+                    unsafe { termy_search_batch_free(&mut batch) },
+                    TermyFfiStatus::Ok
+                );
+            }
+            counts
+        });
+        // Meanwhile output streams and frames are taken on this thread.
+        for line in 0..2000 {
+            feed(terminal, format!("other {line}\r\n").as_bytes());
+            let mut update = TermyFfiFrameUpdate::default();
+            assert_eq!(
+                unsafe { termy_terminal_take_frame_update(terminal, false, &mut update) },
+                TermyFfiStatus::Ok
+            );
+            assert_eq!(
+                unsafe { termy_frame_update_free(&mut update) },
+                TermyFfiStatus::Ok
+            );
+        }
+        let counts = worker.join().expect("searches finish");
+        // Each search finds the needles still in history; output only pushes
+        // them out, never adds them.
+        assert!(counts[0] > 0, "{counts:?}");
+        assert!(counts.iter().all(|count| *count <= 3000), "{counts:?}");
+        // The handle outlives its terminal.
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+        let query = b"other 1999";
+        let mut batch = TermyFfiSearchBatch::default();
+        assert_eq!(
+            unsafe {
+                termy_searcher_search(
+                    searcher,
+                    query.as_ptr(),
+                    query.len(),
+                    TermyFfiSearchOptions::default(),
+                    &mut batch,
+                )
+            },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(batch.matches_len, 1);
+        assert_eq!(
+            unsafe { termy_search_batch_free(&mut batch) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(unsafe { termy_searcher_free(searcher) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn chunked_searches_number_lines_as_when_they_began() {
+        // More lines than one chunk, so the copy releases the lock between chunks.
+        let terminal = scrolling_display_terminal(20, 5);
+        assert_eq!(
+            unsafe { termy_terminal_set_scrollback_history(terminal, 10_000) },
+            TermyFfiStatus::Ok
+        );
+        let output: Vec<u8> = (0..5000)
+            .flat_map(|line| format!("row {line}\r\n").into_bytes())
+            .collect();
+        feed(terminal, &output);
+        let query = b"row 4321";
+        let mut direct = TermyFfiSearchBatch::default();
+        assert_eq!(
+            unsafe {
+                termy_terminal_search_with_options(
+                    terminal,
+                    query.as_ptr(),
+                    query.len(),
+                    TermyFfiSearchOptions::default(),
+                    &mut direct,
+                )
+            },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(direct.matches_len, 1);
+        let mut searcher = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_terminal_searcher_new(terminal, &mut searcher) },
+            TermyFfiStatus::Ok
+        );
+        let mut batch = TermyFfiSearchBatch::default();
+        assert_eq!(
+            unsafe {
+                termy_searcher_search(
+                    searcher,
+                    query.as_ptr(),
+                    query.len(),
+                    TermyFfiSearchOptions::default(),
+                    &mut batch,
+                )
+            },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(batch.matches_len, 1);
+        assert_eq!(unsafe { (*batch.matches_ptr).row }, unsafe {
+            (*direct.matches_ptr).row
+        });
+        assert_eq!(
+            unsafe { termy_search_batch_free(&mut batch) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { termy_search_batch_free(&mut direct) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(unsafe { termy_searcher_free(searcher) }, TermyFfiStatus::Ok);
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_pid_is_the_ptys_program_and_none_for_display_terminals() {
+        let display = scrolling_display_terminal(10, 3);
+        let mut pid = -1;
+        assert_eq!(
+            unsafe { termy_terminal_child_pid(display, &mut pid) },
+            TermyFfiStatus::NotFound
+        );
+        assert_eq!(pid, 0);
+        assert_eq!(
+            unsafe { termy_terminal_child_pid(display, ptr::null_mut()) },
+            TermyFfiStatus::Null
+        );
+        assert_eq!(unsafe { termy_terminal_free(display) }, TermyFfiStatus::Ok);
+
+        let size = TermyFfiSize {
+            cols: 24,
+            rows: 6,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        let command: &[u8] = b"sleep 30";
+        let mut terminal = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_terminal_new(size, command.as_ptr(), command.len(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { termy_terminal_child_pid(terminal, &mut pid) },
+            TermyFfiStatus::Ok
+        );
+        assert!(pid > 0);
+        // It is this process's child.
+        let parent = std::process::Command::new("ps")
+            .args(["-o", "ppid=", "-p", &pid.to_string()])
+            .output()
+            .expect("ps runs");
+        assert_eq!(
+            String::from_utf8_lossy(&parent.stdout).trim(),
+            std::process::id().to_string()
+        );
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mouse_motion_writes_leave_room_for_keys_when_the_program_stops_reading() {
+        let size = TermyFfiSize {
+            cols: 24,
+            rows: 6,
+            cell_width: 9.0,
+            cell_height: 18.0,
+        };
+        // `sleep` never reads its terminal, so input piles up in the backlog.
+        let command: &[u8] = b"sleep 30";
+        let mut terminal = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_terminal_new(size, command.as_ptr(), command.len(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { termy_terminal_write_mouse_motion(ptr::null_mut(), ptr::null(), 0) },
+            TermyFfiStatus::Null
+        );
+        assert_eq!(
+            unsafe { termy_terminal_write_mouse_motion(terminal, ptr::null(), 0) },
+            TermyFfiStatus::Ok
+        );
+        // More motion reports than the whole backlog holds entries.
+        let motion = b"\x1b[<35;10;5M";
+        for _ in 0..6_000 {
+            assert_eq!(
+                unsafe {
+                    termy_terminal_write_mouse_motion(terminal, motion.as_ptr(), motion.len())
+                },
+                TermyFfiStatus::Ok
+            );
+        }
+        let key = b"q";
+        for _ in 0..100 {
+            assert_eq!(
+                unsafe { termy_terminal_write(terminal, key.as_ptr(), key.len()) },
+                TermyFfiStatus::Ok
+            );
+        }
+        let mut batch = TermyFfiEventBatch::default();
+        assert_eq!(
+            unsafe { termy_terminal_drain_events(terminal, &mut batch) },
+            TermyFfiStatus::Ok
+        );
+        let events = unsafe { slice::from_raw_parts(batch.events_ptr, batch.events_len) };
+        assert!(
+            events.iter().all(|event| event.kind != 14),
+            "keys after a motion flood were dropped"
+        );
+        assert_eq!(
+            unsafe { termy_event_batch_free(&mut batch) },
+            TermyFfiStatus::Ok
+        );
         assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
     }
 

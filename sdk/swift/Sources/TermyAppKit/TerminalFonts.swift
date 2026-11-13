@@ -165,11 +165,20 @@ final class TerminalFonts {
     /// Resolves a scalar exactly as the native terminal does, including installed
     /// Nerd Font symbols and color emoji. Font files remain on this Mac.
     @MainActor public enum TerminalGlyphFont {
+        /// Fonts and their glyph lookups by family and size, so resolving
+        /// every glyph of a frame doesn't load the fonts again each time.
+        private static var fonts: [String: TerminalFonts] = [:]
+
         public static func resolve(
             codepoint: UInt32, family: String, size: Float,
             bold: Bool = false, italic: Bool = false
         ) -> CTFont? {
-            let fonts = TerminalFonts(fontFamily: family, fontSize: size)
+            let key = "\(family)|\(size)"
+            let fonts = Self.fonts[key] ?? TerminalFonts(fontFamily: family, fontSize: size)
+            if Self.fonts[key] == nil {
+                if Self.fonts.count >= 8 { Self.fonts.removeAll() }
+                Self.fonts[key] = fonts
+            }
             guard let glyph = fonts.glyph(for: codepoint, style: .init(bold: bold, italic: italic)) else { return nil }
             return fonts.font(at: glyph.fontIndex)
         }

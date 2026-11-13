@@ -964,3 +964,91 @@ fn frame_updates_are_built_from_mirrored_frames_without_asking_the_host() {
         "a frame update asked the host"
     );
 }
+
+/// A view that replays scrolls gets them from the host's frame deltas, plus
+/// damage on only the rows they exposed, and its frame still matches.
+#[test]
+fn mirrored_frame_updates_carry_the_scrolls_of_their_deltas() {
+    let host = FakeHost::new();
+    let (view, _rpc, _input, mut subscription) = host.attach();
+    let transport: Arc<dyn RemoteTransport> = view.clone();
+    let mut terminal = Terminal::from_remote(transport);
+    let colors = TerminalQueryColors::default();
+    terminal.seed_remote_query_colors(colors);
+    let mut source = Terminal::new_display(size(20, 6), None);
+    source.set_query_colors(colors);
+
+    let mut frames = crate::remote::frame::FrameEncoder::default();
+    let mut images = graphics::GraphicsEncoder::default();
+    let mut shown: Vec<TermyCell> = Vec::new();
+    let mut scrolled_rows = 0;
+    let outputs: Vec<Vec<u8>> = vec![
+        b"one\r\ntwo\r\nthree".to_vec(),
+        (0..10)
+            .flat_map(|line| format!("\r\nline {line}").into_bytes())
+            .collect(),
+        b"\r\nnext".to_vec(),
+        b"\r\na\r\nb".to_vec(),
+        b"\x1b[2;4r\x1b[4;1H\r\nregion\x1b[r".to_vec(),
+    ];
+    for output in outputs {
+        source.feed_output(&output);
+        let state = RemoteState::capture(&source);
+        let generation = state.render.metadata.generation;
+        let (_, placements) = images.encode(&[]);
+        write_message(
+            &mut subscription,
+            &Update::Frame(Box::new(frames.encode(&state)), placements),
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while view.state().render.metadata.generation != generation {
+            assert!(Instant::now() < deadline, "the frame never arrived");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let (update, scrolls) = terminal.frame_update_with_scrolls(shown.is_empty());
+        let cols = usize::from(update.cols);
+        match &update.damage {
+            TerminalDamageSnapshot::Full => {
+                assert!(scrolls.is_empty());
+                shown = update.cells.clone();
+            }
+            TerminalDamageSnapshot::Partial(spans) => {
+                for scroll in &scrolls {
+                    let region = &mut shown[scroll.top * cols..(scroll.bottom + 1) * cols];
+                    match scroll.direction {
+                        TerminalViewportScrollDirection::Up => {
+                            region.rotate_left(scroll.count * cols);
+                        }
+                        TerminalViewportScrollDirection::Down => {
+                            region.rotate_right(scroll.count * cols);
+                        }
+                    }
+                    scrolled_rows += scroll.count;
+                }
+                let rows: std::collections::BTreeSet<_> =
+                    spans.iter().map(|span| span.row).collect();
+                if !scrolls.is_empty() {
+                    assert!(
+                        rows.len() < usize::from(update.rows),
+                        "every row was damaged"
+                    );
+                }
+                let mut cells = update.cells.iter();
+                for span in spans {
+                    for col in span.left_col..=span.right_col {
+                        shown[span.row * cols + col] = *cells.next().unwrap();
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            shown,
+            source.frame_update(true).cells,
+            "after {:?}",
+            String::from_utf8_lossy(&output)
+        );
+    }
+    assert!(scrolled_rows > 0, "no update carried a scroll");
+}

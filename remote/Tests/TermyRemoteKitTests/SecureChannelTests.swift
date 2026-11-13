@@ -68,6 +68,18 @@ import Testing
         #expect(try MessageCodec.decode(HostMessage.self, from: data) == .frame(frame))
     }
 
+    @Test func inflationStopsAtTheLimit() throws {
+        // 100 MB of spaces deflates to about 100 KB.
+        let bomb = try (Data(repeating: 0x20, count: 100 * 1024 * 1024) as NSData).compressed(using: .zlib) as Data
+        #expect(bomb.count < 1024 * 1024)
+        #expect(throws: ChannelError.self) { try MessageCodec.decode(HostMessage.self, from: Data([1]) + bomb) }
+        // Under the limit it inflates in full, and garbage is refused.
+        let small = try (Data(repeating: 0x41, count: 300_000) as NSData).compressed(using: .zlib) as Data
+        #expect(try MessageCodec.inflate(small, limit: 300_000) == Data(repeating: 0x41, count: 300_000))
+        #expect(throws: ChannelError.self) { try MessageCodec.inflate(small, limit: 299_999) }
+        #expect(throws: ChannelError.self) { try MessageCodec.inflate(Data([1, 2, 3, 4]), limit: 1000) }
+    }
+
     @Test func wireRoundTrips() {
         let peer = UUID()
         let frame = RelayWire.encode(peer: peer, packet: Data([3, 4, 5]))

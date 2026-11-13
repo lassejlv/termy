@@ -1,4 +1,5 @@
 import Testing
+import CTermy
 @testable import Termy
 
 @Suite("Frames")
@@ -12,6 +13,51 @@ struct FrameTests {
         #expect(frame.text(row: 0) == "hello world")
         #expect(frame.cursor.row == 1)
         #expect(frame.cursor.col == 0)
+    }
+
+    @Test func storesReplayingScrollsMatchASnapshot() throws {
+        let terminal = try Terminal.display(size: TerminalSize(cols: 12, rows: 6))
+        let store = FrameStore()
+        try terminal.updateFrame(store, replayingScrolls: true)
+        let steps = [
+            "a\r\nb\r\nc\r\nd\r\ne\r\nf\r\ng\r\nh",
+            "\u{1b}[31mred\u{1b}[0m\r\n\u{754c}\u{754c}\r\nx",
+            "\u{1b}[2;5r\u{1b}[5;1Hin\r\nregion\r\nmore",
+            "\u{1b}[2S", "\u{1b}[1T", "\u{1b}[3;1H\u{1b}[2L",
+            "\u{1b}[r\u{1b}[6;1H\r\nfull\r\nwidth",
+            "\u{1b}[?1049h\u{1b}[Halt\r\n\r\n\r\n\r\n\r\n\r\nscrolled\u{1b}[?1049l",
+            "\r\n1\r\n2\r\n3",
+        ]
+        var scrolls = 0
+        for step in steps {
+            try terminal.feed(step)
+            let change = try terminal.updateFrame(store, replayingScrolls: true)
+            scrolls += change.scrolls.count
+            // Plain output scrolling three lines sends the three new rows, and
+            // the cells the cursor left where its old row moved to.
+            if step == steps.last {
+                #expect(change.scrolls == [ViewportScroll(top: 0, bottom: 5, count: 3, direction: .up)])
+                if case .partial(let spans) = change.damage { #expect(Set(spans.map(\.row)).isSubset(of: [2, 3, 4, 5])) }
+            }
+            let snapshot = try terminal.snapshot()
+            #expect(store.frame.cells == snapshot.cells, "after \(step.debugDescription)")
+        }
+        #expect(scrolls >= 4)
+    }
+
+    @Test func scrollsWithoutDamageStillMoveRows() throws {
+        let terminal = try Terminal.display(size: TerminalSize(cols: 4, rows: 3))
+        try terminal.feed("a\r\nb\r\nc")
+        let store = FrameStore()
+        try terminal.updateFrame(store, forceFull: true)
+        // An update with no cells, as one whose exposed row needs no patch.
+        var update = TermyFfiFrameUpdate()
+        update.cols = 4
+        update.rows = 3
+        update.cursor = TermyFfiCursor(visible: true, col: 0, row: 0, style: 2)
+        let change = try store.apply(update, scrolls: [ViewportScroll(top: 0, bottom: 2, count: 1, direction: .up)])
+        #expect(change.scrolls.count == 1 && change.contentChanged)
+        #expect(store.text(row: 0) == "b" && store.text(row: 1) == "c")
     }
 
     @Test func cellsCarryResolvedStyles() throws {

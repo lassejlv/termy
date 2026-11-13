@@ -18,6 +18,11 @@ final class MetalTerminalRenderer {
         var backgrounds: [MetalQuad] = []
         /// Glyphs, decorations and special-glyph geometry.
         var foreground: [MetalQuad] = []
+
+        mutating func shift(by pixels: Float) {
+            for index in backgrounds.indices { backgrounds[index].rect.y += pixels }
+            for index in foreground.indices { foreground[index].rect.y += pixels }
+        }
     }
 
     private struct Batch {
@@ -58,6 +63,8 @@ final class MetalTerminalRenderer {
     private var fonts = TerminalFonts(fontFamily: "", fontSize: 13)
     private var baselineOffset: CGFloat = 0
     private var rows: [RowQuads?] = []
+    /// Rows moved by `replay` instead of rebuilt, for tests.
+    private(set) var movedRows = 0
     private var rowCols = 0
     private var atlasGeneration = 0
     /// Image textures and the frame that last drew each. Textures no frame
@@ -83,7 +90,12 @@ final class MetalTerminalRenderer {
         self.atlas = atlas
     }
 
+    /// Pipelines by device. Compiling the shader source takes milliseconds on
+    /// the main thread, so every view on a GPU shares one.
+    private static var pipelines: [ObjectIdentifier: MTLRenderPipelineState] = [:]
+
     private static func makePipeline(device: MTLDevice) throws -> MTLRenderPipelineState {
+        if let pipeline = pipelines[ObjectIdentifier(device)] { return pipeline }
         let library = try device.makeLibrary(source: metalShaderSource, options: nil)
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.label = "Termy quads"
@@ -97,7 +109,9 @@ final class MetalTerminalRenderer {
         attachment.sourceAlphaBlendFactor = .one
         attachment.destinationRGBBlendFactor = .oneMinusSourceAlpha
         attachment.destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        return try device.makeRenderPipelineState(descriptor: descriptor)
+        let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+        pipelines[ObjectIdentifier(device)] = pipeline
+        return pipeline
     }
 
     /// Prepares a layer to receive frames.
@@ -119,6 +133,36 @@ final class MetalTerminalRenderer {
 
     func invalidateAll() {
         rows = Array(repeating: nil, count: rows.count)
+    }
+
+    /// Moves cached rows the way output scrolled them, shifting their quads
+    /// by whole rows; rows a scroll exposes are left to be built. Quads land
+    /// on the pixels a rebuild would give only when the shift is a whole
+    /// number of pixels, so a scroll by any other distance has the rows of
+    /// its region rebuilt instead.
+    func replay(_ scrolls: [ViewportScroll], rowCount: Int) {
+        let step = Float(cellHeight * scale)
+        guard rows.count == rowCount, step > 0,
+              scrolls.allSatisfy({ $0.top >= 0 && $0.top <= $0.bottom && $0.bottom < rows.count
+                  && $0.count > 0 && $0.count <= $0.bottom - $0.top + 1 })
+        else { return invalidateAll() }
+        for scroll in scrolls {
+            let region = scroll.top...scroll.bottom
+            let distance = step * Float(scroll.count)
+            guard distance == distance.rounded() else {
+                rows.replaceSubrange(region, with: Array(repeating: nil, count: region.count))
+                continue
+            }
+            let offset = scroll.direction == .up ? -distance : distance
+            let kept = region.count - scroll.count
+            var moved = Array(rows[region])
+            moved = scroll.direction == .up
+                ? Array(moved[scroll.count...]) + Array(repeating: nil, count: scroll.count)
+                : Array(repeating: nil, count: scroll.count) + Array(moved[..<kept])
+            for index in moved.indices { moved[index]?.shift(by: offset) }
+            movedRows += moved.lazy.filter { $0 != nil }.count
+            rows.replaceSubrange(region, with: moved)
+        }
     }
 
     private func prepare(_ config: RenderConfig, scale: CGFloat, frame: FrameStore) {
@@ -291,10 +335,12 @@ final class MetalTerminalRenderer {
         imageFrame &+= 1
         var failed: Set<KittyImageKey> = []
         appendImages(state, layer: .belowBackgrounds, to: &frame, failed: &failed)
-        frame.append(rows.flatMap { $0?.backgrounds ?? [] }, texture: texture)
+        // Row by row: batches of one texture merge, so this copies each quad
+        // once instead of gathering a whole-screen array first.
+        for row in rows { frame.append(row?.backgrounds ?? [], texture: texture) }
         frame.append(selectionQuads(state), texture: texture)
         appendImages(state, layer: .belowText, to: &frame, failed: &failed)
-        frame.append(rows.flatMap { $0?.foreground ?? [] }, texture: texture)
+        for row in rows { frame.append(row?.foreground ?? [], texture: texture) }
         appendImages(state, layer: .aboveText, to: &frame, failed: &failed)
         evictIdleImageTextures()
         failedImages = failed

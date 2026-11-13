@@ -64,3 +64,41 @@ public struct TerminalLink: Hashable, Sendable {
         position >= start && position <= end
     }
 }
+
+/// Searches a terminal's history and screen from any thread, while the
+/// terminal is driven from its own. It holds its own reference to the engine
+/// (or, for a session-host pane, its own connection to the host), so it stays
+/// usable after the terminal goes away. Make one with `Terminal.searcher()`.
+public final class TerminalSearcher: @unchecked Sendable {
+    // libtermy allows any number of concurrent searches on one handle.
+    private let handle: OpaquePointer
+
+    init(handle: OpaquePointer) {
+        self.handle = handle
+    }
+
+    deinit {
+        termy_searcher_free(handle)
+    }
+
+    /// As `Terminal.search(_:options:)`, on the calling thread. A long
+    /// history is copied in chunks, so output keeps parsing meanwhile.
+    public func search(_ query: String, options: SearchOptions = SearchOptions()) throws(TermyError) -> [SearchMatch] {
+        var batch = TermyFfiSearchBatch()
+        let ffiOptions = TermyFfiSearchOptions(case_sensitive: options.caseSensitive, regex: options.regex)
+        let status = withUTF8(query) { termy_searcher_search(handle, $0, $1, ffiOptions, &batch) }
+        defer { termy_search_batch_free(&batch) }
+        try check(status, "termy_searcher_search")
+        return UnsafeBufferPointer(start: batch.matches_ptr, count: batch.matches_len).map(SearchMatch.init)
+    }
+}
+
+extension Terminal {
+    /// A searcher to run on another thread or task; see `TerminalSearcher`.
+    public func searcher() throws(TermyError) -> TerminalSearcher {
+        var handle: OpaquePointer?
+        try check(termy_terminal_searcher_new(self.handle, &handle), "termy_terminal_searcher_new")
+        guard let handle else { throw TermyError(code: .nullPointer, operation: "termy_terminal_searcher_new") }
+        return TerminalSearcher(handle: handle)
+    }
+}

@@ -9,8 +9,18 @@ public struct FrameChange: Hashable, Sendable {
     public var cursor: TerminalCursor
     /// The scroll position or history length changed.
     public var viewportChanged: Bool
+    /// Some cell now holds something else. Damage alone doesn't say so: the
+    /// engine also marks the cells a cursor left or entered.
+    public var cellsChanged = true
+    /// Scrolls replayed before `damage` patched the frame. Rows they moved
+    /// hold what the rows they came from held, and are not in `damage`.
+    /// Only set when the update was taken replaying scrolls.
+    public var scrolls: [ViewportScroll] = []
 
     public var cursorChanged: Bool { previousCursor != cursor }
+
+    /// Cells, the scroll position or history, or the grid size changed.
+    public var contentChanged: Bool { cellsChanged || resized || viewportChanged }
 
     /// True when anything visible may have changed.
     public var needsDisplay: Bool {
@@ -105,13 +115,14 @@ public final class FrameStore {
         ) { index in update.cells[index].ffi }
     }
 
-    /// Applies a C frame update without converting its cells.
-    func apply(_ update: TermyFfiFrameUpdate) throws(FrameStoreError) -> FrameChange {
+    /// Applies a C frame update without converting its cells, replaying
+    /// `scrolls` first.
+    func apply(_ update: TermyFfiFrameUpdate, scrolls: [ViewportScroll] = []) throws(FrameStoreError) -> FrameChange {
         let cells = UnsafeBufferPointer(start: update.cells_ptr, count: update.cells_len)
         return try apply(
             cols: Int(update.cols), rows: Int(update.rows), damage: FrameDamage(update),
             cellCount: cells.count, cursor: TerminalCursor(update.cursor),
-            displayOffset: update.display_offset, historySize: update.history_size
+            displayOffset: update.display_offset, historySize: update.history_size, scrolls: scrolls
         ) { index in cells[index] }
     }
 
@@ -131,22 +142,41 @@ public final class FrameStore {
         cursor newCursor: TerminalCursor,
         displayOffset newOffset: Int,
         historySize newHistory: Int,
+        scrolls: [ViewportScroll] = [],
         cell: (Int) -> TermyFfiCell
     ) throws(FrameStoreError) -> FrameChange {
         let resized = newCols != cols || newRows != rows
+        var cellsChanged = false
+        var replayed: [ViewportScroll] = []
         switch damage {
         case .full:
             let expected = newCols * newRows
             guard cellCount == expected else {
                 throw .cellCountMismatch(expected: expected, actual: cellCount)
             }
-            rawCells = (0..<cellCount).map(cell)
+            let cells = (0..<cellCount).map(cell)
+            cellsChanged = resized || !zip(cells, rawCells).allSatisfy(TermyFfiCell.same)
+            rawCells = cells
         case .partial(let spans):
             guard !isEmpty, !resized else { throw .needsFullFrame }
             let expected = spans.reduce(0) { $0 + $1.width }
             guard cellCount == expected else {
                 throw .cellCountMismatch(expected: expected, actual: cellCount)
             }
+            // Check every span before moving anything, so a bad update
+            // leaves the frame as it was for the full frame that recovers it.
+            for span in spans {
+                guard span.row >= 0, span.row < newRows, span.leftCol >= 0,
+                      span.leftCol <= span.rightCol, span.rightCol < newCols else {
+                    throw .spanOutOfBounds(span)
+                }
+            }
+            guard scrolls.allSatisfy({ $0.fits(rows: newRows) }) else { throw .needsFullFrame }
+            for scroll in scrolls {
+                rawCells.replay(scroll, width: newCols)
+            }
+            replayed = scrolls
+            if !scrolls.isEmpty { cellsChanged = true }
             var source = 0
             for span in spans {
                 guard span.row >= 0, span.row < newRows, span.leftCol >= 0,
@@ -155,12 +185,21 @@ public final class FrameStore {
                 }
                 let destination = span.row * newCols + span.leftCol
                 for offset in 0..<span.width {
-                    rawCells[destination + offset] = cell(source + offset)
+                    let new = cell(source + offset)
+                    if !cellsChanged, !TermyFfiCell.same(rawCells[destination + offset], new) { cellsChanged = true }
+                    rawCells[destination + offset] = new
                 }
                 source += span.width
             }
         case .none:
             guard !isEmpty, !resized else { throw .needsFullFrame }
+            // Scrolled rows that need no patch, such as blank ones.
+            guard scrolls.allSatisfy({ $0.fits(rows: newRows) }) else { throw .needsFullFrame }
+            for scroll in scrolls {
+                rawCells.replay(scroll, width: newCols)
+            }
+            replayed = scrolls
+            if !scrolls.isEmpty { cellsChanged = true }
         }
 
         let change = FrameChange(
@@ -168,7 +207,9 @@ public final class FrameStore {
             resized: resized,
             previousCursor: cursor,
             cursor: newCursor,
-            viewportChanged: newOffset != displayOffset || newHistory != historySize
+            viewportChanged: newOffset != displayOffset || newHistory != historySize,
+            cellsChanged: cellsChanged,
+            scrolls: replayed
         )
         cols = newCols
         rows = newRows
@@ -192,6 +233,19 @@ public struct GridPosition: Hashable, Comparable, Sendable {
 
     public static func < (lhs: GridPosition, rhs: GridPosition) -> Bool {
         (lhs.row, lhs.col) < (rhs.row, rhs.col)
+    }
+}
+
+extension TermyFfiCell {
+    /// Field by field: the C struct has padding, so its bytes can't be compared.
+    static func same(_ a: TermyFfiCell, _ b: TermyFfiCell) -> Bool {
+        a.codepoint == b.codepoint
+            && a.fg.r == b.fg.r && a.fg.g == b.fg.g && a.fg.b == b.fg.b && a.fg.a == b.fg.a
+            && a.bg.r == b.bg.r && a.bg.g == b.bg.g && a.bg.b == b.bg.b && a.bg.a == b.bg.a
+            && a.uses_terminal_default_bg == b.uses_terminal_default_bg && a.bold == b.bold
+            && a.render_text == b.render_text && a.wide_character_spacer == b.wide_character_spacer
+            && a.line_wrapped == b.line_wrapped && a.italic == b.italic && a.underline == b.underline
+            && a.strikethrough == b.strikethrough
     }
 }
 

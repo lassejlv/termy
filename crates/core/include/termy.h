@@ -122,6 +122,7 @@ typedef enum {
 typedef struct TermyFfiTerminal TermyFfiTerminal;
 typedef struct TermyFfiConfig TermyFfiConfig;
 typedef struct TermyFfiMultiplexer TermyFfiMultiplexer;
+typedef struct TermyFfiSearcher TermyFfiSearcher;
 
 typedef struct {
   uint16_t cols;
@@ -395,6 +396,22 @@ typedef struct {
   size_t spans_len;
   size_t spans_capacity;
 } TermyFfiFrameUpdate;
+
+/* One scroll of viewport rows top..=bottom (inclusive) by count rows:
+ * direction 1 moves content toward row 0, 2 away from it. Rows a scroll
+ * exposes are in the update's damage. */
+typedef struct {
+  size_t top;
+  size_t bottom;
+  size_t count;
+  uint32_t direction;
+} TermyFfiViewportScroll;
+
+typedef struct {
+  TermyFfiViewportScroll *scrolls_ptr;
+  size_t scrolls_len;
+  size_t scrolls_capacity;
+} TermyFfiViewportScrollBatch;
 
 typedef struct {
   size_t start_col;
@@ -709,6 +726,19 @@ TermyFfiStatus termy_terminal_write(
     TermyFfiTerminal *terminal,
     const uint8_t *bytes_ptr,
     size_t bytes_len);
+/* The process ID of the program a terminal started in its own PTY. Writes 0
+ * and returns TERMY_FFI_NOT_FOUND for a display terminal or a session-host
+ * pane, whose program the host runs. */
+TermyFfiStatus termy_terminal_child_pid(TermyFfiTerminal *terminal, int32_t *out_pid);
+/* Writes a mouse motion or drag report from the mouse encoder.
+ * Motion may fill only half of the input backlog, so a program that stops
+ * reading cannot starve later keys; reports that don't fit are dropped (the
+ * next carries the newer position), and a session host keeps only the newest
+ * one queued. (null, 0) is a no-op. */
+TermyFfiStatus termy_terminal_write_mouse_motion(
+    TermyFfiTerminal *terminal,
+    const uint8_t *bytes_ptr,
+    size_t bytes_len);
 TermyFfiStatus termy_terminal_feed_output(
     TermyFfiTerminal *terminal,
     const uint8_t *bytes_ptr,
@@ -816,6 +846,17 @@ TermyFfiStatus termy_terminal_take_frame_update(
     bool force_full,
     TermyFfiFrameUpdate *out_update);
 TermyFfiStatus termy_frame_update_free(TermyFfiFrameUpdate *update);
+/* Like taking a frame update, for a host that keeps the frame it shows:
+ * scrolled output comes back as out_scrolls, to apply in order to that frame
+ * before the update's spans patch it, instead of as damage on every row it
+ * moved. Scrolls only accompany partial damage. Free them with the scrolls
+ * free call. */
+TermyFfiStatus termy_terminal_take_frame_update_with_scrolls(
+    TermyFfiTerminal *terminal,
+    bool force_full,
+    TermyFfiFrameUpdate *out_update,
+    TermyFfiViewportScrollBatch *out_scrolls);
+TermyFfiStatus termy_viewport_scrolls_free(TermyFfiViewportScrollBatch *scrolls);
 /* Build a sparse special-glyph plan from a retained full row-major frame.
  * Pass no spans to plan the full frame, or inclusive dirty spans to plan only
  * changed cells. Entry cell_index values address the full frame. Rectangle and
@@ -910,6 +951,23 @@ TermyFfiStatus termy_terminal_search_with_options(
     TermyFfiSearchOptions options,
     TermyFfiSearchBatch *out_batch);
 TermyFfiStatus termy_search_batch_free(TermyFfiSearchBatch *batch);
+/* A search of a terminal's history and screen that may run on any thread,
+ * concurrently with every call on the terminal (unlike the calls above, which
+ * are serialized): it holds its own reference to the engine or, for a
+ * session-host pane, its own connection, and stays valid after the terminal
+ * is freed. Creating one is a serialized call on the terminal. A local
+ * terminal's text is copied in chunks with the engine lock released between
+ * them, so output keeps parsing. Free it with the searcher free call. */
+TermyFfiStatus termy_terminal_searcher_new(
+    TermyFfiTerminal *terminal,
+    TermyFfiSearcher **out_searcher);
+TermyFfiStatus termy_searcher_search(
+    const TermyFfiSearcher *searcher,
+    const uint8_t *query_ptr,
+    size_t query_len,
+    TermyFfiSearchOptions options,
+    TermyFfiSearchBatch *out_batch);
+TermyFfiStatus termy_searcher_free(TermyFfiSearcher *searcher);
 TermyFfiStatus termy_buffer_free(TermyFfiBytes bytes);
 
 /* Multiplexer: terminals whose programs live in a session host, so they

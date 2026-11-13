@@ -42,4 +42,22 @@ struct KeyMappingTests {
             keyCode: 8, characters: "\u{03}", charactersIgnoringModifiers: "c", modifierFlags: .control))
         #expect(try terminal.encode(keystroke) == Data([0x03]))
     }
+
+    @Test func keypadKeysKeepTheirIdentity() throws {
+        let one = try #require(KeyMapping.keystroke(
+            keyCode: 83, characters: "1", charactersIgnoringModifiers: "1", modifierFlags: .numericPad))
+        #expect(one == Keystroke(key: "kp_1", text: "1"))
+        let enter = try #require(KeyMapping.keystroke(
+            keyCode: 76, characters: "\u{03}", charactersIgnoringModifiers: "\u{03}", modifierFlags: .numericPad))
+        #expect(enter.key == "kp_enter")
+
+        let terminal = try Terminal.display(size: TerminalSize(cols: 80, rows: 24))
+        // Numeric keypad mode types what the main keys type.
+        #expect(try terminal.encode(one) == Data("1".utf8))
+        #expect(try terminal.encode(enter) == Data("\r".utf8))
+        // Application keypad mode (DECKPAM) sends the keypad's own codes.
+        try terminal.feed("\u{1b}=")
+        #expect(try terminal.encode(one) == Data("\u{1b}Oq".utf8))
+        #expect(try terminal.encode(enter) == Data("\u{1b}OM".utf8))
+    }
 }

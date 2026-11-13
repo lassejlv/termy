@@ -670,6 +670,10 @@ impl SessionClient {
             })?;
         Ok(Arc::new(ClientTerminal {
             id: id.to_owned(),
+            queries: Connection {
+                root: self.root.clone(),
+                stream: Mutex::new(None),
+            },
             rpc,
             host: Arc::clone(&self.connection),
             shared,
@@ -1287,6 +1291,9 @@ struct ClientState {
 struct ClientTerminal {
     id: String,
     rpc: Connection,
+    /// For slow queries from other threads (`RemoteTransport::request_query`),
+    /// connected on first use.
+    queries: Connection,
     host: Arc<Connection>,
     shared: Arc<ClientState>,
     input: Arc<InputQueue>,

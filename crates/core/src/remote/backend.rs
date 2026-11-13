@@ -507,19 +507,12 @@ impl RemoteBackend {
         query: &str,
         options: TermySearchOptions,
     ) -> Vec<TermySharedSearchMatch> {
-        let mut lines = std::collections::HashMap::new();
-        self.search_with_options(query, options)
-            .into_iter()
-            .map(|item| {
-                let line = lines.entry(item.row).or_insert_with(|| Arc::new(item.line));
-                TermySharedSearchMatch {
-                    row: item.row,
-                    start_col: item.start_col,
-                    end_col: item.end_col,
-                    line: Arc::clone(line),
-                }
-            })
-            .collect()
+        shared_matches(self.search_with_options(query, options))
+    }
+    /// The transport, for a search made from another thread
+    /// ([`search_from_any_thread`]).
+    pub(crate) fn transport(&self) -> Arc<dyn RemoteTransport> {
+        Arc::clone(&self.transport)
     }
     pub(crate) fn hyperlink_at(&self, row: usize, col: usize) -> Option<DetectedLink> {
         let state = self.transport.state();
@@ -601,6 +594,28 @@ impl RemoteBackend {
             let (state, update) = self.damage(force_full);
             return crate::runtime::legacy_frame_update(&state.render, update, colors);
         }
+        self.snapshot_update()
+    }
+
+    /// [`Self::frame_update`] with the frame deltas' scrolls kept for the
+    /// caller to replay, as a local terminal's.
+    pub(crate) fn frame_update_with_scrolls(
+        &self,
+        force_full: bool,
+    ) -> (TermyFrameUpdate, Vec<crate::TerminalViewportScroll>) {
+        if let Some(colors) = self.query_colors {
+            let (state, update) = self.damage(force_full);
+            return crate::runtime::legacy_frame_update_with_scrolls(
+                &state.render,
+                update,
+                colors,
+                true,
+            );
+        }
+        (self.snapshot_update(), Vec::new())
+    }
+
+    fn snapshot_update(&self) -> TermyFrameUpdate {
         let frame = self.snapshot();
         TermyFrameUpdate {
             cols: frame.cols,
@@ -642,4 +657,41 @@ fn visit_ranges(
         }
     }
     true
+}
+
+/// Matches with each line's text shared between the matches on it.
+fn shared_matches(matches: Vec<TermySearchMatch>) -> Vec<TermySharedSearchMatch> {
+    let mut lines = std::collections::HashMap::new();
+    matches
+        .into_iter()
+        .map(|item| {
+            let line = lines.entry(item.row).or_insert_with(|| Arc::new(item.line));
+            TermySharedSearchMatch {
+                row: item.row,
+                start_col: item.start_col,
+                end_col: item.end_col,
+                line: Arc::clone(line),
+            }
+        })
+        .collect()
+}
+
+/// A session-host pane's search, made on the transport's query connection,
+/// so it may run on any thread while the view is driven from another.
+pub(crate) fn search_from_any_thread(
+    transport: &dyn RemoteTransport,
+    query: &str,
+    options: TermySearchOptions,
+) -> Vec<TermySharedSearchMatch> {
+    match transport.request_query(RemoteCommand::Search {
+        query: query.to_owned(),
+        options,
+    }) {
+        Ok(RemoteReply::Search(matches)) => shared_matches(matches),
+        Ok(_) => Vec::new(),
+        Err(error) => {
+            log::error!("multiplexer search failed: {error}");
+            Vec::new()
+        }
+    }
 }

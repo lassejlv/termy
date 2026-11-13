@@ -28,6 +28,9 @@ pub const FLAG_WRAPPED: u16 = 1 << 10;
 pub const DAMAGE_PARTIAL: u32 = 0;
 pub const DAMAGE_FULL: u32 = 1;
 
+/// Frame buffer capacity, in cells, kept across calls whatever their size.
+const KEEP_CELLS: usize = 64 * 1024;
+
 /// One cell. Colors are raw: `0` the terminal default, `0x01000000 | n`
 /// palette entry `n`, `0x02RRGGBB` a direct color.
 #[repr(C)]
@@ -181,13 +184,31 @@ fn underline_code(underline: UnderlineStyle) -> u8 {
 }
 
 impl FrameBuffers {
-    fn clear(&mut self) {
+    /// Empty the buffers for a frame of at most `cells` cells. Capacity well
+    /// past that is released: one large `termy_engine_read_lines` (up to
+    /// 65,535 rows) would otherwise stay allocated for the handle's lifetime.
+    fn clear(&mut self, cells: usize) {
         self.cells.clear();
         self.graphemes.clear();
         self.hyperlinks.clear();
         self.links.clear();
         self.link_indices.clear();
         self.spans.clear();
+        // Small reads and ordinary frames keep their buffers, so alternating
+        // between them does not reallocate.
+        let keep = cells.saturating_mul(2).max(KEEP_CELLS);
+        if self.cells.capacity() > keep {
+            self.cells.shrink_to(cells);
+        }
+        // Clusters can carry many scalars per cell (combining marks).
+        if self.graphemes.capacity() > keep.saturating_mul(16) {
+            self.graphemes.shrink_to(cells);
+        }
+        if self.hyperlinks.capacity() > keep {
+            self.hyperlinks.shrink_to(0);
+            self.links.shrink_to(0);
+            self.link_indices.shrink_to(0);
+        }
     }
 
     fn link(&mut self, link: &Arc<Hyperlink>) -> u32 {
@@ -364,7 +385,7 @@ fn build_frame(handle: &mut TermyEngine, force_full: bool, out: &mut TermyEngine
         || (shown.display_offset != 0
             && !matches!(&damage, Damage::Partial(spans) if spans.is_empty()));
     buffers.shown = Some(shown);
-    buffers.clear();
+    buffers.clear(size.rows * size.cols);
     if full {
         for row in 0..size.rows {
             let line = engine.viewport_row(row);
@@ -441,24 +462,32 @@ pub unsafe extern "C" fn termy_engine_read_lines(
         let buffers = &mut handle.frame;
         // Reads don't consume damage, but the next frame must be full.
         buffers.shown = None;
-        buffers.clear();
         let cols = engine.size().cols;
         let first = first_line.max(-(engine.history_size() as i64));
         // `rows` is a u16 in the frame, so one call reads at most 65,535 rows.
         let last = (first_line.saturating_add(i64::from(count)))
             .min(engine.size().rows as i64)
-            .min(first + i64::from(u16::MAX));
+            .min(first.saturating_add(i64::from(u16::MAX)));
+        let lines = usize::try_from(last.saturating_sub(first)).unwrap_or(0);
+        buffers.clear(lines.saturating_mul(cols));
         let mut rows = 0_u16;
         let mut line = first;
+        // Packed history is decoded into scratch rather than through
+        // `Engine::line`, which keeps a dense copy of every row it expands
+        // until the next output: paging through scrollback would hold all of
+        // it expanded.
+        let mut scratch = Vec::new();
         while line < last {
             let number = line as i32;
-            buffers.push_line(
-                engine.line(number),
-                0,
-                cols,
-                cols,
-                engine.line_wrapped(number),
-            );
+            let wrapped = engine.line_wrapped(number);
+            if engine
+                .with_line(number, &mut scratch, |cells| {
+                    buffers.push_line(Some(cells), 0, cols, cols, wrapped);
+                })
+                .is_none()
+            {
+                buffers.push_line(None, 0, cols, cols, wrapped);
+            }
             rows += 1;
             line += 1;
         }

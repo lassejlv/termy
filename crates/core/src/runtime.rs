@@ -767,6 +767,34 @@ impl TerminalSize {
     }
 }
 
+/// Searches a terminal's history and screen from any thread, while the
+/// terminal itself is driven from another: it holds its own reference to the
+/// engine (or, for a session-host pane, to the connection), so it stays
+/// usable after the terminal is dropped. From [`Terminal::searcher`].
+#[derive(Clone)]
+pub struct TerminalSearcher(SearcherBackend);
+
+#[derive(Clone)]
+enum SearcherBackend {
+    Local(custom_backend::LocalSearcher),
+    Remote(std::sync::Arc<dyn crate::remote::RemoteTransport>),
+}
+
+impl TerminalSearcher {
+    /// As [`Terminal::search_shared_with_options`]. A local terminal copies
+    /// its text in chunks, releasing the engine lock between them, so output
+    /// keeps parsing; a session-host pane asks the host on a connection of
+    /// its own.
+    pub fn search(&self, query: &str, options: TermySearchOptions) -> Vec<TermySharedSearchMatch> {
+        match &self.0 {
+            SearcherBackend::Local(searcher) => searcher.search(query, options),
+            SearcherBackend::Remote(transport) => {
+                crate::remote::search_from_any_thread(transport.as_ref(), query, options)
+            }
+        }
+    }
+}
+
 /// The terminal state wrapper
 pub struct Terminal {
     backend: engine_backend::Backend,
@@ -774,7 +802,7 @@ pub struct Terminal {
 
 mod custom_backend;
 mod engine_backend;
-pub(crate) use custom_backend::legacy_frame_update;
+pub(crate) use custom_backend::{legacy_frame_update, legacy_frame_update_with_scrolls};
 
 impl Terminal {
     /// Attach a renderer to a terminal owned by the built-in session host.
@@ -976,6 +1004,13 @@ impl Terminal {
         self.backend.child_pid()
     }
 
+    /// The program this terminal's own PTY runs. `None` for display
+    /// terminals and for session-host panes, whose program is the host's
+    /// child (see [`Self::child_pid`]).
+    pub fn local_child_pid(&self) -> Option<u32> {
+        self.backend.local_child_pid()
+    }
+
     /// Ends the child and waits for it, where dropping the terminal would
     /// leave a program that ignores SIGHUP to a timer: for a process about to
     /// exit. Remote and display terminals have no child here.
@@ -1144,6 +1179,18 @@ impl Terminal {
         self.backend.frame_update(force_full)
     }
 
+    /// [`Self::frame_update`] for a consumer that keeps the frame it showed
+    /// and replays scrolls on it: output that scrolls comes back as the
+    /// scrolls (apply them in order) plus damage on the rows they exposed
+    /// and the cells that changed, instead of damage on every row they moved.
+    /// The scrolls are empty for full damage, or when they would not fit.
+    pub fn frame_update_with_scrolls(
+        &self,
+        force_full: bool,
+    ) -> (TermyFrameUpdate, Vec<crate::TerminalViewportScroll>) {
+        self.backend.frame_update_with_scrolls(force_full)
+    }
+
     pub fn take_render_damage_snapshot(&self) -> TerminalRenderDamageSnapshot {
         self.backend.take_render_damage_snapshot()
     }
@@ -1242,6 +1289,11 @@ impl Terminal {
 
     pub fn search_shared(&self, query: &str) -> Vec<TermySharedSearchMatch> {
         self.backend.search_shared(query)
+    }
+
+    /// A search to run on another thread; see [`TerminalSearcher`].
+    pub fn searcher(&self) -> TerminalSearcher {
+        self.backend.searcher()
     }
 
     pub fn search_shared_with_options(

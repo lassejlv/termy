@@ -290,6 +290,28 @@ struct MetalRendererTests {
         #expect(cleared.brightest(in: cellPixels(view, row: 1, col: 0, width: 6)) < 64)
     }
 
+    @Test(arguments: [Float(20), 19.6])
+    func scrolledRowsDrawLikeRebuiltOnes(cellHeight: Float) throws {
+        let config = try TermyConfig(contents: "padding_x = 4\npadding_y = 4\ncursor_blink = false\n")
+        var renderConfig = try config.renderConfig(for: .dark)
+        renderConfig.cellHeight = cellHeight
+        let session = try TerminalSession.display(
+            size: TerminalSize(cols: 20, rows: 4, cellWidth: renderConfig.cellWidth, cellHeight: cellHeight))
+        let view = TerminalView(session: session, renderConfig: renderConfig, backend: .metal)
+        view.frame = NSRect(origin: .zero, size: view.size(cols: 20, rows: 4))
+        try session.feed(Data("\u{1b}[37mfirst\r\n\u{1b}[44m\u{2500}\u{2502}box\u{1b}[0m\r\nthird".utf8))
+        let renderer = try #require(view.metalRenderer)
+        _ = try render(view)
+        try session.feed(Data("\r\n\u{1b}[32mfourth\r\nfifth \u{2588}\u{1b}[4munder\u{1b}[0m".utf8))
+        let scrolled = try render(view)
+        // 40 pixel rows move; 39.2 pixel rows by two rows don't land on
+        // whole pixels and are rebuilt.
+        #expect((renderer.movedRows > 0) == (cellHeight == 20))
+        renderer.invalidateAll()
+        let rebuilt = try render(view)
+        #expect(scrolled.bytes == rebuilt.bytes)
+    }
+
     @Test func drawsAHollowCursorWhenUnfocused() throws {
         let view = try makeView()
         let pixels = try render(view)

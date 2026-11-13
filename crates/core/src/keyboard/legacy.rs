@@ -218,6 +218,11 @@ fn has_xterm_modifiers(modifiers: Modifiers) -> bool {
     !SequenceModifiers::from_modifiers(modifiers).is_empty()
 }
 
+/// The main key a keypad key (`kp_*`) types, such as `"1"` or `"enter"`.
+pub(super) fn keypad_main_key(key: &str) -> Option<&'static str> {
+    keypad_key(key).map(|(main, _)| main)
+}
+
 /// Keypad keys, for hosts that can tell them apart from the main keys. Names
 /// follow xkb's `KP_*` keysyms. Returns the main-key equivalent sent under
 /// DECKPNM and the SS3 final byte sent under DECKPAM.

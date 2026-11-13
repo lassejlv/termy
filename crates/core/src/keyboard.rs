@@ -183,6 +183,19 @@ fn encode_keystroke(
     }
 
     let native = native.is_some();
+    // The kitty encoder has no keypad codes: report a keypad key as the main
+    // key it types, as hosts that can't tell them apart do.
+    let main_key;
+    let keystroke = match legacy::keypad_main_key(&keystroke.key) {
+        Some(key) if keyboard_mode.enhanced_reporting_active() => {
+            main_key = Keystroke {
+                key: key.to_owned(),
+                ..keystroke.clone()
+            };
+            &main_key
+        }
+        _ => keystroke,
+    };
     if !keyboard_mode.enhanced_reporting_active() {
         return match event_kind {
             TerminalKeyEventKind::Press | TerminalKeyEventKind::Repeat => {

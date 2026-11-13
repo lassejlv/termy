@@ -642,7 +642,7 @@ impl Engine {
 
     /// Visit a line without retaining a dense copy of cold history. Scratch
     /// capacity is reused across calls, including full-buffer search/copy.
-    pub(crate) fn with_line<T>(
+    pub fn with_line<T>(
         &self,
         line: i32,
         scratch: &mut Vec<Cell>,
