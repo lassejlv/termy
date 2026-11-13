@@ -125,8 +125,7 @@ pub(crate) fn encode_key(
     let base_key = if key.is_empty() {
         char::from_u32(event.unshifted_codepoint)
             .filter(|_| event.unshifted_codepoint != 0)
-            .map(|c| c.to_lowercase().collect::<String>())
-            .unwrap_or_default()
+            .map_or_default(|c| c.to_lowercase().collect::<String>())
     } else {
         key.to_owned()
     };

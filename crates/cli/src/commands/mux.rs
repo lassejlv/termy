@@ -893,8 +893,7 @@ fn resize(client: &SessionClient, id: &str, cols: u16, rows: u16) -> anyhow::Res
             Ok(())
         })
         .err()
-        .map(|error| vec![format!("Saving the new size failed: {error:#}")])
-        .unwrap_or_default();
+        .map_or_default(|error| vec![format!("Saving the new size failed: {error:#}")]);
     Ok(with_warnings(
         json!({"id":id,"cols":cols,"rows":rows}),
         warnings,

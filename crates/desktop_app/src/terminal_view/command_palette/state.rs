@@ -543,8 +543,7 @@ impl CommandPaletteState {
     pub(super) fn filtered_title_highlights(&self, filtered_index: usize) -> Vec<Range<usize>> {
         self.filtered
             .get(filtered_index)
-            .map(|matched| matched.title_highlights.clone())
-            .unwrap_or_default()
+            .map_or_default(|matched| matched.title_highlights.clone())
     }
 
     pub(super) fn selected_filtered_index(&self) -> Option<usize> {

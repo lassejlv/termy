@@ -337,8 +337,7 @@ impl BenchmarkGateThresholds {
                             animation
                                 .displayed_frame_capture_detail
                                 .as_ref()
-                                .map(|detail| format!(": {detail}"))
-                                .unwrap_or_default()
+                                .map_or_default(|detail| format!(": {detail}"))
                         ));
                     }
                 }
@@ -2834,8 +2833,7 @@ fn render_report(summary: &ComparisonSummary) -> String {
             .baseline
             .git_sha
             .as_ref()
-            .map(|sha| format!(" (`{sha}`)"))
-            .unwrap_or_default()
+            .map_or_default(|sha| format!(" (`{sha}`)"))
     ));
     report.push_str(&format!(
         "- Candidate source: `{}`{}\n\n",
@@ -2844,8 +2842,7 @@ fn render_report(summary: &ComparisonSummary) -> String {
             .candidate
             .git_sha
             .as_ref()
-            .map(|sha| format!(" (`{sha}`)"))
-            .unwrap_or_default()
+            .map_or_default(|sha| format!(" (`{sha}`)"))
     ));
 
     for scenario in &summary.scenarios {
@@ -3234,8 +3231,7 @@ fn render_report(summary: &ComparisonSummary) -> String {
                 animation_summary
                     .displayed_frame_capture_detail
                     .as_ref()
-                    .map(|detail| format!(": {detail}"))
-                    .unwrap_or_default()
+                    .map_or_default(|detail| format!(": {detail}"))
             ));
         }
         if let Some(animation_summary) = scenario.candidate.animation_summary.as_ref()
@@ -3252,8 +3248,7 @@ fn render_report(summary: &ComparisonSummary) -> String {
                 animation_summary
                     .displayed_frame_capture_detail
                     .as_ref()
-                    .map(|detail| format!(": {detail}"))
-                    .unwrap_or_default()
+                    .map_or_default(|detail| format!(": {detail}"))
             ));
         }
         if scenario.baseline.app_summary.is_some() || scenario.candidate.app_summary.is_some() {

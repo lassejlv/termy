@@ -931,8 +931,7 @@ impl SettingsWindow {
             EditableField::InactiveTabScrollback => self
                 .config
                 .inactive_tab_scrollback
-                .map(|value| value.to_string())
-                .unwrap_or_default(),
+                .map_or_default(|value| value.to_string()),
             EditableField::ScrollMultiplier => {
                 format!("{:.3}", self.config.mouse_scroll_multiplier)
             }
@@ -1024,8 +1023,7 @@ impl SettingsWindow {
             EditableField::WindowHeight => format!("{}", self.config.window_height.round() as i32),
             EditableField::Color(id) => self
                 .custom_color_for_id(id)
-                .map(|rgb| format!("#{:02x}{:02x}{:02x}", rgb.r, rgb.g, rgb.b))
-                .unwrap_or_default(),
+                .map_or_default(|rgb| format!("#{:02x}{:02x}{:02x}", rgb.r, rgb.g, rgb.b)),
         }
     }
 

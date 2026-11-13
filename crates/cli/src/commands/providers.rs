@@ -42,8 +42,7 @@ fn theme_lines(themes_dir: Option<&Path>) -> Vec<String> {
         .collect();
 
     let installed: Vec<String> = themes_dir
-        .map(termy_core::themes::local_theme_ids)
-        .unwrap_or_default()
+        .map_or_default(termy_core::themes::local_theme_ids)
         .into_iter()
         .filter(|id| !lines.contains(id))
         .collect();

@@ -224,8 +224,7 @@ impl IntoElement for InlineInputElement {
                 let prev_line_offset_xs: Vec<f32> = {
                     let view = prepaint_view.read(cx);
                     view.active_inline_input_state()
-                        .map(|s| s.line_offsets().map(f32::from).collect())
-                        .unwrap_or_default()
+                        .map_or_default(|s| s.line_offsets().map(f32::from).collect())
                 };
 
                 // Shape each line and compute per-row offset_x
@@ -281,7 +280,7 @@ impl IntoElement for InlineInputElement {
                                 if me < line_str.len() {
                                     runs.push(TextRun {
                                         len: line_str.len() - me,
-                                        ..base_run.clone()
+                                        ..base_run
                                     });
                                 }
                                 runs

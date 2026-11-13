@@ -30,8 +30,7 @@ pub(super) enum WindowsShellFamily {
 pub(super) fn windows_shell_family(program: &str) -> WindowsShellFamily {
     let name = Path::new(program.trim())
         .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|name| name.to_string_lossy().into_owned());
     // Win32 ignores trailing spaces and periods in file names.
     let name = name.trim_end_matches([' ', '.']).to_ascii_lowercase();
     let stem = name.strip_suffix(".exe").unwrap_or(&name);

@@ -477,8 +477,7 @@ impl TerminalView {
                 // Tab creation should stay robust if active pane state is transiently missing.
                 let size = self
                     .active_terminal()
-                    .map(|terminal| terminal.size())
-                    .unwrap_or_default();
+                    .map_or_default(|terminal| terminal.size());
                 let preferred_working_dir =
                     self.preferred_working_dir_for_new_session(working_dir, cx);
                 let terminal_runtime = windows_shell
@@ -579,8 +578,7 @@ impl TerminalView {
 
         let size = self
             .active_terminal()
-            .map(|terminal| terminal.size())
-            .unwrap_or_default();
+            .map_or_default(|terminal| terminal.size());
         let launch = TerminalLaunch::Program {
             program: process.program,
             args: process.args,

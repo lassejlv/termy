@@ -697,8 +697,7 @@ impl PluginUiView {
                 let query = self
                     .list_queries
                     .get(&id)
-                    .map(|query| query.to_lowercase())
-                    .unwrap_or_default();
+                    .map_or_default(|query| query.to_lowercase());
                 children
                     .into_iter()
                     .filter_map(|child| match child {

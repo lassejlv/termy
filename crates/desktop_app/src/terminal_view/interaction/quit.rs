@@ -200,8 +200,9 @@ impl TerminalView {
                 .iter()
                 .enumerate()
                 .find(|(_, tab)| tab.id == tab_id && Self::tab_is_busy(tab))
-                .map(|(index, tab)| vec![self.tab_title_for_warning(index, tab, fallback_title)])
-                .unwrap_or_default(),
+                .map_or_default(|(index, tab)| {
+                    vec![self.tab_title_for_warning(index, tab, fallback_title)]
+                }),
             CloseRequestTarget::WorkspaceDelete { workspace_id } => {
                 let Some(workspace_index) = self
                     .session
@@ -315,12 +316,11 @@ impl TerminalView {
 
     fn detach_warning_detail(busy_titles: &[String], process_count: usize) -> String {
         let mut detail = Self::close_warning_detail(CloseRequestTarget::WindowClose, busy_titles)
-            .map(|detail| {
+            .map_or_default(|detail| {
                 // Replace the "anyway?" question with the choice below.
                 let list_end = detail.rfind("\n\n").unwrap_or(detail.len());
                 format!("{}\n\n", &detail[..list_end])
-            })
-            .unwrap_or_default();
+            });
         detail.push_str(&format!(
             "Detach keeps this window's {process_count} process{} running in the background; \
              run Reopen Detached Window to bring the window back. Terminate ends {}.",

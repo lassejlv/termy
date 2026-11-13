@@ -204,8 +204,8 @@ impl TerminalView {
         let windows_style = palette.style.is_windows_11();
         let overlay_slots = self.tab_strip.transitions.overlay_slots(tab_count, now);
         let mut tab_widths = Vec::with_capacity(tab_count);
-        for index in 0..tab_count {
-            let display_width = self.session.tabs[index].display_width;
+        for (index, tab) in self.session.tabs.iter().enumerate() {
+            let display_width = tab.display_width;
             let anim_progress = new_tab_anim
                 .filter(|(anim_index, _)| *anim_index == index)
                 .map(|(_, progress)| progress);

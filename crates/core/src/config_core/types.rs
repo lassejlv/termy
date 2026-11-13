@@ -450,8 +450,7 @@ impl AppConfig {
     pub fn tmux_command_prefix_argv(&self) -> Vec<String> {
         self.tmux_command_prefix
             .as_deref()
-            .map(|prefix| prefix.split_whitespace().map(str::to_string).collect())
-            .unwrap_or_default()
+            .map_or_default(|prefix| prefix.split_whitespace().map(str::to_string).collect())
     }
 }
 

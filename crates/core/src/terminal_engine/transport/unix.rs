@@ -948,7 +948,7 @@ impl Transport {
                 *exit_status
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    Some(status.map(child_exit_from_wait_status).unwrap_or_default());
+                    Some(status.map_or_default(child_exit_from_wait_status));
                 if !exited {
                     watcher_alive.exited();
                 }

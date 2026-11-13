@@ -2918,13 +2918,12 @@ impl Render for TerminalView {
             .session
             .tabs
             .get(self.session.active_tab)
-            .map(|tab| {
+            .map_or_default(|tab| {
                 tab.panes
                     .iter()
                     .map(|pane| self.effective_font_size_for_pane_in_tab(tab, pane))
                     .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            });
         for pane_font_size in active_pane_font_sizes.iter().copied() {
             let _ = self.calculate_cell_size_for_font_size(pane_font_size, window, cx);
         }

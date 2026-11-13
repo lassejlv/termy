@@ -53,18 +53,20 @@ struct SessionTests {
     @Test func wakeupsRightAfterAPollWaitForTheMinimumInterval() async throws {
         let session = try TerminalSession.display(size: TerminalSize(cols: 40, rows: 10))
         defer { session.stop() }
-        session.minimumPollInterval = 0.3
+        session.minimumPollInterval = 0.5
         session.poll()
+        let polled = ProcessInfo.processInfo.systemUptime
         // Output that arrives at once, as from a PTY read, waits for the interval.
         try session.terminal.feed(Data("later".utf8))
         session.schedulePoll()
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(session.frame.text(row: 0) == "")
-        let deadline = Date().addingTimeInterval(5)
+        let deadline = Date().addingTimeInterval(10)
         while session.frame.text(row: 0) != "later", Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
+            try await Task.sleep(for: .milliseconds(10))
         }
         #expect(session.frame.text(row: 0) == "later")
+        // Measured rather than checked midway: a slow machine only makes the
+        // wait longer, so it can't fail this by oversleeping.
+        #expect(ProcessInfo.processInfo.systemUptime - polled >= 0.45)
     }
 
     @Test func childPIDIsTheProgramOfTheTerminalsOwnPTY() throws {

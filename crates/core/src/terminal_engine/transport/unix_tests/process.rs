@@ -1135,9 +1135,7 @@ fn a_failed_wait_reports_an_unknown_exit_instead_of_success() {
     // with ECHILD; pid 1 is never our child, which gives the same error.
     assert_eq!(wait_for_child(1), None);
     assert_eq!(
-        wait_for_child(1)
-            .map(child_exit_from_wait_status)
-            .unwrap_or_default(),
+        wait_for_child(1).map_or_default(child_exit_from_wait_status),
         ChildExit::default()
     );
 }

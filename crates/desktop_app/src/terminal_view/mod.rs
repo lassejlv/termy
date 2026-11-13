@@ -785,8 +785,7 @@ impl Terminal {
             Self::Tmux(_) => (Vec::new(), false),
             Self::Native(terminal) => terminal
                 .lock()
-                .map(|terminal| terminal.drain_events(host))
-                .unwrap_or_default(),
+                .map_or_default(|terminal| terminal.drain_events(host)),
         }
     }
 
@@ -875,10 +874,7 @@ impl Terminal {
     fn size(&self) -> TerminalSize {
         match self {
             Self::Tmux(terminal) => terminal.size(),
-            Self::Native(terminal) => terminal
-                .lock()
-                .map(|terminal| terminal.size())
-                .unwrap_or_default(),
+            Self::Native(terminal) => terminal.lock().map_or_default(|terminal| terminal.size()),
         }
     }
 
@@ -887,8 +883,7 @@ impl Terminal {
             Self::Tmux(terminal) => terminal.size(),
             Self::Native(terminal) => terminal
                 .lock()
-                .map(|terminal| terminal.requested_size())
-                .unwrap_or_default(),
+                .map_or_default(|terminal| terminal.requested_size()),
         }
     }
 
@@ -1030,8 +1025,7 @@ impl Terminal {
             Self::Tmux(terminal) => terminal.mouse_mode(),
             Self::Native(terminal) => terminal
                 .lock()
-                .map(|terminal| terminal.mouse_mode())
-                .unwrap_or_default(),
+                .map_or_default(|terminal| terminal.mouse_mode()),
         }
     }
 
@@ -1040,8 +1034,7 @@ impl Terminal {
             Self::Tmux(terminal) => terminal.keyboard_mode(),
             Self::Native(terminal) => terminal
                 .lock()
-                .map(|terminal| terminal.keyboard_mode())
-                .unwrap_or_default(),
+                .map_or_default(|terminal| terminal.keyboard_mode()),
         }
     }
 

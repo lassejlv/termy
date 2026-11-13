@@ -2389,9 +2389,8 @@ fn settings_theme_choices(
     use serde_json::json;
 
     let config_path = loaded.path.as_deref();
-    let local_ids = settings_themes_dir(config_path)
-        .map(|dir| crate::themes::local_theme_ids(&dir))
-        .unwrap_or_default();
+    let local_ids =
+        settings_themes_dir(config_path).map_or_default(|dir| crate::themes::local_theme_ids(&dir));
     let builtins = crate::themes::builtin_themes();
     let termy_count = crate::themes::TERMY_THEME_IDS.len();
     let mut ids: Vec<String> = builtins[..termy_count]
