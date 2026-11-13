@@ -1010,18 +1010,14 @@ fn candidate_is_executable(candidate: &std::path::Path) -> bool {
     let Ok(metadata) = std::fs::metadata(candidate) else {
         return false;
     };
-    if !metadata.is_file() {
-        return false;
-    }
-
     #[cfg(unix)]
     {
-        metadata.permissions().mode() & 0o111 != 0
+        metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
     }
 
     #[cfg(not(unix))]
     {
-        true
+        metadata.is_file()
     }
 }
 
