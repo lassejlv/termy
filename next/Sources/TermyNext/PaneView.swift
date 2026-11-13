@@ -120,11 +120,8 @@ final class PaneView: NSView, TerminalViewDelegate {
         } else {
             let token = UUID().uuidString
             options.environment.merge(ShellPlugins.shared.environment(token: token)) { $1 }
-            // The shell is a child of the app; the new child is this pane's.
-            let before = ShellProcess.children()
             let terminal = try Terminal(size: Self.initialSize, options: options)
             self.init(hostTerminal: terminal, directory: workingDirectory, shellToken: token)
-            shellPID = ShellProcess.children().subtracting(before).min()
         }
     }
 
@@ -150,7 +147,9 @@ final class PaneView: NSView, TerminalViewDelegate {
         terminal.optionAsAlt = (try? app.termyConfig.native().macosOptionAsAlt) ?? false
         paneID = hostTerminal.paneID
         inAppShellToken = shellToken
-        shellPID = SessionHost.shared.childPID(for: hostTerminal.paneID)
+        // A pane inside the app knows the shell it started on its PTY; the
+        // session host runs the program of a hosted one.
+        shellPID = hostTerminal.paneID == nil ? hostTerminal.childPID : SessionHost.shared.childPID(for: hostTerminal.paneID)
         self.directory = directory
         super.init(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
         wantsLayer = true
@@ -165,6 +164,7 @@ final class PaneView: NSView, TerminalViewDelegate {
         header.pane = self
         updateShape()
         applyTerminalColors()
+        appliedStyle = Self.currentStyle
         refreshProcess()
         ShellPlugins.shared.register(self)
     }
@@ -175,6 +175,7 @@ final class PaneView: NSView, TerminalViewDelegate {
     /// Detaches from a hosted pane, whose program keeps running in the host;
     /// ends an in-app pane's program.
     func stop() {
+        shellUI.stopAgent()
         terminal.session.stop()
     }
 
@@ -309,7 +310,31 @@ final class PaneView: NSView, TerminalViewDelegate {
         }
     }
 
+    /// What the pane's look was last built from: the config, the interface
+    /// and pane styles, and light or dark.
+    private struct Style: Equatable {
+        var config: ObjectIdentifier
+        var interface: InterfaceStyle
+        var pane: PaneStyle
+        var appearance: Appearance
+    }
+
+    private var appliedStyle: Style?
+
+    private static var currentStyle: Style {
+        let app = AppConfig.shared
+        return Style(config: ObjectIdentifier(app.termyConfig), interface: Preferences.shared.interfaceStyle,
+                     pane: Preferences.shared.paneStyle, appearance: app.appearance)
+    }
+
+    /// Catches up on config and style changes made while no window showed
+    /// the pane: a window restyles only the session it shows.
+    func themeChangedIfStale() {
+        if appliedStyle != Self.currentStyle { themeChanged() }
+    }
+
     func themeChanged() {
+        appliedStyle = Self.currentStyle
         terminal.apply(AppConfig.shared.terminalRenderConfig(zoom: zoom))
         applyTerminalColors()
         search?.bar.applyTheme()
@@ -551,7 +576,8 @@ final class PaneView: NSView, TerminalViewDelegate {
     }
 
     func terminalViewDidExit(_ view: TerminalView) {
-        delegate?.paneDidExit(self)
+        // The window that last showed the pane may be gone.
+        if let delegate { delegate.paneDidExit(self) } else { AppDelegate.shared.paneExitedOffScreen(self) }
     }
 
     // Header callbacks

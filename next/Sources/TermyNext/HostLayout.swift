@@ -91,13 +91,48 @@ final class HostLayoutSync {
         }
     }
 
+    /// A write is on its way to the host; the revision it answers with is
+    /// the one the next write must carry.
+    private var writing = false
+    private var writeAgain = false
+    /// The write on its way, which quitting waits for (the main thread is
+    /// blocked then, so its answer can't arrive the usual way).
+    private var inFlight: PendingWrite?
+
+    private final class PendingWrite: @unchecked Sendable {
+        let answered = DispatchGroup()
+        private let lock = NSLock()
+        private var value: (updated: Bool, revision: UInt64)?
+        var answer: (updated: Bool, revision: UInt64)? {
+            get { lock.withLock { value } }
+            set { lock.withLock { value = newValue } }
+        }
+    }
+
     private func write() {
+        // A second write sent before the first answers would carry the old
+        // revision, be refused, and fetching the host's layout would then
+        // undo the change it was meant to save.
+        guard !writing else { writeAgain = true; return }
         guard !SessionHost.shared.isRestarting, let multiplexer = SessionHost.shared.multiplexer, var layout = snapshot() else { return }
         layout.revision = revision
+        writing = true
+        let pending = PendingWrite()
+        pending.answered.enter()
+        inFlight = pending
         queue.async {
             let result = try? multiplexer.setLayout(layout)
+            pending.answer = result
+            pending.answered.leave()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
+                    let sync = HostLayoutSync.shared
+                    sync.writing = false
+                    if sync.inFlight === pending { sync.inFlight = nil }
+                    if sync.writeAgain {
+                        sync.writeAgain = false
+                        sync.scheduleWrite()
+                    }
                     guard let result else { return }
                     if result.updated {
                         HostLayoutSync.shared.revision = max(HostLayoutSync.shared.revision, result.revision)
@@ -112,8 +147,18 @@ final class HostLayoutSync {
 
     /// The last write, made while quitting, before windows go away.
     func writeNow() {
-        guard let multiplexer = SessionHost.shared.multiplexer, var layout = snapshot() else { return }
+        guard let multiplexer = SessionHost.shared.multiplexer else { return }
+        if let pending = inFlight {
+            // The write still out carries an older layout; its answer has the
+            // revision this one must carry. A host that doesn't answer in time
+            // keeps what it has rather than hold up quitting.
+            guard pending.answered.wait(timeout: .now() + 2) == .success else { return }
+            if let answer = pending.answer, answer.updated { revision = max(revision, answer.revision) }
+            inFlight = nil
+        }
+        guard var layout = snapshot() else { return }
         layout.revision = revision
+        // Refused means the layout changed elsewhere meanwhile: the host's stays.
         _ = try? multiplexer.setLayout(layout)
     }
 
@@ -125,7 +170,8 @@ final class HostLayoutSync {
         let controllers = AppDelegate.shared.controllersFrontToBack
         guard let front = controllers.first else { return nil }
         let open = Set(controllers.map(\.hostWindowID))
-        var frames = floatingFrames
+        let stored = floatingFrames
+        var frames = stored
         var windows: [MultiplexerLayout.Window] = []
         for controller in controllers {
             let sessions = Workspace.shared.sessions.filter { session in
@@ -145,7 +191,8 @@ final class HostLayoutSync {
             guard !workspaces.isEmpty else { continue }
             windows.append(.init(id: controller.hostWindowID, activeWorkspace: active, workspaces: workspaces))
         }
-        floatingFrames = frames
+        // Every write and every host change takes a snapshot; most move no floating pane.
+        if frames != stored { floatingFrames = frames }
         return MultiplexerLayout(revision: revision, windows: windows)
     }
 

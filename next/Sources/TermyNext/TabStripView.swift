@@ -48,7 +48,23 @@ final class TabStripView: GlassPanel {
     func advanceSpinner() {
         guard navigator?.session.tabs.contains(where: { $0.activity == .working }) == true else { return }
         phase = (phase - 24).truncatingRemainder(dividingBy: 360)
-        if StatusIndicator.hostAnimatesWorking || drawnLoader != Preferences.shared.tabLoader { needsDisplay = true }
+        if drawnLoader != Preferences.shared.tabLoader {
+            needsDisplay = true
+        } else if StatusIndicator.hostAnimatesWorking {
+            // Only the dots move: redraw them, not the whole strip.
+            for rect in workingDotsRects() { overlay.setNeedsDisplay(rect.insetBy(dx: -2, dy: -2)) }
+        }
+    }
+
+    /// Where each working tab's three dots are drawn (see `drawContent`).
+    private func workingDotsRects() -> [NSRect] {
+        guard let tabs = navigator?.session.tabs else { return [] }
+        return zip(tabs.indices, computeFrames()).compactMap { i, tabFrame in
+            guard tabs[i].activity == .working else { return nil }
+            var frame = tabFrame
+            if i == dragIndex { frame.origin.x += dragOffset }
+            return NSRect(x: frame.maxX - 12 - StatusIndicator.dotsWidth, y: frame.minY, width: StatusIndicator.dotsWidth, height: frame.height)
+        }
     }
 
     func computeFrames() -> [NSRect] {
@@ -146,6 +162,9 @@ final class TabStripView: GlassPanel {
         for (i, tab) in tabs.enumerated() {
             var frame = frames[i]
             if i == dragIndex { frame.origin.x += dragOffset }
+            // A spinner tick redraws only the dots. Tabs outside it are skipped,
+            // except with a live loader, whose spots must be placed every draw.
+            if StatusIndicator.hostAnimatesWorking, !frame.insetBy(dx: -3, dy: 0).intersects(dirtyRect) { continue }
             let selected = i == navigator.session.selectedIndex
             let radius = frame.height / 2
             if !selected, i == hoverIndex {
@@ -198,9 +217,7 @@ final class TabStripView: GlassPanel {
                 theme.hover.setFill()
                 NSBezierPath(ovalIn: close.insetBy(dx: -3, dy: -3)).fill()
             }
-            let config = NSImage.SymbolConfiguration(pointSize: 9, weight: .bold)
-            if let image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close Tab")?
-                .withSymbolConfiguration(config)?.tinted(theme.textSecondary) {
+            if let image = SymbolImages.tinted("xmark", pointSize: 9, weight: .bold, color: theme.textSecondary) {
                 image.drawUpright(in: NSRect(x: close.midX - image.size.width / 2, y: close.midY - image.size.height / 2,
                                              width: image.size.width, height: image.size.height))
             }
@@ -336,8 +353,9 @@ final class TabStripView: GlassPanel {
             positionPill(animated: true)
             needsDisplay = true
         }
-        guard let from = dragIndex, abs(dragOffset) > 8 else { return }
         let frames = computeFrames()
+        // A tab can close (its program exited) while another is dragged.
+        guard let from = dragIndex, frames.indices.contains(from), abs(dragOffset) > 8 else { return }
         let center = frames[from].midX + dragOffset
         let to = frames.firstIndex { center < $0.maxX } ?? frames.count - 1
         if to != from { navigator?.moveTab(from: from, to: to) }

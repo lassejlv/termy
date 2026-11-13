@@ -356,6 +356,8 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         session.hostWindowID = hostWindowID
         session.lastActive = Date()
         strip.navigator = self
+        // The 1 s refresh skipped it while no window showed it.
+        AppDelegate.shared.refreshProcesses(in: session)
         if changed {
             Motion.crossfade(sidebar, duration: 0.25)
             Motion.crossfade(strip, duration: 0.25)
@@ -371,7 +373,11 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         container.tab = tab
         strip.applyStyle()
         container.reloadPanes()
-        for pane in tab.allPanes { pane.delegate = self }
+        for pane in tab.allPanes {
+            pane.delegate = self
+            // Settings changed while another session (or no window) showed it.
+            pane.themeChangedIfStale()
+        }
         root.needsLayout = true
         root.layoutSubtreeIfNeeded()
         tab.focusedPane?.focus()
@@ -605,6 +611,9 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
                 }
                 Workspace.shared.changed()
             }
+        } else {
+            // A pane of a session this window showed before switching away.
+            AppDelegate.shared.paneExitedOffScreen(pane)
         }
     }
 
@@ -921,6 +930,9 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     var isSearching: Bool { focusedPane?.isSearching ?? false }
 
     func tick() {
+        // A minimized or covered window has nothing to animate or follow;
+        // its find bars would still search the whole history every 0.6 s.
+        guard window?.occlusionState.contains(.visible) == true else { return }
         currentTab?.allPanes.forEach { $0.searchTick() }
         strip.advanceSpinner()
         sidebar.advanceSpinner()
@@ -1201,6 +1213,8 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
             return
         }
         picker?.dismiss()
+        // It lists panes of every session, not only shown ones.
+        AppDelegate.shared.refreshProcesses()
         let view = ActivityView()
         view.onSelect = { [weak self] session, tab, pane in self?.reveal(session: session, tab: tab, pane: pane) }
         view.onDismiss = { [weak self, weak view] in
@@ -1250,6 +1264,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     }
 
     private func showPalette() {
+        AppDelegate.shared.refreshProcesses()
         let view = PickerView(mode: .list(placeholder: "Search commands, sessions, and tabs…", items: { [weak self] in
             self?.paletteItems() ?? []
         }, create: nil))
@@ -1278,6 +1293,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     }
 
     private func showSessionPicker() {
+        AppDelegate.shared.refreshProcesses()
         let view = PickerView(mode: .list(placeholder: "Filter or create…", items: { [weak self] in
             guard let self else { return [] }
             var items = Workspace.shared.sessionsByRecency.map { s in
@@ -1325,6 +1341,8 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     }
 
     private func showDirectoryPicker(insert: Bool) {
+        // Lists the folders of panes in every session.
+        AppDelegate.shared.refreshProcesses()
         let base = focusedPane?.directory ?? NSHomeDirectory()
         let view = PickerView(mode: .list(placeholder: insert ? "Insert a path…" : "Go to directory…", items: { [weak self] in
             self?.directoryItems(base: base, includeFiles: insert, insert: insert) ?? []

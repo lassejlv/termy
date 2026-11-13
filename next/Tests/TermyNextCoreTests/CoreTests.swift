@@ -122,6 +122,31 @@ import Testing
         #expect(empty == .line(ShellLine(buffer: "", cursor: 0)))
     }
 
+    @Test func cursorFromZshCountsCharacters() {
+        let accent = "cafe\u{301}"  // é as e + combining acute: 5 code points, 4 characters
+        #expect(ShellProtocol.characterOffset(ofScalarOffset: 5, in: accent) == 4)
+        // Between the e and its accent is inside a character, not the end.
+        #expect(ShellProtocol.characterOffset(ofScalarOffset: 4, in: accent) == 3)
+        let thumbs = "ls 👍🏽"  // thumbs up + skin tone: 2 code points, 1 character
+        #expect(ShellProtocol.characterOffset(ofScalarOffset: 5, in: thumbs) == 4)
+        #expect(ShellProtocol.characterOffset(ofScalarOffset: 4, in: thumbs) == 3)
+        let family = "👨‍👩‍👧"  // 5 code points joined into 1 character
+        #expect(ShellProtocol.characterOffset(ofScalarOffset: 5, in: family) == 1)
+        #expect(ShellProtocol.characterOffset(ofScalarOffset: 3, in: family) == 0)
+        #expect(ShellProtocol.characterOffset(ofScalarOffset: 3, in: "cd 日本") == 3)
+        #expect(ShellProtocol.characterOffset(ofScalarOffset: 5, in: "cd 日本") == 5)
+        #expect(ShellProtocol.characterOffset(ofScalarOffset: 99, in: "ab") == 2)
+        #expect(ShellProtocol.characterOffset(ofScalarOffset: -1, in: "ab") == 0)
+
+        // A line ending in a combining mark is at its end, so it gets suggestions.
+        guard case .line(let line)? = ShellProtocol.parse("line\u{1F}5\u{1F}cafe\u{301}\u{1F}cafe\u{301} au lait\u{1F}") else {
+            Issue.record("line not parsed")
+            return
+        }
+        #expect(line.cursor == 4)
+        #expect(line.suggestions.history == ["cafe\u{301} au lait"])
+    }
+
     @Test func escapingRoundTrips() {
         let text = "print -r -- \"a\\b\"\necho second"
         #expect(ShellProtocol.escape(text) == "print -r -- \"a\\\\b\"\\necho second")

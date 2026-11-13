@@ -22,11 +22,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         installKeyMonitor()
         PaneNotifier.shared.start()
         ShellPlugins.shared.start()
-        processTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            MainActor.assumeIsolated { AppDelegate.shared.refreshProcesses() }
-        }
-        spinnerTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15, repeats: true) { _ in
-            MainActor.assumeIsolated { AppDelegate.shared.controllers.forEach { $0.tick() } }
+        startTimers()
+        // Nothing of the app shows (hidden, minimized, covered): the timers
+        // stop, so an idle app doesn't wake 16 times a second. Program status,
+        // directory and command reports still refresh panes as they come.
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeOcclusionStateNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { AppDelegate.shared.occlusionChanged() }
         }
         NSApp.activate(ignoringOtherApps: true)
         // Only for the windows launch opens, not one opened much later.
@@ -332,16 +333,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    /// A pane's program ended while no window shows its session (the window
+    /// closed, or switched to another session): closes the pane there as its
+    /// window would, instead of leaving a dead pane, and its exited pane in
+    /// the host, until the session is shown again.
+    func paneExitedOffScreen(_ pane: PaneView) {
+        guard !SessionHost.shared.isRestarting,
+              let session = Workspace.shared.sessions.first(where: { $0.tabs.contains { $0.panes[pane.id] != nil } }),
+              let tab = session.tabs.first(where: { $0.panes[pane.id] != nil })
+        else { return }
+        if let controller = controllers.first(where: { $0.session === session }) {
+            pane.delegate = controller
+            return controller.paneDidExit(pane)
+        }
+        tab.remove(pane.id)
+        pane.terminate()
+        pane.removeFromSuperview()
+        if tab.isEmpty { session.remove(tab) }
+        if session.tabs.isEmpty { Workspace.shared.remove(session) } else { Workspace.shared.changed() }
+    }
+
     func windowClosed(_ controller: WindowController) {
         controllers.removeAll { $0 === controller }
     }
 
     // MARK: Ticks and config
 
-    private func refreshProcesses() {
-        for session in Workspace.shared.sessions {
-            for tab in session.tabs { tab.allPanes.forEach { $0.refreshProcess() } }
+    private func startTimers() {
+        if processTimer == nil {
+            let timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+                MainActor.assumeIsolated { AppDelegate.shared.refreshShownProcesses() }
+            }
+            timer.tolerance = 0.2
+            processTimer = timer
         }
+        if spinnerTimer == nil {
+            let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15, repeats: true) { _ in
+                MainActor.assumeIsolated { AppDelegate.shared.controllers.forEach { $0.tick() } }
+            }
+            timer.tolerance = 0.01
+            spinnerTimer = timer
+        }
+    }
+
+    private func stopTimers() {
+        processTimer?.invalidate()
+        processTimer = nil
+        spinnerTimer?.invalidate()
+        spinnerTimer = nil
+    }
+
+    private func occlusionChanged() {
+        if NSApp.occlusionState.contains(.visible) {
+            let wasStopped = processTimer == nil
+            startTimers()
+            // Labels went stale while nothing showed them.
+            if wasStopped { refreshShownProcesses() }
+        } else {
+            stopTimers()
+        }
+    }
+
+    /// Every pane's program and folder, for what lists panes of sessions no
+    /// window shows (the quit warning, the palette, the session picker,
+    /// Activity, Go to Directory). The 1 s timer keeps only shown ones fresh;
+    /// terminal reports refresh the rest as they come.
+    func refreshProcesses() {
+        for session in Workspace.shared.sessions { refreshProcesses(in: session) }
+    }
+
+    func refreshProcesses(in session: TerminalSessionGroup) {
+        for tab in session.tabs { tab.allPanes.forEach { $0.refreshProcess() } }
+    }
+
+    /// The panes of the sessions windows show.
+    private func refreshShownProcesses() {
+        for controller in controllers { refreshProcesses(in: controller.session) }
     }
 
     /// Writes a setting to Termy Next's config and applies it to every pane;

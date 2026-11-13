@@ -268,6 +268,10 @@ final class ShellConnection {
                 continue
             } else {
                 // A full buffer means the shell stopped reading; it isn't at a prompt.
+                // Half a line would run into the next message and set a garbled
+                // command line, so a cut-off message ends the connection; zsh
+                // connects again at its next prompt.
+                if offset > 0 { close() }
                 return
             }
         }

@@ -16,6 +16,33 @@ final class PaneSearch: NSObject, NSTextFieldDelegate {
     private var options = SearchOptions()
     private var lastSearch = Date.distantPast
     private var lastGeometry: [CGRect] = []
+    /// The terminal's content when it was last searched; re-running finds
+    /// nothing new while it stays the same.
+    private var searchedGeneration: UInt64?
+    /// A search waiting for typing to pause.
+    private var pendingSearch: DispatchWorkItem?
+    /// How long typing pauses before the history is searched: each search
+    /// walks the whole history, and a hosted pane's asks the session host.
+    private static let typingDelay: TimeInterval = 0.12
+
+    /// One search of the history, run off the main thread.
+    private struct Request {
+        var query: String
+        var options: SearchOptions
+        var keepingPlace: Bool
+        /// Run again because output arrived while it ran the first time.
+        var isRetry = false
+    }
+
+    /// A search is running; only one runs at a time.
+    private var searching = false
+    /// The latest search asked for while one ran; it replaces older ones.
+    private var queued: Request?
+    /// What `matches` were found for.
+    private var matchesFor: (query: String, options: SearchOptions)?
+    /// Steps (Return, ⇧Return, the arrows) taken while the matches for what
+    /// is typed were still on their way; they're taken once those land.
+    private var queuedSteps = 0
 
     init(terminal: TerminalView) {
         self.terminal = terminal
@@ -52,7 +79,29 @@ final class PaneSearch: NSObject, NSTextFieldDelegate {
     // MARK: Searching
 
     func controlTextDidChange(_ notification: Notification) {
+        pendingSearch?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.pendingSearch = nil
+                self.search(keepingPlace: false)
+            }
+        }
+        pendingSearch = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.typingDelay, execute: work)
+    }
+
+    /// Starts a search still waiting on typing now.
+    private func flushPendingSearch() {
+        guard pendingSearch != nil else { return }
+        pendingSearch?.cancel()
+        pendingSearch = nil
         search(keepingPlace: false)
+    }
+
+    /// Whether `matches` are for what is typed and the options set now.
+    private var matchesAreCurrent: Bool {
+        matchesFor.map { $0.query == query && $0.options == options } ?? query.isEmpty
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
@@ -68,13 +117,60 @@ final class PaneSearch: NSObject, NSTextFieldDelegate {
         }
     }
 
-    /// Runs the query over the history. A fresh query starts at the newest
-    /// match; a re-run (new output, toggled option) stays on the same one.
+    /// Runs the query over the history, off the main thread. A fresh query
+    /// starts at the newest match; a re-run (new output, toggled option)
+    /// stays on the same one.
     func search(keepingPlace: Bool) {
+        pendingSearch?.cancel()
+        pendingSearch = nil
+        let request = Request(query: query, options: options, keepingPlace: keepingPlace)
+        guard !request.query.isEmpty else {
+            // Nothing to look for; a search still running is dropped when it lands.
+            lastSearch = Date()
+            searchedGeneration = terminal.session.contentGeneration
+            return apply([], for: request)
+        }
+        if searching {
+            queued = request
+        } else {
+            start(request)
+        }
+    }
+
+    private func start(_ request: Request) {
+        searching = true
         lastSearch = Date()
+        let session = terminal.session
+        let generation = session.contentGeneration
+        searchedGeneration = generation
+        Task { [weak self] in
+            let found = (try? await session.search(request.query, options: request.options)) ?? []
+            guard let self else { return }
+            self.searching = false
+            if let next = self.queued {
+                // Asked for again meanwhile: the latest request wins.
+                self.queued = nil
+                return self.start(next)
+            }
+            // Typed or toggled since: the new query's own search follows.
+            guard request.query == self.query, request.options == self.options else { return }
+            if session.contentGeneration != generation, !request.isRetry {
+                // Output arrived during the scan; look once more. Under
+                // output that never stops, the second result is shown, and
+                // the ticks keep catching up with it.
+                var again = request
+                again.isRetry = true
+                return self.start(again)
+            }
+            self.apply(found, for: request)
+        }
+    }
+
+    private func apply(_ found: [SearchMatch], for request: Request) {
+        let keepingPlace = request.keepingPlace
         let previous = current.flatMap { matches.indices.contains($0) ? matches[$0] : nil }
-        let query = self.query
-        matches = query.isEmpty ? [] : ((try? terminal.session.terminal.search(query, options: options)) ?? [])
+        matches = found
+        matchesFor = (request.query, request.options)
         if matches.isEmpty {
             current = nil
         } else if keepingPlace, let previous,
@@ -87,12 +183,27 @@ final class PaneSearch: NSObject, NSTextFieldDelegate {
         }
         if !keepingPlace, let current { terminal.reveal(matches[current]) }
         refresh(animated: !keepingPlace)
+        let steps = queuedSteps
+        queuedSteps = 0
+        if steps != 0, !matches.isEmpty { move(by: steps) }
     }
 
     /// Moves to an older (-1) or newer (+1) match, wrapping around.
     func step(_ direction: Int) {
+        // Return right after typing goes to the matches of what's typed:
+        // the step waits for them and is taken when they land.
+        guard matchesAreCurrent else {
+            flushPendingSearch()
+            if !searching { search(keepingPlace: false) }
+            queuedSteps += direction
+            return
+        }
         guard !matches.isEmpty else { return search(keepingPlace: false) }
-        let next = ((current ?? matches.count - 1) + direction + matches.count) % matches.count
+        move(by: direction)
+    }
+
+    private func move(by direction: Int) {
+        let next = (((current ?? matches.count - 1) + direction) % matches.count + matches.count) % matches.count
         current = next
         terminal.reveal(matches[next])
         refresh(animated: true)
@@ -101,7 +212,9 @@ final class PaneSearch: NSObject, NSTextFieldDelegate {
     /// Called often: follows scrolling and output, and re-runs the search now
     /// and then so new output gets matched too.
     func tick() {
-        if !query.isEmpty, Date().timeIntervalSince(lastSearch) > 0.6 {
+        // New output gets searched now and then; without any, the matches stand.
+        if pendingSearch == nil, !searching, !query.isEmpty, Date().timeIntervalSince(lastSearch) > 0.6,
+           terminal.session.contentGeneration != searchedGeneration {
             search(keepingPlace: true)
         } else {
             refresh(animated: false)

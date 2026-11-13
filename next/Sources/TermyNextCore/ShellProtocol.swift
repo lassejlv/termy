@@ -57,7 +57,8 @@ public enum ShellProtocol {
         case "hello" where fields.count >= 4:
             return .hello(pane: unescape(fields[1]), pid: Int32(fields[2]) ?? 0, path: unescape(fields[3]))
         case "line" where fields.count >= 5:
-            return .line(ShellLine(buffer: unescape(fields[2]), cursor: Int(fields[1]) ?? 0,
+            let buffer = unescape(fields[2])
+            return .line(ShellLine(buffer: buffer, cursor: characterOffset(ofScalarOffset: Int(fields[1]) ?? 0, in: buffer),
                                    history: list(fields[3]), commands: list(fields[4])))
         case "done":
             return .done
@@ -103,6 +104,22 @@ public enum ShellProtocol {
         }
         if escaping { out.append("\\") }
         return out
+    }
+
+    /// zsh's `$CURSOR` counts code points; Swift strings count characters
+    /// (an accented letter or a flag can be several code points). The number
+    /// of whole characters before the cursor, so a cursor inside one isn't
+    /// taken for the end of the line.
+    public static func characterOffset(ofScalarOffset offset: Int, in text: String) -> Int {
+        guard offset > 0 else { return 0 }
+        var scalars = 0
+        var characters = 0
+        for character in text {
+            scalars += character.unicodeScalars.count
+            guard scalars <= offset else { break }
+            characters += 1
+        }
+        return characters
     }
 
     private static func list(_ field: String) -> [String] {

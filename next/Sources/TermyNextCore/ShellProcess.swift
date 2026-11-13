@@ -4,14 +4,6 @@ import Foundation
 /// Reads the foreground program and working directory of a shell from the
 /// kernel, the way a pane header names "zsh ~/Dev/termy" or "nvim ~/notes".
 public enum ShellProcess {
-    /// Direct children of `pid` (default: this process).
-    public static func children(of pid: pid_t = getpid()) -> Set<pid_t> {
-        var buffer = [pid_t](repeating: 0, count: 512)
-        let count = proc_listchildpids(pid, &buffer, Int32(buffer.count * MemoryLayout<pid_t>.size))
-        guard count > 0 else { return [] }
-        return Set(buffer.prefix(Int(count)).filter { $0 > 0 })
-    }
-
     /// The foreground process group leader on `shell`'s terminal, or `shell` itself.
     public static func foreground(of shell: pid_t) -> pid_t {
         var info = proc_bsdinfo()

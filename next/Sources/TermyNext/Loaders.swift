@@ -545,10 +545,23 @@ final class LoaderView: NSView {
         updateLink()
     }
 
+    // A hidden host (the sidebar with tabs above, the tab strip with tabs at
+    // the side) no longer draws, so it never removes its spinners either:
+    // without this their links ran at 60 Hz for as long as the window showed.
+    override func viewDidHide() {
+        super.viewDidHide()
+        updateLink()
+    }
+
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        updateLink()
+    }
+
     /// Ticks only while the window shows; a display link holds its target,
     /// so it's dropped as soon as the view leaves the window.
     private func updateLink() {
-        let visible = window?.occlusionState.contains(.visible) ?? false
+        let visible = (window?.occlusionState.contains(.visible) ?? false) && !isHiddenOrHasHiddenAncestor
         if visible, link == nil {
             let link = displayLink(target: self, selector: #selector(step(_:)))
             link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
