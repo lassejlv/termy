@@ -421,4 +421,7 @@ impl RemoteTransport for ClientTerminal {
     fn host_lost(&self) -> bool {
         self.shared.host_lost.load(Ordering::Acquire)
     }
+    fn supports_prompt_marks(&self) -> bool {
+        self.same_build
+    }
 }

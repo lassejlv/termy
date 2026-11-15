@@ -119,6 +119,52 @@ final class EchoPredictorTests: XCTestCase {
         XCTAssertEqual(screen.visibleText, " 界")
     }
 
+    func testShellPhasesAndLongCommandNotice() {
+        let screen = TerminalScreen(stream: 1, paneID: "p", title: nil)
+        let start = Date()
+        XCTAssertEqual(screen.shellPhase, .unknown)
+        screen.apply(shell: .prompt, now: start)
+        screen.apply(shell: .input, now: start)
+        XCTAssertEqual(screen.shellPhase, .input)
+        screen.apply(shell: .executing, now: start)
+        XCTAssertEqual(screen.shellPhase, .running)
+        // A quick command ends quietly.
+        screen.apply(shell: .finished(exitCode: 0), now: start.addingTimeInterval(1))
+        XCTAssertNil(screen.finishedCommand)
+        XCTAssertEqual(screen.shellPhase, .prompt)
+
+        screen.apply(shell: .executing, now: start)
+        screen.apply(shell: .finished(exitCode: 2), now: start.addingTimeInterval(75))
+        let notice = screen.finishedCommand
+        XCTAssertEqual(notice?.exitCode, 2)
+        XCTAssertEqual(notice.map(CommandFormat.finished), "Exit 2 after 1m 15s")
+        screen.dismissFinishedCommand()
+        XCTAssertNil(screen.finishedCommand)
+        // A stray finish without a start (fish prints one at its first prompt) says nothing.
+        screen.apply(shell: .finished(exitCode: 0), now: start.addingTimeInterval(100))
+        XCTAssertNil(screen.finishedCommand)
+    }
+
+    func testNoPredictionsWhileACommandRuns() {
+        let screen = TerminalScreen(stream: 1, paneID: "p", title: nil)
+        let start = Date()
+        screen.apply(HostLinkTests.frame(stream: 1, text: "$ "), now: start)
+        screen.noteSent(.text("l"), now: start)
+        screen.apply(HostLinkTests.frame(stream: 1, text: "$ l"), now: start.addingTimeInterval(0.2))
+        screen.apply(shell: .executing)
+        screen.noteSent(.text("s"), now: start.addingTimeInterval(0.3))
+        XCTAssertTrue(screen.predictions(enabled: true).isEmpty)
+    }
+
+    func testDurationsReadNaturally() {
+        XCTAssertEqual(CommandFormat.duration(45), "45s")
+        XCTAssertEqual(CommandFormat.duration(192), "3m 12s")
+        XCTAssertEqual(CommandFormat.duration(3840), "1h 4m")
+        XCTAssertEqual(
+            CommandFormat.finished(.init(exitCode: 0, duration: 8)), "Finished in 8s")
+        XCTAssertEqual(CommandFormat.finished(.init(exitCode: nil, duration: 8)), "Finished in 8s")
+    }
+
     func testPredictionsShowOnlyOnSlowLinks() {
         let screen = TerminalScreen(stream: 1, paneID: "p", title: nil)
         let start = Date()

@@ -11,6 +11,8 @@ enum KeyAction: Equatable {
     case paste
     case hideKeyboard
     case functionRow
+    /// Asks the SwiftUI host, like a ⌘ shortcut does.
+    case command(TerminalCommand)
 }
 
 /// A key the bar can show. Users choose and order them in Settings.
@@ -20,6 +22,7 @@ enum KeyBarKey: String, Codable, CaseIterable, Identifiable {
     case home, end, pageUp, pageDown
     case tilde, pipe, slash, dash, dollar, star
     case functionKeys, snippets, paste, hideKeyboard
+    case previousPrompt, nextPrompt
 
     var id: String { rawValue }
 
@@ -46,7 +49,7 @@ enum KeyBarKey: String, Codable, CaseIterable, Identifiable {
         case .dollar: "$"
         case .star: "*"
         case .functionKeys: "fn"
-        case .left, .up, .down, .right, .snippets, .paste, .hideKeyboard: ""
+        case .left, .up, .down, .right, .snippets, .paste, .hideKeyboard, .previousPrompt, .nextPrompt: ""
         }
     }
 
@@ -59,6 +62,8 @@ enum KeyBarKey: String, Codable, CaseIterable, Identifiable {
         case .snippets: "text.badge.plus"
         case .paste: "doc.on.clipboard"
         case .hideKeyboard: "keyboard.chevron.compact.down"
+        case .previousPrompt: "chevron.up.2"
+        case .nextPrompt: "chevron.down.2"
         default: nil
         }
     }
@@ -89,6 +94,8 @@ enum KeyBarKey: String, Codable, CaseIterable, Identifiable {
         case .snippets: "Snippets"
         case .paste: "Paste"
         case .hideKeyboard: "Hide Keyboard"
+        case .previousPrompt: "Previous Prompt"
+        case .nextPrompt: "Next Prompt"
         }
     }
 
@@ -117,6 +124,8 @@ enum KeyBarKey: String, Codable, CaseIterable, Identifiable {
         case .snippets: .functionRow  // Handled as a menu; see `KeyBar`.
         case .paste: .paste
         case .hideKeyboard: .hideKeyboard
+        case .previousPrompt: .command(.previousPrompt)
+        case .nextPrompt: .command(.nextPrompt)
         }
     }
 
@@ -464,6 +473,7 @@ final class KeyBar: UIInputView, UIInputViewAudioFeedback {
         case .paste: terminal.paste()
         case .hideKeyboard: _ = terminal.resignFirstResponder()
         case .functionRow: toggleFunctionRow()
+        case .command(let command): terminal.onCommand?(command)
         }
     }
 

@@ -1153,3 +1153,46 @@ fn query_colors_a_view_sends_become_the_launch_colors() {
     assert_eq!(pane.launch_config().config.query_colors, colors);
     pane.close().unwrap();
 }
+
+/// The host answers `PromptMarks` with the lines OSC 133 marked, numbered
+/// like `LineTexts`.
+#[cfg(unix)]
+#[test]
+fn panes_answer_prompt_marks_by_line() {
+    let pane = launched_pane(
+        "stty -echo; printf '\\033]133;A\\007$ ls\\r\\n\\033]133;C\\007out\\r\\nREADY'; exec sleep 30",
+        None,
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !screen(&pane.snapshot().unwrap()).contains("READY") {
+        assert!(Instant::now() < deadline, "the program never got ready");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let state = pane.snapshot().unwrap();
+    let RemoteReply::PromptMarks(marks) = pane
+        .command(RemoteCommand::PromptMarks {
+            first: -100,
+            last: 100,
+            anchor: Some(state.lines_scrolled),
+        })
+        .unwrap()
+    else {
+        panic!("expected prompt marks");
+    };
+    let kinds: Vec<_> = marks.iter().map(|mark| mark.kinds).collect();
+    assert_eq!(kinds, [PromptMark::PROMPT, PromptMark::OUTPUT]);
+    assert_eq!(marks[1].line, marks[0].line + 1);
+    let RemoteReply::LineTexts(texts) = pane
+        .command(RemoteCommand::LineTexts {
+            first: marks[0].line,
+            last: marks[1].line,
+            anchor: Some(state.lines_scrolled),
+        })
+        .unwrap()
+    else {
+        panic!("expected lines");
+    };
+    let texts: Vec<_> = texts.lines.iter().map(|line| line.text.as_str()).collect();
+    assert_eq!(texts, ["$ ls", "out"]);
+    pane.close().unwrap();
+}

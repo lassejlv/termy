@@ -528,12 +528,23 @@ fn open_stream(port: u16) -> anyhow::Result<TcpStream> {
 /// failure: a probe holds it for a moment, and mutual authentication already
 /// keeps a stale port's new owner from learning anything.
 pub(crate) fn connect(root: &Path) -> anyhow::Result<TcpStream> {
-    connect_identified(root).map(|(stream, _)| stream)
+    connect_identified(root).map(|host| host.stream)
 }
 
-/// Like [`connect`], also returning the host's token, which no other host
-/// shares: a client can tell that the host it reached is a new one.
-pub(crate) fn connect_identified(root: &Path) -> anyhow::Result<(TcpStream, String)> {
+/// A connection made by [`connect_identified`].
+pub(crate) struct IdentifiedHost {
+    pub(crate) stream: TcpStream,
+    /// The host's token, which no other host shares: a client can tell that
+    /// the host it reached is a new one.
+    pub(crate) token: String,
+    /// Whether the host's [`build_id`] is this client's own, so it decodes
+    /// requests added to [`VERSION`] after it shipped (see
+    /// `RemoteCommand::PromptMarks`).
+    pub(crate) same_build: bool,
+}
+
+/// Like [`connect`], also identifying the host.
+pub(crate) fn connect_identified(root: &Path) -> anyhow::Result<IdentifiedHost> {
     if fs::symlink_metadata(root).is_err() {
         return Err(no_host(root));
     }
@@ -552,11 +563,16 @@ pub(crate) fn connect_identified(root: &Path) -> anyhow::Result<(TcpStream, Stri
         .into());
     }
     warn_about_build_skew(&endpoint.build);
+    let same_build = endpoint.build == build_id();
     let result = (|| {
         let mut stream = open_stream(endpoint.port)?;
         authenticate(&mut stream, &endpoint.token)?;
         match read_message_limited(&mut stream, 4096)? {
-            Response::Ok => Ok((stream, endpoint.token)),
+            Response::Ok => Ok(IdentifiedHost {
+                stream,
+                token: endpoint.token,
+                same_build,
+            }),
             Response::Error(error) => bail!(error),
             _ => bail!("unexpected multiplexer greeting"),
         }

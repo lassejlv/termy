@@ -593,6 +593,18 @@ impl Backend {
         }
     }
 
+    pub(super) fn prompt_marks(
+        &self,
+        first: i32,
+        last: i32,
+        anchor: Option<u64>,
+    ) -> anyhow::Result<Option<Vec<crate::remote::PromptMark>>> {
+        match self {
+            Self::Custom(backend) => Ok(Some(backend.prompt_marks(first, last, anchor))),
+            Self::Remote(backend) => backend.prompt_marks(first, last, anchor),
+        }
+    }
+
     pub(super) fn take_damage_snapshot(&self) -> TerminalDamageSnapshot {
         match self {
             Self::Custom(backend) => backend.take_damage_snapshot(),

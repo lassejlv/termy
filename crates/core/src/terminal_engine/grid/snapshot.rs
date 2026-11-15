@@ -213,6 +213,8 @@ impl Row {
             occupied,
             clear_background,
             wrapped: flags & WRAPPED != 0,
+            // Snapshots don't carry prompt marks.
+            prompt: 0,
             extra_units,
         };
         if flags & PACKED != 0 {

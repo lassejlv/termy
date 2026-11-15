@@ -37,6 +37,12 @@ the same way; `line_texts_anchored` keeps the line numbers of an earlier
 reply while output scrolls, which `termy mux wait` uses to search output that
 scrolled into history between two polls.
 
+`RemoteCommand::PromptMarks` reads the lines OSC 133;A and 133;C marked,
+numbered and anchored like `LineTexts`. It was added to protocol 4 after it
+shipped, without a bump, so a view sends it only to a host of its own build
+(`RemoteTransport::supports_prompt_marks`); `Terminal::prompt_marks` reports
+`None` for any other host, which would drop the connection on it.
+
 A `Write` the program cannot receive is answered with
 `RemoteReply::InputRejected` (the program exited, or the input backlog is
 full), and `SessionClient::write` fails with that `InputRejection`. One it

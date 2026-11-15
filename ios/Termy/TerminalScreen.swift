@@ -36,6 +36,8 @@ final class TerminalScreen: Identifiable {
     @ObservationIgnored private(set) var background: UInt32 = 0x1014_21ff
     /// Kitty graphics on the screen, and the images the host has sent.
     @ObservationIgnored private(set) var images: [RemoteImagePlacement] = []
+    /// Screen rows where a shell prompt starts (protocol 5).
+    @ObservationIgnored private(set) var promptRows: [Int] = []
     @ObservationIgnored private var pixels: [String: CGImage] = [:]
     /// Called after each frame; the terminal view redraws.
     @ObservationIgnored var changedRows: [Int]?
@@ -48,6 +50,21 @@ final class TerminalScreen: Identifiable {
     @ObservationIgnored private var keySentAt: Date?
     /// Typed after the screen first goes live, e.g. a Shortcut's command.
     @ObservationIgnored var pendingInput: String?
+
+    /// Where the shell is, from OSC 133 (protocol 5); `.unknown` without shell integration.
+    enum ShellPhase { case unknown, prompt, input, running }
+    private(set) var shellPhase = ShellPhase.unknown
+    /// A command that ran long enough to be worth telling about when it ends.
+    struct FinishedCommand: Equatable, Identifiable {
+        let id = UUID()
+        var exitCode: Int?
+        var duration: TimeInterval
+        var failed: Bool { (exitCode ?? 0) != 0 }
+    }
+    private(set) var finishedCommand: FinishedCommand?
+    /// Commands shorter than this end without a notice.
+    static let noticeAfter: TimeInterval = 5
+    @ObservationIgnored private var commandStartedAt: Date?
 
     nonisolated var id: Int { stream }
 
@@ -115,6 +132,9 @@ final class TerminalScreen: Identifiable {
 
     func image(_ key: String) -> CGImage? { pixels[key] }
 
+    /// The buffer row of a screen row, as the host numbers them for prompts and search: 0 is the oldest kept line.
+    func bufferRow(ofScreenRow row: Int) -> Int { historySize - displayOffset + row }
+
     /// Keeps an image the host sent; a later `apply(_:)` places it.
     func store(image png: Data, key: String) {
         // Untrusted: bound what is decoded and how much is kept.
@@ -154,6 +174,11 @@ final class TerminalScreen: Identifiable {
             lines[update.row] = update.runs
             wrapped[update.row] = update.wrapped ?? false
         }
+        let prompts = frame.promptRows ?? []
+        if prompts != promptRows {
+            changedRows = changedRows.map { Array(Set($0 + promptRows + prompts)) }
+            promptRows = prompts
+        }
         displayOffset = max(0, frame.displayOffset ?? 0)
         historySize = max(0, frame.historySize ?? 0)
         cursor = frame.cursor
@@ -175,11 +200,31 @@ final class TerminalScreen: Identifiable {
     /// Records a key on its way to the host, for latency and local echo.
     func noteSent(_ key: RemoteKey, now: Date = Date()) {
         if keySentAt == nil { keySentAt = now }
-        guard displayOffset == 0 else { return }
+        guard displayOffset == 0, shellPhase != .running else { return }
         predictor.noteKey(key, cursor: cursor, cols: cols, now: now)
     }
 
     func notePasted() { predictor.reset() }
+
+    func apply(shell event: RemoteShellEvent, now: Date = Date()) {
+        switch event {
+        case .prompt: shellPhase = .prompt
+        case .input: shellPhase = .input
+        case .executing:
+            shellPhase = .running
+            commandStartedAt = now
+            // Whatever runs now decides what it echoes.
+            predictor.reset()
+        case .finished(let code):
+            if let start = commandStartedAt, now.timeIntervalSince(start) >= Self.noticeAfter {
+                finishedCommand = FinishedCommand(exitCode: code, duration: now.timeIntervalSince(start))
+            }
+            commandStartedAt = nil
+            shellPhase = .prompt
+        }
+    }
+
+    func dismissFinishedCommand() { finishedCommand = nil }
 
     /// Drops predictions the host never answered. True when some were shown.
     func expirePredictions(now: Date = Date()) -> Bool {
@@ -189,7 +234,8 @@ final class TerminalScreen: Identifiable {
 
     /// Predictions worth drawing: only when the link is slow enough to notice.
     func predictions(enabled: Bool) -> [EchoPredictor.Prediction] {
-        guard enabled, let latency, latency > 0.04 else { return [] }
+        // A running program (an editor, a REPL) may not echo as typed; only the shell's prompt is safe.
+        guard enabled, shellPhase != .running, let latency, latency > 0.04 else { return [] }
         return predictor.visible
     }
 }

@@ -440,6 +440,22 @@ typedef struct {
   size_t matches_capacity;
 } TermyFfiSearchBatch;
 
+/* A buffer line OSC 133 shell integration marked, with kinds holding
+ * TERMY_PROMPT_MARK_PROMPT (133;A, prompt start) and/or
+ * TERMY_PROMPT_MARK_OUTPUT (133;C, command output start). */
+#define TERMY_PROMPT_MARK_PROMPT 1u
+#define TERMY_PROMPT_MARK_OUTPUT 2u
+typedef struct {
+  int32_t line;
+  uint8_t kinds;
+} TermyFfiPromptMark;
+
+typedef struct {
+  TermyFfiPromptMark *marks_ptr;
+  size_t marks_len;
+  size_t marks_capacity;
+} TermyFfiPromptMarkBatch;
+
 typedef struct {
   bool case_sensitive;
   bool regex;
@@ -838,7 +854,7 @@ TermyFfiStatus termy_terminal_set_scrollback_history(
  * mouse {enabled, report_click, report_drag, report_motion, sgr_encoding,
  * utf8_encoding} and keyboard {application_keypad, disambiguate_escape_codes,
  * report_event_types, report_alternate_keys, report_all_keys_as_esc,
- * report_associated_text}. Free with termy_buffer_free. */
+ * report_associated_text}. Free with the buffer free call. */
 TermyFfiStatus termy_terminal_modes_json(
     TermyFfiTerminal *terminal,
     TermyFfiBytes *out_json);
@@ -851,6 +867,34 @@ TermyFfiStatus termy_terminal_text(
     TermyFfiTerminal *terminal,
     uint32_t flags,
     uint32_t max_lines,
+    TermyFfiBytes *out_text);
+/* Buffer lines are numbered with 0 the top screen row and -1 the newest
+ * history row. The first and last line of the buffer, history included. */
+TermyFfiStatus termy_terminal_line_bounds(
+    TermyFfiTerminal *terminal,
+    int32_t *out_first,
+    int32_t *out_last);
+/* The lines of first..last (inclusive) that OSC 133;A (prompt start) or
+ * 133;C (command output start) marked while the cursor was on them, oldest
+ * first. Marks follow their rows into history and through reflow; snapshots
+ * drop them. *out_supported is false, with no marks, when the terminal can't
+ * tell: it views a pane of a session host of another build. Free the batch
+ * with the prompt mark batch free call. */
+TermyFfiStatus termy_terminal_prompt_marks(
+    TermyFfiTerminal *terminal,
+    int32_t first,
+    int32_t last,
+    bool *out_supported,
+    TermyFfiPromptMarkBatch *out_batch);
+TermyFfiStatus termy_prompt_mark_batch_free(TermyFfiPromptMarkBatch *batch);
+/* The plain text of lines first..last (inclusive, clamped to the buffer): a
+ * soft-wrapped line joins the next without a newline, every other line ends
+ * with one (none after the last), and trailing blanks of each line are
+ * dropped. Free the text with the buffer free call. */
+TermyFfiStatus termy_terminal_line_range_text(
+    TermyFfiTerminal *terminal,
+    int32_t first,
+    int32_t last,
     TermyFfiBytes *out_text);
 TermyFfiStatus termy_terminal_bracketed_paste_mode(
     TermyFfiTerminal *terminal,

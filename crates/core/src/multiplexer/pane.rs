@@ -914,6 +914,7 @@ fn run(
                         | RemoteCommand::Snapshot
                         | RemoteCommand::Lines { .. }
                         | RemoteCommand::LineTexts { .. }
+                        | RemoteCommand::PromptMarks { .. }
                         | RemoteCommand::Search { .. }
                         | RemoteCommand::HyperlinkAt { .. }
                         | RemoteCommand::LinkAt { .. }

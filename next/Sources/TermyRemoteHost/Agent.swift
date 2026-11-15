@@ -22,6 +22,8 @@ public final class RemoteHostAgent {
     private var lastConfiguration: RemoteConfiguration?
     var configuration: RemoteConfiguration { lastConfiguration ?? configurationProvider() }
     private var lastSessions: RemoteSessionList?
+    /// When each pane's running command was first seen, for phones to show how long it runs.
+    private var runningSince: [String: Date] = [:]
     /// Pane sizes phones asked for, across every phone, so the last one to
     /// leave a pane gives it back the size it had before any phone came.
     let paneSizes = PaneSizes()
@@ -237,12 +239,19 @@ public final class RemoteHostAgent {
     /// The sessions as the host has them now. The host calls block, so they
     /// run off the main actor.
     func currentSessions() async -> RemoteSessionList {
-        await Task.detached { [multiplexer] in
-            Self.sessions(panes: (try? multiplexer.panes()) ?? [], layout: try? multiplexer.layout())
-        }.value
+        let read = await Task.detached { [multiplexer] in
+            Handoff(((try? multiplexer.panes()) ?? [], try? multiplexer.layout()))
+        }.value.value
+        let now = Date()
+        var since: [String: Date] = [:]
+        for pane in read.0 where pane.shell?.running == true { since[pane.id] = runningSince[pane.id] ?? now }
+        runningSince = since
+        return Self.sessions(panes: read.0, layout: read.1, runningSince: since)
     }
 
-    nonisolated static func sessions(panes: [MultiplexerPane], layout: MultiplexerLayout?) -> RemoteSessionList {
+    nonisolated static func sessions(
+        panes: [MultiplexerPane], layout: MultiplexerLayout?, runningSince: [String: Date] = [:]
+    ) -> RemoteSessionList {
         var groups: [RemoteSessionGroup] = []
         for window in layout?.windows ?? [] {
             for workspace in window.workspaces {
@@ -260,8 +269,15 @@ public final class RemoteHostAgent {
         }
         return RemoteSessionList(
             groups: groups,
-            panes: panes.map {
-                RemotePane(id: $0.id, title: $0.title, workingDirectory: $0.workingDirectory, exited: $0.exited)
+            panes: panes.map { pane in
+                RemotePane(
+                    id: pane.id, title: pane.title, workingDirectory: pane.workingDirectory, exited: pane.exited,
+                    command: pane.shell.map { shell in
+                        RemoteCommandState(
+                            running: shell.running, finished: Int(clamping: shell.commandsFinished),
+                            exitCode: shell.exitCode.map(Int.init),
+                            runningSince: shell.running ? runningSince[pane.id] : nil)
+                    })
             }
         )
     }
@@ -325,6 +341,13 @@ final class Peer {
     var showsImages: Bool { clientVersion >= 3 }
     /// Whether the phone keeps glyphs by key and takes larger grids.
     var keepsGlyphs: Bool { clientVersion >= 4 }
+    /// Whether the phone understands `HostMessage.shell`.
+    var followsShell: Bool { clientVersion >= 5 }
+
+    /// A pane's command started or ended: phones see it in the list without waiting for the next poll.
+    func sessionsMayHaveChanged() {
+        Task { await agent?.broadcastSessionsIfChanged() }
+    }
 
     init(id: UUID, name: String, channel: SecureChannel, agent: RemoteHostAgent) {
         self.id = id
@@ -442,6 +465,9 @@ final class Peer {
             let frame = stream.session.frame
             let desired = max(0, frame.historySize - bufferRow + frame.rows / 2)
             stream.session.scroll(lines: Int32(clamping: desired - frame.displayOffset))
+        case .jumpToPrompt(let id, let forward): streams[id]?.jumpToPrompt(forward: forward)
+        case .commandOutput(let id, let bufferRow):
+            send(.commandOutput(stream: id, output: streams[id]?.commandOutput(promptBufferRow: bufferRow)))
         case .closePane(let paneID):
             Task {
                 do { try await agent?.closePane(paneID) } catch { send(.error("Couldn’t close the pane: \(error)")) }
@@ -507,6 +533,8 @@ final class Stream {
     /// next frame waits for it, so frames reach the phone in order.
     private var encoding = false
     private var closed = false
+    /// False once the pane's host said it can't report prompt marks (another build).
+    private var promptsSupported = true
 
     init(id: Int, session: TerminalSession, peer: Peer, sizes: PaneSizes) {
         self.id = id
@@ -565,6 +593,21 @@ final class Stream {
         pendingFull = true
         scheduleSend()
     }
+    func jumpToPrompt(forward: Bool) {
+        let frame = session.frame
+        guard
+            let offset = PromptNavigation.jumpOffset(
+                in: session.terminal, displayOffset: frame.displayOffset, forward: forward)
+        else { return }
+        session.scroll(lines: Int32(clamping: offset - frame.displayOffset))
+    }
+
+    func commandOutput(promptBufferRow: Int?) -> RemoteCommandOutput? {
+        // The phone numbers buffer rows from the oldest history line, like search.
+        let line = promptBufferRow.map { $0 - session.frame.historySize }
+        return PromptNavigation.output(in: session.terminal, promptLine: line)
+    }
+
     func mouse(col: Int, row: Int, action: String) {
         guard (0..<session.frame.cols).contains(col), (0..<session.frame.rows).contains(row) else { return }
         let kind: MouseInput.Kind
@@ -601,8 +644,21 @@ final class Stream {
         case .title(let title): peer?.send(.title(stream: id, title: title))
         case .bell: peer?.send(.bell(stream: id))
         case .exit: peer?.send(.exited(stream: id))
+        case .shellPromptStart: shell(.prompt)
+        case .shellCommandStart: shell(.input)
+        case .shellCommandExecuting:
+            shell(.executing)
+            peer?.sessionsMayHaveChanged()
+        case .shellCommandFinished(let code):
+            shell(.finished(exitCode: code.map(Int.init)))
+            peer?.sessionsMayHaveChanged()
         default: break
         }
+    }
+
+    private func shell(_ event: RemoteShellEvent) {
+        guard let peer, peer.followsShell else { return }
+        peer.send(.shell(stream: id, event: event))
     }
 
     private func scheduleSend() {
@@ -658,6 +714,11 @@ final class Stream {
         )
         frame.displayOffset = store.displayOffset
         frame.historySize = store.historySize
+        if promptsSupported, peer?.followsShell == true {
+            frame.promptRows = PromptNavigation.promptRows(
+                in: session.terminal, displayOffset: store.displayOffset, rows: store.rows)
+            if frame.promptRows == nil { promptsSupported = false }
+        }
         let slots = FrameEncoder.attachGlyphs(to: &frame, configuration: config, glyphs: glyphs)
         var pendingImages: ImageEncoder.Pending?
         if imagesChanged || full, let peer, peer.showsImages {

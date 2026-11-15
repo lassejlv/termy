@@ -730,6 +730,7 @@ impl Row {
             occupied: self.occupied,
             clear_background: self.clear_background,
             wrapped: false,
+            prompt: 0,
             extra_units: 0,
         };
         self.packed = Some(packed);

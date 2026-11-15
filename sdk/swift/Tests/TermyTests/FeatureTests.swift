@@ -33,6 +33,35 @@ struct FeatureTests {
         #expect(matches[0].viewportRow(historySize: frame.historySize, displayOffset: 0, rows: 3) == nil)
     }
 
+    @Test func promptMarksAndLineTextFollowShellIntegration() throws {
+        let prompt = "\u{1b}]133;A\u{07}"
+        let output = "\u{1b}]133;C\u{07}"
+        let terminal = try displayTerminal(cols: 10, rows: 3)
+        try terminal.feed("\(prompt)$ ls\r\n\(output)one\r\n0123456789abc\r\n\(prompt)\(output)$ ")
+
+        // Five rows on a three-row screen: two scrolled into history.
+        let bounds = try terminal.lineBounds()
+        #expect(bounds == -2...2)
+        let marks = try #require(try terminal.promptMarks(in: bounds))
+        #expect(marks == [
+            PromptMark(line: -2, kinds: [.prompt]),
+            PromptMark(line: -1, kinds: [.output]),
+            PromptMark(line: 2, kinds: [.prompt, .output]),
+        ])
+        #expect(try terminal.promptMarks(in: 0...1) == [])
+        #expect(try terminal.promptMarks(in: -100...(-2)) == [PromptMark(line: -2, kinds: [.prompt])])
+
+        // The command's output runs from its output mark to the next prompt.
+        #expect(try terminal.text(of: -1...1) == "one\n0123456789abc")
+        #expect(try terminal.text(of: bounds) == "$ ls\none\n0123456789abc\n$")
+        #expect(try terminal.text(of: 0...0) == "0123456789")
+        #expect(try terminal.text(of: 5...9) == "")
+
+        // Marks stay on their rows as output scrolls them further into history.
+        try terminal.feed("\r\nnext\r\n")
+        #expect(try terminal.promptMarks(in: try terminal.lineBounds())?.first == PromptMark(line: -4, kinds: [.prompt]))
+    }
+
     @Test func hyperlinksAtACell() throws {
         let terminal = try displayTerminal(
             feeding: "see \u{1b}]8;;https://termy.sh\u{1b}\\termy\u{1b}]8;;\u{1b}\\ docs")

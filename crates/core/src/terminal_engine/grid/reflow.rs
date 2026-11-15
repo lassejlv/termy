@@ -30,6 +30,9 @@ struct ReflowWindow {
     // each one's first cell, and its index in `pins`.
     pins: Vec<Option<usize>>,
     logical_pins: Vec<(usize, usize)>,
+    // The prompt marks of the logical line's source rows, like
+    // `logical_pins`: the index of each row's first cell, and its marks.
+    logical_marks: Vec<(usize, u8)>,
     #[cfg(test)]
     row_allocations: usize,
 }
@@ -55,6 +58,7 @@ impl ReflowWindow {
             viewport: None,
             pins: Vec::new(),
             logical_pins: Vec::new(),
+            logical_marks: Vec::new(),
             #[cfg(test)]
             row_allocations: 0,
         }
@@ -234,6 +238,11 @@ impl Grid {
             if let Some(pin) = pin {
                 output.logical_pins.push((logical.len(), pin));
             }
+            // Rows rewrapped here are new ones, without marks; the mark
+            // goes to the row that receives this row's first cell.
+            if row.prompt != 0 {
+                output.logical_marks.push((logical.len(), row.prompt));
+            }
             if index == cursor_source {
                 let removed = row.cells[..cursor_col]
                     .iter()
@@ -349,6 +358,8 @@ impl Grid {
         let mut extras = extras.drain(..).peekable();
         let pins = std::mem::take(&mut output.logical_pins);
         let mut pins = pins.into_iter().peekable();
+        let marks = std::mem::take(&mut output.logical_marks);
+        let mut marks = marks.into_iter().peekable();
         while let Some((index, mut cell)) = input.next() {
             // Metadata of cells skipped below (narrowed spacers) is dropped.
             while extras
@@ -390,6 +401,9 @@ impl Grid {
             }
             while let Some((_, pin)) = pins.next_if(|(cell, _)| *cell <= index) {
                 output.pins[pin] = Some(output.produced);
+            }
+            while let Some((_, mark)) = marks.next_if(|(cell, _)| *cell <= index) {
+                row.prompt |= mark;
             }
             if wide && cols == 1 {
                 cell.flags &= !Cell::WIDE;
@@ -441,6 +455,9 @@ impl Grid {
         // A tracked row with no text of its own is the row that ends the line.
         for (_, pin) in pins {
             output.pins[pin] = Some(output.produced);
+        }
+        for (_, mark) in marks {
+            row.prompt |= mark;
         }
         output.push(row);
     }

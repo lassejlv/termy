@@ -117,6 +117,9 @@ public struct RemoteFrame: Codable, Hashable, Sendable {
     public var background: UInt32
     public var displayOffset: Int? = nil
     public var historySize: Int? = nil
+    /// Screen rows where a shell prompt starts (OSC 133;A), for protocol 5
+    /// phones. Nil when the pane has no shell integration.
+    public var promptRows: [Int]? = nil
 
     public init(
         stream: Int, cols: Int, rows: Int, full: Bool, updates: [RowUpdate], cursor: RemoteCursor, background: UInt32
@@ -205,18 +208,59 @@ public struct RemoteImages: Codable, Hashable, Sendable {
     }
 }
 
+/// A pane's shell commands, from OSC 133 shell integration (protocol 5).
+///
+/// Only panes whose shell reported a lifecycle event have one. Older phones
+/// ignore it, and older hosts never send it.
+public struct RemoteCommandState: Codable, Hashable, Sendable {
+    /// A command was submitted and hasn't finished.
+    public var running: Bool
+    /// Commands that finished so far.
+    public var finished: Int
+    /// What the last finished command exited with.
+    public var exitCode: Int?
+    /// When the host first saw the running command, to within its poll.
+    public var runningSince: Date?
+
+    public init(running: Bool, finished: Int, exitCode: Int?, runningSince: Date? = nil) {
+        self.running = running
+        self.finished = finished
+        self.exitCode = exitCode
+        self.runningSince = runningSince
+    }
+
+    /// The last command failed and nothing runs now.
+    public var failed: Bool { !running && finished > 0 && (exitCode ?? 0) != 0 }
+}
+
+/// One step of a shell command, as an attached pane reports it (protocol 5).
+public enum RemoteShellEvent: Codable, Hashable, Sendable {
+    /// The shell shows its prompt (OSC 133;A).
+    case prompt
+    /// The user is typing a command (OSC 133;B).
+    case input
+    /// The command was submitted and runs (OSC 133;C).
+    case executing
+    /// The command finished (OSC 133;D).
+    case finished(exitCode: Int?)
+}
+
 /// A pane as the phone lists it.
 public struct RemotePane: Codable, Hashable, Sendable, Identifiable {
     public var id: String
     public var title: String?
     public var workingDirectory: String?
     public var exited: Bool
+    public var command: RemoteCommandState? = nil
 
-    public init(id: String, title: String?, workingDirectory: String?, exited: Bool) {
+    public init(
+        id: String, title: String?, workingDirectory: String?, exited: Bool, command: RemoteCommandState? = nil
+    ) {
         self.id = id
         self.title = title
         self.workingDirectory = workingDirectory
         self.exited = exited
+        self.command = command
     }
 }
 
@@ -279,6 +323,11 @@ public enum ClientMessage: Codable, Hashable, Sendable {
     case scrollToBottom(stream: Int)
     case search(stream: Int, query: String)
     case revealSearch(stream: Int, bufferRow: Int)
+    /// Scrolls to the previous or next shell prompt (protocol 5).
+    case jumpToPrompt(stream: Int, forward: Bool)
+    /// Asks for a command's output: the one whose prompt starts at
+    /// `promptBufferRow`, or the last finished one when nil (protocol 5).
+    case commandOutput(stream: Int, promptBufferRow: Int?)
 
 }
 
@@ -298,6 +347,12 @@ public enum HostMessage: Codable, Hashable, Sendable {
     /// Sent to phones that said hello with version 3 or later.
     case image(stream: Int, key: String, png: Data)
     case images(RemoteImages)
+    /// A shell lifecycle step on an attached pane. Sent to phones of version 5 or later.
+    case shell(stream: Int, event: RemoteShellEvent)
+    /// The text a command printed, answering `ClientMessage.commandOutput`.
+    /// Nil when there is no such command; `truncated` when it was cut to
+    /// `RemoteCommandOutput.maxBytes` (its end is kept).
+    case commandOutput(stream: Int, output: RemoteCommandOutput?)
 
 }
 
@@ -305,7 +360,9 @@ public enum RemoteProtocol {
     /// 3 adds Kitty graphics: `HostMessage.image` and `.images`.
     /// 4: the phone keeps glyphs by `CellRun.glyphKey` (see `GlyphCache`),
     /// and takes grids up to `RemoteFrame.maxCols` by `maxRows`.
-    public static let version = 4
+    /// 5: shell integration: `HostMessage.shell`, `RemotePane.command`,
+    /// `RemoteFrame.promptRows`, prompt jumps and command output.
+    public static let version = 5
 }
 
 /// JSON, deflated when that saves space. The first byte says which.
@@ -401,6 +458,7 @@ extension RemoteFrame {
             }
             return update
         }
+        frame.promptRows = promptRows?.filter { $0 < frame.rows }
         if cursor.row >= frame.rows || cursor.col >= frame.cols { frame.cursor.visible = false }
         frame.cursor.row = min(cursor.row, frame.rows - 1)
         frame.cursor.col = min(cursor.col, frame.cols - 1)
@@ -494,6 +552,34 @@ public final class GlyphCache {
     }
 }
 
+/// A command's output, as the host read it from the pane's history.
+public struct RemoteCommandOutput: Codable, Hashable, Sendable {
+    /// What fits a relay message with room to spare after JSON escaping.
+    public static let maxBytes = 1024 * 1024
+
+    public var command: String?
+    public var text: String
+    public var exitCode: Int?
+    public var truncated: Bool
+
+    public init(command: String?, text: String, exitCode: Int?, truncated: Bool) {
+        self.command = command
+        self.text = text
+        self.exitCode = exitCode
+        self.truncated = truncated
+    }
+
+    /// Keeps the last `maxBytes` of `text`, on a character boundary.
+    public static func bounded(command: String?, text: String, exitCode: Int?) -> RemoteCommandOutput {
+        guard text.utf8.count > maxBytes else {
+            return RemoteCommandOutput(command: command, text: text, exitCode: exitCode, truncated: false)
+        }
+        var tail = Substring(text)
+        while tail.utf8.count > maxBytes { tail = tail.dropFirst(max(1, (tail.utf8.count - maxBytes) / 4)) }
+        return RemoteCommandOutput(command: command, text: String(tail), exitCode: exitCode, truncated: true)
+    }
+}
+
 public struct RemoteSearchMatch: Codable, Hashable, Sendable {
     public var row: Int
     public var startCol: Int
@@ -518,6 +604,7 @@ extension RemoteFrame {
     /// Reject invalid dimensions/indices before allocating or drawing untrusted frames.
     public var isValid: Bool {
         (1...Self.maxCols).contains(cols) && (1...Self.maxRows).contains(rows) && updates.count <= rows
+            && (promptRows ?? []).count <= rows && (promptRows ?? []).allSatisfy { (0..<rows).contains($0) }
             && updates.allSatisfy { update in
                 (0..<rows).contains(update.row) && update.runs.count <= cols
                     && update.runs.allSatisfy {

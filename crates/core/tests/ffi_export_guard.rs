@@ -442,6 +442,8 @@ fn ffi_source() -> String {
     [
         include_str!("../src/ffi/mod.rs"),
         include_str!("../src/ffi/multiplexer.rs"),
+        include_str!("../src/ffi/inspect.rs"),
+        include_str!("../src/ffi/lines.rs"),
     ]
     .join("\n")
 }

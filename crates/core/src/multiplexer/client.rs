@@ -461,7 +461,11 @@ impl SessionClient {
         validate_state(&state)?;
         let rpc = Connection::connect(&self.root)?;
         let input = Connection::connect(&self.root)?;
-        let (mut stream, host) = Subscription::open_on(&self.root, id, host_capable, None)?;
+        let discovery::IdentifiedHost {
+            mut stream,
+            token: host,
+            same_build,
+        } = Subscription::open_on(&self.root, id, host_capable, None)?;
         let subscription = Subscription {
             root: self.root.clone(),
             pane: id.to_owned(),
@@ -678,6 +682,7 @@ impl SessionClient {
             host: Arc::clone(&self.connection),
             shared,
             input: input_queue,
+            same_build,
         }))
     }
 
@@ -1163,7 +1168,7 @@ struct Subscription {
 impl Subscription {
     fn open(&self) -> anyhow::Result<TcpStream> {
         Self::open_on(&self.root, &self.pane, self.host_capable, Some(&self.host))
-            .map(|(stream, _)| stream)
+            .map(|host| host.stream)
     }
 
     /// Subscribes to `pane`, on the host with token `host` when given.
@@ -1173,8 +1178,12 @@ impl Subscription {
         pane: &str,
         host_capable: bool,
         host: Option<&str>,
-    ) -> anyhow::Result<(TcpStream, String)> {
-        let (mut stream, token) = discovery::connect_identified(root).map_err(|error| {
+    ) -> anyhow::Result<discovery::IdentifiedHost> {
+        let discovery::IdentifiedHost {
+            mut stream,
+            token,
+            same_build,
+        } = discovery::connect_identified(root).map_err(|error| {
             if discovery::is_no_host(&error) || discovery::is_version_mismatch(&error) {
                 HostGone(format!("{error:#}")).into()
             } else {
@@ -1201,7 +1210,11 @@ impl Subscription {
             _ => bail!("invalid terminal subscription response"),
         }
         stream.set_read_timeout(None)?;
-        Ok((stream, token))
+        Ok(discovery::IdentifiedHost {
+            stream,
+            token,
+            same_build,
+        })
     }
 }
 
@@ -1297,6 +1310,10 @@ struct ClientTerminal {
     host: Arc<Connection>,
     shared: Arc<ClientState>,
     input: Arc<InputQueue>,
+    /// Whether the pane's host is of this build (see
+    /// [`discovery::IdentifiedHost::same_build`]). A subscription only ever
+    /// resumes on the host it started on, so this holds for the view's life.
+    same_build: bool,
 }
 
 #[cfg(test)]

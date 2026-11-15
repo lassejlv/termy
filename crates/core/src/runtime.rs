@@ -1344,6 +1344,29 @@ impl Terminal {
         self.backend.line_texts(first, last, anchor, max_bytes)
     }
 
+    /// Buffer lines of `first..=last` that OSC 133 shell integration marked,
+    /// oldest first, numbered like [`Self::visit_line_cells`].
+    /// `Ok(None)` when this terminal cannot tell: it views a pane of a
+    /// session host of another build. Errors are failed host requests.
+    pub fn prompt_marks(
+        &self,
+        first: i32,
+        last: i32,
+    ) -> anyhow::Result<Option<Vec<crate::remote::PromptMark>>> {
+        self.backend.prompt_marks(first, last, None)
+    }
+
+    /// [`Self::prompt_marks`] numbered as of `anchor`; see
+    /// [`crate::remote::RemoteCommand::PromptMarks`].
+    pub(crate) fn prompt_marks_anchored(
+        &self,
+        first: i32,
+        last: i32,
+        anchor: Option<u64>,
+    ) -> anyhow::Result<Option<Vec<crate::remote::PromptMark>>> {
+        self.backend.prompt_marks(first, last, anchor)
+    }
+
     pub fn take_damage_snapshot(&self) -> TerminalDamageSnapshot {
         self.backend.take_damage_snapshot()
     }

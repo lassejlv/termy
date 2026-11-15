@@ -20,6 +20,14 @@ struct TerminalScreenView: View {
     /// Which way the next pane slides in.
     @State private var switchEdge = Edge.trailing
     @State private var snippets = SnippetStore.shared
+    /// Something worth a moment's banner: a long command ended, output was copied.
+    private struct Notice: Equatable {
+        var text: String
+        var symbol: String
+        var tint: Color
+        let id = UUID()
+    }
+    @State private var notice: Notice?
 
     init(link: HostLink, screen: TerminalScreen) {
         self.link = link
@@ -68,6 +76,10 @@ struct TerminalScreenView: View {
                 switchTo(RemotePane(id: id, title: nil, workingDirectory: nil, exited: false), edge: .trailing)
             }
             .onChange(of: screen.live) { _, live in if live { primaryView?.resetFit() } }
+            .onChange(of: screen.finishedCommand) { _, command in announce(command, from: screen) }
+            .onChange(of: secondary?.finishedCommand) { _, command in
+                if let secondary { announce(command, from: secondary) }
+            }
             .onChange(of: secondary?.live) { _, live in if live == true { secondaryView?.resetFit() } }
             .onChange(of: sizeClass) { _, size in
                 // A narrowed window keeps one pane.
@@ -135,8 +147,12 @@ struct TerminalScreenView: View {
                             Button {
                                 switchTo(pane, edge: edge(toward: pane))
                             } label: {
-                                Text(title(of: pane)).font(.caption.weight(current ? .semibold : .regular))
-                                    .lineLimit(1).frame(maxWidth: 160)
+                                HStack(spacing: 5) {
+                                    CommandDot(state: pane.command)
+                                    Text(title(of: pane)).font(.caption.weight(current ? .semibold : .regular))
+                                        .lineLimit(1)
+                                }
+                                .frame(maxWidth: 160)
                                     .padding(.horizontal, 10).padding(.vertical, 5)
                                     .background(
                                         current ? AnyShapeStyle(.tint.opacity(0.3)) : AnyShapeStyle(.quaternary),
@@ -255,6 +271,10 @@ struct TerminalScreenView: View {
         case .nextPane: step(by: 1)
         case .previousPane: step(by: -1)
         case .close: dismiss()
+        case .previousPrompt, .nextPrompt:
+            guard link.followsPrompts else { return }
+            link.send(.jumpToPrompt(stream: focused.stream, forward: command == .nextPrompt))
+        case .copyOutput(let row): copyOutput(promptBufferRow: row)
         }
     }
 
@@ -295,6 +315,15 @@ struct TerminalScreenView: View {
                         Button(snippet.title, systemImage: snippet.runs ? "return" : "text.cursor") {
                             focusedView?.type(snippet)
                         }
+                    }
+                }
+            }
+            if link.followsPrompts {
+                Section {
+                    Button("Previous Prompt", systemImage: "chevron.up.2") { handle(.previousPrompt) }
+                    Button("Next Prompt", systemImage: "chevron.down.2") { handle(.nextPrompt) }
+                    Button("Copy Last Output", systemImage: "text.below.photo") {
+                        handle(.copyOutput(promptBufferRow: nil))
                     }
                 }
             }
@@ -375,7 +404,12 @@ struct TerminalScreenView: View {
     }
 
     @ViewBuilder private var banner: some View {
-        if focused.exited {
+        if let notice {
+            Label(notice.text, systemImage: notice.symbol).foregroundStyle(notice.tint).bannerStyle()
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .onTapGesture { self.notice = nil }
+                .accessibilityAddTraits(.isButton)
+        } else if focused.exited {
             Label("The program ended.", systemImage: "stop.circle").bannerStyle()
         } else if !focused.live {
             Label(
@@ -386,6 +420,47 @@ struct TerminalScreenView: View {
             Text(error).bannerStyle()
         } else if mouseMode {
             Text("Mouse mode · Tap to click, drag to select in the program").bannerStyle()
+        }
+    }
+
+    /// Tells about a long command that finished in a pane on screen, with a haptic.
+    private func announce(_ command: TerminalScreen.FinishedCommand?, from pane: TerminalScreen) {
+        guard let command else { return }
+        pane.dismissFinishedCommand()
+        var text = CommandFormat.finished(command)
+        if split, let title = pane.title { text = "\(title): \(text)" }
+        show(
+            Notice(
+                text: text, symbol: command.failed ? "xmark.circle.fill" : "checkmark.circle.fill",
+                tint: command.failed ? .red : .green))
+        UINotificationFeedbackGenerator().notificationOccurred(command.failed ? .error : .success)
+    }
+
+    private func show(_ new: Notice) {
+        withAnimation(reduceMotion ? nil : .snappy) { notice = new }
+        UIAccessibility.post(notification: .announcement, argument: new.text)
+        Task {
+            try? await Task.sleep(for: .seconds(4))
+            if notice?.id == new.id { withAnimation(reduceMotion ? nil : .snappy) { notice = nil } }
+        }
+    }
+
+    /// Copies a command's output from the Mac's history, which may reach far past the screen.
+    private func copyOutput(promptBufferRow: Int?) {
+        guard link.followsPrompts else {
+            return show(Notice(text: "Update Termy Next on your Mac to copy output", symbol: "info.circle", tint: .secondary))
+        }
+        link.requestOutput(of: focused, promptBufferRow: promptBufferRow) { output in
+            guard let output, !output.text.isEmpty else {
+                return show(Notice(text: "No command output to copy", symbol: "info.circle", tint: .secondary))
+            }
+            UIPasteboard.general.string = output.text
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            let lines = output.text.split(separator: "\n", omittingEmptySubsequences: false).count
+            var text = "Copied \(lines) line\(lines == 1 ? "" : "s")"
+            if let command = output.command, !command.isEmpty { text += " from \(command.prefix(30))" }
+            if output.truncated { text += " (the end)" }
+            show(Notice(text: text, symbol: "doc.on.doc.fill", tint: .accentColor))
         }
     }
 

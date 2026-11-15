@@ -418,14 +418,20 @@ struct FakeHost {
 }
 
 impl FakeHost {
+    /// A host of another build: its `endpoint.json` names none.
     fn new() -> Self {
+        Self::with_build("")
+    }
+
+    fn with_build(build: &str) -> Self {
         use std::net::TcpListener;
         let root = crate::multiplexer::discovery::private_tempdir();
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         std::fs::write(
             root.path().join("endpoint.json"),
-            serde_json::json!({ "version": VERSION, "port": port, "token": "token" }).to_string(),
+            serde_json::json!({ "version": VERSION, "port": port, "token": "token", "build": build })
+                .to_string(),
         )
         .unwrap();
         let (sender, connections) = flume::unbounded();
@@ -1051,4 +1057,76 @@ fn mirrored_frame_updates_carry_the_scrolls_of_their_deltas() {
         );
     }
     assert!(scrolled_rows > 0, "no update carried a scroll");
+}
+
+/// A view of a pane on a host of this very build asks it for prompt marks,
+/// numbered like the frame it shows.
+#[test]
+fn a_host_of_this_build_is_asked_for_prompt_marks() {
+    let host = FakeHost::with_build(&build_id());
+    let (transport, mut rpc, _input, _subscription) = host.attach();
+    assert!(transport.supports_prompt_marks());
+    let terminal = Terminal::from_remote(transport.clone());
+    // The host's terminal, which executes what the view asks.
+    let mut pane = Terminal::new_display(size(80, 24), None);
+    pane.feed_output(b"\x1b]133;A\x07$ ls\r\n\x1b]133;C\x07out\r\n");
+    std::thread::scope(|scope| {
+        let request = scope.spawn(|| terminal.prompt_marks(-10, 10));
+        let Request::Command { pane: id, command } = read_message(&mut rpc).unwrap() else {
+            panic!("expected a command");
+        };
+        assert_eq!(id, "pane");
+        let RemoteCommand::PromptMarks {
+            first,
+            last,
+            anchor,
+        } = command
+        else {
+            panic!("expected a prompt marks request, got {command:?}");
+        };
+        assert_eq!((first, last), (-10, 10));
+        // Numbered like the frame the view shows.
+        assert_eq!(anchor, Some(transport.state().lines_scrolled));
+        let reply = crate::remote::execute(
+            &mut pane,
+            RemoteCommand::PromptMarks {
+                first,
+                last,
+                anchor,
+            },
+        );
+        write_message(&mut rpc, &Response::Reply(reply)).unwrap();
+        let marks = request.join().unwrap().unwrap().expect("supported");
+        assert_eq!(
+            marks,
+            [
+                PromptMark {
+                    line: 0,
+                    kinds: PromptMark::PROMPT,
+                },
+                PromptMark {
+                    line: 1,
+                    kinds: PromptMark::OUTPUT,
+                },
+            ]
+        );
+    });
+}
+
+/// A host of another build cannot decode the request and would drop the
+/// connection, so the view never sends it and reports marks as unknown.
+#[test]
+fn a_host_of_another_build_is_never_asked_for_prompt_marks() {
+    let host = FakeHost::new();
+    let (transport, mut rpc, _input, _subscription) = host.attach();
+    assert!(!transport.supports_prompt_marks());
+    let terminal = Terminal::from_remote(transport);
+    assert!(terminal.prompt_marks(i32::MIN, i32::MAX).unwrap().is_none());
+    // Nothing was sent: the request connection stays silent.
+    rpc.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let Err(error) = read_message::<Request>(&mut rpc) else {
+        panic!("the view sent a request");
+    };
+    assert!(timed_out(&error), "{error:#}");
 }

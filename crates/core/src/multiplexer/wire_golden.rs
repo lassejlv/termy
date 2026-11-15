@@ -714,6 +714,11 @@ fn add_remote(samples: &mut Samples) {
                 col: 4,
                 view: viewport_anchor(true),
             },
+            C::PromptMarks {
+                first: -8,
+                last: 5,
+                anchor: Some(14),
+            },
         ],
         |command| match command {
             C::Write(_) => 0,
@@ -738,6 +743,7 @@ fn add_remote(samples: &mut Samples) {
             C::LineTexts { .. } => 19,
             C::HyperlinkAt { .. } => 20,
             C::LinkAt { .. } => 21,
+            C::PromptMarks { .. } => 22,
         },
     );
     use RemoteReply as R;
@@ -787,6 +793,16 @@ fn add_remote(samples: &mut Samples) {
             }),
             R::InputRejected(InputRejection::BacklogFull),
             R::Written { anchor: 21 },
+            R::PromptMarks(vec![
+                PromptMark {
+                    line: -6,
+                    kinds: PromptMark::PROMPT,
+                },
+                PromptMark {
+                    line: 2,
+                    kinds: PromptMark::PROMPT | PromptMark::OUTPUT,
+                },
+            ]),
         ],
         |reply| match reply {
             R::Ok => 0,
@@ -800,6 +816,7 @@ fn add_remote(samples: &mut Samples) {
             R::LineTexts(_) => 8,
             R::InputRejected(_) => 9,
             R::Written { .. } => 10,
+            R::PromptMarks(_) => 11,
         },
     );
     samples.variants(

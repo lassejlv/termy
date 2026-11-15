@@ -139,7 +139,11 @@ pub fn format_lines(lines: &[Vec<TerminalRenderCell>], format: TextFormat, unwra
     out
 }
 
-fn format_line(cells: &[TerminalRenderCell], format: TextFormat, wrapped: bool) -> String {
+pub(super) fn format_line(
+    cells: &[TerminalRenderCell],
+    format: TextFormat,
+    wrapped: bool,
+) -> String {
     // A wrapped line keeps its trailing spaces: they are part of the text.
     let end = if wrapped {
         cells.len()

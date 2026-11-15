@@ -98,6 +98,31 @@ impl CustomBackend {
         }
     }
 
+    /// Lines of `first..=last` with prompt marks, numbered like
+    /// [`Self::line_texts`] (as of `anchor` when given).
+    pub(in crate::runtime) fn prompt_marks(
+        &self,
+        first: i32,
+        last: i32,
+        anchor: Option<u64>,
+    ) -> Vec<crate::remote::PromptMark> {
+        let state = self.shared.state();
+        let lines_scrolled = state.engine.scrolled_into_history();
+        let moved = anchor.map_or(0, |anchor| lines_scrolled.wrapping_sub(anchor) as i64);
+        let shift = |line: i32, by: i64| {
+            (i64::from(line) + by).clamp(i32::MIN.into(), i32::MAX.into()) as i32
+        };
+        state
+            .engine
+            .prompt_marks(shift(first, -moved), shift(last, -moved))
+            .into_iter()
+            .map(|(line, kinds)| crate::remote::PromptMark {
+                line: shift(line, moved),
+                kinds,
+            })
+            .collect()
+    }
+
     /// Everything a session host publishes, read under one engine lock so
     /// that images, cells and screen always describe the same moment (audit
     /// L20).

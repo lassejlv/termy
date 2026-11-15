@@ -482,6 +482,32 @@ impl RemoteBackend {
         }
     }
 
+    /// Marked lines, numbered like the frame on screen unless `anchor` says
+    /// otherwise. `None` without asking when the host may not understand
+    /// the request (see [`RemoteTransport::supports_prompt_marks`]).
+    pub(crate) fn prompt_marks(
+        &self,
+        first: i32,
+        last: i32,
+        anchor: Option<u64>,
+    ) -> anyhow::Result<Option<Vec<PromptMark>>> {
+        if !self.transport.supports_prompt_marks() {
+            return Ok(None);
+        }
+        if first > last {
+            return Ok(Some(Vec::new()));
+        }
+        let anchor = Some(anchor.unwrap_or_else(|| self.transport.state().lines_scrolled));
+        match self.transport.request(RemoteCommand::PromptMarks {
+            first,
+            last,
+            anchor,
+        })? {
+            RemoteReply::PromptMarks(marks) => Ok(Some(marks)),
+            _ => anyhow::bail!("invalid prompt marks reply"),
+        }
+    }
+
     pub(crate) fn search(&self, query: &str) -> Vec<TermySearchMatch> {
         self.search_with_options(query, TermySearchOptions::default())
     }

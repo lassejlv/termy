@@ -16,7 +16,7 @@ pub struct TermyFfiMultiplexer {
     client: SessionClient,
 }
 
-fn status_for(error: &anyhow::Error) -> TermyFfiStatus {
+pub(super) fn status_for(error: &anyhow::Error) -> TermyFfiStatus {
     if is_version_mismatch(error) {
         TermyFfiStatus::VersionMismatch
     } else if is_host_unavailable(error) {

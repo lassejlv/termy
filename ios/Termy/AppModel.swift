@@ -109,8 +109,11 @@ final class AppModel: HostTransport {
     private func publishDevices() {
         let hosts = devices.map { device in
             let link = links[device.id]
-            let panes = link?.state == .connected ? link?.orderedPanes.count : nil
-            return HostSnapshot.Host(id: device.id, name: device.name, online: device.online, panes: panes)
+            let connected = link?.state == .connected
+            let panes = connected ? link?.orderedPanes : nil
+            return HostSnapshot.Host(
+                id: device.id, name: device.name, online: device.online, panes: panes?.count,
+                running: panes?.filter { $0.command?.running == true }.count)
         }
         let previous = publishedSnapshot ?? HostSnapshotStore.load()
         let stale = Date().timeIntervalSince(previous.updatedAt) > 300

@@ -14,7 +14,7 @@ struct ComputersEntry: TimelineEntry {
 struct ComputersProvider: TimelineProvider {
     static let sample = HostSnapshot(
         hosts: [
-            .init(id: UUID(), name: "MacBook Pro", online: true, panes: 4),
+            .init(id: UUID(), name: "MacBook Pro", online: true, panes: 4, running: 1),
             .init(id: UUID(), name: "Studio", online: false, panes: nil),
         ], updatedAt: Date())
 
@@ -117,7 +117,9 @@ struct ComputersWidgetView: View {
     private func status(_ host: HostSnapshot.Host) -> some View {
         HStack(spacing: 4) {
             Circle().fill(host.online ? Color.green : Color.secondary).frame(width: 6, height: 6)
-            if host.online, let panes = host.panes {
+            if host.online, let running = host.running, running > 0 {
+                Text("\(running) running")
+            } else if host.online, let panes = host.panes {
                 Text("\(panes) pane\(panes == 1 ? "" : "s")")
             } else {
                 Text(host.online ? "Online" : "Offline")

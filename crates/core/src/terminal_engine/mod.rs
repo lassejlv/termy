@@ -30,6 +30,15 @@ pub use types::{
 
 pub use snapshot::{MIN_SNAPSHOT_VERSION, SNAPSHOT_VERSION, SnapshotError, snapshot_version};
 
+/// The marks OSC 133 shell integration leaves on rows; see
+/// [`Engine::line_prompt_marks`]. A row can carry both.
+pub mod prompt_mark {
+    /// OSC 133;A: the shell's prompt starts on the row.
+    pub const PROMPT: u8 = 1;
+    /// OSC 133;C: the command's output starts on the row.
+    pub const OUTPUT: u8 = 2;
+}
+
 /// The default scrollback byte limit, 16 MiB; see [`Options::scrollback_bytes`].
 pub const DEFAULT_SCROLLBACK_BYTES: usize = grid::DEFAULT_HISTORY_BYTES;
 /// The default (and largest) OSC and DCS payload, 64 KiB.
@@ -658,6 +667,22 @@ impl Engine {
         self.state.grid.row(line).is_some_and(|row| row.wrapped)
     }
 
+    /// The [`prompt_mark`] bits of a line, numbered like [`Self::line`]: the
+    /// marks OSC 133;A and 133;C left on it while the cursor was there. They
+    /// follow the row into history and through reflow; snapshots drop them.
+    pub fn line_prompt_marks(&self, line: i32) -> u8 {
+        self.state.grid.row(line).map_or(0, |row| row.prompt)
+    }
+
+    /// The lines of `first..=last` that carry [`prompt_mark`]s, oldest
+    /// first, with their marks. Reads no cells, so it is cheap over all of
+    /// history.
+    pub fn prompt_marks(&self, first: i32, last: i32) -> Vec<(i32, u8)> {
+        let mut marks = Vec::new();
+        self.state.grid.prompt_marks(first, last, &mut marks);
+        marks
+    }
+
     /// Sets the colors that OSC 4/10/11/12 queries answer with. When the
     /// default foreground or background changes and the program turned on
     /// `?2031`, it is told with `CSI ? 997 ; 1|2 n` so it can query again.
@@ -845,5 +870,7 @@ fn enqueue(events: &mut VecDeque<Event>, dropped: &mut u64, paste_events: bool, 
     events.push_back(event);
 }
 
+#[cfg(test)]
+mod prompt_mark_tests;
 #[cfg(test)]
 mod tests;

@@ -135,6 +135,68 @@ import XCTest
         XCTAssertEqual(try host.read(transport), [])
     }
 
+    func testShellEventsReachTheirScreenOnly() throws {
+        try connect()
+        let one = link.open(RemotePane(id: "p1", title: nil, workingDirectory: nil, exited: false))
+        let two = link.open(RemotePane(id: "p2", title: nil, workingDirectory: nil, exited: false))
+        try host.send(.shell(stream: one.stream, event: .executing), to: link)
+        XCTAssertEqual(one.shellPhase, .running)
+        XCTAssertEqual(two.shellPhase, .unknown)
+        try host.send(.shell(stream: one.stream, event: .finished(exitCode: 1)), to: link)
+        XCTAssertEqual(one.shellPhase, .prompt)
+    }
+
+    func testPaneCommandStateArrivesWithTheSessionList() throws {
+        try connect()
+        let state = RemoteCommandState(running: true, finished: 2, exitCode: 0, runningSince: Date())
+        try host.send(
+            .sessions(
+                RemoteSessionList(
+                    groups: [], panes: [RemotePane(id: "a", title: nil, workingDirectory: nil, exited: false, command: state)])),
+            to: link)
+        XCTAssertEqual(link.pane("a")?.command, state)
+    }
+
+    func testCommandOutputNeedsAVersionFiveHostAndRoutesTheReply() throws {
+        try connect()
+        let screen = link.open(RemotePane(id: "p1", title: nil, workingDirectory: nil, exited: false))
+        _ = try host.read(transport)
+        var replies: [RemoteCommandOutput?] = []
+        // A version 4 host: nothing is asked.
+        try host.send(.hello(hostName: "Mac", version: 4), to: link)
+        _ = try host.read(transport)
+        link.requestOutput(of: screen) { replies.append($0) }
+        XCTAssertEqual(replies, [nil])
+        XCTAssertEqual(try host.read(transport), [])
+
+        try host.send(.hello(hostName: "Mac", version: 5), to: link)
+        _ = try host.read(transport)
+        XCTAssertTrue(link.followsPrompts)
+        link.requestOutput(of: screen, promptBufferRow: 7) { replies.append($0) }
+        // A newer request replaces the one before; that one hears nil.
+        link.requestOutput(of: screen) { replies.append($0) }
+        XCTAssertEqual(
+            try host.read(transport),
+            [.commandOutput(stream: screen.stream, promptBufferRow: 7), .commandOutput(stream: screen.stream, promptBufferRow: nil)])
+        let output = RemoteCommandOutput(command: "ls", text: "a\nb", exitCode: 0, truncated: false)
+        try host.send(.commandOutput(stream: screen.stream, output: output), to: link)
+        XCTAssertEqual(replies, [nil, nil, output])
+    }
+
+    func testFramesCarryPromptRows() throws {
+        try connect()
+        let screen = link.open(RemotePane(id: "p1", title: nil, workingDirectory: nil, exited: false))
+        var frame = Self.frame(stream: screen.stream, text: "$ ls")
+        frame.promptRows = [0]
+        frame.historySize = 50
+        frame.displayOffset = 10
+        try host.send(.frame(frame), to: link)
+        XCTAssertEqual(screen.promptRows, [0])
+        XCTAssertEqual(screen.bufferRow(ofScreenRow: 1), 41)
+        try host.send(.frame(Self.frame(stream: screen.stream, text: "$ ls")), to: link)
+        XCTAssertEqual(screen.promptRows, [])
+    }
+
     func testFailedCreationDropsTheCommand() throws {
         try connect()
         link.commandForNextCreation = "rm -rf build"

@@ -10,11 +10,33 @@ public struct MultiplexerPane: Decodable, Hashable, Sendable {
     /// Where the pane started, then the latest directory its shell reported.
     public var workingDirectory: String?
     public var exited: Bool
+    /// The shell's command lifecycle; nil until the pane's shell reported an
+    /// OSC 133 event, which needs shell integration.
+    public var shell: MultiplexerShellState?
 
     enum CodingKeys: String, CodingKey {
-        case id, title, exited
+        case id, title, exited, shell
         case childPID = "child_pid"
         case workingDirectory = "working_directory"
+    }
+}
+
+/// A pane's shell commands, as the session host follows them from OSC 133.
+public struct MultiplexerShellState: Decodable, Hashable, Sendable {
+    /// A command was submitted and hasn't finished.
+    public var running: Bool
+    /// Commands that started (`C`).
+    public var commandsStarted: UInt64
+    /// Commands that finished (`D`).
+    public var commandsFinished: UInt64
+    /// What the last finished command exited with.
+    public var exitCode: Int32?
+
+    enum CodingKeys: String, CodingKey {
+        case running
+        case commandsStarted = "commands_started"
+        case commandsFinished = "commands_finished"
+        case exitCode = "exit_code"
     }
 }
 

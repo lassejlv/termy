@@ -44,6 +44,9 @@ pub(super) struct Row {
     occupied: usize,
     clear_background: Color,
     pub(super) wrapped: bool,
+    // OSC 133 marks of the row (`prompt_mark` bits), kept as it scrolls into
+    // history and reflows. Uses the row's padding, so its size is unchanged.
+    pub(super) prompt: u8,
     // Metadata bytes measured as the row entered history; see `row.rs`.
     extra_units: u16,
 }
@@ -59,6 +62,7 @@ impl Row {
             occupied: 0,
             clear_background: blank.style.background,
             wrapped: false,
+            prompt: 0,
             extra_units: 0,
         }
     }
@@ -91,6 +95,7 @@ impl Row {
         self.occupied = 0;
         self.clear_background = blank.style.background;
         self.wrapped = false;
+        self.prompt = 0;
         self.extra_units = 0;
         end.min(len)
     }
@@ -396,6 +401,40 @@ impl Grid {
             .len()
             .checked_sub(line.unsigned_abs() as usize)
             .and_then(|index| self.history.get(index))
+    }
+
+    /// Mark the cursor's row with `mark` (`prompt_mark` bits) for OSC 133.
+    /// Rows of the alternate screen are never marked: they have no history
+    /// and full-screen programs redraw them at will.
+    pub(super) fn mark_prompt(&mut self, mark: u8) {
+        if self.alternate_active {
+            return;
+        }
+        let row = self.cursor.row;
+        let Some(active) = self.primary.rows.get_mut(row) else {
+            return;
+        };
+        if active.prompt & mark == mark {
+            return;
+        }
+        active.prompt |= mark;
+        let cols = self.size.cols;
+        self.mark(row, 0, cols);
+    }
+
+    /// Lines `first..=last` (numbered as for [`Self::row`]) that carry
+    /// prompt marks, oldest first, appended to `out`. Reads only row flags,
+    /// so packed history stays packed.
+    pub(super) fn prompt_marks(&self, first: i32, last: i32, out: &mut Vec<(i32, u8)>) {
+        let top = -(self.history_size() as i32);
+        let bottom = self.screen().rows.len() as i32 - 1;
+        for line in first.max(top)..=last.min(bottom) {
+            if let Some(row) = self.row(line)
+                && row.prompt != 0
+            {
+                out.push((line, row.prompt));
+            }
+        }
     }
 
     pub(super) fn visible_row(&self, row: usize) -> Option<&Row> {

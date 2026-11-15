@@ -129,6 +129,39 @@ pub enum RemoteCommand {
         col: usize,
         view: ViewportAnchor,
     },
+    /// The lines of `first..=last` that OSC 133 shell integration marked
+    /// (see [`PromptMark`]), numbered and anchored like
+    /// [`Self::LineTexts`]. The host answers with
+    /// [`RemoteReply::PromptMarks`].
+    ///
+    /// Added to protocol VERSION 4 after it shipped, without a bump: a host
+    /// of an older build cannot decode it and drops the connection, so a
+    /// client sends it only to a host of its own build (see
+    /// [`RemoteTransport::supports_prompt_marks`]).
+    PromptMarks {
+        first: i32,
+        last: i32,
+        anchor: Option<u64>,
+    },
+}
+
+/// A buffer line that OSC 133 shell integration marked: the shell's prompt
+/// (133;A) or a command's output (133;C) started on it while the cursor was
+/// there. The marks follow the row into history and through reflow.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PromptMark {
+    /// Numbered like [`Terminal::visit_line_cells`]: 0 is the top screen
+    /// row, -1 the newest history row.
+    pub line: i32,
+    /// [`Self::PROMPT`] and/or [`Self::OUTPUT`].
+    pub kinds: u8,
+}
+
+impl PromptMark {
+    /// OSC 133;A: the shell's prompt starts on the line.
+    pub const PROMPT: u8 = crate::terminal_engine::prompt_mark::PROMPT;
+    /// OSC 133;C: the command's output starts on the line.
+    pub const OUTPUT: u8 = crate::terminal_engine::prompt_mark::OUTPUT;
 }
 
 /// The frame a client shows and a row the user clicked in it, so that the
@@ -344,6 +377,8 @@ pub enum RemoteReply {
     Written {
         anchor: u64,
     },
+    /// The answer to a [`RemoteCommand::PromptMarks`], oldest line first.
+    PromptMarks(Vec<PromptMark>),
 }
 
 /// Why input written with [`RemoteCommand::Write`] did not reach the
@@ -436,6 +471,12 @@ pub trait RemoteTransport: Send + Sync {
     fn host_lost(&self) -> bool {
         false
     }
+    /// Whether the host understands [`RemoteCommand::PromptMarks`]. A
+    /// multiplexer host must be of this very build: one of an older build
+    /// drops the connection on a request it cannot decode. Off by default.
+    fn supports_prompt_marks(&self) -> bool {
+        false
+    }
 }
 
 /// Execute a client operation against the authoritative terminal. No output
@@ -493,6 +534,19 @@ pub fn execute(terminal: &mut Terminal, command: RemoteCommand) -> RemoteReply {
         }
         C::LinkAt { row, col, view } => {
             return RemoteReply::Link(terminal.link_at_view(row, col, view));
+        }
+        C::PromptMarks {
+            first,
+            last,
+            anchor,
+        } => {
+            return RemoteReply::PromptMarks(
+                terminal
+                    .prompt_marks_anchored(first, last, anchor)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default(),
+            );
         }
         C::RetiredHyperlink => return RemoteReply::Hyperlink(None),
         C::RetiredLink => return RemoteReply::Link(None),

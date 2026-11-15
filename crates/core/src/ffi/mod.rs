@@ -55,6 +55,8 @@ mod multiplexer;
 pub use multiplexer::*;
 mod inspect;
 pub use inspect::*;
+mod lines;
+pub use lines::*;
 
 #[cfg(test)]
 static PANIC_NEXT_FEED_OUTPUT: AtomicBool = AtomicBool::new(false);

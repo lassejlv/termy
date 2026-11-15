@@ -25,6 +25,70 @@ struct MobileProtocolTests {
             #expect(try MessageCodec.decode(ClientMessage.self, from: MessageCodec.encode(command)) == command)
         }
     }
+    /// Protocol 5: shell events travel, and pane lists stay readable both ways
+    /// between phones and hosts of either version.
+    @Test func shellStateTravelsAndOlderPeersStillDecodePanes() throws {
+        let events: [HostMessage] = [
+            .shell(stream: 3, event: .prompt), .shell(stream: 3, event: .input),
+            .shell(stream: 3, event: .executing), .shell(stream: 3, event: .finished(exitCode: 2)),
+            .shell(stream: 3, event: .finished(exitCode: nil)),
+        ]
+        for message in events {
+            #expect(try MessageCodec.decode(HostMessage.self, from: MessageCodec.encode(message)) == message)
+        }
+        let state = RemoteCommandState(
+            running: false, finished: 4, exitCode: 1, runningSince: Date(timeIntervalSinceReferenceDate: 10))
+        #expect(state.failed)
+        #expect(!RemoteCommandState(running: true, finished: 4, exitCode: 1).failed)
+        #expect(!RemoteCommandState(running: false, finished: 0, exitCode: 1).failed)
+        let pane = RemotePane(id: "p", title: "zsh", workingDirectory: nil, exited: false, command: state)
+        #expect(try JSONDecoder().decode(RemotePane.self, from: JSONEncoder().encode(pane)) == pane)
+
+        // A version 4 host sends no command; a version 4 phone ignores it.
+        let older = try JSONDecoder().decode(RemotePane.self, from: Data(#"{"id":"p","exited":false}"#.utf8))
+        #expect(older.command == nil)
+        struct VersionFourPane: Decodable { var id: String; var exited: Bool }
+        #expect(try JSONDecoder().decode(VersionFourPane.self, from: JSONEncoder().encode(pane)).id == "p")
+    }
+    @Test func promptRowsJumpsAndCommandOutputTravel() throws {
+        let messages: [HostMessage] = [
+            .commandOutput(stream: 2, output: RemoteCommandOutput(command: "ls", text: "a\nb", exitCode: 0, truncated: false)),
+            .commandOutput(stream: 2, output: nil),
+        ]
+        for message in messages {
+            #expect(try MessageCodec.decode(HostMessage.self, from: MessageCodec.encode(message)) == message)
+        }
+        for command: ClientMessage in [
+            .jumpToPrompt(stream: 1, forward: false), .commandOutput(stream: 1, promptBufferRow: 40),
+            .commandOutput(stream: 1, promptBufferRow: nil),
+        ] {
+            #expect(try MessageCodec.decode(ClientMessage.self, from: MessageCodec.encode(command)) == command)
+        }
+        let cursor = RemoteCursor(row: 0, col: 0, visible: true, style: "bar")
+        var frame = RemoteFrame(stream: 1, cols: 80, rows: 24, full: true, updates: [], cursor: cursor, background: 0)
+        frame.promptRows = [0, 10, 23]
+        #expect(frame.isValid)
+        #expect(frame.clipped(cols: 80, rows: 12).promptRows == [0, 10])
+        frame.promptRows = [24]
+        #expect(!frame.isValid)
+        frame.promptRows = [-1]
+        #expect(!frame.isValid)
+        // Older frames have none.
+        #expect(try JSONDecoder().decode(RemoteFrame.self, from: JSONEncoder().encode(
+            RemoteFrame(stream: 1, cols: 2, rows: 2, full: true, updates: [], cursor: cursor, background: 0))).promptRows == nil)
+    }
+    @Test func longOutputKeepsItsEnd() {
+        let text = String(repeating: "x", count: RemoteCommandOutput.maxBytes) + "THE END"
+        let output = RemoteCommandOutput.bounded(command: "make", text: text, exitCode: 2)
+        #expect(output.truncated)
+        #expect(output.text.utf8.count <= RemoteCommandOutput.maxBytes)
+        #expect(output.text.hasSuffix("THE END"))
+        let short = RemoteCommandOutput.bounded(command: nil, text: "ok", exitCode: 0)
+        #expect(!short.truncated && short.text == "ok")
+        let wide = RemoteCommandOutput.bounded(
+            command: nil, text: String(repeating: "界", count: RemoteCommandOutput.maxBytes / 2), exitCode: nil)
+        #expect(wide.text.utf8.count <= RemoteCommandOutput.maxBytes && wide.text.allSatisfy { $0 == "界" })
+    }
     @Test func malformedFramesAreRejectedBeforeAllocation() {
         let cursor = RemoteCursor(row: 0, col: 0, visible: true, style: "bar")
         var frame = RemoteFrame(stream: 1, cols: 80, rows: 24, full: true, updates: [], cursor: cursor, background: 0)

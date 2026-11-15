@@ -19,6 +19,16 @@ use std::sync::Arc;
 // and the working directory a pane actually started in. A refused
 // subscription says whether the pane is gone, and a subscription is told
 // when the host shuts down.
+//
+// One additive exception after version 4 shipped, with no bump:
+// `RemoteCommand::PromptMarks` and `RemoteReply::PromptMarks`, appended at
+// the end of their enums so no other variant's index moved. Every message
+// older version 4 builds exchange still decodes, but such a host cannot
+// decode the new request and drops the connection that sent it. So a client
+// sends it only to a host whose `build_id` (which includes the wire
+// fingerprint) equals its own: `RemoteTransport::supports_prompt_marks`,
+// true only for a pane whose host `discovery::connect_identified` reported
+// as the same build. Any further change to the wire bumps VERSION as usual.
 pub(crate) const VERSION: u32 = 4;
 /// The error a host that is shutting down answers requests with.
 pub(crate) const HOST_STOPPING: &str = "the session host is shutting down";
@@ -30,8 +40,10 @@ pub(crate) const MAX_MESSAGE_BYTES: u64 =
 
 /// Hash of the encoding of every wire type, checked by the `wire_golden`
 /// test. When it changes, the wire changed: bump [`VERSION`] (unless the
-/// unreleased change already did) and update this value.
-pub(crate) const WIRE_FINGERPRINT: u64 = 0x0e14_2648_4656_9ebf;
+/// unreleased change already did) and update this value. It changed
+/// without a bump once, for the additive `PromptMarks` exception described
+/// at [`VERSION`].
+pub(crate) const WIRE_FINGERPRINT: u64 = 0x716e_1e74_ed8e_f347;
 
 /// Identifies the build that wrote `endpoint.json`. A client logs a warning
 /// when it differs from its own under the same [`VERSION`], which points at

@@ -5,6 +5,7 @@ use super::{
     Options, Size, Style, UnderlineStyle, enqueue,
     grid::Grid,
     parser::{Handler, Param},
+    prompt_mark,
 };
 
 const MAX_TITLE_STACK: usize = 64;
@@ -603,8 +604,13 @@ impl State {
                 }
             }
             133 => {
-                if rest.split(';').next() == Some("A") {
-                    self.program_status.finish();
+                match rest.split(';').next() {
+                    Some("A") => {
+                        self.program_status.finish();
+                        self.grid.mark_prompt(prompt_mark::PROMPT);
+                    }
+                    Some("C") => self.grid.mark_prompt(prompt_mark::OUTPUT),
+                    _ => {}
                 }
                 self.event(Event::ShellIntegration(rest.to_owned()));
             }

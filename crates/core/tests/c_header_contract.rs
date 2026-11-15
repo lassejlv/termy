@@ -20,6 +20,7 @@ _Static_assert(TERMY_FFI_CLIPBOARD_LOCATION_PRIMARY == 2, "primary location is s
 _Static_assert(TERMY_FFI_CLIPBOARD_RESULT_SUCCESS == 0, "clipboard success is stable");
 _Static_assert(TERMY_FFI_CLIPBOARD_RESULT_IO_ERROR == 5, "clipboard I/O error is stable");
 _Static_assert(sizeof(TermyFfiCell) == 20, "cell ABI size is stable");
+_Static_assert(sizeof(TermyFfiPromptMark) == 8, "prompt mark ABI size is stable");
 _Static_assert(sizeof(TermyFfiGlyphPoint) == 8, "glyph point ABI size is stable");
 _Static_assert(sizeof(TermyFfiGlyphRect) == 24, "glyph rect ABI size is stable");
 _Static_assert(sizeof(TermyFfiGlyphStroke) == 60, "glyph stroke ABI size is stable");
@@ -103,6 +104,21 @@ void termy_header_contract(void) {
       formats,
       1,
       &paste_event_sent);
+  int32_t first_line = 0;
+  int32_t last_line = 0;
+  bool marks_supported = false;
+  TermyFfiPromptMarkBatch marks = {0};
+  TermyFfiBytes line_text = termy_null_buffer();
+  (void)termy_terminal_line_bounds(terminal, &first_line, &last_line);
+  (void)termy_terminal_prompt_marks(
+      terminal, first_line, last_line, &marks_supported, &marks);
+  if (marks.marks_len != 0 &&
+      (marks.marks_ptr[0].kinds & TERMY_PROMPT_MARK_PROMPT) != 0) {
+    (void)termy_terminal_line_range_text(
+        terminal, marks.marks_ptr[0].line, last_line, &line_text);
+  }
+  (void)termy_prompt_mark_batch_free(&marks);
+  (void)termy_buffer_free(line_text);
   (void)termy_frame_free(&frame);
   (void)termy_terminal_free(terminal);
 }

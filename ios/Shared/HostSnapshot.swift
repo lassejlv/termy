@@ -12,6 +12,8 @@ struct HostSnapshot: Codable, Equatable, Sendable {
         var online: Bool
         /// Live panes, when the app was connected to it.
         var panes: Int?
+        /// Panes running a command, from shell integration.
+        var running: Int?
     }
 
     var hosts: [Host]

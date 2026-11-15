@@ -170,11 +170,15 @@ struct SessionsView: View {
                                 openScreen = link.open(pane)
                             }
                         } label: {
-                            Label(
-                                tab.title ?? tab.paneIDs.compactMap { link.pane($0)?.title }.first
-                                    ?? "Tab \(index + 1)", systemImage: "terminal"
-                            )
-                            .lineLimit(1).foregroundStyle(.primary)
+                            HStack {
+                                Label(
+                                    tab.title ?? tab.paneIDs.compactMap { link.pane($0)?.title }.first
+                                        ?? "Tab \(index + 1)", systemImage: "terminal"
+                                )
+                                .lineLimit(1).foregroundStyle(.primary)
+                                Spacer(minLength: 4)
+                                CommandBadge(state: commandState(of: tab))
+                            }
                         }
                     }
                 }
@@ -211,19 +215,29 @@ struct SessionsView: View {
         Button {
             openScreen = link.open(pane)
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(pane.title?.isEmpty == false ? pane.title! : fallback).foregroundStyle(
-                    pane.exited ? .secondary : .primary
-                ).lineLimit(1)
-                if let directory = pane.workingDirectory {
-                    Text(Self.abbreviate(directory)).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(
-                        1
-                    ).truncationMode(.head)
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(pane.title?.isEmpty == false ? pane.title! : fallback).foregroundStyle(
+                        pane.exited ? .secondary : .primary
+                    ).lineLimit(1)
+                    if let directory = pane.workingDirectory {
+                        Text(Self.abbreviate(directory)).font(.caption.monospaced()).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.head)
+                    }
                 }
+                Spacer(minLength: 4)
+                CommandBadge(state: pane.command)
             }
         }
         .swipeActions { Button("End", role: .destructive) { closing = pane } }
     }
+    /// What a tab's row shows: a command running in any of its panes, else its active pane's failure.
+    private func commandState(of tab: RemoteSessionGroup.Tab) -> RemoteCommandState? {
+        let states = tab.paneIDs.compactMap { link.pane($0)?.command }
+        if let running = states.first(where: \.running) { return running }
+        return (tab.activePaneID ?? tab.paneIDs.first).flatMap { link.pane($0)?.command }
+    }
+
     static func abbreviate(_ path: String) -> String {
         let path = path.hasPrefix("file://") ? (URL(string: path)?.path ?? path) : path
         if let range = path.range(of: #"^/Users/[^/]+"#, options: .regularExpression) {

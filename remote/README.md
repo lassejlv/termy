@@ -61,6 +61,28 @@ size, and ends a pane with confirmation. Session/tab/split edits use the
 multiplexer's revision-checked layout so Next adopts them live. Failed layout
 writes close their just-created shell instead of leaving an orphan pane.
 
+Protocol version 5 adds shell integration. The session host already follows
+each pane's OSC 133 lifecycle; every `RemotePane` now carries it as
+`command` (running, commands finished, last exit code, and when the host first
+saw the running command). Version-4 phones ignore the field and version-4
+hosts never send it. Attached panes also send `HostMessage.shell` for each
+prompt, input, executing and finished step, only to phones that said hello
+with version 5. The phone shows running and failed commands in the session
+list and pane strip, announces commands that ran five seconds or more when
+they finish, and turns predictive typing off while a command runs. Panes
+without shell integration report nothing.
+
+Version 5 also carries prompt positions. The engine marks the row the cursor
+is on at OSC 133;A (prompt) and 133;C (output), and the marks follow their
+rows into history and through reflow. Each frame lists the screen rows where
+a prompt starts (`RemoteFrame.promptRows`); the phone draws a bar beside
+them. `ClientMessage.jumpToPrompt` scrolls the Mac's view to the previous or
+next prompt, and `ClientMessage.commandOutput` asks for what a command
+printed, the newest or the one whose prompt starts at a buffer row, read from
+the Mac's history. The reply keeps the last `RemoteCommandOutput.maxBytes`.
+A session host of another build can't report marks, so the Mac sends no
+prompt rows and answers output requests with nothing until the host restarts.
+
 Terminals fit to the phone by default, refit for keyboard/orientation changes,
 and restore their original size on detach. Pinch changes the mobile text
 size. Drag scrolls history, or sends wheel events when a TUI has mouse

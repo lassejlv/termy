@@ -48,6 +48,8 @@ final class HostLink {
     /// Typed into the next pane the host creates for us, e.g. a Shortcut's command.
     @ObservationIgnored var commandForNextCreation: String?
     @ObservationIgnored private var pendingInputs: [String: String] = [:]
+    /// Output requests waiting for the host, by stream; one at a time each.
+    @ObservationIgnored private var outputRequests: [Int: (id: UUID, reply: (RemoteCommandOutput?) -> Void)] = [:]
 
     @ObservationIgnored private weak var model: (any HostTransport)?
     @ObservationIgnored private var handshake: SecureChannel.ClientHandshake?
@@ -208,6 +210,10 @@ final class HostLink {
             screens[stream]?.searchMatches = matches
         case .image(let stream, let key, let png):
             screens[stream]?.store(image: png, key: key)
+        case .shell(let stream, let event):
+            screens[stream]?.apply(shell: event)
+        case .commandOutput(let stream, let output):
+            outputRequests.removeValue(forKey: stream)?.reply(output)
         case .images(let list):
             screens[list.stream]?.apply(list)
         case .created(let paneID):
@@ -274,6 +280,24 @@ final class HostLink {
 
     func pane(_ id: String) -> RemotePane? {
         sessions.panes.first { $0.id == id }
+    }
+
+    /// Whether the host knows prompts: jumping between them and reading a command's output.
+    var followsPrompts: Bool { state == .connected && protocolVersion >= 5 }
+
+    /// Asks for a command's output: the one whose prompt starts at `promptBufferRow`, else the last.
+    /// `reply` gets nil when there's none, the host doesn't answer within 10 s, or a newer request replaces it.
+    func requestOutput(of screen: TerminalScreen, promptBufferRow: Int? = nil, reply: @escaping (RemoteCommandOutput?) -> Void) {
+        guard followsPrompts else { return reply(nil) }
+        let id = UUID()
+        outputRequests.removeValue(forKey: screen.stream)?.reply(nil)
+        outputRequests[screen.stream] = (id, reply)
+        send(.commandOutput(stream: screen.stream, promptBufferRow: promptBufferRow))
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard let self, self.outputRequests[screen.stream]?.id == id else { return }
+            self.outputRequests.removeValue(forKey: screen.stream)?.reply(nil)
+        }
     }
 
     /// Every live pane in session, tab and split order: what swiping steps through.

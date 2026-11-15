@@ -3,8 +3,11 @@ import TermyRemoteKit
 import UIKit
 
 /// Things the terminal asks its SwiftUI host to do, from ⌘ shortcuts and edge swipes.
-enum TerminalCommand {
+enum TerminalCommand: Equatable {
     case find, newTab, splitRight, splitDown, nextPane, previousPane, close
+    case previousPrompt, nextPrompt
+    /// Copy what a command printed: the one whose prompt is at this buffer row, or the last one.
+    case copyOutput(promptBufferRow: Int?)
 }
 
 /// Draws a `TerminalScreen` and turns touches and keys into `ClientMessage`s.
@@ -328,6 +331,7 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGestureReco
             }
         }
         drawImages(screen, below: false, cell: cell, origin: origin, in: context)
+        drawPromptMarks(screen, cell: cell, context: context)
         drawPredictions(size: size, cell: cell, background: background, context: context)
         drawSelection(context: context)
         drawCursor(screen, cell: cell, context: context)
@@ -355,6 +359,16 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGestureReco
             (String(scalar) as NSString).draw(at: .zero, withAttributes: attributes)
             context.restoreGState()
             if span > 1 { break }
+        }
+    }
+
+    /// A short bar in the left padding beside each shell prompt, so commands are easy to find.
+    private func drawPromptMarks(_ screen: TerminalScreen, cell: CGSize, context: CGContext) {
+        guard gridOrigin.x >= 3 else { return }
+        context.setFillColor(tintColor.withAlphaComponent(0.7).cgColor)
+        for row in screen.promptRows {
+            let y = gridOrigin.y + CGFloat(row) * cell.height
+            context.fill(CGRect(x: max(0.5, gridOrigin.x / 2 - 1), y: y + cell.height * 0.15, width: 2, height: cell.height * 0.7))
         }
     }
 
@@ -665,7 +679,21 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGestureReco
             UIAction(title: "Open as Text", image: UIImage(systemName: "doc.plaintext")) { [weak self] _ in
                 self?.showText()
             },
-        ])
+        ] + outputAction())
+    }
+
+    /// "Copy Command Output" for the command whose prompt is at or above the selection.
+    private func outputAction() -> [UIMenuElement] {
+        guard let selection, let screen, !screen.promptRows.isEmpty else { return [] }
+        let top = ordered(selection).0.row
+        guard let prompt = screen.promptRows.filter({ $0 <= top }).max() else { return [] }
+        let bufferRow = screen.bufferRow(ofScreenRow: prompt)
+        return [
+            UIAction(title: "Copy Command Output", image: UIImage(systemName: "text.below.photo")) { [weak self] _ in
+                self?.clearSelection()
+                self?.onCommand?(.copyOutput(promptBufferRow: bufferRow))
+            }
+        ]
     }
 
     func editMenuInteraction(_ interaction: UIEditMenuInteraction, targetRectFor configuration: UIEditMenuConfiguration)
@@ -898,6 +926,9 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGestureReco
             command("Bigger", "=", #selector(zoomInCommand)),
             command("Smaller", "-", #selector(zoomOutCommand)),
             command("Actual Size", "0", #selector(zoomResetCommand)),
+            command("Previous Prompt", UIKeyCommand.inputUpArrow, #selector(previousPromptCommand)),
+            command("Next Prompt", UIKeyCommand.inputDownArrow, #selector(nextPromptCommand)),
+            command("Copy Last Output", "c", #selector(copyOutputCommand), [.command, .shift]),
         ]
     }
 
@@ -916,6 +947,9 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGestureReco
     @objc private func zoomInCommand() { setZoom(zoom * 1.1) }
     @objc private func zoomOutCommand() { setZoom(zoom / 1.1) }
     @objc private func zoomResetCommand() { setZoom(1) }
+    @objc private func previousPromptCommand() { onCommand?(.previousPrompt) }
+    @objc private func nextPromptCommand() { onCommand?(.nextPrompt) }
+    @objc private func copyOutputCommand() { onCommand?(.copyOutput(promptBufferRow: nil)) }
 
     // MARK: Accessibility
 
