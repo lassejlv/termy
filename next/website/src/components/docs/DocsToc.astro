@@ -1,0 +1,53 @@
+---
+import type { MarkdownHeading } from 'astro'
+
+interface Props {
+  headings: MarkdownHeading[]
+  editUrl: string
+}
+
+const { headings, editUrl } = Astro.props
+const sections = headings.filter((heading) => heading.depth === 2)
+---
+
+<div class="flex flex-col gap-8">
+  {
+    sections.length > 0 && (
+      <nav class="flex flex-col gap-3" aria-label="On this page">
+        <h2 class="text-[12px] font-medium tracking-[0.06em] text-dim uppercase">On this page</h2>
+        <ul class="flex flex-col border-l border-white/8" data-toc>
+          {sections.map((heading) => (
+            <li>
+              <a
+                href={`#${heading.slug}`}
+                data-slug={heading.slug}
+                class="-ml-px block border-l border-transparent py-1.5 pl-3.5 text-[14px] leading-5 text-faint transition-colors hover:text-foreground data-[active]:border-brand data-[active]:text-foreground"
+              >
+                {heading.text}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+    )
+  }
+  <div class="flex flex-col gap-2.5 border-t border-white/6 pt-6 text-[14px]">
+    <a href={editUrl} class="text-faint transition-colors hover:text-foreground">Edit this page on GitHub</a>
+    <a href="https://github.com/lassejlv/termy/issues/new" class="text-faint transition-colors hover:text-foreground">Report a problem</a>
+  </div>
+</div>
+
+<script>
+  // Marks the last section whose heading has scrolled past the header.
+  const links = [...document.querySelectorAll<HTMLAnchorElement>('[data-toc] a')]
+  const headings = links.map((link) => document.getElementById(link.dataset.slug!)).filter((h) => h !== null)
+  const update = () => {
+    let current = headings[0]
+    for (const heading of headings) if (heading.getBoundingClientRect().top < 120) current = heading
+    for (const link of links) link.toggleAttribute('data-active', link.dataset.slug === current?.id)
+  }
+  if (links.length) {
+    update()
+    addEventListener('scroll', update, { passive: true })
+  }
+</script>
