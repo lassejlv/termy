@@ -10,7 +10,7 @@ settings:
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "6.0"
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "4"
+    CURRENT_PROJECT_VERSION: "5"
 packages:
   TermyRemote:
     path: ../remote
