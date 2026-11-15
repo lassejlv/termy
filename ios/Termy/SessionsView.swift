@@ -10,6 +10,8 @@ struct SessionsView: View {
     @State private var sessionName = ""
     @State private var renameTarget: (pane: String, session: Bool)?
     @State private var renamed = ""
+    /// "host|pane" of the terminal open when the app was last used.
+    @SceneStorage("openPane") private var openPane = ""
 
     var body: some View {
         List {
@@ -61,7 +63,19 @@ struct SessionsView: View {
             }
         }
         .refreshable { link.send(.listSessions) }
-        .onAppear { link.connect() }
+        .onAppear {
+            link.connect()
+            followRoute()
+        }
+        .onChange(of: model.route) { _, _ in followRoute() }
+        .onChange(of: link.state) { _, _ in followRoute() }
+        .onChange(of: link.sessions) { _, _ in
+            followRoute()
+            restore()
+        }
+        .onChange(of: openScreen?.paneID) { _, pane in
+            openPane = pane.map { "\(link.device.id.uuidString)|\($0)" } ?? ""
+        }
         .onChange(of: link.createdPaneID) { _, id in
             guard let id, openScreen == nil else { return }
             link.createdPaneID = nil
@@ -96,6 +110,43 @@ struct SessionsView: View {
         } message: { _ in
             Text("The program running in it stops on your Mac too.")
         }
+    }
+
+    /// Opens the pane, or runs the command, that a widget, quick action or Shortcut asked for.
+    private func followRoute() {
+        guard let route = model.route, route.host == link.device.id, link.state == .connected else { return }
+        if let command = route.command {
+            guard link.protocolVersion >= 2, !link.creating else { return }
+            model.route = nil
+            // An open terminal switches to the new tab itself; otherwise the list opens it.
+            link.commandForNextCreation = command
+            if let anchor = link.sessions.groups.first(where: { $0.name == route.sessionName })?.tabs.first?.paneIDs
+                .first
+            {
+                link.send(.createTab(inSessionContaining: anchor))
+            } else {
+                link.send(.createSession(name: route.sessionName))
+            }
+        } else if let id = route.pane {
+            // Wait for the session list; a pane that's gone just leaves the list showing.
+            guard !link.sessions.panes.isEmpty else { return }
+            model.route = nil
+            if let pane = link.pane(id), !pane.exited, openScreen?.paneID != id {
+                openScreen = nil
+                openScreen = link.open(pane)
+            }
+        } else {
+            model.route = nil
+        }
+    }
+
+    /// Reopens the terminal that was open when the app was last used.
+    private func restore() {
+        guard openScreen == nil, model.route == nil, !openPane.isEmpty else { return }
+        let parts = openPane.split(separator: "|", maxSplits: 1).map(String.init)
+        guard parts.count == 2, parts[0] == link.device.id.uuidString else { return }
+        openPane = ""
+        if let pane = link.pane(parts[1]), !pane.exited { openScreen = link.open(pane) }
     }
 
     @ViewBuilder private var sessionSections: some View {
@@ -188,16 +239,36 @@ struct StatusRow: View {
     var body: some View { Label(text, systemImage: symbol).foregroundStyle(.secondary) }
 }
 struct TrustSection: View {
+    @Environment(AppModel.self) private var model
     let link: HostLink
     let changed: Bool
+    @State private var confirming = false
+    @State private var error: String?
     var body: some View {
         Section {
             Label(
                 changed ? "This computer’s key changed" : "Pair this computer again",
                 systemImage: "exclamationmark.shield"
             ).foregroundStyle(.orange)
-            Text("Remove this computer in Settings, then scan a new QR code from Termy Next → Settings → Mobile.")
-                .foregroundStyle(.secondary)
+            Text(
+                changed
+                    ? "Termy can’t confirm this is the Mac you paired. If you reinstalled Termy Next or reset its key, pair again. Otherwise, don’t connect."
+                    : "Scan a new QR code from Termy Next → Settings → Mobile."
+            )
+            .foregroundStyle(.secondary)
+            Button("Remove and Pair Again", systemImage: "qrcode.viewfinder") { confirming = true }
+            if let error { Text(error).foregroundStyle(.red) }
+        }
+        .confirmationDialog(
+            "Remove \(link.device.name) and pair it again?", isPresented: $confirming, titleVisibility: .visible
+        ) {
+            Button("Remove and Pair Again", role: .destructive) {
+                Task {
+                    do { try await model.repair(link.device) } catch { self.error = error.localizedDescription }
+                }
+            }
+        } message: {
+            Text("You’ll scan a new QR code from Termy Next → Settings → Mobile on that Mac.")
         }
     }
 }

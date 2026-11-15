@@ -20,23 +20,56 @@ targets:
     platform: iOS
     sources:
       - path: Termy
+      - path: Shared
     dependencies:
       - package: TermyRemote
         product: TermyRemoteKit
+      - target: TermyWidgets
+    entitlements:
+      path: Termy/Termy.entitlements
+      properties:
+        # The app's own group stays first, so its pairing secrets keep defaulting to it;
+        # only the widget snapshot goes to the shared group.
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)sh.termy.app
+          - $(AppIdentifierPrefix)sh.termy.shared
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sh.termy.app
         PRODUCT_NAME: Termy
-        TARGETED_DEVICE_FAMILY: "1"
+        TARGETED_DEVICE_FAMILY: "1,2"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Termy
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        # One window: two windows on the same pane would detach each other's stream.
+        INFOPLIST_KEY_UIApplicationSupportsMultipleScenes: NO
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.developer-tools
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         INFOPLIST_FILE: Termy/Info.plist
+
+  TermyWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Widgets
+      - path: Shared
+    entitlements:
+      path: Widgets/Widgets.entitlements
+      properties:
+        keychain-access-groups:
+          - $(AppIdentifierPrefix)sh.termy.shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sh.termy.app.widgets
+        PRODUCT_NAME: TermyWidgets
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_FILE: Widgets/Info.plist
+        SKIP_INSTALL: YES
 
   TermyTests:
     type: bundle.unit-test

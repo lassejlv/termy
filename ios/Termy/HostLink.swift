@@ -3,6 +3,18 @@ import Observation
 import TermyRemoteKit
 import UIKit
 
+/// What a `HostLink` needs from the app: trust decisions and the relay.
+@MainActor
+protocol HostTransport: AnyObject {
+    var identity: DeviceIdentity { get }
+    func verdict(for host: RelayDevice) -> TrustStore.Verdict
+    func isConnected(to host: UUID) -> Bool
+    func send(_ packet: Data, to host: UUID)
+    func configuration(for host: UUID) -> RemoteConfiguration?
+    func saveConfiguration(_ configuration: RemoteConfiguration, for host: UUID)
+    func sessionsChanged(for host: UUID)
+}
+
 /// The end-to-end encrypted channel to one computer, its session list, and
 /// the screens open on it.
 @MainActor
@@ -33,7 +45,11 @@ final class HostLink {
     /// Set when the host made a pane at our request; the list opens it.
     var createdPaneID: String?
 
-    @ObservationIgnored private weak var model: AppModel?
+    /// Typed into the next pane the host creates for us, e.g. a Shortcut's command.
+    @ObservationIgnored var commandForNextCreation: String?
+    @ObservationIgnored private var pendingInputs: [String: String] = [:]
+
+    @ObservationIgnored private weak var model: (any HostTransport)?
     @ObservationIgnored private var handshake: SecureChannel.ClientHandshake?
     @ObservationIgnored private var channel: SecureChannel?
     @ObservationIgnored private var nextStream = 1
@@ -44,7 +60,7 @@ final class HostLink {
     /// Whether a view wants this link open.
     @ObservationIgnored private var wanted = false
 
-    init(device: RelayDevice, model: AppModel) {
+    init(device: RelayDevice, model: any HostTransport) {
         self.device = device
         self.model = model
         self.configuration = model.configuration(for: device.id) ?? RemoteConfiguration()
@@ -164,9 +180,16 @@ final class HostLink {
             if version >= 2 { send(.clientHello(version: RemoteProtocol.version)) }
         case .sessions(let list):
             sessions = list
+            model?.sessionsChanged(for: device.id)
         case .frame(var frame):
             glyphs.resolve(&frame)
-            screens[frame.stream]?.apply(frame)
+            guard let screen = screens[frame.stream] else { return }
+            screen.apply(frame)
+            if let input = screen.pendingInput, !screen.exited {
+                screen.pendingInput = nil
+                send(.paste(stream: screen.stream, text: input))
+                send(.key(stream: screen.stream, key: RemoteKey(key: "enter")))
+            }
         case .title(let stream, let title):
             screens[stream]?.title = title
         case .exited(let stream):
@@ -190,10 +213,15 @@ final class HostLink {
         case .created(let paneID):
             creating = false
             creationTimeout?.cancel()
+            if let command = commandForNextCreation {
+                commandForNextCreation = nil
+                pendingInputs[paneID] = command
+            }
             createdPaneID = paneID
         case .error(let message):
             creating = false
             creationTimeout?.cancel()
+            commandForNextCreation = nil
             lastError = message
         }
     }
@@ -210,6 +238,7 @@ final class HostLink {
                 try? await Task.sleep(for: .seconds(15))
                 guard !Task.isCancelled else { return }
                 self?.creating = false
+                self?.commandForNextCreation = nil
                 self?.lastError = "The Mac hasn’t answered the creation request. Refresh before trying again."
             }
         default: break
@@ -231,6 +260,7 @@ final class HostLink {
         nextStream += 1
         let screen = TerminalScreen(stream: stream, paneID: pane.id, title: pane.title)
         screen.configuration = configuration
+        screen.pendingInput = pendingInputs.removeValue(forKey: pane.id)
         screens[stream] = screen
         send(.attach(stream: stream, paneID: pane.id))
         return screen
@@ -244,5 +274,28 @@ final class HostLink {
 
     func pane(_ id: String) -> RemotePane? {
         sessions.panes.first { $0.id == id }
+    }
+
+    /// Every live pane in session, tab and split order: what swiping steps through.
+    var orderedPanes: [RemotePane] {
+        var seen = Set<String>()
+        var result: [RemotePane] = []
+        for group in sessions.groups {
+            for tab in group.tabs {
+                for id in tab.paneIDs where !seen.contains(id) {
+                    if let pane = pane(id), !pane.exited {
+                        seen.insert(id)
+                        result.append(pane)
+                    }
+                }
+            }
+        }
+        for pane in sessions.panes where !seen.contains(pane.id) && !pane.exited { result.append(pane) }
+        return result
+    }
+
+    /// The session holding a pane.
+    func group(containing paneID: String) -> RemoteSessionGroup? {
+        sessions.groups.first { $0.tabs.contains { $0.paneIDs.contains(paneID) } }
     }
 }

@@ -6,6 +6,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var removing: RelayDevice?
     @State private var error: String?
+    @AppStorage("predictiveEcho") private var predictiveEcho = true
     var body: some View {
         NavigationStack {
             Form {
@@ -18,6 +19,23 @@ struct SettingsView: View {
                         }
                     }
                     if model.hosts.isEmpty { Text("No paired computers").foregroundStyle(.secondary) }
+                }
+                Section {
+                    NavigationLink("Snippets") { SnippetsSettingsView() }
+                    NavigationLink("Key Bar") { KeyBarSettingsView() }
+                    Toggle("Predictive Typing", isOn: $predictiveEcho)
+                } header: {
+                    Text("Terminal")
+                } footer: {
+                    Text(
+                        "On slow connections, shows what you type right away and underlines it until your Mac confirms it. Never used for passwords or programs that don’t echo."
+                    )
+                }
+                Section("Shortcuts") {
+                    Text(
+                        "Use “Run Command on Computer” in the Shortcuts app to run a command on your Mac from Siri, the Action button or an automation."
+                    )
+                    .font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("This iPhone’s Key") {
                     Text(model.identity.fingerprint).font(.system(.caption, design: .monospaced)).textSelection(

@@ -7,7 +7,7 @@ struct PairComputerView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var code: PairingCode?
     @State private var error: String?
-    @State private var cameraAllowed = false
+    @State private var camera = AVCaptureDevice.authorizationStatus(for: .video)
     @State private var pairingTask: Task<Void, Never>?
     var body: some View {
         NavigationStack {
@@ -42,14 +42,24 @@ struct PairComputerView: View {
                 } else {
                     Text("Scan the QR code in Termy Next → Settings → Mobile.")
                         .multilineTextAlignment(.center).foregroundStyle(.secondary)
-                    if cameraAllowed {
+                    if camera == .authorized {
                         QRScanner(onCode: scanned, onError: { error = $0 })
                             .frame(maxHeight: 340).clipShape(RoundedRectangle(cornerRadius: 20))
+                    } else if camera == .notDetermined {
+                        ProgressView().frame(maxHeight: 340)
                     } else {
-                        ContentUnavailableView(
-                            "Camera Access Needed", systemImage: "camera",
-                            description: Text("Allow camera access in iPhone Settings to scan your Mac’s pairing code.")
-                        )
+                        ContentUnavailableView {
+                            Label("Camera Access Needed", systemImage: "camera")
+                        } description: {
+                            Text("Allow camera access in Settings to scan your Mac’s pairing code.")
+                        } actions: {
+                            Button("Open Settings") {
+                                if let url = URL(string: UIApplication.openSettingsURLString) {
+                                    UIApplication.shared.open(url)
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                        }
                     }
                     Button("Paste Pairing Code", systemImage: "doc.on.clipboard") {
                         if let text = UIPasteboard.general.string { scanned(text) }
@@ -68,7 +78,12 @@ struct PairComputerView: View {
                     }
                 }
             }
-            .task { cameraAllowed = await AVCaptureDevice.requestAccess(for: .video) }
+            .task {
+                if camera == .notDetermined {
+                    _ = await AVCaptureDevice.requestAccess(for: .video)
+                    camera = AVCaptureDevice.authorizationStatus(for: .video)
+                }
+            }
             .onDisappear { pairingTask?.cancel() }
         }
     }

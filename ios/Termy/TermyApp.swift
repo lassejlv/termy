@@ -1,15 +1,18 @@
 import SwiftUI
+import UIKit
 
 @main
 struct TermyApp: App {
-    @State private var model = AppModel()
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    @State private var model = AppModel.shared
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             HostsView()
-            .environment(model)
-            .preferredColorScheme(.dark)
+                .environment(model)
+                .preferredColorScheme(.dark)
+                .onOpenURL { model.open($0) }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -18,5 +21,41 @@ struct TermyApp: App {
             default: break
             }
         }
+    }
+}
+
+/// Home Screen quick actions arrive through the scene delegate, which SwiftUI leaves to UIKit.
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication, configurationForConnecting session: UISceneSession,
+        options: UIScene.ConnectionOptions
+    ) -> UISceneConfiguration {
+        let configuration = UISceneConfiguration(name: nil, sessionRole: session.role)
+        configuration.delegateClass = QuickActionSceneDelegate.self
+        return configuration
+    }
+}
+
+final class QuickActionSceneDelegate: NSObject, UIWindowSceneDelegate {
+    func scene(
+        _ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions
+    ) {
+        if let item = connectionOptions.shortcutItem { Self.perform(item) }
+    }
+
+    func windowScene(
+        _ windowScene: UIWindowScene, performActionFor shortcutItem: UIApplicationShortcutItem,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        completionHandler(Self.perform(shortcutItem))
+    }
+
+    @discardableResult
+    @MainActor private static func perform(_ item: UIApplicationShortcutItem) -> Bool {
+        guard let raw = item.userInfo?["url"] as? String, let url = URL(string: raw),
+            let destination = TermyLink.parse(url)
+        else { return false }
+        AppModel.shared.open(destination)
+        return true
     }
 }

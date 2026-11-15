@@ -5,8 +5,11 @@ struct HostsView: View {
     @Environment(AppModel.self) private var model
     @State private var showSettings = false
     @State private var showPairing = false
+    @State private var path: [UUID] = []
+    /// The computer open when the app was last used, restored on launch.
+    @SceneStorage("openHost") private var openHost = ""
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 if let error = model.lastError {
                     Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
@@ -49,6 +52,30 @@ struct HostsView: View {
             .sheet(isPresented: $showPairing) { PairComputerView() }
             .task { await model.refreshDevices() }
         }
+        .onAppear {
+            if let route = model.route {
+                follow(route)
+            } else if path.isEmpty, let id = UUID(uuidString: openHost), model.hosts.contains(where: { $0.id == id }) {
+                path = [id]
+            }
+            if model.pairingRequested { openPairing() }
+        }
+        .onChange(of: model.route) { _, route in if let route { follow(route) } }
+        .onChange(of: model.pairingRequested) { _, requested in if requested { openPairing() } }
+        .onChange(of: path) { _, path in openHost = path.last?.uuidString ?? "" }
+    }
+
+    private func follow(_ route: Route) {
+        showSettings = false
+        showPairing = false
+        if path.last != route.host { path = [route.host] }
+    }
+
+    private func openPairing() {
+        model.pairingRequested = false
+        path = []
+        showSettings = false
+        showPairing = true
     }
 }
 struct HostRow: View {

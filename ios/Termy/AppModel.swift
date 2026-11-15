@@ -2,10 +2,23 @@ import Foundation
 import Observation
 import TermyRemoteKit
 import UIKit
+import WidgetKit
+
+/// Somewhere the app was asked to go: a computer, a pane, or a command to run.
+struct Route: Equatable, Identifiable {
+    let id = UUID()
+    var host: UUID
+    var pane: String?
+    /// Run in a new tab of `sessionName` (made if missing). Only Shortcuts set it.
+    var command: String?
+    var sessionName = "Shortcuts"
+}
 
 /// One device identity, with separate credentials and pairings for each relay.
 @MainActor @Observable
-final class AppModel {
+final class AppModel: HostTransport {
+    /// One model per process, so App Intents and the widget's links reach the UI's.
+    static let shared = AppModel()
     struct Profile: Codable {
         var credentials: DeviceCredentials
         var pins: [UUID: Data] = [:]
@@ -27,6 +40,11 @@ final class AppModel {
     private(set) var states: [String: RelayState] = [:]
     @ObservationIgnored private var active = true
     @ObservationIgnored private var identityError: Error?
+    /// Where the UI should go next; the views clear it once they got there.
+    var route: Route?
+    /// The pairing sheet should open, e.g. after removing a computer to pair it again.
+    var pairingRequested = false
+    @ObservationIgnored private var publishedSnapshot: HostSnapshot?
 
     init() {
         do {
@@ -58,6 +76,63 @@ final class AppModel {
         devices = profiles.values.flatMap(\.hosts).sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
+        publishDevices()
+    }
+
+    // MARK: Routes, widget and quick actions
+
+    func open(_ destination: TermyLink.Destination) {
+        switch destination {
+        case .pair:
+            route = nil
+            pairingRequested = true
+        case .host(let id, let pane):
+            guard devices.contains(where: { $0.id == id }) else { return }
+            route = Route(host: id, pane: pane)
+        }
+    }
+
+    func open(_ url: URL) {
+        if let destination = TermyLink.parse(url) { open(destination) }
+    }
+
+    /// Removes a computer whose key no longer matches, then opens pairing.
+    func repair(_ host: RelayDevice) async throws {
+        try await removeHost(host)
+        route = nil
+        pairingRequested = true
+    }
+
+    func sessionsChanged(for host: UUID) { publishDevices() }
+
+    /// Shares the computer list with the widget, the Home Screen quick actions and Shortcuts.
+    private func publishDevices() {
+        let hosts = devices.map { device in
+            let link = links[device.id]
+            let panes = link?.state == .connected ? link?.orderedPanes.count : nil
+            return HostSnapshot.Host(id: device.id, name: device.name, online: device.online, panes: panes)
+        }
+        let previous = publishedSnapshot ?? HostSnapshotStore.load()
+        let stale = Date().timeIntervalSince(previous.updatedAt) > 300
+        guard previous.hosts != hosts || stale else { return }
+        let snapshot = HostSnapshot(hosts: hosts, updatedAt: Date())
+        publishedSnapshot = snapshot
+        if HostSnapshotStore.save(snapshot) { WidgetCenter.shared.reloadAllTimelines() }
+        if previous.hosts.map(\.id) != hosts.map(\.id) || previous.hosts.map(\.name) != hosts.map(\.name) {
+            TermyShortcuts.updateAppShortcutParameters()
+        }
+        var items = devices.prefix(3).map { device in
+            UIApplicationShortcutItem(
+                type: "sh.termy.open-host", localizedTitle: device.name,
+                localizedSubtitle: nil, icon: UIApplicationShortcutIcon(systemImageName: "desktopcomputer"),
+                userInfo: ["url": TermyLink.open(host: device.id).absoluteString as NSString])
+        }
+        items.append(
+            UIApplicationShortcutItem(
+                type: "sh.termy.pair", localizedTitle: "Pair Computer", localizedSubtitle: nil,
+                icon: UIApplicationShortcutIcon(systemImageName: "qrcode.viewfinder"),
+                userInfo: ["url": TermyLink.pair.absoluteString as NSString]))
+        UIApplication.shared.shortcutItems = items
     }
     func pair(_ code: PairingCode) async throws {
         guard !pairingBusy else { return }
