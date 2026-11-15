@@ -61,7 +61,9 @@ cargo clippy -p termy_relay --all-targets -- -D warnings
 
 The default public relay is **https://relay.termy.sh**, deployed on Unkey from
 `crates/relay/Dockerfile`. Keep production at **one replica**: the socket hub
-and registration limiter are in memory. Deploying this branch replaces the
+and rate limiters are in memory. Set `TRUSTED_PROXIES` to the address range
+Unkey's proxy connects from (see Limits); until then the relay logs a warning
+and all users share one registration limit. Deploying this branch replaces the
 v1 account endpoints with v2 pairing endpoints. Existing apps need updating
 and re-pairing for the original v1 transition. Migration `0003` removes the
 plaintext device-name column and the retired v1 account tables (including
@@ -80,7 +82,35 @@ through the database provider's retention policy; do not treat this migration
 as proof that historical plaintext has been physically erased.
 
 Configuration: `DATABASE_URL` (required), `HOST` (default `0.0.0.0`), `PORT`
-(default `8080`; `just relay` uses `8787`), and `RUST_LOG`.
+(default `8080`; `just relay` uses `8787`), `TRUSTED_PROXIES` (default none)
+and `RUST_LOG`.
+
+## Limits
+
+Limits count per client address; an IPv6 client is its /64. The address is
+the socket's source unless that source is listed in `TRUSTED_PROXIES`
+(comma-separated addresses or CIDR blocks). For a listed proxy the relay
+takes the rightmost `X-Forwarded-For` entry that isn't itself a listed proxy,
+so a client can't choose its own address. List only proxies that append to
+that header, and only when clients can't reach the relay around them.
+
+- Registration, the one unauthenticated write: 30 per address per five minutes.
+- Every other request: 600 per address per minute, refused with 429 before
+  it is authenticated. A source on a private or loopback address that isn't
+  a listed proxy is not counted, because it would stand for all its users.
+- Requests: 16 KiB body, 15 seconds to send the headers and 15 to finish.
+- Sockets: 4 MiB per frame. A device may send a 32 MiB burst, then 2 MiB/s;
+  beyond that the relay reads its socket more slowly and drops nothing.
+- A device may have 32 frames or 16 MiB waiting, and all devices together
+  256 MiB. A device that falls further behind, takes over a minute to accept
+  one frame, or sends nothing (not even a pong) for 75 seconds is
+  disconnected and resynchronises when it reconnects.
+- Hourly, the relay deletes registrations that have not connected for 90
+  days, are offline, and have no link or open invitation. Such a device gets
+  401, which the apps report as an ended registration. Paired devices are kept.
+
+Bearer tokens do not expire. A device replaces its token by deleting its
+registration and pairing again.
 
 ## Self-host on a VPS
 
@@ -114,10 +144,10 @@ local development. There is no dependency on Unkey or Neon when self-hosting.
 
 Back up the Postgres volume/database. Restart with `docker compose restart`;
 update with `docker compose up -d --build`. Do not use `down -v` unless you
-intend to erase all pairings. Device registration is public and limited to
-30 attempts per socket-source IP per five minutes. Behind a proxy this limit
-is shared by that proxy's users; forwarded IP headers are deliberately not
-trusted. Add stricter edge quotas if exposing a relay to a large audience.
+intend to erase all pairings. Device registration is public; see Limits.
+`compose.yaml` sets `TRUSTED_PROXIES` to the private ranges, which is safe
+there because only Caddy can reach the relay's port. Add stricter edge quotas
+if exposing a relay to a large audience.
 
 ## API
 
@@ -148,7 +178,7 @@ Device private keys and credentials live in the clients' Keychain.
 Socket framing is unchanged: binary `0x01`, recipient UUID (16 bytes), then
 sealed packet. The relay replaces the UUID with the sender's. Text events are
 `ready`, `presence`, and `undeliverable`. Frames are capped at 4 MiB. Slow peers
-are disconnected rather than accumulating an unbounded output queue.
+are disconnected rather than accumulating an unbounded output queue (see Limits).
 
 ## Validation
 

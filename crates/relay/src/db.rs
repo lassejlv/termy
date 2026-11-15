@@ -50,6 +50,16 @@ impl Db {
         sqlx::query_as("SELECT * FROM remote_pairings WHERE id=$1 AND (expires_at>now() OR (response_packet IS NOT NULL AND expires_at>now()-interval '10 minutes'))")
             .bind(id).fetch_optional(&self.pool).await
     }
+    /// Removes invitations past retrieval, then registrations that haven't
+    /// connected for 90 days and that no link or invitation refers to.
+    /// Returns the removed devices.
+    pub async fn prune(&self, online: &[Uuid]) -> sqlx::Result<Vec<Uuid>> {
+        sqlx::query("DELETE FROM remote_pairings WHERE expires_at<now()-interval '10 minutes'")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query_scalar("DELETE FROM remote_devices d WHERE coalesce(d.last_seen_at,d.created_at)<now()-interval '90 days' AND NOT (d.id=ANY($1)) AND NOT EXISTS(SELECT 1 FROM remote_links l WHERE l.host_id=d.id OR l.client_id=d.id) AND NOT EXISTS(SELECT 1 FROM remote_pairings p WHERE p.host_id=d.id OR p.client_id=d.id) RETURNING d.id")
+            .bind(online).fetch_all(&self.pool).await
+    }
     pub async fn touch(&self, id: Uuid) {
         let _ = sqlx::query("UPDATE remote_devices SET last_seen_at=now() WHERE id=$1")
             .bind(id)

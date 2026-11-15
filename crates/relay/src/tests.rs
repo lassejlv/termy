@@ -120,12 +120,7 @@ async fn pairing_api_lifecycle() {
         preserved
     );
 
-    let app = api::router(AppState {
-        db: db::Db::new(pool.clone()),
-        hub: Arc::new(hub::Hub::default()),
-        gate: Arc::new(tokio::sync::Mutex::new(())),
-        limiter: Arc::new(api::AttemptLimiter::default()),
-    });
+    let app = api::router(AppState::new(pool.clone(), limit::Proxies::default()));
     // Optionally exercise the real Swift host + encrypted terminal over this
     // isolated schema. No deployed relay or production registrations are used.
     if std::env::var_os("RELAY_SWIFT_E2E").is_some() {
@@ -382,6 +377,59 @@ async fn pairing_api_lifecycle() {
             .0,
         StatusCode::UNAUTHORIZED
     );
+    // Pruning removes only registrations that are idle, offline and unlinked.
+    let (_, p) = request(&app, "POST", "/v2/pairings", Some(ht), json!({})).await;
+    let linked = register(&app, "client").await;
+    let (inviting, idle, online, fresh) = (
+        Uuid::parse_str(hid).unwrap(),
+        Uuid::parse_str(stranger["device"]["id"].as_str().unwrap()).unwrap(),
+        Uuid::parse_str(
+            register(&app, "client").await["device"]["id"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap(),
+        Uuid::parse_str(
+            register(&app, "client").await["device"]["id"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap(),
+    );
+    let linked = Uuid::parse_str(linked["device"]["id"].as_str().unwrap()).unwrap();
+    sqlx::query("INSERT INTO remote_links(host_id,client_id) VALUES($1,$2)")
+        .bind(preserved)
+        .bind(linked)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE remote_devices SET created_at=now()-interval '91 days' WHERE id<>$1")
+        .bind(fresh)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let db = db::Db::new(pool.clone());
+    assert_eq!(db.prune(&[online]).await.unwrap(), vec![idle]);
+    let left: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM remote_devices")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    for kept in [inviting, online, fresh, linked, preserved, preserved_client] {
+        assert!(left.contains(&kept));
+    }
+    assert_eq!(
+        request(&app, "GET", "/v2/devices", Some(st), json!({}))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    // Once its invitation is past retrieval, the idle host goes too.
+    sqlx::query("UPDATE remote_pairings SET expires_at=now()-interval '11 minutes' WHERE id=$1")
+        .bind(Uuid::parse_str(p["id"].as_str().unwrap()).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(db.prune(&[online]).await.unwrap(), vec![inviting]);
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
         .execute(&admin)
