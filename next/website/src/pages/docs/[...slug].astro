@@ -1,0 +1,140 @@
+---
+import type { GetStaticPaths } from 'astro'
+import { render } from 'astro:content'
+import Layout from '@/layouts/Layout.astro'
+import DocsHeader from '@/components/docs/DocsHeader.astro'
+import DocsSidebar from '@/components/docs/DocsSidebar.astro'
+import DocsToc from '@/components/docs/DocsToc.astro'
+import { dithers, images } from '@/lib/assets'
+import { href, loadDocs, type Doc } from '@/lib/docs'
+
+export const getStaticPaths = (async () => {
+  const { sidebar, ordered, groupOf } = await loadDocs()
+  return ordered.map((doc, index) => ({
+    params: { slug: doc.id === 'index' ? undefined : doc.id },
+    props: {
+      doc,
+      sidebar,
+      ordered,
+      group: groupOf.get(doc.id)!,
+      previous: ordered[index - 1],
+      next: ordered[index + 1],
+    },
+  }))
+}) satisfies GetStaticPaths
+
+interface Props {
+  doc: Doc
+  sidebar: { title: string; docs: Doc[] }[]
+  ordered: Doc[]
+  group: string
+  previous?: Doc
+  next?: Doc
+}
+
+const { doc, sidebar, ordered, group, previous, next } = Astro.props
+const { Content, headings } = await render(doc)
+const minutes = Math.max(1, Math.round((doc.body ?? '').split(/\s+/).length / 220))
+const facts = [...doc.data.tags, `${minutes} min read`]
+const editUrl = `https://github.com/lassejlv/termy/blob/main/next/website/src/content/docs/${doc.id}.md`
+---
+
+<Layout title={doc.id === 'index' ? 'Termy Next docs' : `${doc.data.title} · Termy Next docs`} description={doc.data.description}>
+  <DocsHeader docs={ordered} />
+  <div class="mx-auto flex max-w-[1440px] items-start">
+    <aside class="sticky top-16 hidden max-h-[calc(100dvh-4rem)] w-[280px] shrink-0 self-start overflow-y-auto border-r border-white/6 px-6 pt-9 pb-12 pl-8 lg:block">
+      <DocsSidebar sidebar={sidebar} current={doc} />
+    </aside>
+
+    <main class="relative isolate min-w-0 flex-1 overflow-x-clip px-5 pt-10 pb-24 md:px-12 md:pt-14 lg:px-[72px] xl:pr-16">
+      <img src={dithers.hero} alt="" width="1440" height="500" class="dither absolute -top-[140px] left-0 -z-10 h-[300px] w-full max-w-none opacity-20" />
+      <div class="absolute top-5 left-0 -z-10 h-[140px] w-full bg-linear-to-b from-background/0 to-background"></div>
+
+      <details class="group mb-8 rounded-xl border border-white/8 bg-panel lg:hidden">
+        <summary class="flex cursor-pointer list-none items-center justify-between px-4 py-3 text-[14px] text-soft">
+          <span>{group} <span class="text-dim">/</span> <span class="text-foreground">{doc.data.title}</span></span>
+          <span class="text-dim transition-transform group-open:rotate-180">▾</span>
+        </summary>
+        <div class="border-t border-white/6 px-2 pt-5 pb-4">
+          <DocsSidebar sidebar={sidebar} current={doc} />
+        </div>
+      </details>
+
+      <div class="mx-auto max-w-[744px]">
+        <header class="flex flex-col gap-[18px]">
+          <p class="hidden items-center gap-2 text-[14px] text-faint lg:flex">
+            {group}<span class="text-[#5a5a5a]">/</span><span class="text-soft">{doc.data.title}</span>
+          </p>
+          <h1 class="text-[40px] leading-[44px] font-semibold tracking-[-0.035em] md:text-[52px] md:leading-[56px]">{doc.data.title}</h1>
+          <p class="max-w-[640px] text-[17px] leading-[28px] text-soft md:text-[19px] md:leading-[30px]">{doc.data.description}</p>
+          <ul class="flex flex-wrap items-center gap-x-5 gap-y-2 pt-1.5 text-[13px] text-faint">
+            {
+              facts.map((fact, index) => (
+                <li class="flex items-center gap-5">
+                  {index > 0 && <span class="size-[3px] rounded-full bg-[#5a5a5a]" />}
+                  {fact}
+                </li>
+              ))
+            }
+          </ul>
+        </header>
+
+        <hr class="mt-11 mb-10 border-white/6" />
+
+        <article class="docs-prose">
+          <Content />
+        </article>
+
+        <nav class="mt-[72px] grid gap-4 sm:grid-cols-2" aria-label="Previous and next">
+          {
+            previous ? (
+              <a href={href(previous)} class="flex flex-col gap-1.5 rounded-xl border border-white/8 px-5 py-[18px] transition-colors hover:border-white/16 hover:bg-white/[0.02]">
+                <span class="text-[13px] text-dim">← Previous</span>
+                <span class="text-[16px] font-medium">{previous.data.title}</span>
+              </a>
+            ) : (
+              <span />
+            )
+          }
+          {
+            next && (
+              <a href={href(next)} class="flex flex-col items-end gap-1.5 rounded-xl border border-white/8 px-5 py-[18px] text-right transition-colors hover:border-white/16 hover:bg-white/[0.02]">
+                <span class="text-[13px] text-dim">Next →</span>
+                <span class="text-[16px] font-medium">{next.data.title}</span>
+              </a>
+            )
+          }
+        </nav>
+      </div>
+    </main>
+
+    <aside class="sticky top-16 hidden w-[280px] shrink-0 self-start pt-[60px] pr-8 pb-12 pl-2 xl:block">
+      <DocsToc headings={headings} editUrl={editUrl} />
+    </aside>
+  </div>
+
+  <footer class="border-t border-white/6">
+    <div class="mx-auto flex max-w-[1440px] flex-col gap-4 px-5 py-6 text-[13px] text-faint sm:h-[72px] sm:flex-row sm:items-center sm:justify-between sm:py-0 md:px-8">
+      <a href="/" class="flex items-center gap-2.5 hover:text-foreground">
+        <img src={images.icon} alt="" width="18" height="18" class="size-[18px]" />
+        Termy Next · MIT licensed
+      </a>
+      <div class="flex items-center gap-6">
+        <a href="https://termy.sh" class="hover:text-foreground">termy.sh</a>
+        <a href="https://github.com/lassejlv/termy/releases" class="hover:text-foreground">Releases</a>
+        <a href="https://github.com/lassejlv/termy" class="hover:text-foreground">GitHub</a>
+      </div>
+    </div>
+  </footer>
+</Layout>
+
+<script>
+  for (const button of document.querySelectorAll<HTMLButtonElement>('.code-frame [data-copy]')) {
+    button.addEventListener('click', async () => {
+      const code = button.closest('.code-frame')?.querySelector('pre')?.innerText ?? ''
+      await navigator.clipboard.writeText(code.replace(/\n$/, ''))
+      button.textContent = 'Copied'
+      setTimeout(() => (button.textContent = 'Copy'), 1500)
+    })
+  }
+</script>
