@@ -1,4 +1,5 @@
 import AppKit
+import TermyRemoteKit
 import Termy
 import TermyAppKit
 import TermyNextCore
@@ -333,6 +334,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         window.setFrameTopLeftPoint(NSPoint(x: point.x - 40, y: point.y + 14))
         Motion.appear(window.contentView ?? NSView(), scale: 0.96, duration: 0.2)
         pane.focus()
+    }
+
+    func application(_ application: NSApplication, willContinueUserActivityWithType type: String) -> Bool {
+        type == RemoteHandoff.activityType
+    }
+
+    func application(
+        _ application: NSApplication, continue userActivity: NSUserActivity,
+        restorationHandler: @escaping ([any NSUserActivityRestoring]) -> Void
+    ) -> Bool {
+        PaneHandoff.continue(userActivity) { revealPane($0) }
     }
 
     /// Brings a pane to the front, such as from its notification: its

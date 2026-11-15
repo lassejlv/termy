@@ -7,6 +7,7 @@ struct SettingsView: View {
     @State private var removing: RelayDevice?
     @State private var error: String?
     @AppStorage("predictiveEcho") private var predictiveEcho = true
+    @State private var notifier = CommandNotifier.shared
     var body: some View {
         NavigationStack {
             Form {
@@ -29,6 +30,27 @@ struct SettingsView: View {
                 } footer: {
                     Text(
                         "On slow connections, shows what you type right away and underlines it until your Mac confirms it. Never used for passwords or programs that don’t echo."
+                    )
+                }
+                Section {
+                    // Turning it on is what asks iOS for permission, not launching the app.
+                    Toggle(
+                        "Notify When Commands Finish",
+                        isOn: Binding(
+                            get: { notifier.enabled },
+                            set: { on in Task { await notifier.setEnabled(on) } }))
+                    if notifier.denied {
+                        Button("Allow Notifications in Settings") {
+                            if let url = URL(string: UIApplication.openNotificationSettingsURLString) {
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text(
+                        "Tells you when a command that ran \(Int(CommandNotifier.minimumDuration)) seconds or more finishes in a pane you aren’t looking at, while Termy is open. Needs shell integration on your Mac."
                     )
                 }
                 Section("Shortcuts") {

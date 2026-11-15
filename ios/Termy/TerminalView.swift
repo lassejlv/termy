@@ -6,6 +6,8 @@ import UIKit
 enum TerminalCommand: Equatable {
     case find, newTab, splitRight, splitDown, nextPane, previousPane, close
     case previousPrompt, nextPrompt
+    /// Speak a command; send a photo to the Mac.
+    case dictate, sendPhoto
     /// Copy what a command printed: the one whose prompt is at this buffer row, or the last one.
     case copyOutput(promptBufferRow: Int?)
 }
@@ -34,6 +36,8 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGestureReco
     var onMouse: ((Int, Int, String) -> Void)?
     var onGridChange: ((Int, Int) -> Void)?
     var onCommand: ((TerminalCommand) -> Void)?
+    /// A copied image was pasted; the host sends it to the Mac.
+    var onPasteImage: ((UIImage) -> Void)?
     /// Called when this view starts taking keys, so a side-by-side host knows which pane is focused.
     var onFocus: (() -> Void)?
     var mouseMode = false
@@ -812,9 +816,15 @@ final class TerminalUIView: UIView, UIKeyInput, UITextInputTraits, UIGestureReco
     }
 
     func paste() {
-        guard screen?.live == true, let text = UIPasteboard.general.string, !text.isEmpty else { return }
-        screen?.notePasted()
-        onPaste?(text)
+        guard screen?.live == true else { return }
+        let board = UIPasteboard.general
+        if board.hasStrings, let text = board.string, !text.isEmpty {
+            screen?.notePasted()
+            onPaste?(text)
+        } else if board.hasImages, let image = board.image {
+            // A copied screenshot goes to the Mac as a file, its path typed in.
+            onPasteImage?(image)
+        }
     }
 
     /// Types a saved command, pressing Return when the snippet says so.
@@ -1002,6 +1012,7 @@ struct TerminalViewRepresentable: UIViewRepresentable {
     var onReady: ((TerminalUIView) -> Void)?
     var onCommand: ((TerminalCommand) -> Void)?
     var onFocus: (() -> Void)?
+    var onPasteImage: ((UIImage) -> Void)?
 
     func makeUIView(context: Context) -> TerminalUIView {
         let view = TerminalUIView()
@@ -1018,6 +1029,7 @@ struct TerminalViewRepresentable: UIViewRepresentable {
         }
         view.onCommand = onCommand
         view.onFocus = onFocus
+        view.onPasteImage = onPasteImage
         view.screen = screen
         onReady?(view)
         if focusOnAppear { DispatchQueue.main.async { _ = view.becomeFirstResponder() } }
@@ -1028,6 +1040,7 @@ struct TerminalViewRepresentable: UIViewRepresentable {
         if view.screen !== screen { view.screen = screen }
         view.onCommand = onCommand
         view.onFocus = onFocus
+        view.onPasteImage = onPasteImage
         view.updateGrid()
     }
 }

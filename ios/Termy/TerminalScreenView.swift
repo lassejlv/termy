@@ -1,5 +1,7 @@
+import PhotosUI
 import SwiftUI
 import TermyRemoteKit
+import UniformTypeIdentifiers
 
 struct TerminalScreenView: View {
     let link: HostLink
@@ -28,6 +30,9 @@ struct TerminalScreenView: View {
         let id = UUID()
     }
     @State private var notice: Notice?
+    @State private var dictating = false
+    @State private var choosingPhoto = false
+    @State private var photo: PhotosPickerItem?
 
     init(link: HostLink, screen: TerminalScreen) {
         self.link = link
@@ -86,6 +91,41 @@ struct TerminalScreenView: View {
                 if size != .regular, let secondary { closeSecondary(secondary) }
             }
             .sheet(isPresented: $showSearch) { searchSheet }
+            .sheet(isPresented: $dictating) {
+                DictationSheet { command, run in
+                    focusedView?.type(Snippet(name: "", command: command, runs: run))
+                }
+            }
+            .photosPicker(isPresented: $choosingPhoto, selection: $photo, matching: .images)
+            .onChange(of: photo) { _, item in
+                guard let item else { return }
+                photo = nil
+                let target = focused
+                Task {
+                    guard let data = try? await item.loadTransferable(type: Data.self) else {
+                        return show(Notice(text: "Couldn’t read that photo", symbol: "exclamationmark.triangle", tint: .orange))
+                    }
+                    send(data: data, name: nil, to: target)
+                }
+            }
+            .onDrop(of: [.image], isTargeted: nil) { providers in
+                guard let provider = providers.first else { return false }
+                let target = focused
+                let name = provider.suggestedName
+                _ = provider.loadDataRepresentation(for: .image) { data, _ in
+                    guard let data else { return }
+                    Task { @MainActor in send(data: data, name: name, to: target) }
+                }
+                return true
+            }
+            .onChange(of: screen.uploadedPath) { _, path in uploaded(path, on: screen) }
+            .onChange(of: secondary?.uploadedPath) { _, path in if let secondary { uploaded(path, on: secondary) } }
+            .userActivity(RemoteHandoff.activityType, isActive: focused.live && link.state == .connected) { activity in
+                // Termy Next opens the same pane on the Mac.
+                activity.title = focused.title ?? "Terminal"
+                activity.addUserInfoEntries(from: RemoteHandoff.userInfo(host: link.device.id, pane: focused.paneID))
+                activity.isEligibleForHandoff = true
+            }
             .sheet(isPresented: $showConfig) { configSheet }
             .confirmationDialog(
                 "End this pane on your Mac?", isPresented: $closeConfirmation, titleVisibility: .visible
@@ -120,7 +160,8 @@ struct TerminalScreenView: View {
                     }
                 },
                 onCommand: { handle($0) },
-                onFocus: { if focusedSecondary != isSecondary { focusedSecondary = isSecondary } }
+                onFocus: { if focusedSecondary != isSecondary { focusedSecondary = isSecondary } },
+                onPasteImage: { image in send(image: image, to: screen) }
             )
             .id(screen.stream)
             .transition(reduceMotion ? .opacity : .push(from: switchEdge))
@@ -275,6 +316,14 @@ struct TerminalScreenView: View {
             guard link.followsPrompts else { return }
             link.send(.jumpToPrompt(stream: focused.stream, forward: command == .nextPrompt))
         case .copyOutput(let row): copyOutput(promptBufferRow: row)
+        case .dictate:
+            _ = focusedView?.resignFirstResponder()
+            dictating = true
+        case .sendPhoto:
+            guard link.followsPrompts else {
+                return show(Notice(text: "Update Termy Next on your Mac to send photos", symbol: "info.circle", tint: .secondary))
+            }
+            choosingPhoto = true
         }
     }
 
@@ -307,6 +356,12 @@ struct TerminalScreenView: View {
                     if let secondary {
                         Button("Close Side Pane", systemImage: "xmark.rectangle") { closeSecondary(secondary) }
                     }
+                }
+            }
+            Section {
+                Button("Speak a Command…", systemImage: "mic") { handle(.dictate) }
+                if link.followsPrompts {
+                    Button("Send Photo…", systemImage: "photo") { handle(.sendPhoto) }
                 }
             }
             if !snippets.snippets.isEmpty {
@@ -443,6 +498,42 @@ struct TerminalScreenView: View {
             try? await Task.sleep(for: .seconds(4))
             if notice?.id == new.id { withAnimation(reduceMotion ? nil : .snappy) { notice = nil } }
         }
+    }
+
+    /// Sends a photo into a pane: the Mac saves it and types its path, ready for Claude Code and friends.
+    private func send(data: Data, name: String?, to pane: TerminalScreen) {
+        Task.detached(priority: .userInitiated) {
+            let prepared = ImageUpload.prepare(data, name: name)
+            await MainActor.run { upload(prepared, to: pane) }
+        }
+    }
+
+    private func send(image: UIImage, to pane: TerminalScreen) {
+        guard link.followsPrompts else {
+            return show(Notice(text: "Update Termy Next on your Mac to paste images", symbol: "info.circle", tint: .secondary))
+        }
+        let image = Handoff(image)
+        Task.detached(priority: .userInitiated) {
+            let prepared = ImageUpload.prepare(image.value, name: "pasted")
+            await MainActor.run { upload(prepared, to: pane) }
+        }
+    }
+
+    private func upload(_ prepared: (data: Data, name: String)?, to pane: TerminalScreen) {
+        guard let prepared else {
+            return show(Notice(text: "That image is too large to send", symbol: "exclamationmark.triangle", tint: .orange))
+        }
+        guard link.upload(prepared.data, name: prepared.name, to: pane) else {
+            return show(Notice(text: "Update Termy Next on your Mac to send photos", symbol: "info.circle", tint: .secondary))
+        }
+        show(Notice(text: "Sending to your Mac…", symbol: "arrow.up.circle", tint: .accentColor))
+    }
+
+    private func uploaded(_ path: String?, on pane: TerminalScreen) {
+        guard let path else { return }
+        pane.uploadedPath = nil
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        show(Notice(text: "Saved as \((path as NSString).lastPathComponent)", symbol: "photo.badge.checkmark", tint: .accentColor))
     }
 
     /// Copies a command's output from the Mac's history, which may reach far past the screen.

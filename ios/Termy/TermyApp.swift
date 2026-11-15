@@ -1,4 +1,5 @@
 import SwiftUI
+import TermyRemoteKit
 import UIKit
 
 @main
@@ -13,10 +14,13 @@ struct TermyApp: App {
                 .environment(model)
                 .preferredColorScheme(.dark)
                 .onOpenURL { model.open($0) }
+                .onContinueUserActivity(RemoteHandoff.activityType) { model.continue($0) }
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
-            case .active: model.resume()
+            case .active:
+                model.resume()
+                Task { await CommandNotifier.shared.refreshPermission() }
             case .background: model.suspend()
             default: break
             }
@@ -26,6 +30,14 @@ struct TermyApp: App {
 
 /// Home Screen quick actions arrive through the scene delegate, which SwiftUI leaves to UIKit.
 final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication, didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        // Before launch ends, so tapping a notification opens its pane even when Termy wasn't running.
+        _ = CommandNotifier.shared
+        return true
+    }
+
     func application(
         _ application: UIApplication, configurationForConnecting session: UISceneSession,
         options: UIScene.ConnectionOptions

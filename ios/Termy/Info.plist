@@ -18,6 +18,17 @@
 			</array>
 		</dict>
 	</array>
+	<!-- Handoff with Termy Next on the Mac. -->
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>sh.termy.pane</string>
+	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Speak a command to type into your Mac’s terminal.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Turns a command you speak into text you check before it’s typed.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Choose a photo to send to your Mac’s terminal.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<!-- A relay on this Mac or the local network during development. -->

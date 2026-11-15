@@ -204,3 +204,75 @@ final class KeyBarAndLinkTests: XCTestCase {
         XCTAssertNil(TermyLink.parse(URL(string: "termy://open?host=nope")!))
     }
 }
+
+final class PhoneInputTests: XCTestCase {
+    func testSpokenSymbolsBecomeShellSyntax() {
+        XCTAssertEqual(SpokenCommand.normalize("ls dash l"), "ls -l")
+        XCTAssertEqual(SpokenCommand.normalize("Git commit dash dash amend."), "git commit --amend")
+        XCTAssertEqual(SpokenCommand.normalize("cd tilde slash dev slash termy"), "cd ~/dev/termy")
+        XCTAssertEqual(SpokenCommand.normalize("cat readme dot md"), "cat readme.md")
+        XCTAssertEqual(SpokenCommand.normalize("ps aux pipe grep node"), "ps aux | grep node")
+        XCTAssertEqual(SpokenCommand.normalize("npm run build"), "npm run build")
+        // An acronym keeps its capitals.
+        XCTAssertEqual(SpokenCommand.normalize("AWS s3 ls"), "AWS s3 ls")
+        XCTAssertEqual(SpokenCommand.normalize("  "), "")
+    }
+
+    func testImagesShrinkToFitTheRelay() throws {
+        let small = try XCTUnwrap(UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).pngData { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 20, height: 20))
+        })
+        let kept = try XCTUnwrap(ImageUpload.prepare(small, name: "dot.png"))
+        XCTAssertEqual(kept.data, small, "A PNG that fits goes as it is")
+        XCTAssertEqual(kept.name, "dot.png")
+
+        // Noise doesn't compress: a big noisy image must be scaled down.
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let noisy = UIGraphicsImageRenderer(size: CGSize(width: 3000, height: 3000), format: format).image { context in
+            var generator = SystemRandomNumberGenerator()
+            for x in stride(from: 0, to: 3000, by: 6) {
+                for y in stride(from: 0, to: 3000, by: 6) {
+                    UIColor(white: CGFloat(UInt8.random(in: 0...255, using: &generator)) / 255, alpha: 1).setFill()
+                    context.fill(CGRect(x: x, y: y, width: 6, height: 6))
+                }
+            }
+        }
+        let shrunk = try XCTUnwrap(ImageUpload.prepare(noisy, name: "IMG_1.HEIC"))
+        XCTAssertLessThanOrEqual(shrunk.data.count, RemoteUpload.maxBytes)
+        XCTAssertEqual(shrunk.name, "IMG_1.jpg")
+        XCTAssertEqual(RemoteUpload.sniffedExtension(shrunk.data), "jpg")
+        XCTAssertNil(ImageUpload.prepare(Data("not an image".utf8)))
+    }
+}
+
+final class CommandNotifierTests: XCTestCase {
+    private func pane(_ id: String, _ state: RemoteCommandState?) -> RemotePane {
+        RemotePane(id: id, title: "make", workingDirectory: nil, exited: false, command: state)
+    }
+
+    func testOnlyLongCommandsThatJustFinishedNotify() {
+        let now = Date()
+        let started = now.addingTimeInterval(-60)
+        let old = [
+            pane("long", .init(running: true, finished: 3, exitCode: 0, runningSince: started)),
+            pane("quick", .init(running: true, finished: 0, exitCode: nil, runningSince: now.addingTimeInterval(-2))),
+            pane("idle", .init(running: false, finished: 1, exitCode: 0)),
+            pane("plain", nil),
+        ]
+        let new = [
+            pane("long", .init(running: false, finished: 4, exitCode: 2)),
+            pane("quick", .init(running: false, finished: 1, exitCode: 0)),
+            pane("idle", .init(running: false, finished: 1, exitCode: 0)),
+            pane("plain", nil),
+            pane("new", .init(running: false, finished: 1, exitCode: 0)),
+        ]
+        let done = CommandNotifier.finished(old: old, new: new, now: now)
+        XCTAssertEqual(done.map(\.pane.id), ["long"])
+        XCTAssertEqual(done.first?.state.exitCode, 2)
+        XCTAssertEqual(done.first?.duration ?? 0, 60, accuracy: 0.01)
+        // The same list again says nothing new.
+        XCTAssertTrue(CommandNotifier.finished(old: new, new: new, now: now).isEmpty)
+    }
+}

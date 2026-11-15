@@ -119,4 +119,24 @@ import Testing
         #expect(PromptNavigation.output(in: terminal, promptLine: 0)?.text == "one\ntwo")
         #expect(PromptNavigation.jumpOffset(in: terminal, displayOffset: 0, forward: true) == 0)
     }
+
+    @Test func uploadsAreSavedPrivatelyWithSafeNames() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("termy-upload-test-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let jpeg = Data([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3])
+        let now = Date()
+        let path = try Uploads.save(jpeg, name: "../IMG 1.HEIC", in: folder, now: now)
+        #expect(URL(fileURLWithPath: path).deletingLastPathComponent().standardizedFileURL == folder.standardizedFileURL)
+        #expect(path.hasSuffix("-IMG-1.jpg"))
+        #expect(FileManager.default.contents(atPath: path) == jpeg)
+        let mode = try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int
+        #expect(mode == 0o600)
+        let second = try Uploads.save(jpeg, name: "../IMG 1.HEIC", in: folder, now: now)
+        #expect(second != path)
+        // A week later, both are gone when the next one arrives.
+        let later = try Uploads.save(jpeg, name: "new.jpg", in: folder, now: now.addingTimeInterval(8 * 24 * 3600))
+        #expect(!FileManager.default.fileExists(atPath: path) && !FileManager.default.fileExists(atPath: second))
+        #expect(FileManager.default.fileExists(atPath: later))
+        #expect(throws: (any Error).self) { try Uploads.save(Data(), name: "empty", in: folder) }
+    }
 }

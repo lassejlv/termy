@@ -77,6 +77,31 @@ struct MobileProtocolTests {
         #expect(try JSONDecoder().decode(RemoteFrame.self, from: JSONEncoder().encode(
             RemoteFrame(stream: 1, cols: 2, rows: 2, full: true, updates: [], cursor: cursor, background: 0))).promptRows == nil)
     }
+    @Test func uploadsAreNamedSafelyAndQuoted() throws {
+        let png = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a])
+        for message: ClientMessage in [.upload(stream: 1, name: "Photo 1.png", data: png)] {
+            #expect(try MessageCodec.decode(ClientMessage.self, from: MessageCodec.encode(message)) == message)
+        }
+        #expect(try MessageCodec.decode(HostMessage.self, from: MessageCodec.encode(HostMessage.uploaded(stream: 1, path: "/tmp/a.png"))) == .uploaded(stream: 1, path: "/tmp/a.png"))
+        #expect(RemoteUpload.fileName("../../etc/passwd") == "etc-passwd.bin")
+        #expect(RemoteUpload.fileName(".hidden.png") == "hidden.png")
+        #expect(RemoteUpload.fileName("IMG 0001.HEIC") == "IMG-0001.HEIC")
+        #expect(RemoteUpload.fileName("", fallbackExtension: "jpg") == "upload.jpg")
+        #expect(RemoteUpload.fileName(String(repeating: "a", count: 200) + ".png").count <= 84)
+        #expect(RemoteUpload.sniffedExtension(png) == "png")
+        #expect(RemoteUpload.sniffedExtension(Data([0xff, 0xd8, 0xff, 0xe0])) == "jpg")
+        #expect(RemoteUpload.sniffedExtension(Data("hello".utf8)) == nil)
+        #expect(RemoteUpload.shellQuoted("/tmp/a.png") == "/tmp/a.png")
+        #expect(RemoteUpload.shellQuoted("/tmp/Termy Uploads/it's.png") == #"'/tmp/Termy Uploads/it'\''s.png'"#)
+    }
+    @Test func handoffNamesTheComputerAndPane() {
+        let host = UUID()
+        let parsed = RemoteHandoff.parse(RemoteHandoff.userInfo(host: host, pane: "p-1"))
+        #expect(parsed?.host == host && parsed?.pane == "p-1")
+        #expect(RemoteHandoff.parse(["host": "nope", "pane": "p"]) == nil)
+        #expect(RemoteHandoff.parse(["host": host.uuidString]) == nil)
+        #expect(RemoteHandoff.parse(nil) == nil)
+    }
     @Test func longOutputKeepsItsEnd() {
         let text = String(repeating: "x", count: RemoteCommandOutput.maxBytes) + "THE END"
         let output = RemoteCommandOutput.bounded(command: "make", text: text, exitCode: 2)

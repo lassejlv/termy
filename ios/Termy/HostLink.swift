@@ -181,7 +181,10 @@ final class HostLink {
             protocolVersion = version
             if version >= 2 { send(.clientHello(version: RemoteProtocol.version)) }
         case .sessions(let list):
+            let old = sessions
             sessions = list
+            CommandNotifier.shared.sessionsChanged(
+                from: old, to: list, on: device, watching: Set(screens.values.map(\.paneID)))
             model?.sessionsChanged(for: device.id)
         case .frame(var frame):
             glyphs.resolve(&frame)
@@ -212,6 +215,8 @@ final class HostLink {
             screens[stream]?.store(image: png, key: key)
         case .shell(let stream, let event):
             screens[stream]?.apply(shell: event)
+        case .uploaded(let stream, let path):
+            screens[stream]?.uploadedPath = path
         case .commandOutput(let stream, let output):
             outputRequests.removeValue(forKey: stream)?.reply(output)
         case .images(let list):
@@ -298,6 +303,13 @@ final class HostLink {
             guard let self, self.outputRequests[screen.stream]?.id == id else { return }
             self.outputRequests.removeValue(forKey: screen.stream)?.reply(nil)
         }
+    }
+
+    /// Sends a file into a pane: the Mac saves it and types its path, as dropping a file there would.
+    func upload(_ data: Data, name: String, to screen: TerminalScreen) -> Bool {
+        guard followsPrompts, data.count <= RemoteUpload.maxBytes, !data.isEmpty else { return false }
+        send(.upload(stream: screen.stream, name: name, data: data))
+        return true
     }
 
     /// Every live pane in session, tab and split order: what swiping steps through.

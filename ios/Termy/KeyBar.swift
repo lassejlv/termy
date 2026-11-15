@@ -23,12 +23,13 @@ enum KeyBarKey: String, Codable, CaseIterable, Identifiable {
     case tilde, pipe, slash, dash, dollar, star
     case functionKeys, snippets, paste, hideKeyboard
     case previousPrompt, nextPrompt
+    case voice, photo
 
     var id: String { rawValue }
 
     static let defaultLayout: [KeyBarKey] = [
         .escape, .control, .alt, .tab, .left, .up, .down, .right, .tilde, .pipe, .slash, .dash, .dollar, .star,
-        .functionKeys, .snippets, .paste, .hideKeyboard,
+        .functionKeys, .snippets, .voice, .paste, .hideKeyboard,
     ]
 
     var title: String {
@@ -49,7 +50,7 @@ enum KeyBarKey: String, Codable, CaseIterable, Identifiable {
         case .dollar: "$"
         case .star: "*"
         case .functionKeys: "fn"
-        case .left, .up, .down, .right, .snippets, .paste, .hideKeyboard, .previousPrompt, .nextPrompt: ""
+        case .left, .up, .down, .right, .snippets, .paste, .hideKeyboard, .previousPrompt, .nextPrompt, .voice, .photo: ""
         }
     }
 
@@ -64,6 +65,8 @@ enum KeyBarKey: String, Codable, CaseIterable, Identifiable {
         case .hideKeyboard: "keyboard.chevron.compact.down"
         case .previousPrompt: "chevron.up.2"
         case .nextPrompt: "chevron.down.2"
+        case .voice: "mic"
+        case .photo: "photo"
         default: nil
         }
     }
@@ -96,6 +99,8 @@ enum KeyBarKey: String, Codable, CaseIterable, Identifiable {
         case .hideKeyboard: "Hide Keyboard"
         case .previousPrompt: "Previous Prompt"
         case .nextPrompt: "Next Prompt"
+        case .voice: "Speak a Command"
+        case .photo: "Send Photo"
         }
     }
 
@@ -126,6 +131,8 @@ enum KeyBarKey: String, Codable, CaseIterable, Identifiable {
         case .hideKeyboard: .hideKeyboard
         case .previousPrompt: .command(.previousPrompt)
         case .nextPrompt: .command(.nextPrompt)
+        case .voice: .command(.dictate)
+        case .photo: .command(.sendPhoto)
         }
     }
 

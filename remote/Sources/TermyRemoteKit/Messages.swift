@@ -328,6 +328,9 @@ public enum ClientMessage: Codable, Hashable, Sendable {
     /// Asks for a command's output: the one whose prompt starts at
     /// `promptBufferRow`, or the last finished one when nil (protocol 5).
     case commandOutput(stream: Int, promptBufferRow: Int?)
+    /// A file from the phone, such as a photo, saved on the Mac; its path is
+    /// pasted into the pane (protocol 5). See `RemoteUpload`.
+    case upload(stream: Int, name: String, data: Data)
 
 }
 
@@ -353,6 +356,8 @@ public enum HostMessage: Codable, Hashable, Sendable {
     /// Nil when there is no such command; `truncated` when it was cut to
     /// `RemoteCommandOutput.maxBytes` (its end is kept).
     case commandOutput(stream: Int, output: RemoteCommandOutput?)
+    /// An upload was saved at `path` and the path pasted into the pane.
+    case uploaded(stream: Int, path: String)
 
 }
 
@@ -361,7 +366,7 @@ public enum RemoteProtocol {
     /// 4: the phone keeps glyphs by `CellRun.glyphKey` (see `GlyphCache`),
     /// and takes grids up to `RemoteFrame.maxCols` by `maxRows`.
     /// 5: shell integration: `HostMessage.shell`, `RemotePane.command`,
-    /// `RemoteFrame.promptRows`, prompt jumps and command output.
+    /// `RemoteFrame.promptRows`, prompt jumps, command output and uploads.
     public static let version = 5
 }
 
@@ -577,6 +582,60 @@ public struct RemoteCommandOutput: Codable, Hashable, Sendable {
         var tail = Substring(text)
         while tail.utf8.count > maxBytes { tail = tail.dropFirst(max(1, (tail.utf8.count - maxBytes) / 4)) }
         return RemoteCommandOutput(command: command, text: String(tail), exitCode: exitCode, truncated: true)
+    }
+}
+
+/// Files a phone sends into a pane.
+public enum RemoteUpload {
+    /// The largest file: base64 in JSON grows it by a third, and the relay
+    /// carries messages up to 4 MiB.
+    public static let maxBytes = 2_500_000
+
+    /// A safe file name: letters, digits, dots, dashes and underscores, at
+    /// most 80 characters, never hidden, never empty.
+    public static func fileName(_ name: String, fallbackExtension: String = "bin") -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        var cleaned = String(name.map { allowed.contains($0) ? $0 : "-" }.prefix(80))
+        while cleaned.hasPrefix(".") || cleaned.hasPrefix("-") { cleaned.removeFirst() }
+        if cleaned.isEmpty || !cleaned.contains(".") { cleaned = (cleaned.isEmpty ? "upload" : cleaned) + "." + fallbackExtension }
+        return cleaned
+    }
+
+    /// The extension the bytes call for, from their signature.
+    public static func sniffedExtension(_ data: Data) -> String? {
+        let bytes = [UInt8](data.prefix(12))
+        if bytes.starts(with: [0x89, 0x50, 0x4e, 0x47]) { return "png" }
+        if bytes.starts(with: [0xff, 0xd8, 0xff]) { return "jpg" }
+        if bytes.starts(with: Array("GIF8".utf8)) { return "gif" }
+        if bytes.count >= 12, bytes[0..<4] == [0x52, 0x49, 0x46, 0x46], bytes[8..<12] == [0x57, 0x45, 0x42, 0x50] {
+            return "webp"
+        }
+        if bytes.starts(with: Array("%PDF".utf8)) { return "pdf" }
+        return nil
+    }
+
+    /// A path as one shell word, quoted only when it needs to be.
+    public static func shellQuoted(_ path: String) -> String {
+        let plain = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-/+@%:,")
+        if !path.isEmpty, path.allSatisfy(plain.contains) { return path }
+        return "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+}
+
+/// Handoff between the iPhone app and Termy Next: the pane on screen, and
+/// the computer it runs on (its relay device ID, which both apps know).
+public enum RemoteHandoff {
+    public static let activityType = "sh.termy.pane"
+
+    public static func userInfo(host: UUID, pane: String) -> [String: String] {
+        ["host": host.uuidString, "pane": pane]
+    }
+
+    public static func parse(_ userInfo: [AnyHashable: Any]?) -> (host: UUID, pane: String)? {
+        guard let raw = userInfo?["host"] as? String, let host = UUID(uuidString: raw),
+            let pane = userInfo?["pane"] as? String, !pane.isEmpty, pane.count <= 128
+        else { return nil }
+        return (host, pane)
     }
 }
 

@@ -83,6 +83,21 @@ the Mac's history. The reply keeps the last `RemoteCommandOutput.maxBytes`.
 A session host of another build can't report marks, so the Mac sends no
 prompt rows and answers output requests with nothing until the host restarts.
 
+Phones of version 5 can also send files into a pane (`ClientMessage.upload`,
+at most `RemoteUpload.maxBytes`): a photo from the library, a pasted
+screenshot or a dropped image. The Mac saves it with a safe, dated name in a
+`TermyUploads` folder only the user can read under its temporary directory,
+deletes uploads after a week, and pastes the shell-quoted path into the pane,
+as dropping a file onto a terminal does, so programs such as Claude Code pick
+the image up.
+
+`RemoteHandoff` is the Handoff activity both apps share. Termy Next offers
+the focused session-host pane, named by its relay device ID and pane ID, and
+the iPhone opens that pane; the iPhone offers the pane on screen and Termy
+Next brings it to the front. Handoff needs Mobile access on and both apps
+signed by the same team, so locally ad-hoc signed builds of Termy Next don't
+take part.
+
 Terminals fit to the phone by default, refit for keyboard/orientation changes,
 and restore their original size on detach. Pinch changes the mobile text
 size. Drag scrolls history, or sends wheel events when a TUI has mouse

@@ -62,6 +62,8 @@ final class TerminalScreen: Identifiable {
         var failed: Bool { (exitCode ?? 0) != 0 }
     }
     private(set) var finishedCommand: FinishedCommand?
+    /// Where the Mac saved the latest file sent into this pane.
+    var uploadedPath: String?
     /// Commands shorter than this end without a notice.
     static let noticeAfter: TimeInterval = 5
     @ObservationIgnored private var commandStartedAt: Date?

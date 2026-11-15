@@ -27,6 +27,8 @@ final class MobileController {
 
     @ObservationIgnored private let store = DeviceStore(service: "sh.termy.next.mobile")
     @ObservationIgnored private var credentials: DeviceCredentials?
+    /// This Mac's relay device ID, which paired phones know it by; nil while Mobile access is off.
+    var deviceID: UUID? { credentials?.device.id }
     @ObservationIgnored private var agent: RemoteHostAgent?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var pairingTask: Task<Void, Never>?
@@ -145,6 +147,7 @@ final class MobileController {
         cancelPairing()
         showPairing = false
         credentials = nil
+        PaneHandoff.stop()
         devices = []
     }
     func applyRelay() {

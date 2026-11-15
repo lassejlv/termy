@@ -403,7 +403,10 @@ final class PaneView: NSView, TerminalViewDelegate {
             seenDone = true
             recomputeActivity()
         }
-        if isFocused { PaneNotifier.shared.paneWasSeen(self) }
+        if isFocused {
+            PaneNotifier.shared.paneWasSeen(self)
+            PaneHandoff.paneFocused(self)
+        }
         updateShape()
         updateDim()
     }

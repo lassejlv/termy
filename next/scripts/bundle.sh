@@ -88,6 +88,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+  <!-- Handoff with the Termy iPhone app (Sources/TermyNext/Handoff.swift). -->
+  <key>NSUserActivityTypes</key><array><string>sh.termy.pane</string></array>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <!-- macOS asks on behalf of Termy Next when a program in a pane wants

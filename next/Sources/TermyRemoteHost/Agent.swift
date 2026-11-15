@@ -465,6 +465,17 @@ final class Peer {
             let frame = stream.session.frame
             let desired = max(0, frame.historySize - bufferRow + frame.rows / 2)
             stream.session.scroll(lines: Int32(clamping: desired - frame.displayOffset))
+        case .upload(let id, let name, let data):
+            guard let stream = streams[id] else { return }
+            guard data.count <= RemoteUpload.maxBytes else { return send(.error("That file is too large to send.")) }
+            do {
+                let path = try Uploads.save(data, name: name)
+                // A trailing space, as dropping a file into a terminal pastes.
+                try stream.session.paste(RemoteUpload.shellQuoted(path) + " ")
+                send(.uploaded(stream: id, path: path))
+            } catch {
+                send(.error("Couldn’t save the file on this Mac."))
+            }
         case .jumpToPrompt(let id, let forward): streams[id]?.jumpToPrompt(forward: forward)
         case .commandOutput(let id, let bufferRow):
             send(.commandOutput(stream: id, output: streams[id]?.commandOutput(promptBufferRow: bufferRow)))

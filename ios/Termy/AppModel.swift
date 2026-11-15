@@ -92,6 +92,12 @@ final class AppModel: HostTransport {
         }
     }
 
+    /// A pane Termy Next on a Mac handed off: open it, when that Mac is paired.
+    func `continue`(_ activity: NSUserActivity) {
+        guard let target = RemoteHandoff.parse(activity.userInfo) else { return }
+        open(.host(target.host, pane: target.pane))
+    }
+
     func open(_ url: URL) {
         if let destination = TermyLink.parse(url) { open(destination) }
     }
