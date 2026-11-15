@@ -149,6 +149,115 @@
     animation-range: entry 0% entry 40%;
   }
 
+  /* Docs pages: Markdown from src/content/docs. */
+  .docs-prose {
+    @apply text-[16px] leading-[27px] text-soft;
+
+    & > * + * {
+      margin-top: 20px;
+    }
+    & h2 {
+      @apply mt-16 scroll-mt-24 text-[26px] leading-8 font-semibold tracking-[-0.02em] text-foreground;
+    }
+    & > h2:first-child {
+      margin-top: 0;
+    }
+    & h3 {
+      @apply mt-10 scroll-mt-24 text-[19px] leading-7 font-semibold tracking-[-0.01em] text-foreground;
+    }
+    & h2 + *,
+    & h3 + * {
+      margin-top: 14px;
+    }
+    & a {
+      @apply text-foreground underline decoration-white/25 underline-offset-[4px] transition-colors hover:decoration-white/70;
+    }
+    & strong {
+      @apply font-medium text-foreground;
+    }
+    & :not(pre) > code {
+      @apply font-mono text-[0.875em] text-code;
+    }
+    & kbd {
+      @apply rounded-[5px] bg-[#1f1f1f] px-1.5 py-0.5 font-sans text-[14px] text-foreground;
+    }
+    & ul {
+      @apply flex flex-col gap-2 pl-5;
+      list-style: disc;
+    }
+    & ul li::marker {
+      color: #5a5a5a;
+    }
+
+    /* Ordered lists are steps: numbered rows between hairlines. */
+    & ol {
+      counter-reset: step;
+      @apply border-t border-white/6;
+    }
+    & ol > li {
+      counter-increment: step;
+      @apply relative border-b border-white/6 py-5 pl-[52px] text-[15px] leading-6;
+    }
+    & ol > li::before {
+      content: counter(step, decimal-leading-zero);
+      @apply absolute top-5 left-0 font-mono text-[14px] leading-6 text-brand;
+    }
+
+    & blockquote {
+      @apply rounded-[10px] border border-brand/18 bg-brand/6 py-4 pr-[18px] pl-[34px] text-[15px] leading-6 text-[#c9d3f5];
+      position: relative;
+    }
+    & blockquote::before {
+      content: '';
+      @apply absolute top-4 bottom-4 left-[18px] w-[3px] rounded-full bg-brand;
+    }
+    & blockquote strong {
+      @apply text-foreground;
+    }
+
+    & table {
+      @apply block w-full overflow-x-auto rounded-xl border border-white/8 text-[15px] leading-[22px];
+      border-collapse: separate;
+      border-spacing: 0;
+    }
+    & thead th {
+      @apply bg-panel px-5 py-3 text-left text-[12px] leading-4 font-medium tracking-[0.06em] text-dim uppercase;
+    }
+    & th,
+    & td {
+      @apply border-b border-white/[0.04] px-5 py-3.5 align-top;
+    }
+    & thead th {
+      @apply border-white/6;
+    }
+    & tbody tr:last-child td {
+      @apply border-b-0;
+    }
+    & td:first-child {
+      @apply whitespace-nowrap text-foreground;
+    }
+    & td:first-child code {
+      @apply text-[#7dcfff];
+    }
+
+    & .code-frame {
+      @apply overflow-hidden rounded-xl border border-white/8 bg-secondary;
+    }
+    & .code-frame figcaption {
+      @apply flex h-[42px] items-center justify-between border-b border-white/6 px-4 text-[13px] text-faint;
+    }
+    & .code-frame .code-title {
+      @apply font-mono text-[#a8a8a8];
+    }
+    & .code-frame button {
+      @apply text-faint transition-colors hover:text-foreground;
+    }
+    & .code-frame pre {
+      @apply px-5 py-[18px] font-mono text-[14px] leading-6;
+      background-color: transparent !important;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .text-shimmer,
     .working-dots > span,

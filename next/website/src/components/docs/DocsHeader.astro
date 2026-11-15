@@ -1,0 +1,121 @@
+---
+import { buttonVariants } from '@/components/ui/button'
+import { images } from '@/lib/assets'
+import { href, type Doc } from '@/lib/docs'
+
+interface Props {
+  docs: Doc[]
+}
+
+const { docs } = Astro.props
+const links = [
+  { href: '/docs', label: 'Docs', current: true },
+  { href: 'https://github.com/lassejlv/termy/blob/main/next/CHANGELOG.md', label: 'Changelog' },
+  { href: 'https://github.com/lassejlv/termy/tree/main/next', label: 'GitHub' },
+]
+---
+
+<header class="sticky top-0 z-30 border-b border-white/6 bg-background/85 backdrop-blur-md">
+  <div class="mx-auto flex h-16 max-w-[1440px] items-center justify-between gap-6 px-5 md:px-8">
+    <div class="flex min-w-0 items-center gap-7">
+      <a href="/" class="flex shrink-0 items-center gap-2.5 rounded-lg">
+        <img src={images.icon} alt="" width="24" height="24" class="size-6" />
+        <span class="text-[15px] font-semibold">Termy Next</span>
+        <span class="rounded-md border border-white/10 px-2 py-0.5 text-[12px] font-medium text-soft">Docs</span>
+      </a>
+      <button
+        type="button"
+        data-search-open
+        class="hidden h-[34px] w-80 items-center justify-between rounded-lg border border-white/8 bg-secondary pr-1.5 pl-3 text-[14px] text-dim transition-colors hover:border-white/14 hover:text-faint md:flex"
+      >
+        Search docs
+        <kbd class="rounded-[5px] bg-[#1f1f1f] px-1.5 py-0.5 font-mono text-[12px] text-faint">⌘K</kbd>
+      </button>
+    </div>
+    <nav class="flex items-center gap-7" aria-label="Main">
+      <ul class="hidden items-center gap-7 md:flex">
+        {
+          links.map((link) => (
+            <li>
+              <a
+                href={link.href}
+                aria-current={link.current ? 'page' : undefined}
+                class:list={['text-[14px] transition-colors hover:text-foreground', link.current ? 'text-foreground' : 'text-soft']}
+              >
+                {link.label}
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+      <button type="button" data-search-open aria-label="Search docs" class="text-soft hover:text-foreground md:hidden">
+        <svg viewBox="0 0 24 24" class="size-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>
+      </button>
+      <a href="/#download" class={buttonVariants({ variant: 'light', size: 'sm', className: 'rounded-lg px-3.5' })}>Download</a>
+    </nav>
+  </div>
+</header>
+
+<dialog
+  id="docs-search"
+  aria-label="Search docs"
+  class="mx-auto mt-[12vh] w-[min(560px,calc(100vw-2rem))] overflow-hidden rounded-[14px] border border-white/10 bg-popover p-0 text-foreground shadow-[0_24px_64px_#00000073] backdrop:bg-black/60"
+>
+  <input
+    type="search"
+    placeholder="Search docs"
+    autocomplete="off"
+    class="h-[52px] w-full border-b border-white/8 bg-transparent px-[18px] text-[15px] outline-none placeholder:text-dim"
+  />
+  <ul class="max-h-[360px] overflow-y-auto p-1.5">
+    {
+      docs.map((doc) => (
+        <li data-text={`${doc.data.title} ${doc.data.description}`.toLowerCase()}>
+          <a href={href(doc)} class="flex flex-col gap-0.5 rounded-lg px-3 py-2.5 outline-none hover:bg-white/5 focus-visible:bg-white/6">
+            <span class="text-[14px] font-medium">{doc.data.title}</span>
+            <span class="truncate text-[13px] text-faint">{doc.data.description}</span>
+          </a>
+        </li>
+      ))
+    }
+  </ul>
+  <p data-empty hidden class="px-[18px] pt-1 pb-5 text-[14px] text-faint">Nothing matches.</p>
+</dialog>
+
+<script>
+  const dialog = document.querySelector<HTMLDialogElement>('#docs-search')!
+  const input = dialog.querySelector('input')!
+  const items = [...dialog.querySelectorAll<HTMLLIElement>('li')]
+  const empty = dialog.querySelector<HTMLElement>('[data-empty]')!
+
+  const open = () => {
+    dialog.showModal()
+    input.select()
+  }
+  const filter = () => {
+    const words = input.value.toLowerCase().split(/\s+/).filter(Boolean)
+    let shown = 0
+    for (const item of items) {
+      item.hidden = !words.every((word) => item.dataset.text!.includes(word))
+      if (!item.hidden) shown++
+    }
+    empty.hidden = shown > 0
+  }
+
+  document.querySelectorAll('[data-search-open]').forEach((button) => button.addEventListener('click', open))
+  document.addEventListener('keydown', (event) => {
+    const typing = event.target instanceof HTMLElement && event.target.closest('input, textarea, [contenteditable]')
+    if ((event.key === 'k' && (event.metaKey || event.ctrlKey)) || (event.key === '/' && !typing)) {
+      event.preventDefault()
+      if (!dialog.open) open()
+    }
+  })
+  input.addEventListener('input', filter)
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') items.find((item) => !item.hidden)?.querySelector('a')?.click()
+  })
+  // A click on the backdrop lands on the dialog itself.
+  dialog.addEventListener('click', (event) => {
+    if (event.target === dialog) dialog.close()
+  })
+</script>
