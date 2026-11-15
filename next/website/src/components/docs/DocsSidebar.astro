@@ -1,0 +1,41 @@
+---
+import { href, monoIds, type Doc } from '@/lib/docs'
+
+interface Props {
+  sidebar: { title: string; docs: Doc[] }[]
+  current: Doc
+}
+
+const { sidebar, current } = Astro.props
+---
+
+<nav class="flex flex-col gap-7" aria-label="Docs">
+  {
+    sidebar.map((group) => (
+      <div class="flex flex-col gap-0.5">
+        <h2 class="px-2.5 pb-2 text-[12px] font-medium tracking-[0.06em] text-dim uppercase">{group.title}</h2>
+        <ul class="flex flex-col gap-0.5">
+          {group.docs.map((doc) => {
+            const active = doc.id === current.id
+            return (
+              <li>
+                <a
+                  href={href(doc)}
+                  aria-current={active ? 'page' : undefined}
+                  class:list={[
+                    'flex items-center gap-2.5 rounded-[7px] px-2.5 py-1.5 leading-5 transition-colors',
+                    monoIds.has(doc.id) ? 'font-mono text-[13px]' : 'text-[14px]',
+                    active ? 'bg-brand/10 font-medium text-foreground' : 'text-soft hover:text-foreground',
+                  ]}
+                >
+                  {active && <span class="size-1.5 shrink-0 rounded-full bg-brand" />}
+                  {doc.data.title}
+                </a>
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+    ))
+  }
+</nav>
