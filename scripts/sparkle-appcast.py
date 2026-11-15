@@ -54,9 +54,27 @@ def sign(args: argparse.Namespace) -> None:
     print(f"Signed {record['asset_name']} for Sparkle ({record['version']})")
 
 
+# Sparkle shows <description> in its update window as a web page: system
+# font, the system's light or dark look, compact headings and lists.
+NOTES_STYLE = """<style>
+:root { color-scheme: light dark; }
+body { font: 13px/1.45 -apple-system, system-ui, sans-serif; margin: 0 2px; }
+h1, h2, h3 { font-size: 13px; font-weight: 600; margin: 14px 0 4px; }
+h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }
+ul { padding-left: 18px; margin: 4px 0 8px; }
+li { margin: 3px 0; }
+p { margin: 6px 0; }
+code { font: 12px ui-monospace, Menlo, monospace; }
+a { color: AccentColor; }
+</style>
+"""
+
+
 def feed(args: argparse.Namespace) -> None:
     ET.register_namespace("sparkle", SPARKLE_NS)
     notes_html = Path(args.notes_html).read_text() if args.notes_html else ""
+    if notes_html.strip() and args.style_notes:
+        notes_html = NOTES_STYLE + notes_html
     release_url = f"https://github.com/{args.repo}/releases/tag/{args.tag}"
     pub_date = email.utils.formatdate(usegmt=True)
     out_dir = Path(args.out_dir)
@@ -117,6 +135,7 @@ def main() -> None:
     feed_parser.add_argument("--repo", required=True, help="owner/name")
     feed_parser.add_argument("--tag", required=True)
     feed_parser.add_argument("--notes-html", help="Release notes rendered as HTML")
+    feed_parser.add_argument("--style-notes", action="store_true", help="Style the notes for Sparkle's update window")
     feed_parser.add_argument("--app-name", default="Termy", help="App name for the feed and item titles")
     feed_parser.add_argument("--out-dir", required=True)
     feed_parser.add_argument("records", nargs="+", help="JSON records from `sign`")

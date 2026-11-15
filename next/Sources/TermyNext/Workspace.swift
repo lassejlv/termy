@@ -5,12 +5,32 @@ import TermyNextCore
 /// floating above it.
 @MainActor
 final class TerminalTab {
-    let id = UUID()
+    /// Kept across relaunches through its panes in the session host.
+    let id: UUID
     var customName: String?
     var tree: SplitTree<UUID>
     private(set) var panes: [UUID: PaneView] = [:]
     /// Floating panes and their frames as fractions of the tab's area.
-    var floating: [UUID: CGRect] = [:]
+    var floating: [UUID: CGRect] = [:] {
+        didSet {
+            // A pane that starts floating goes on top of the others.
+            floatingOrder.removeAll { floating[$0] == nil }
+            for id in floating.keys.sorted(by: { $0.uuidString < $1.uuidString }) where !floatingOrder.contains(id) {
+                floatingOrder.append(id)
+            }
+        }
+    }
+    /// Floating panes back to front.
+    private(set) var floatingOrder: [UUID] = []
+    /// Floating panes that move and stack as one (a Rex layer holding a
+    /// split), by layer ID, with the area each layer covers. A floating pane
+    /// in no group is a layer of its own, whose ID is the pane's.
+    private(set) var layerTrees: [UUID: SplitTree<UUID>] = [:]
+    private(set) var layerBounds: [UUID: CGRect] = [:]
+    /// Layers a plugin minimized: their panes keep running, out of sight.
+    var minimizedLayers: Set<UUID> = []
+    /// Whoever the plugin API says owns each pane; the app when unset.
+    var owners: [UUID: String] = [:]
     var focusedID: UUID
     var zoomedID: UUID?
     /// Most recently focused first, for focus after close.
@@ -18,6 +38,7 @@ final class TerminalTab {
     weak var session: TerminalSessionGroup?
 
     init(pane: PaneView) {
+        id = PluginIdentity.tabID(for: [pane]) ?? UUID()
         tree = .leaf(pane.id)
         focusedID = pane.id
         panes[pane.id] = pane
@@ -26,8 +47,10 @@ final class TerminalTab {
 
     /// A restored tab: `tree` and `floating` over the `panes` given.
     init(tree: SplitTree<UUID>, panes: [PaneView], floating: [UUID: CGRect]) {
+        id = PluginIdentity.tabID(for: panes) ?? UUID()
         self.tree = tree
         self.floating = floating
+        floatingOrder = floating.keys.sorted { $0.uuidString < $1.uuidString }
         for pane in panes {
             self.panes[pane.id] = pane
             pane.isFloating = floating[pane.id] != nil
@@ -39,7 +62,125 @@ final class TerminalTab {
     var focusedPane: PaneView? { panes[focusedID] }
     /// Whether any pane runs in the session host.
     var isHosted: Bool { panes.values.contains { $0.isHosted } }
-    var allPanes: [PaneView] { (tree.leaves + floating.keys.sorted { $0.uuidString < $1.uuidString }).compactMap { panes[$0] } }
+    var allPanes: [PaneView] { (tree.leaves + floatingOrder).compactMap { panes[$0] } }
+
+    /// Brings a floating pane, and the layer it's in, in front of the others.
+    func raiseFloating(_ id: UUID) {
+        guard let layer = layerID(of: id) else { return }
+        raiseLayer(layer)
+    }
+
+    // MARK: Layers
+
+    /// The layer a floating pane is in; nil for a tiled pane.
+    func layerID(of pane: UUID) -> UUID? {
+        guard floating[pane] != nil else { return nil }
+        return layerTrees.first { $0.value.contains(pane) }?.key ?? pane
+    }
+
+    /// The floating layers back to front.
+    var layerOrder: [UUID] {
+        var seen = Set<UUID>()
+        return floatingOrder.compactMap { pane in
+            guard let layer = layerID(of: pane), seen.insert(layer).inserted else { return nil }
+            return layer
+        }
+    }
+
+    func layerPanes(_ layer: UUID) -> [UUID] { layerTrees[layer]?.leaves ?? (floating[layer] != nil ? [layer] : []) }
+    func layerTree(_ layer: UUID) -> SplitTree<UUID>? { layerTrees[layer] ?? (floating[layer] != nil ? .leaf(layer) : nil) }
+    func bounds(ofLayer layer: UUID) -> CGRect? { layerBounds[layer] ?? floating[layer] }
+    func isMinimized(_ pane: UUID) -> Bool { layerID(of: pane).map { minimizedLayers.contains($0) } ?? false }
+
+    /// Adds `newPanes` floating as one layer laid out by `tree` over `bounds`.
+    func addLayer(_ layer: UUID, tree: SplitTree<UUID>, panes newPanes: [PaneView], bounds: CGRect) {
+        for pane in newPanes {
+            panes[pane.id] = pane
+            pane.isFloating = true
+        }
+        if tree.leaves.count == 1, let only = tree.leaves.first {
+            floating[only] = bounds
+            return
+        }
+        layerTrees[layer] = tree
+        layerBounds[layer] = bounds
+        relayoutLayer(layer)
+    }
+
+    /// Puts `subtree` beside `anchor` inside the anchor's floating layer.
+    func insert(_ subtree: SplitTree<UUID>, panes newPanes: [PaneView], inLayerAt anchor: UUID, direction: Direction, ratio: CGFloat) {
+        guard let layer = layerID(of: anchor), let tree = layerTree(layer), let bounds = bounds(ofLayer: layer) else { return }
+        for pane in newPanes {
+            panes[pane.id] = pane
+            pane.isFloating = true
+        }
+        layerTrees[layer] = tree.inserting(subtree, at: anchor, direction: direction, ratio: ratio)
+        layerBounds[layer] = bounds
+        relayoutLayer(layer)
+        // The new panes stack with their layer.
+        if let top = floatingOrder.lastIndex(where: { layerPanes(layer).contains($0) }) {
+            let added = newPanes.map(\.id)
+            floatingOrder.removeAll { added.contains($0) }
+            floatingOrder.insert(contentsOf: added, at: min(top, floatingOrder.count))
+        }
+    }
+
+    /// Moves or resizes a layer to `rect`, fractions of the tab's area.
+    func setBounds(_ rect: CGRect, ofLayer layer: UUID) {
+        if layerTrees[layer] != nil {
+            layerBounds[layer] = rect
+            relayoutLayer(layer)
+        } else if floating[layer] != nil {
+            floating[layer] = rect
+        }
+    }
+
+    /// Moves the layer `pane` is in by `dx`, `dy` (fractions), as a header drag does.
+    func moveLayer(containing pane: UUID, dx: CGFloat, dy: CGFloat) {
+        guard let layer = layerID(of: pane), var rect = bounds(ofLayer: layer) else { return }
+        rect.origin.x = min(max(rect.origin.x + dx, -rect.width + 0.1), 0.9)
+        rect.origin.y = min(max(rect.origin.y + dy, 0), 0.9)
+        setBounds(rect, ofLayer: layer)
+    }
+
+    func raiseLayer(_ layer: UUID, above other: UUID? = nil) {
+        let members = layerPanes(layer)
+        floatingOrder.removeAll { members.contains($0) }
+        if let other, let index = floatingOrder.lastIndex(where: { layerPanes(other).contains($0) }) {
+            floatingOrder.insert(contentsOf: members, at: index + 1)
+        } else {
+            floatingOrder.append(contentsOf: members)
+        }
+    }
+
+    func lowerLayer(_ layer: UUID, below other: UUID? = nil) {
+        let members = layerPanes(layer)
+        floatingOrder.removeAll { members.contains($0) }
+        if let other, let index = floatingOrder.firstIndex(where: { layerPanes(other).contains($0) }) {
+            floatingOrder.insert(contentsOf: members, at: index)
+        } else {
+            floatingOrder.insert(contentsOf: members, at: 0)
+        }
+    }
+
+    private func relayoutLayer(_ layer: UUID) {
+        guard let tree = layerTrees[layer], let bounds = layerBounds[layer] else { return }
+        for (pane, rect) in tree.unitRects(in: bounds) { floating[pane] = rect }
+    }
+
+    /// Takes `pane` out of its layer's split, which closes up around it.
+    private func leaveLayer(_ pane: UUID) {
+        guard let layer = layerTrees.first(where: { $0.value.contains(pane) })?.key, let tree = layerTrees[layer] else { return }
+        if let rest = tree.removing(pane), rest.leaves.count > 1 {
+            layerTrees[layer] = rest
+            relayoutLayer(layer)
+        } else {
+            // One pane left: it floats on its own, where it is.
+            layerTrees[layer] = nil
+            layerBounds[layer] = nil
+            if minimizedLayers.remove(layer) != nil, let last = tree.removing(pane)?.leaves.first { minimizedLayers.insert(last) }
+        }
+    }
     var isEmpty: Bool { panes.isEmpty }
 
     /// The pane whose OSC 7501 report the tab shows, when any pane reports one.
@@ -97,7 +238,11 @@ final class TerminalTab {
     /// Detaches a pane without stopping it. Returns false when it was the last one.
     @discardableResult
     func remove(_ id: UUID) -> PaneView? {
-        guard let pane = panes.removeValue(forKey: id) else { return nil }
+        guard let pane = panes[id] else { return nil }
+        leaveLayer(id)
+        panes[id] = nil
+        minimizedLayers.remove(id)
+        owners[id] = nil
         floating[id] = nil
         if let rest = tree.removing(id) {
             tree = rest
@@ -160,9 +305,35 @@ final class TerminalTab {
         zoomedID = zoomed.flatMap { panes[$0] != nil ? $0 : nil }
     }
 
+    // MARK: Plugin layouts
+
+    /// Adds `pane` floating at `frame`, fractions of the tab's area.
+    func addFloating(_ pane: PaneView, frame: CGRect) {
+        panes[pane.id] = pane
+        floating[pane.id] = frame
+        pane.isFloating = true
+    }
+
+    /// Puts `subtree`, over `newPanes`, beside `anchor` on `direction`'s side;
+    /// `ratio` is the share of the first (left or top) side.
+    func insert(_ subtree: SplitTree<UUID>, panes newPanes: [PaneView], at anchor: UUID, direction: Direction, ratio: CGFloat) {
+        for pane in newPanes { panes[pane.id] = pane }
+        tree = tree.inserting(subtree, at: anchor, direction: direction, ratio: ratio)
+        zoomedID = nil
+    }
+
+    /// Takes on `newTree`, which also holds `newPanes`.
+    func replaceTree(_ newTree: SplitTree<UUID>, adding newPanes: [PaneView]) {
+        for pane in newPanes { panes[pane.id] = pane }
+        tree = newTree
+        zoomedID = nil
+    }
+
     func toggleFloating(_ id: UUID) {
         guard let pane = panes[id] else { return }
         if floating[id] != nil {
+            leaveLayer(id)
+            minimizedLayers.remove(id)
             floating[id] = nil
             let anchor = focusHistory.first { $0 != id && tree.contains($0) } ?? tree.leaves.first
             if let anchor {
@@ -187,8 +358,11 @@ final class TerminalTab {
 /// switches between them with ⌘K.
 @MainActor
 final class TerminalSessionGroup {
-    let id = UUID()
-    var name: String
+    /// Kept by name across relaunches; plugins see it as `session:<id>`.
+    let id: UUID
+    var name: String {
+        didSet { if oldValue != name { PluginIdentity.sessionRenamed(id, from: oldValue, to: name) } }
+    }
     private(set) var tabs: [TerminalTab] = []
     var selectedIndex = 0
     let created = Date()
@@ -196,9 +370,13 @@ final class TerminalSessionGroup {
     /// the window showing it, or the one that last did.
     var hostWindowID: String?
     var lastActive = Date()
+    /// Panes a plugin took out of every tab (Rex's detached blocks): they
+    /// keep running until placed again or closed.
+    var detached: [PaneView] = []
 
     init(name: String) {
         self.name = name
+        id = PluginIdentity.sessionID(named: name, taken: Set(Workspace.shared.sessions.map(\.id)))
     }
 
     var selectedTab: TerminalTab? { tabs.indices.contains(selectedIndex) ? tabs[selectedIndex] : tabs.first }
@@ -264,7 +442,7 @@ final class Workspace {
     func createSession(name: String? = nil, directory: String?) throws -> TerminalSessionGroup {
         let session = TerminalSessionGroup(name: name.map { Naming.uniqued($0, taken: Set(sessions.map(\.name))) }
             ?? newSessionName(near: directory))
-        let pane = try PaneView(workingDirectory: directory)
+        let pane = try PaneView(workingDirectory: directory, session: session.id)
         session.append(TerminalTab(pane: pane))
         sessions.append(session)
         noteDirectory(directory)
@@ -288,7 +466,18 @@ final class Workspace {
 
     func remove(_ session: TerminalSessionGroup) {
         for tab in session.tabs { tab.allPanes.forEach { $0.terminate() } }
+        session.detached.forEach { $0.terminate() }
+        session.detached.removeAll()
         sessions.removeAll { $0 === session }
+        changed()
+    }
+
+    /// Puts `session` before `other` in the order sessions are listed, or last.
+    func move(_ session: TerminalSessionGroup, before other: TerminalSessionGroup?) {
+        guard let index = sessions.firstIndex(where: { $0 === session }) else { return }
+        sessions.remove(at: index)
+        let target = other.flatMap { o in sessions.firstIndex { $0 === o } } ?? sessions.count
+        sessions.insert(session, at: target)
         changed()
     }
 

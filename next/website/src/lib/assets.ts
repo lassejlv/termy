@@ -6,15 +6,16 @@ import docker from '@/assets/logos/docker.svg?url'
 import neovim from '@/assets/logos/neovim.svg?url'
 import node from '@/assets/logos/node.svg?url'
 import rust from '@/assets/logos/rust-dark.svg?url'
-import cellmap from '@/assets/images/cellmap.svg?url'
+import ditherDownload from '@/assets/images/dither-download.png?url'
+import ditherFooter from '@/assets/images/dither-footer.png?url'
+import ditherHero from '@/assets/images/dither-hero.png?url'
+import ditherStage from '@/assets/images/dither-stage.png?url'
 import icon from '@/assets/images/icon-256.png?url'
-import sunFooter from '@/assets/images/sun-footer.webp?url'
-import sunHero from '@/assets/images/sun-hero.webp?url'
-import sunStage from '@/assets/images/sun-stage.webp?url'
 import favicon from '@/assets/favicon.png?url'
 import appleTouchIcon from '@/assets/apple-touch-icon.png?url'
 
 export const logos = { claude, codex, docker, neovim, node, rust }
 export type Logo = keyof typeof logos
 
-export const images = { cellmap, icon, sunFooter, sunHero, sunStage, favicon, appleTouchIcon }
+export const images = { icon, favicon, appleTouchIcon }
+export const dithers = { hero: ditherHero, stage: ditherStage, download: ditherDownload, footer: ditherFooter }

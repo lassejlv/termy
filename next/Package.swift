@@ -22,10 +22,17 @@ let package = Package(
     targets: [
         // Layout tree, fuzzy matching and naming: no AppKit, no libtermy.
         .target(name: "TermyNextCore"),
+        // Lua 5.4, vendored, for plugins (`termy.*`, and Rex's `rex.*`).
+        .target(
+            name: "CLua",
+            exclude: ["LICENSE"],
+            cSettings: [.define("LUA_USE_MACOSX"), .unsafeFlags(["-w"])]
+        ),
         .executableTarget(
             name: "TermyNext",
             dependencies: [
                 "TermyNextCore",
+                "CLua",
                 "TermyRemoteHost",
                 .product(name: "TermyRemoteKit", package: "remote"),
                 .product(name: "Termy", package: "swift"),

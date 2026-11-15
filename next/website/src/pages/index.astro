@@ -4,10 +4,8 @@ import Agents from '@/components/landing/Agents.astro'
 import Download from '@/components/landing/Download.astro'
 import Footer from '@/components/landing/Footer.astro'
 import Hero from '@/components/landing/Hero.astro'
-import Libtermy from '@/components/landing/Libtermy.astro'
-import Mux from '@/components/landing/Mux.astro'
+import Plugins from '@/components/landing/Plugins.astro'
 import Sessions from '@/components/landing/Sessions.astro'
-import Shortcuts from '@/components/landing/Shortcuts.astro'
 import { loadRelease } from '@/lib/release'
 
 const release = await loadRelease()
@@ -21,9 +19,7 @@ const release = await loadRelease()
     <Hero />
     <Sessions />
     <Agents />
-    <Libtermy />
-    <Mux />
-    <Shortcuts />
+    <Plugins />
     <Download release={release} />
   </main>
   <Footer />

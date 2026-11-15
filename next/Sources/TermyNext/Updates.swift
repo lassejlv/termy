@@ -74,10 +74,15 @@ final class Updates: NSObject {
         readyVersion.map { "Restart to Update to \($0)" } ?? Command.checkForUpdates.title
     }
 
-    /// Installs a downloaded update and relaunches, or checks now with
-    /// Sparkle's progress and result window.
+    /// Shows Sparkle's window: for a downloaded update, its release notes
+    /// with Install and Relaunch; otherwise a check with its progress and
+    /// result, and the new version's notes when there is one.
     func checkForUpdates() {
-        if let installNow { return installNow() }
+        if installNow != nil {
+            // Sparkle resumes the update it downloaded, notes and all.
+            if let controller, controller.updater.canCheckForUpdates { return controller.checkForUpdates(nil) }
+            return installNow?() ?? ()
+        }
         // An updater that already found a version this run shows that one
         // again; a fresh one reads the feed for the latest.
         if controller?.updater.canCheckForUpdates == true { makeController() }

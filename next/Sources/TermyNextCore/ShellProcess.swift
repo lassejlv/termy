@@ -82,6 +82,37 @@ public enum ShellProcess {
         return nil
     }
 
+    /// The parent process and the user it runs as, from the kernel.
+    public static func parentAndUser(of pid: pid_t) -> (parent: pid_t, uid: uid_t)? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return (pid_t(info.pbi_ppid), info.pbi_uid)
+    }
+
+    /// The terminal device a process runs on, such as /dev/ttys012.
+    public static func ttyPath(of pid: pid_t) -> String? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        let device = dev_t(bitPattern: info.e_tdev)
+        guard device != -1, device != 0, let name = devname(device, S_IFCHR) else { return nil }
+        return "/dev/" + String(cString: name)
+    }
+
+    /// How the terminal treats typed input: echoed, line by line, and
+    /// whether ^C and friends send signals. Nil when the device can't be read.
+    public static func inputMode(of pid: pid_t) -> (echo: Bool, canonical: Bool, signals: Bool)? {
+        guard let path = ttyPath(of: pid) else { return nil }
+        let fd = open(path, O_RDONLY | O_NOCTTY | O_NONBLOCK)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var settings = termios()
+        guard tcgetattr(fd, &settings) == 0 else { return nil }
+        let flags = settings.c_lflag
+        return (flags & tcflag_t(ECHO) != 0, flags & tcflag_t(ICANON) != 0, flags & tcflag_t(ISIG) != 0)
+    }
+
     public static func isAlive(_ pid: pid_t) -> Bool {
         kill(pid, 0) == 0 || errno == EPERM
     }

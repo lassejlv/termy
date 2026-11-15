@@ -834,6 +834,24 @@ TermyFfiStatus termy_terminal_clear_scrollback(
 TermyFfiStatus termy_terminal_set_scrollback_history(
     TermyFfiTerminal *terminal,
     size_t scrollback_history);
+/* The modes programs turned on, as JSON: alternate_screen, bracketed_paste,
+ * mouse {enabled, report_click, report_drag, report_motion, sgr_encoding,
+ * utf8_encoding} and keyboard {application_keypad, disambiguate_escape_codes,
+ * report_event_types, report_alternate_keys, report_all_keys_as_esc,
+ * report_associated_text}. Free with termy_buffer_free. */
+TermyFfiStatus termy_terminal_modes_json(
+    TermyFfiTerminal *terminal,
+    TermyFfiBytes *out_json);
+/* The screen and scrollback as text, the last max_lines lines (0 for all),
+ * oldest first. flags: 0 plain, 1 with SGR escapes, 2 HTML, or'd with
+ * TERMY_TEXT_UNWRAP to join lines the terminal wrapped. Free with
+ * termy_buffer_free. */
+#define TERMY_TEXT_UNWRAP (1u << 8)
+TermyFfiStatus termy_terminal_text(
+    TermyFfiTerminal *terminal,
+    uint32_t flags,
+    uint32_t max_lines,
+    TermyFfiBytes *out_text);
 TermyFfiStatus termy_terminal_bracketed_paste_mode(
     TermyFfiTerminal *terminal,
     bool *out_enabled);

@@ -50,7 +50,9 @@ png = "0.18"
 rand_core = { workspace = true }
 ttf-parser = "0.25"
 unicode-width = { workspace = true }
-unicode-segmentation = "=1.12.0"
+# Termy's own Cargo.lock holds 1.12.0; a caret lets apps that embed termy_core next to
+# crates needing 1.13 (next-rune, through Rune) resolve one copy.
+unicode-segmentation = "1.12"
 bincode = { version = "1.3", optional = true }
 serde_json = { workspace = true }
 ureq = { workspace = true, optional = true }

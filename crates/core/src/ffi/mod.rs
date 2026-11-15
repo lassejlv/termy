@@ -53,6 +53,8 @@ pub enum TermyFfiStatus {
 
 mod multiplexer;
 pub use multiplexer::*;
+mod inspect;
+pub use inspect::*;
 
 #[cfg(test)]
 static PANIC_NEXT_FEED_OUTPUT: AtomicBool = AtomicBool::new(false);

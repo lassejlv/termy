@@ -1,5 +1,5 @@
 ---
-import { images } from '@/lib/assets'
+import { dithers, images } from '@/lib/assets'
 
 const columns = [
   {
@@ -8,7 +8,8 @@ const columns = [
       ['Download', '#download'],
       ['Sessions', '#sessions'],
       ['Agents', '#agents'],
-      ['termy mux', '#termy-mux'],
+      ['Plugins', '#plugins'],
+      ['termy mux', 'https://github.com/lassejlv/termy/tree/main/next#termy-mux'],
     ],
   },
   {
@@ -16,7 +17,7 @@ const columns = [
     links: [
       ['termy.sh', 'https://termy.sh'],
       ['Documentation', 'https://termy.sh/docs'],
-      ['libtermy', '#libtermy'],
+      ['libtermy', 'https://github.com/lassejlv/termy/tree/main/crates/core'],
       ['Swift SDK', 'https://github.com/lassejlv/termy/tree/main/sdk/swift'],
     ],
   },
@@ -32,14 +33,14 @@ const columns = [
 ---
 
 <footer class="relative isolate overflow-hidden">
-  <img src={images.sunFooter} alt="" width="1440" height="260" class="pointer-events-none absolute bottom-0 left-1/2 -z-10 w-[1440px] max-w-none -translate-x-1/2 opacity-90" />
+  <img src={dithers.footer} alt="" width="1440" height="260" class="dither absolute bottom-0 left-1/2 -z-10 h-[260px] w-[1440px] max-w-none -translate-x-1/2 opacity-30" />
   <div class="mx-auto flex max-w-[1440px] flex-col justify-between gap-14 px-6 pt-16 pb-[220px] md:flex-row md:px-16">
     <div class="flex max-w-[360px] flex-col gap-[18px]">
       <a href="/" class="flex items-center gap-3">
         <img src={images.icon} alt="" width="28" height="28" class="size-7" />
         <span class="text-[15px] font-semibold">Termy Next</span>
       </a>
-      <p class="text-[14px] leading-[1.55] text-muted-foreground">
+      <p class="text-[14px] leading-[22px] text-soft">
         A session-first terminal for macOS, built on libtermy. Part of the Termy project.
       </p>
     </div>
@@ -47,11 +48,11 @@ const columns = [
       {
         columns.map((column) => (
           <div class="flex flex-col gap-3.5">
-            <h2 class="text-[13px] text-faint">{column.title}</h2>
+            <h2 class="text-[13px] font-normal text-faint">{column.title}</h2>
             <ul class="flex flex-col gap-3.5">
               {column.links.map(([label, href]) => (
                 <li>
-                  <a href={href} class="text-[14px] text-[#c0caf5] transition-colors hover:text-white">
+                  <a href={href} class="text-[14px] text-code transition-colors hover:text-white">
                     {label}
                   </a>
                 </li>

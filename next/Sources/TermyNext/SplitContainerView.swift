@@ -56,6 +56,7 @@ final class SplitContainerView: NSView {
         let frames = tab.tree.frames(in: area, gap: gap)
         return tab.allPanes.map { pane in
             if let frame = frames[pane.id] { return (pane, frame.integral, true) }
+            if tab.isMinimized(pane.id) { return (pane, pane.frame, false) }
             let unit = tab.floating[pane.id] ?? CGRect(x: 0.2, y: 0.15, width: 0.6, height: 0.62)
             let frame = NSRect(x: area.minX + unit.minX * area.width, y: area.minY + unit.minY * area.height,
                                width: unit.width * area.width, height: unit.height * area.height).integral
@@ -236,11 +237,10 @@ final class SplitContainerView: NSView {
 
     /// Moves a floating pane by a drag on its header.
     func moveFloating(_ pane: PaneView, by delta: NSPoint) {
-        guard let tab, var unit = tab.floating[pane.id], bounds.width > 0, bounds.height > 0 else { return }
-        unit.origin.x = min(max(unit.origin.x + delta.x / bounds.width, -unit.width + 0.1), 0.9)
-        // Window coordinates grow upward; this view is flipped.
-        unit.origin.y = min(max(unit.origin.y - delta.y / bounds.height, 0), 0.9)
-        tab.floating[pane.id] = unit
+        guard let tab, tab.floating[pane.id] != nil, bounds.width > 0, bounds.height > 0 else { return }
+        // A pane in a layer with others carries them along. Window
+        // coordinates grow upward; this view is flipped.
+        tab.moveLayer(containing: pane.id, dx: delta.x / bounds.width, dy: -delta.y / bounds.height)
         needsLayout = true
     }
 }

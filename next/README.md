@@ -124,6 +124,101 @@ into the shell, which stays open afterwards. `working_dir` may use `~`; a
 relative path starts from the focused pane's directory. `layout` limits a
 task to the session with that name. `task.<name>.keybind` is not used yet.
 
+## Plugins (Lua)
+
+Termy Next runs Lua plugins with Rex's plugin API, so Rex plugins run
+unchanged. It loads `~/.config/termy-next/init.lua` first, written against
+`termy.*`, then Rex's config (`REX_CONFIG`, else `~/.config/rex/init.lua`),
+where Rex plugins put themselves. `rex` and `termy` are the same table, so
+either name works in either file. **Settings → Plugins** shows both files,
+what failed to load, every action with its key and a Run button, and turns
+Rex's config off; **Reload Plugins** and **Open Plugin Config** are also in
+the palette.
+
+```lua
+termy.action{
+  name = "htop_beside",
+  title = "htop Beside",
+  run = function(ctx)
+    termy.session.new_split{
+      anchor_id = ctx.block_id, direction = "horizontal", side = "after", focus = true,
+      layout = termy.layout.block{ label = "htop", options = { command = { "htop" } } },
+    }
+  end,
+}
+termy.bind("ctrl+shift+h", "htop_beside")
+```
+
+Actions appear in the command palette (with their `description`, `category`,
+`keywords` and bound key); required `args` are asked for first. The API is
+Rex's:
+
+| | |
+| --- | --- |
+| `action{…}`, `invoke(name, args)` | Palette actions. Unknown names run Termy Next's own: `pane.split`, `pane.zoom`, `client.tab.goto`, `client.mode.enter`, `termy.<command>`… |
+| `bind(key, name \| fn, args)`, `unbind`, `bindings()`, `mode(name, {exclusive})`, `modes()` | Keys, sequences (`ctrl+b>c`), physical keys (`cmd+[KeyD]`) and modes (`resize/left`). A function that returns true takes the key; otherwise the pane gets it. `unbind` with no action also takes a key from Termy Next's own shortcuts. |
+| `session.*{…}`, `call(method, params)` | Every session method: windows, splits, floating layers (with splits, raise, lower, minimize), detached blocks (`new_block`, `detach_block`, `move_block`), owners, `resize_pane`, `view`, `target.resolve`… Results, or `nil, err`. |
+| `block.call(creator, method, args)` | `process` (with `last_exit`), `pwd`, `program_status`, `write`, `format` (screen and scrollback as plain, VT or HTML), `modes` (`screen` is `alternate` under a full-screen program), `input_mode`, `size`, `resize`, `set_theme`, `title`, `list_dir`, `clear`, `reset`, `blob_read`, `clipboard_read`, `download_begin`, `upload_begin`. |
+| `exec(argv, opts)`, `exec.start(argv, opts)` | Run a program in the login shell's environment (`env`, `cwd`, `timeout`, `stdin`, `detach`, `stdout`/`stderr`/`on_exit` callbacks); `start` returns a userdata handle. |
+| `on(event, [filter], fn)`, `wait`, `after`, `every`, `sleep`, `stop` | Rex's events (`session_*`, `window_*`, `active_window_changed`, `block_created`, `block_closed`, `block_event` with `program_status`, `title_changed`, `child_exited`, `selection_copied`, `keymap_changed`, `hosts_changed`, `client_*`) and timers. |
+| `server(label)`, `servers()`, `host{label, ssh}` | Other Macs running Termy Next: `rex.server("studio").session.list{}` runs there over ssh. |
+| `json`, `layout`, `log`, `client.queue`, `command(name)`, `commands()` | JSON, layout helpers, `plugins.log` in the support folder, Termy Next's own commands. |
+
+Lua is 5.4 with Rex's 5.1 functions added back (`setfenv`, `getfenv`,
+`module`, `unpack`, `loadstring`, `table.getn`…). A config file that fails to
+load leaves the last one that worked in place, and its problem shows in
+Settings → Plugins; a key that can't be read is reported and skipped.
+
+Rex's model maps onto Termy Next's: a session is a session, a Rex window is a
+tab, a block is a pane, and a floating layer is one or more floating panes
+that move and stack together. IDs keep Rex's form (`session:…`, `block:…`)
+and survive relaunches for panes in the session host. Block creators and
+flavors answer to Rex's names (`com.superlogical.terminal.shell`) as well as
+`sh.termy.terminal.shell`. A block's command runs through `termy-run`, which
+keeps the program in front and reports how it exited; a command that fails
+within moments keeps its pane open to read why. Panes nobody can see are still
+polled, so programs there get answers to their terminal queries.
+
+Every pane gets `REX_SESSION`, `REX_BLOCK` (and `TERMY_SESSION`,
+`TERMY_BLOCK`) and `REX_BIN_DIR`, whose `rex` is Rex's command-line tool
+answered by Termy Next: `new`, `ls`, `run` and `split` (`--wait` exits with
+the program's status), `do`, `send`, `send-key`, `capture`, `kill`, `focus`,
+`zoom`, `move`, `swap`, `resize`, `session`, `window`, `block`, `client`,
+`events`, `wait`, `api`, `actions`, `keymap`, `config`, `server`, `hosts`,
+`home`, `whoami`, `terminfo`, `skill` and `completion`. `-S HOST` (or
+`rex home HOST`) runs a command on another Mac's Termy Next over ssh. Tools
+that drive Rex through it work here, such as
+[leaf](https://github.com/DeepanshuMishraa/leaf): `leaf rex install` adds it
+to Rex's config, and its actions (open a document over the pane, review
+diffs, ask the agent pane about a selection with ⇧⌘A, read aloud) work in
+Termy Next as in Rex.
+
+Termy Next never talks to Rex: a plugin that runs Rex's own `rex` by its
+full path (inside Rex.app or its server, as rex-durable does) gets Termy
+Next's instead, so it drives Termy Next. Where Termy Next differs: it has no
+network server of its own, so Rex's
+Tailscale methods answer `not_supported` and hosts are reached over ssh; and
+`data.connect` streams a block's screen as JSON lines over Termy Next's
+socket (`data.open`), not Rex's WebSocket protocol.
+
+## Themes
+
+**Settings → Theme & Font** searches Termy's theme library. **Import…**
+brings in the theme Ghostty (`theme` and its colors), Alacritty
+(`[colors]` and `import`s), kitty (`kitty.conf` and its `include`s) or Rex
+(its custom themes) uses, or any of their theme files, as a JSON file in
+`~/.config/termy-next/themes`, and switches to it. The welcome tour's last
+page has the same list.
+
+## The termy command
+
+Panes have `termy`, Termy Next's command-line tool (the same tool as `rex`
+there, under Termy's name): `termy split -- npm test`, `termy capture`,
+`termy --help`. **Termy Next → Install termy Command…** (or the welcome
+tour) writes `~/.local/bin/termy` for every other shell and adds that folder
+to PATH in your shell's startup file, with the same marker as Termy's
+Install CLI. It asks before replacing another `termy`, such as Termy's.
+
 ## SSH
 
 `ssh` typed in zsh and Add Remote Host send `COLORTERM` along (Settings →
@@ -145,7 +240,11 @@ restart; programs that only ask at startup pick up a change on their next run.
 
 ## Shortcuts
 
-These are Rex's defaults.
+These are Rex's defaults. **Settings → Keyboard** changes any of them: click
+a shortcut and press the new keys (⌫ removes it, Esc keeps it). A key another
+command uses moves after you confirm. Menus, the palette and the welcome tour
+show the keys as you set them. Bindings from `termy.bind` in the plugin
+config, including sequences like `ctrl+b>c`, come before these.
 
 | Action | Keys |
 | --- | --- |
@@ -205,6 +304,8 @@ on every frame. Reduce Motion in System Settings turns all of it off.
 | `Sources/TermyNext/PickerView.swift` | The palette, session picker and prompts. |
 | `Sources/TermyNext/Glass.swift` | `GlassView` (Liquid Glass with fallback), `GlassPanel`, and `Motion` timing and transitions. |
 | `Sources/TermyNext/Commands.swift` | Every command with its title and shortcut; menus and the palette are built from it. |
+| `Sources/TermyNext/Plugins` | Lua plugins: the runtime and `termy.*`/`rex.*` API (`PluginHost`), Rex's control API over sessions, tabs and panes (`PluginAPI`), the socket and `rex` command (`PluginServer`, `PluginCLIRunner`). |
+| `Sources/CLua` | Lua 5.4.7, vendored unmodified. |
 
 ## Releasing
 
@@ -231,13 +332,20 @@ release run replaces with a feed that lists the version it just published.
 The DMG is EdDSA-signed with the same `SPARKLE_ED_PRIVATE_KEY` secret as
 Termy's releases. Sparkle checks every hour, downloads new versions in the
 background and installs them on quit; **Termy Next → Restart to Update**
-installs one now. The first launch of a new version checks again right away,
+shows Sparkle's window with the downloaded version's release notes and
+Install and Relaunch. The first launch of a new version checks again right away,
 so an update downloaded before a newer release doesn't leave you a version
 behind. **Termy Next → Check for Updates…** (also in the command palette)
 reads the feed right away, and **Settings → General → Updates** turns
 automatic checks and downloads on or off.
 Development builds and `scripts/bundle.sh` bundles have no feed and never
 update.
+
+Release notes come from `next/CHANGELOG.md`: the release workflow takes the
+version's section, else `## Unreleased`, else GitHub's notes from the pull
+requests since the last `next-v*` release
+(`scripts/next-release-notes.sh`). They go in the GitHub release and in the
+feed, so Sparkle's update window shows them.
 
 To try the release build locally, signed ad hoc and without notarization:
 

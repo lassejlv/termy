@@ -174,6 +174,8 @@ final class SessionHost {
     func closeExitedPanes() {
         guard let multiplexer, let panes = try? multiplexer.panes() else { return }
         for pane in panes where pane.exited { try? multiplexer.close(paneID: pane.id) }
+        // Plugin IDs and labels of panes that are gone.
+        PluginIdentity.prune(livePanes: Set(panes.filter { !$0.exited }.map(\.id)))
     }
 
     /// Live panes the shared layout doesn't list, such as ones from before

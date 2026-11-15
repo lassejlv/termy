@@ -1,6 +1,6 @@
 ---
 import { buttonVariants } from '@/components/ui/button'
-import { images } from '@/lib/assets'
+import { dithers } from '@/lib/assets'
 import AppleLogo from './AppleLogo.astro'
 import AppWindow from './AppWindow.astro'
 import Nav from './Nav.astro'
@@ -8,40 +8,46 @@ import Nav from './Nav.astro'
 
 <div class="relative isolate w-full overflow-hidden">
   <div class="relative mx-auto w-full max-w-[1440px] xl:h-[820px]">
-    <!-- The icon's halftone sun, as terminal cells, setting behind the window. -->
+    <!-- Dithered light rising toward the window, below the buttons. -->
     <img
-      src={images.sunHero}
+      src={dithers.hero}
       alt=""
-      width="900"
-      height="720"
-      class="sun-drift pointer-events-none absolute top-[120px] -right-[360px] -z-10 w-[620px] opacity-80 md:top-[40px] md:-right-[120px] md:w-[780px] xl:right-auto xl:left-[640px]"
+      width="1440"
+      height="500"
+      class="dither absolute bottom-0 left-0 -z-10 h-[500px] w-[1440px] max-w-none opacity-[0.36] xl:top-[530px] xl:bottom-auto"
     />
     <Nav />
 
-    <section class="relative z-10 flex flex-col items-start px-6 pt-14 pb-12 md:px-16 xl:pt-[120px] xl:pb-24">
-      <h1 class="text-shimmer text-[32px] leading-[1.1] font-semibold tracking-[-0.03em] text-balance md:text-[40px]">
-        Sessions that outlive the app.
+    <section class="relative z-10 flex flex-col items-start px-6 pt-14 pb-12 md:px-16 xl:pt-[112px] xl:pb-24">
+      <h1 class="text-shimmer max-w-[600px] text-[40px] leading-[1.05] font-semibold tracking-[-0.035em] md:text-[52px] xl:text-[60px] xl:leading-[62px]">
+        Sessions that<br class="hidden md:inline" /> outlive the app.
       </h1>
-      <p class="mt-5 max-w-[460px] text-[16px] leading-[1.6] text-pretty text-soft">
+      <p class="mt-6 max-w-[500px] text-[17px] leading-[1.6] text-pretty text-soft md:text-[18px] md:leading-[28px]">
         A native macOS terminal in Swift, running on libtermy, the engine inside Termy. Quit it or update it and every
         program keeps running. The next launch puts each window, tab and split back where you left it.
       </p>
-      <div class="mt-8 flex flex-wrap items-center gap-x-5 gap-y-3">
-        <a href="#download" class={buttonVariants({ size: 'lg' })}><AppleLogo class="size-[14px]" />Download for macOS</a>
-        <a href="https://github.com/lassejlv/termy/tree/main/next" class={buttonVariants({ variant: 'link', size: 'link' })}>
+      <div class="mt-10 flex flex-wrap items-center gap-3">
+        <a href="#download" class={buttonVariants({ variant: 'light', size: 'lg' })}><AppleLogo class="size-[14px]" />Download for macOS</a>
+        <a href="https://github.com/lassejlv/termy/tree/main/next" class={buttonVariants({ variant: 'secondary', size: 'lg' })}>
           Read the source on GitHub
         </a>
       </div>
-      <p class="mt-4 text-[13px] text-muted-foreground">macOS 14 or later. One universal build for Apple Silicon and Intel.</p>
+      <p class="mt-4 text-[13px] text-faint">macOS 14 or later. One universal build for Apple Silicon and Intel.</p>
     </section>
 
     <!-- Beside the copy from 1280px, bleeding off the right edge; under it on narrower screens. -->
     <div
-      class="relative mx-6 mb-14 h-[300px] overflow-hidden rounded-2xl md:mx-16 md:h-[380px] lg:h-[480px] xl:absolute xl:top-[250px] xl:left-[calc(100%-700px)] xl:m-0 xl:h-[570px] xl:overflow-visible xl:rounded-none"
+      class="relative mx-6 mb-14 h-[300px] overflow-hidden rounded-2xl md:mx-16 md:h-[380px] lg:h-[480px] xl:absolute xl:top-[176px] xl:left-[calc(100%-700px)] xl:m-0 xl:h-[580px] xl:w-[900px] xl:rounded-none"
     >
-      <div class="origin-top-left scale-[0.46] md:scale-[0.58] lg:scale-[0.74] xl:scale-[0.88]">
+      <div class="origin-top-left scale-[0.46] md:scale-[0.58] lg:scale-[0.74] xl:scale-100">
         <AppWindow />
       </div>
+    </div>
+
+    <!-- The window sinks into the page. -->
+    <div
+      class="pointer-events-none absolute -bottom-2 left-0 hidden h-[240px] w-full bg-linear-to-b from-background/0 via-background/85 via-60% to-background to-80% xl:block"
+    >
     </div>
   </div>
 </div>

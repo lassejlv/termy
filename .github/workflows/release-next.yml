@@ -143,13 +143,34 @@ jobs:
       - name: Checkout scripts
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          sparse-checkout: scripts
+          sparse-checkout: |
+            /scripts/
+            /next/CHANGELOG.md
+          sparse-checkout-cone-mode: false
 
       - name: Download release files
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: termy-next
           path: dist
+
+      # next/CHANGELOG.md's section for this version (or Unreleased), else
+      # GitHub's notes from the pull requests since the last Termy Next release.
+      - name: Write the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          scripts/next-release-notes.sh "$VERSION" > "$RUNNER_TEMP/notes.md"
+          {
+            echo "Termy Next $VERSION, the native Swift terminal built on libtermy."
+            echo
+            if [[ -s "$RUNNER_TEMP/notes.md" ]]; then
+              cat "$RUNNER_TEMP/notes.md"
+              echo
+            fi
+            echo "Download \`TermyNext-$VERSION-macos-universal.dmg\`, open it and drag Termy Next to Applications. It runs on Apple Silicon and Intel Macs with macOS 14 or later, and is signed and notarized. Installed copies update themselves."
+          } > "$RUNNER_TEMP/body.md"
 
       - name: Publish release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -161,10 +182,7 @@ jobs:
           prerelease: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
           # Termy's own release stays the repository's "Latest".
           make_latest: false
-          body: |
-            Termy Next ${{ needs.build.outputs.version }}, the native Swift terminal built on libtermy.
-
-            Download `TermyNext-${{ needs.build.outputs.version }}-macos-universal.dmg`, open it and drag Termy Next to Applications. It runs on Apple Silicon and Intel Macs with macOS 14 or later, and is signed and notarized.
+          body_path: ${{ runner.temp }}/body.md
           files: |
             dist/*.dmg
             dist/*.zip
@@ -172,12 +190,19 @@ jobs:
           fail_on_unmatched_files: true
           overwrite_files: true
 
+      # The same notes, as the update window shows them.
       - name: Generate the update feed
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: next-v${{ needs.build.outputs.version }}
         run: |
+          notes_args=()
+          if [[ -s "$RUNNER_TEMP/notes.md" ]]; then
+            gh api markdown -f text="$(cat "$RUNNER_TEMP/notes.md")" -f mode=gfm -f context="$GITHUB_REPOSITORY" > "$RUNNER_TEMP/notes.html"
+            notes_args=(--notes-html "$RUNNER_TEMP/notes.html" --style-notes)
+          fi
           python3 scripts/sparkle-appcast.py feed \
-            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --app-name "Termy Next" \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --app-name "Termy Next" "${notes_args[@]}" \
             --out-dir dist dist/sparkle-universal.json
 
       # After the release, so the feed never points at a DMG that isn't there yet.

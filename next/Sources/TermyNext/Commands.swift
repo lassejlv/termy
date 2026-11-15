@@ -16,6 +16,7 @@ enum Command: String, CaseIterable {
     case tabsAbove, tabsLeft, tabsRight, paneComfortable, paneCompact, interfaceLiquid, interfaceClassic
     case increaseFontSize, decreaseFontSize, resetFontSize
     case clearScrollback, insertPath, askForCommand, find, findNext, findPrevious
+    case reloadPlugins, openPluginConfig, welcomeTour, installCLI
     case selectTab1, selectTab2, selectTab3, selectTab4, selectTab5, selectTab6, selectTab7, selectTab8, selectLastTab
 
     var title: String {
@@ -79,6 +80,10 @@ enum Command: String, CaseIterable {
         case .findPrevious: "Find Previous"
         case .insertPath: "Insert Path…"
         case .askForCommand: "Ask for a Command…"
+        case .reloadPlugins: "Reload Plugins"
+        case .openPluginConfig: "Open Plugin Config"
+        case .welcomeTour: "Welcome Tour"
+        case .installCLI: "Install termy Command…"
         case .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8:
             "Show Tab \(tabNumber!)"
         case .selectLastTab: "Show Last Tab"
@@ -124,8 +129,12 @@ enum Command: String, CaseIterable {
         return self != .askForCommand || Preferences.shared.shellPlugins
     }
 
+    /// The key the command uses now: the default below, or the user's own
+    /// from Settings › Keyboard.
+    @MainActor var shortcut: (key: String, modifiers: NSEvent.ModifierFlags)? { Shortcuts.binding(for: self) }
+
     // Rex's default bindings (see the Rex Beta menus).
-    var shortcut: (key: String, modifiers: NSEvent.ModifierFlags)? {
+    var defaultShortcut: (key: String, modifiers: NSEvent.ModifierFlags)? {
         let up = String(UnicodeScalar(NSUpArrowFunctionKey)!)
         let down = String(UnicodeScalar(NSDownArrowFunctionKey)!)
         let left = String(UnicodeScalar(NSLeftArrowFunctionKey)!)
@@ -184,7 +193,7 @@ enum Command: String, CaseIterable {
     }
 
     /// The shortcut drawn the way macOS menus show it, e.g. "⇧⌘P".
-    var shortcutLabel: String? {
+    @MainActor var shortcutLabel: String? {
         guard let (key, modifiers) = shortcut else { return nil }
         var s = ""
         if modifiers.contains(.control) { s += "⌃" }
@@ -204,12 +213,12 @@ enum Command: String, CaseIterable {
     }
 
     /// A tooltip naming the action and its shortcut, e.g. "Split Right (⌘D)".
-    func help(_ text: String? = nil) -> String {
+    @MainActor func help(_ text: String? = nil) -> String {
         let name = text ?? (title.hasSuffix("…") ? String(title.dropLast()) : title)
         return shortcutLabel.map { "\(name) (\($0))" } ?? name
     }
 
-    func menuItem(title: String? = nil) -> NSMenuItem {
+    @MainActor func menuItem(title: String? = nil) -> NSMenuItem {
         let item = NSMenuItem(title: title ?? menuTitle, action: #selector(AppDelegate.runCommand(_:)), keyEquivalent: "")
         item.representedObject = rawValue
         if let (key, modifiers) = shortcut {
@@ -220,16 +229,13 @@ enum Command: String, CaseIterable {
     }
 
     /// The command bound to `event`, if any.
-    static func matching(_ event: NSEvent) -> Command? {
-        let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        guard let chars = event.charactersIgnoringModifiers?.lowercased() else { return nil }
-        for command in allCases {
-            guard let (key, modifiers) = command.shortcut else { continue }
-            if modifiers == flags, key.lowercased() == chars { return command }
-            // ⌘+ arrives as "=" without shift on US layouts; ⇧⌘↩ etc. keep their key.
-            if command == .increaseFontSize, flags.subtracting(.shift) == .command, chars == "=" { return command }
-            // Shifted tab arrives as backtab.
-            if key == "\t", chars == "\u{19}", modifiers == flags { return command }
+    @MainActor static func matching(_ event: NSEvent) -> Command? {
+        guard let chord = KeyChord(event: event) else { return nil }
+        if let command = allCases.first(where: { Shortcuts.chord(for: $0) == chord }) { return command }
+        // ⌘+ arrives as ⌘= or ⇧⌘= on US layouts, while it's still the default.
+        if chord.key == "=", chord.modifiers.subtracting(.shift) == .command, !Shortcuts.isCustom(.increaseFontSize),
+           Shortcuts.command(using: chord) == nil {
+            return .increaseFontSize
         }
         return nil
     }

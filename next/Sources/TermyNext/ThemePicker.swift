@@ -6,10 +6,14 @@ import TermyNextCore
 /// local files in `~/.config/termy-next/themes`, each with a color preview.
 /// Picking one writes `theme = <id>` to Termy Next's config.
 @MainActor
-final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSMenuDelegate {
     var onPick: ((TermyTheme) -> Void)?
+    /// A theme was imported into the themes folder under this id.
+    var onImport: ((String) -> Void)?
 
     private let search = NSSearchField()
+    private let importButton = NSPopUpButton(frame: .zero, pullsDown: true)
+    private var isDark = true
     private let table = NSTableView()
     private let scroll = NSScrollView()
     private let countLabel = NSTextField(labelWithString: "")
@@ -20,8 +24,9 @@ final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
     /// Colors from the terminal theme; nil keeps the system's.
     private var colors: ThemeRowColors?
 
-    init(width: CGFloat, height: CGFloat) {
-        super.init(frame: NSRect(x: 0, y: 0, width: width, height: height))
+    /// Without a size, it fills whatever its constraints give it.
+    init(width: CGFloat? = nil, height: CGFloat? = nil) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width ?? 300, height: height ?? 300))
         translatesAutoresizingMaskIntoConstraints = false
 
         search.placeholderString = "Search themes"
@@ -51,16 +56,25 @@ final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         countLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         countLabel.textColor = .tertiaryLabelColor
 
-        for view in [search, scroll, countLabel] {
+        importButton.addItem(withTitle: "Import…")
+        importButton.menu?.delegate = self
+        importButton.menu?.autoenablesItems = false
+        importButton.controlSize = .regular
+        importButton.setAccessibilityLabel("Import a theme")
+        importButton.toolTip = "Import the theme Ghostty, Alacritty, kitty or Rex uses"
+
+        for view in [search, importButton, scroll, countLabel] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
+        if let width { widthAnchor.constraint(equalToConstant: width).isActive = true }
+        if let height { heightAnchor.constraint(equalToConstant: height).isActive = true }
         NSLayoutConstraint.activate([
-            widthAnchor.constraint(equalToConstant: width),
-            heightAnchor.constraint(equalToConstant: height),
             search.topAnchor.constraint(equalTo: topAnchor),
             search.leadingAnchor.constraint(equalTo: leadingAnchor),
-            search.trailingAnchor.constraint(equalTo: trailingAnchor),
+            search.trailingAnchor.constraint(equalTo: importButton.leadingAnchor, constant: -8),
+            importButton.trailingAnchor.constraint(equalTo: trailingAnchor),
+            importButton.centerYAnchor.constraint(equalTo: search.centerYAnchor),
             scroll.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 8),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
@@ -88,6 +102,7 @@ final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         scroll.layer?.borderColor = theme.paneStroke.cgColor
         table.backgroundColor = theme.paneFill
         countLabel.textColor = theme.textTertiary
+        isDark = theme.isDark
         table.reloadData()
         selectCurrent(scroll: false)
     }
@@ -121,6 +136,85 @@ final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         if scroll { table.scrollRowToVisible(row) }
     }
 
+    // MARK: Import
+
+    /// Lists each terminal with the theme it would bring in, built when the
+    /// menu opens so it shows the configs as they are now.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        while menu.items.count > 1 { menu.removeItem(at: 1) }
+        for source in ThemeImportSource.allCases {
+            let item = NSMenuItem(title: source.title, action: nil, keyEquivalent: "")
+            item.image = ThemeImports.logo(for: source, dark: isDark)
+            switch ThemeImports.themes(from: source) {
+            case .success(let themes) where themes.count > 1:
+                let submenu = NSMenu()
+                for theme in themes { submenu.addItem(importItem(theme.name, theme)) }
+                item.submenu = submenu
+            case .success(let themes) where themes.count == 1:
+                item.target = self
+                item.action = #selector(importTheme(_:))
+                item.representedObject = ImportBox(themes[0])
+                note(themes[0].name, on: item)
+            case .success:
+                item.isEnabled = false
+                note("No custom themes", on: item)
+            case .failure(let error):
+                item.isEnabled = false
+                note(source == .rex ? "Not found" : "No config found", on: item)
+                item.toolTip = error.localizedDescription
+            }
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let file = NSMenuItem(title: "Theme File…", action: #selector(importFile), keyEquivalent: "")
+        file.target = self
+        file.image = NSImage(systemSymbolName: "doc", accessibilityDescription: nil)
+        menu.addItem(file)
+    }
+
+    private func importItem(_ title: String, _ theme: ImportedTheme) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: #selector(importTheme(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = ImportBox(theme)
+        return item
+    }
+
+    /// The theme name under the terminal's, where macOS shows subtitles.
+    private func note(_ text: String, on item: NSMenuItem) {
+        if #available(macOS 14.4, *) { item.subtitle = text } else { item.title += " — \(text)" }
+    }
+
+    @objc private func importTheme(_ sender: NSMenuItem) {
+        guard let theme = (sender.representedObject as? ImportBox)?.theme else { return }
+        finishImport { try ThemeImports.install(theme, existing: all) }
+    }
+
+    @objc private func importFile() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose a Ghostty, Alacritty, kitty or Termy theme file."
+        panel.prompt = "Import"
+        panel.canChooseDirectories = false
+        panel.showsHiddenFiles = true
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            self.finishImport { try ThemeImports.installFile(url, existing: self.all) }
+        }
+        if let window { panel.beginSheetModal(for: window, completionHandler: finish) } else { finish(panel.runModal()) }
+    }
+
+    private func finishImport(_ body: () throws -> String) {
+        do {
+            let id = try body()
+            search.stringValue = ""
+            onImport?(id)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Couldn't import the theme"
+            alert.informativeText = error.localizedDescription
+            if let window { alert.beginSheetModal(for: window) } else { alert.runModal() }
+        }
+    }
+
     // MARK: Table
 
     func numberOfRows(in tableView: NSTableView) -> Int { shown.count }
@@ -147,6 +241,12 @@ final class ThemePicker: NSView, NSTableViewDataSource, NSTableViewDelegate, NSS
         current = theme.id
         onPick?(theme)
     }
+}
+
+/// Carries an imported theme on a menu item.
+private final class ImportBox: NSObject {
+    let theme: ImportedTheme
+    init(_ theme: ImportedTheme) { self.theme = theme }
 }
 
 /// Row colors taken from the terminal theme.

@@ -14,7 +14,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
     static let shared = SettingsWindowController()
 
     private enum Pane: String, CaseIterable {
-        case general, appearance, theme, notifications, shell, sessions, mobile
+        case general, appearance, theme, notifications, shell, keyboard, plugins, sessions, mobile
 
         var title: String {
             switch self {
@@ -23,6 +23,8 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
             case .theme: "Theme & Font"
             case .notifications: "Notifications"
             case .shell: "Shell"
+            case .keyboard: "Keyboard"
+            case .plugins: "Plugins"
             case .sessions: "Sessions"
             case .mobile: "Mobile"
             }
@@ -35,6 +37,8 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
             case .theme: "paintpalette.fill"
             case .notifications: "bell.badge.fill"
             case .shell: "terminal.fill"
+            case .keyboard: "keyboard.fill"
+            case .plugins: "puzzlepiece.extension.fill"
             case .sessions: "rectangle.stack.fill"
             case .mobile: "iphone"
             }
@@ -47,6 +51,8 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
             case .theme: .systemPink
             case .notifications: .systemRed
             case .shell: .systemGreen
+            case .keyboard: .systemIndigo
+            case .plugins: .systemPurple
             case .sessions: .systemOrange
             case .mobile: .systemTeal
             }
@@ -134,6 +140,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
     private let arrowsCheckbox = NSSwitch()
     private let agentPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let sshColorCheckbox = NSSwitch()
+    private let rexPluginsCheckbox = NSSwitch()
 
     // Sessions
     private let hostCheckbox = NSSwitch()
@@ -144,7 +151,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
 
     private var switches: [NSSwitch] {
         [separateThemesSwitch, inheritSwitch, warnAlwaysSwitch, warnRunningSwitch, copyShineSwitch, reduceMotionSwitch, updateCheckbox, updateDownload, notifyCheckbox, notifyBlocked, notifyDone, notifyFailed, notifySound,
-         shellCheckbox, specCheckbox, arrowsCheckbox, sshColorCheckbox, hostCheckbox]
+         shellCheckbox, specCheckbox, arrowsCheckbox, sshColorCheckbox, rexPluginsCheckbox, hostCheckbox]
     }
 
     private init() {
@@ -178,6 +185,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         NotificationCenter.default.addObserver(self, selector: #selector(refreshIfShown), name: Workspace.didChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(refreshIfShown), name: Updates.didChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(fontsChanged), name: NSFont.fontSetChangedNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(pluginsChanged), name: PluginHost.didChange, object: nil)
         updateSidebar()
         select(.general)
         window.center()
@@ -369,6 +377,8 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
                              subtitle: configLabel),
                     .control("Import from Termy", button("Import…", #selector(importConfig)),
                              subtitle: noteLabel("Copies ~/.config/termy/config.txt and its local themes")),
+                    .control("Welcome tour", button("Show Tour", #selector(showWelcomeTour)),
+                             subtitle: noteLabel("Sessions, panes, the palette, agents, the zsh plugin and plugins")),
                 ], footer: "Termy Next keeps its own config, separate from the Termy app's. Import copies a Termy config over it, along with its local themes; the old file is kept as config.txt.bak."),
             ]
         case .appearance:
@@ -423,6 +433,10 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
                     .control("Send 24-bit color support to SSH hosts", sshColorCheckbox),
                 ], footer: "ssh sends COLORTERM from zsh, from Add Remote Host and from tools that run ssh themselves (boat ssh, git), so Claude Code and other programs on the server draw true colors. The server has to accept it (AcceptEnv COLORTERM), as Debian and Ubuntu do. Copying over SSH works through OSC 52 from the pane you're in."),
             ]
+        case .plugins:
+            sections = pluginSections()
+        case .keyboard:
+            sections = keyboardSections()
         case .mobile:
             let host = NSHostingView(rootView: MobileSettingsView())
             sections = [Section(rows: [.full(host)], footer: "Connect your iPhone to this Mac with a QR code. Mobile access uses your chosen relay server.")]
@@ -439,6 +453,53 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         }
         paneText[pane] = ([pane.title] + sections.flatMap(\.searchText)).joined(separator: " ").lowercased()
         return paneView(sections)
+    }
+
+    // MARK: Keyboard
+
+    /// Every command with its shortcut, by what it acts on.
+    private func keyboardSections() -> [Section] {
+        let groups: [(String, [Command])] = [
+            ("Termy Next", [.commandPalette, .settings, .checkForUpdates, .toggleTheme, .reloadPlugins, .openPluginConfig,
+                            .installCLI, .welcomeTour, .restartSessionHost]),
+            ("Sessions and Windows", [.changeSession, .newSession, .renameSession, .closeSession, .newWindow, .closeWindow,
+                                      .addRemoteHost, .runTask, .goToDirectory]),
+            ("Tabs", [.newTab, .renameTab, .closeTab, .previousTab, .nextTab, .moveTabLeft, .moveTabRight, .moveTabToNewWindow,
+                      .selectTab1, .selectTab2, .selectTab3, .selectTab4, .selectTab5, .selectTab6, .selectTab7, .selectTab8,
+                      .selectLastTab]),
+            ("Panes", [.splitRight, .splitDown, .splitLeft, .splitUp, .splitBestFit, .closePane, .floatPane, .zoomPane,
+                       .equalizePanes, .focusLeft, .focusRight, .focusUp, .focusDown, .focusPreviousPane, .focusNextPane,
+                       .swapLeft, .swapRight, .swapUp, .swapDown]),
+            ("Terminal", [.find, .findNext, .findPrevious, .clearScrollback, .insertPath, .askForCommand,
+                          .increaseFontSize, .decreaseFontSize, .resetFontSize]),
+            ("View", [.toggleSidebar, .toggleActivity, .tabsAbove, .tabsLeft, .tabsRight, .paneComfortable, .paneCompact,
+                      .interfaceLiquid, .interfaceClassic]),
+        ]
+        // A command left out above still gets a row.
+        let listed = Set(groups.flatMap(\.1))
+        let rest = Command.allCases.filter { !listed.contains($0) }
+        let restoreButton = NSButton(title: "Restore Defaults", target: self, action: #selector(restoreShortcuts))
+        restoreButton.bezelStyle = .rounded
+        var sections = [Section(rows: [.control("All shortcuts", restoreButton)],
+                                footer: "Click a shortcut and press the keys you want. ⌫ removes it and Esc keeps it. Keys bound with termy.bind in your plugin config, including sequences like ctrl+b>c, come first.")]
+        for (title, commands) in groups + (rest.isEmpty ? [] : [("More", rest)]) {
+            sections.append(Section(header: title, rows: commands.map { command in
+                .control(command.title.hasSuffix("…") ? String(command.title.dropLast()) : command.title, ShortcutField(command: command))
+            }))
+        }
+        return sections
+    }
+
+    @objc private func restoreShortcuts() {
+        guard Shortcuts.hasCustom else { return }
+        let alert = NSAlert()
+        alert.messageText = "Restore every shortcut to its default?"
+        alert.addButton(withTitle: "Restore Defaults")
+        alert.addButton(withTitle: "Cancel")
+        guard let window else { return }
+        alert.beginSheetModal(for: window) { response in
+            if response == .alertFirstButtonReturn { Shortcuts.resetAll() }
+        }
     }
 
     private struct Section {
@@ -673,6 +734,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         arrowsCheckbox.action = #selector(arrowKeysChanged)
         specCheckbox.action = #selector(specCompletionsChanged)
         sshColorCheckbox.action = #selector(sshColorChanged)
+        rexPluginsCheckbox.action = #selector(rexPluginsChanged)
         agentPopup.addItems(withTitles: ShellAgent.all.map(\.title))
         agentPopup.target = self
         agentPopup.action = #selector(shellAgentChanged)
@@ -707,12 +769,8 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         fontPopup.target = self
         fontPopup.action = #selector(fontChanged)
         fontPopup.widthAnchor.constraint(lessThanOrEqualToConstant: 240).isActive = true
-        themePicker.onPick = { [weak self] theme in
-            guard let self else { return }
-            let app = AppConfig.shared
-            guard app.followsAppearance else { return AppDelegate.shared.applySetting("theme", theme.id) }
-            AppDelegate.shared.applySetting((themeSlot ?? app.appearance) == .dark ? "theme_dark" : "theme_light", theme.id)
-        }
+        themePicker.onPick = { [weak self] theme in self?.useTheme(theme.id) }
+        themePicker.onImport = { [weak self] id in self?.useTheme(id) }
         separateThemesSwitch.action = #selector(separateThemesChanged)
         appearanceControl.target = self
         appearanceControl.action = #selector(appearanceChanged)
@@ -792,6 +850,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         arrowsCheckbox.state = prefs.completionArrowKeys ? .on : .off
         arrowsCheckbox.isEnabled = prefs.shellPlugins
         sshColorCheckbox.state = prefs.sshSendsColor ? .on : .off
+        rexPluginsCheckbox.state = PluginHost.loadsRexConfig ? .on : .off
         refreshStartMenu()
         inheritSwitch.state = prefs.inheritsDirectory ? .on : .off
         warnAlwaysSwitch.state = app.warnsOnQuit ? .on : .off
@@ -1006,12 +1065,147 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         AppDelegate.shared.applySetting("font_family", family)
     }
     @objc private func openConfig() { AppDelegate.shared.openConfig() }
+    @objc private func showWelcomeTour() {
+        guard let controller = AppDelegate.shared.controllersFrontToBack.first else { return NSSound.beep() }
+        controller.presentOnboarding()
+    }
     @objc private func importConfig() { AppDelegate.shared.importTermyConfig(attachedTo: window) }
     @objc private func reloadConfig() { AppDelegate.shared.reloadConfig() }
+
+    /// Sets `id` as the theme, or as the light or dark one being edited.
+    private func useTheme(_ id: String) { AppDelegate.shared.useTheme(id, for: themeSlot) }
 
     @objc private func shellPluginsChanged() { Preferences.shared.shellPlugins = shellCheckbox.state == .on }
     @objc private func arrowKeysChanged() { Preferences.shared.completionArrowKeys = arrowsCheckbox.state == .on }
     @objc private func specCompletionsChanged() { Preferences.shared.commandCompletions = specCheckbox.state == .on }
+    @objc private func rexPluginsChanged() {
+        UserDefaults.standard.set(rexPluginsCheckbox.state == .on, forKey: "loadsRexPlugins")
+        PluginHost.shared.reload()
+    }
+
+    // MARK: Plugins
+
+    /// The Plugins pane, from what's loaded now; rebuilt when plugins reload.
+    private func pluginSections() -> [Section] {
+        let snapshot = PluginHost.shared.snapshot
+        let fm = FileManager.default
+        func status(_ url: URL, loaded: Bool) -> NSTextField {
+            let path = (url.path as NSString).abbreviatingWithTildeInPath
+            let state = !fm.fileExists(atPath: url.path) ? "not created yet" : loaded ? "loaded" : "off"
+            let label = noteLabel("\(path) · \(state)")
+            label.lineBreakMode = .byTruncatingMiddle
+            label.toolTip = url.path
+            return label
+        }
+        let rexLoaded = PluginHost.loadsRexConfig
+        let rexOpen = button("Open in Editor", #selector(openRexPluginConfig))
+        rexOpen.isEnabled = fm.fileExists(atPath: PluginPaths.rexConfig.path)
+        let actions = snapshot.actions.count, keys = snapshot.bindings.count
+        let summary = snapshot.diagnostics.isEmpty
+            ? "\(actions) action\(actions == 1 ? "" : "s"), \(keys) key\(keys == 1 ? "" : "s")"
+            : "\(snapshot.diagnostics.count) problem\(snapshot.diagnostics.count == 1 ? "" : "s") loading"
+
+        var sections = [
+            Section(header: "Config Files", rows: [
+                .control("Termy Next", button("Open in Editor", #selector(openTermyPluginConfig)),
+                         subtitle: status(PluginPaths.termyConfig, loaded: true)),
+                .control("Load Rex plugins", rexPluginsCheckbox, subtitle: status(PluginPaths.rexConfig, loaded: rexLoaded)),
+                .control("Rex config", rexOpen),
+                .control("Plugins", button("Reload", #selector(reloadPlugins)), subtitle: noteLabel(summary)),
+            ], footer: "Termy Next runs its own init.lua first, written with termy.action, termy.bind and the rest of termy.*, then Rex's, where Rex plugins such as leaf (leaf rex install) put themselves. rex.* is the same API as termy.*, so Rex plugins work as they do in Rex."),
+        ]
+
+        if !snapshot.diagnostics.isEmpty {
+            let text = noteLabel(snapshot.diagnostics.joined(separator: "\n\n"), wraps: true)
+            text.isSelectable = true
+            text.preferredMaxLayoutWidth = Self.groupWidth - 24
+            sections.append(Section(header: "Problems", rows: [.full(text)],
+                                    footer: "A file that fails to load keeps the actions and keys it set up before the error. Fix it and choose Reload."))
+        }
+
+        var actionRows: [Row] = snapshot.actions.filter { !$0.hidden }.map { action in
+            let run = button("Run", #selector(runPluginAction(_:)))
+            run.identifier = NSUserInterfaceItemIdentifier(action.name)
+            run.controlSize = .small
+            let detail = [action.category, snapshot.chord(for: action.name)?.symbolLabel, action.name].compactMap { $0 }
+            let subtitle = noteLabel(detail.joined(separator: " · "))
+            subtitle.toolTip = action.description
+            return .control(action.title, run, subtitle: subtitle)
+        }
+        if actionRows.isEmpty {
+            actionRows = [.full(noteLabel("No plugin actions yet. Add one to Termy Next's init.lua, or install a Rex plugin."))]
+        }
+        sections.append(Section(header: "Actions", rows: actionRows,
+                                footer: "Plugin actions are in the command palette (\(Command.commandPalette.shortcutLabel ?? "⇧⌘P")) with their keys. Run asks the front window for any arguments the action needs."))
+
+        let rexPath = NSTextField(labelWithString: (PluginPaths.binDirectory.appendingPathComponent("rex").path as NSString).abbreviatingWithTildeInPath)
+        let logPath = NSTextField(labelWithString: (PluginPaths.logFile.path as NSString).abbreviatingWithTildeInPath)
+        for label in [rexPath, logPath] {
+            label.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            label.lineBreakMode = .byTruncatingMiddle
+            label.isSelectable = true
+            notes.append(label)
+        }
+        sections.append(Section(header: "Command Line", rows: [
+            .control("rex command", button("Copy Path", #selector(copyRexPath)), subtitle: rexPath),
+            .control("Plugin log", button("Show in Finder", #selector(revealPluginLog)), subtitle: logPath),
+        ], footer: "Every pane gets REX_SESSION, REX_BLOCK and REX_BIN_DIR (also TERMY_SESSION and TERMY_BLOCK). $REX_BIN_DIR/rex is Rex's command-line tool, answered by Termy Next, so tools that drive Rex, like leaf, drive Termy Next. termy.log and print write to the plugin log."))
+        return sections
+    }
+
+    /// Rebuilds the Plugins pane, keeping it on screen if it shows.
+    @objc private func pluginsChanged() {
+        if let old = paneViews[.plugins] {
+            rowTitles.removeAll { $0.label.isDescendant(of: old) }
+            headers.removeAll { $0.isDescendant(of: old) }
+            notes.removeAll { $0.isDescendant(of: old) }
+            groups.removeAll { $0.isDescendant(of: old) }
+            separators.removeAll { $0.isDescendant(of: old) }
+        }
+        paneViews[.plugins] = build(.plugins)
+        applyTheme()
+        if pane == .plugins {
+            let offset = scroll.contentView.bounds.origin
+            select(.plugins)
+            scroll.contentView.scroll(to: offset)
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+    }
+
+    @objc private func openTermyPluginConfig() {
+        AppDelegate.shared.openPluginConfig()
+        pluginsChanged()
+    }
+
+    @objc private func openRexPluginConfig() {
+        NSWorkspace.shared.open(PluginPaths.rexConfig)
+    }
+
+    @objc private func reloadPlugins() {
+        // Problems show in this pane, so no alert.
+        PluginHost.shared.reload()
+    }
+
+    @objc private func runPluginAction(_ sender: NSButton) {
+        guard let name = sender.identifier?.rawValue, let action = PluginHost.shared.snapshot.action(named: name) else { return }
+        guard let controller = AppDelegate.shared.controllersFrontToBack.first else { return NSSound.beep() }
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.runPluginAction(action)
+    }
+
+    @objc private func copyRexPath() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(PluginPaths.binDirectory.appendingPathComponent("rex").path, forType: .string)
+    }
+
+    @objc private func revealPluginLog() {
+        let log = PluginPaths.logFile
+        if FileManager.default.fileExists(atPath: log.path) {
+            NSWorkspace.shared.activateFileViewerSelecting([log])
+        } else {
+            NSWorkspace.shared.open(log.deletingLastPathComponent())
+        }
+    }
     @objc private func sshColorChanged() { Preferences.shared.sshSendsColor = sshColorCheckbox.state == .on }
 
     @objc private func shellAgentChanged() {

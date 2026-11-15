@@ -1,6 +1,6 @@
 ---
 import { buttonVariants } from '@/components/ui/button'
-import { images } from '@/lib/assets'
+import { dithers, images } from '@/lib/assets'
 import { formatDate, formatSize, type Release } from '@/lib/release'
 import AppleLogo from './AppleLogo.astro'
 
@@ -9,47 +9,48 @@ interface Props {
 }
 const { release } = Astro.props
 
-const box = 'flex flex-col gap-3 rounded-[10px] bg-white/[0.04] px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between'
+const facts = [
+  `v${release.version}`,
+  release.prerelease ? 'pre-release' : 'release',
+  formatDate(release.publishedAt),
+  formatSize(release.dmg.size),
+  'Apple Silicon and Intel',
+]
 const link = 'text-soft underline decoration-white/25 underline-offset-4 transition-colors hover:text-foreground hover:decoration-white/70'
 ---
 
-<section id="download" class="bg-panel">
-  <div class="mx-auto flex max-w-[1440px] flex-col gap-10 px-6 py-20 md:px-16 md:py-28 lg:flex-row lg:items-start lg:justify-between lg:gap-20">
-    <div class="reveal flex flex-col items-start gap-5">
-      <img src={images.icon} alt="" width="56" height="56" class="size-14" />
-      <h2 class="text-[24px] leading-[1.2] font-semibold tracking-[-0.02em] text-balance md:text-[28px]">
-        Download Termy Next.<br />
-        <span class="text-shimmer [animation-delay:3.5s]">Free, for any Mac on macOS 14.</span>
-      </h2>
-      <p class="max-w-[420px] text-[15px] leading-[1.65] text-soft">
-        Version {release.version}, {release.prerelease ? 'a pre-release' : 'released'} on {formatDate(release.publishedAt)}.
-        Open the disk image and drag Termy Next to Applications.
-      </p>
+<section id="download" class="mx-auto max-w-[1440px] px-6 pt-8 pb-20 md:px-16 md:pb-32">
+  <div class="relative isolate flex min-h-[600px] flex-col items-center overflow-hidden rounded-[20px] bg-panel px-6 pt-16 pb-[220px] text-center ring-1 ring-white/8 md:pt-24">
+    <img
+      src={dithers.download}
+      alt=""
+      width="1312"
+      height="520"
+      class="dither absolute bottom-0 left-1/2 -z-10 h-[520px] w-[1312px] max-w-none -translate-x-1/2 opacity-[0.38]"
+    />
+    <img src={images.icon} alt="" width="72" height="72" class="mb-7 size-[72px]" />
+    <h2 class="reveal text-[32px] leading-[1.1] font-semibold tracking-[-0.03em] text-balance md:text-[40px] md:leading-[44px]">
+      Download Termy Next
+    </h2>
+    <p class="mt-3 text-[16px] leading-6 text-soft">Free, for any Mac on macOS 14 or later</p>
+    <div class="mt-8 flex flex-wrap justify-center gap-3">
+      <a href={release.dmg.url} class={buttonVariants({ variant: 'light', size: 'lg', className: 'h-11 px-5 text-[15px]' })}>
+        <AppleLogo class="size-[14px]" />Download for macOS
+      </a>
+      {
+        release.zip && (
+          <a href={release.zip.url} class={buttonVariants({ variant: 'secondary', size: 'lg', className: 'h-11 px-5 text-[15px]' })}>
+            Download .zip
+          </a>
+        )
+      }
     </div>
-
-    <div class="flex w-full flex-col gap-2 lg:w-[540px] lg:shrink-0">
-      <div class={box}>
-        <div class="flex flex-col gap-0.5">
-          <span class="text-[13px] font-medium">Termy Next for Mac</span>
-          <span class="text-[12px] text-faint">Apple Silicon and Intel in one app, {formatSize(release.dmg.size)}</span>
-        </div>
-        <div class="flex gap-2">
-          <a href={release.dmg.url} class={buttonVariants({ size: 'sm' })}><AppleLogo class="size-3" />Download</a>
-          {release.zip && <a href={release.zip.url} class={buttonVariants({ variant: 'secondary', size: 'sm' })}>Zip</a>}
-        </div>
-      </div>
-      <div class={box}>
-        <div class="flex flex-col gap-0.5">
-          <span class="text-[13px] font-medium">Build it yourself</span>
-          <span class="text-[12px] text-faint">From a clone of the Termy repository</span>
-        </div>
-        <code class="rounded-md bg-terminal px-2.5 py-1.5 font-mono text-[12px] text-[#c0caf5]">just bundle-next</code>
-      </div>
-      <p class="px-1 pt-2 text-[12px] leading-[1.6] text-muted-foreground">
-        Signed and notarized, and kept up to date by Sparkle.
-        {release.checksums && <><a href={release.checksums.url} class={link}>SHA-256 checksums</a>, </>}
-        <a href={release.notesUrl} class={link}>release notes</a>.
-      </p>
-    </div>
+    <p class="mt-5 font-mono text-[13px] leading-[18px] text-faint">{facts.join(' · ')}</p>
+    <p class="mt-6 max-w-[520px] text-[13px] leading-[1.6] text-faint">
+      Open the disk image and drag Termy Next to Applications. Signed and notarized, and kept up to date by Sparkle.{' '}
+      {release.checksums && <><a href={release.checksums.url} class={link}>SHA-256 checksums</a>,{' '}</>}
+      <a href={release.notesUrl} class={link}>release notes</a>, or build it yourself with{' '}
+      <code class="font-mono text-code">just bundle-next</code>.
+    </p>
   </div>
 </section>

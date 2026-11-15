@@ -66,6 +66,7 @@ enum ProgramLogos {
         "brew": "homebrew",
         "kotlin": "kotlin", "kotlinc": "kotlin",
         "lua": "lua", "luajit": "lua",
+        "ghostty": "ghostty", "alacritty": "alacritty", "kitty": "kitty",
         "nginx": "nginx",
         "aws": "aws",
         "fly": "fly", "flyctl": "fly",

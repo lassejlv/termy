@@ -17,6 +17,6 @@ API rate limit. If GitHub can't be reached, the build logs a warning and uses
 the last known release in that file, so rebuild after each Termy Next release
 (or keep `lastKnown` current) to show the new version.
 
-The halftone suns in `public/images` are generated, not photographs; the cell
-map in the libtermy section (`public/images/cellmap.svg`) is drawn from the
-same lines as the frame beside it.
+The dithered light in the hero, the session and download stages and the footer
+comes from the Paper design, as `src/assets/images/dither-*.png`; draw them
+with `image-rendering: pixelated` (the `dither` class) so they stay crisp.

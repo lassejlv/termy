@@ -56,7 +56,8 @@ protocol PaneDelegate: AnyObject {
 /// A pane: a rounded card holding a header and a libtermy `TerminalView`.
 @MainActor
 final class PaneView: NSView, TerminalViewDelegate {
-    let id = UUID()
+    /// Stable across relaunches for a hosted pane; plugins see it as `block:<id>`.
+    let id: UUID
     let terminal: TerminalView
     weak var delegate: PaneDelegate?
 
@@ -109,19 +110,48 @@ final class PaneView: NSView, TerminalViewDelegate {
 
     /// Starts a new pane: in the session host, or inside the app when the
     /// session host is turned off in Settings.
-    convenience init(workingDirectory: String?, command: String? = nil) throws {
+    /// `session` names the pane's session to plugins (REX_SESSION); `environment`
+    /// is added on top of the pane's own, and `keepOpen` keeps the pane on
+    /// screen once its program exits.
+    convenience init(workingDirectory: String?, command: String? = nil, session: UUID? = nil,
+                     environment extra: [String: String] = [:], keepOpen: Bool = false) throws {
         let app = AppConfig.shared
+        let blockID = UUID()
         var options = TerminalOptions(config: app.termyConfig, workingDirectory: workingDirectory, startupCommand: command)
         options.environment["TERM_PROGRAM"] = "TermyNext"
+        options.environment.merge(PluginEnvironment.pane(block: blockID, session: session)) { $1 }
         if Preferences.shared.usesSessionHost {
             options.environment.merge(ShellPlugins.shared.environment(token: nil)) { $1 }
+            options.environment.merge(extra) { $1 }
             let terminal = try SessionHost.shared.requireMultiplexer().createTerminal(size: Self.initialSize, options: options)
-            self.init(hostTerminal: terminal, directory: workingDirectory)
+            if let paneID = terminal.paneID { PluginIdentity.remember(block: blockID, hostPane: paneID) }
+            self.init(id: blockID, hostTerminal: terminal, directory: workingDirectory)
         } else {
             let token = UUID().uuidString
             options.environment.merge(ShellPlugins.shared.environment(token: token)) { $1 }
+            options.environment.merge(extra) { $1 }
             let terminal = try Terminal(size: Self.initialSize, options: options)
-            self.init(hostTerminal: terminal, directory: workingDirectory, shellToken: token)
+            self.init(id: blockID, hostTerminal: terminal, directory: workingDirectory, shellToken: token)
+        }
+        self.keepOpen = keepOpen
+        runsCommand = command != nil
+    }
+
+    /// Kept on screen after its program exits (Rex's `keep_open`).
+    var keepOpen = false
+    /// Started for a command rather than the login shell.
+    private(set) var runsCommand = false
+    /// The program ended while the pane stays open.
+    private(set) var hasExited = false
+    /// How a command pane's program exited, as termy-run reports it.
+    private(set) var exitCode: Int32?
+    private let startedAt = Date()
+    /// A name a plugin gave the pane (a Rex block's `label`), shown in its header.
+    var customLabel: String? {
+        didSet {
+            guard oldValue != customLabel else { return }
+            if let paneID { PluginIdentity.remember(label: customLabel, hostPane: paneID) }
+            updateLabel()
         }
     }
 
@@ -131,7 +161,10 @@ final class PaneView: NSView, TerminalViewDelegate {
     /// Attaches to a pane the session host already runs, such as one from before a relaunch.
     convenience init(attaching paneID: String) throws {
         let terminal = try SessionHost.shared.requireMultiplexer().attachTerminal(paneID: paneID)
-        self.init(hostTerminal: terminal, directory: nil)
+        let blockID = PluginIdentity.blockID(forHostPane: paneID) ?? UUID()
+        PluginIdentity.remember(block: blockID, hostPane: paneID)
+        self.init(id: blockID, hostTerminal: terminal, directory: nil)
+        customLabel = PluginIdentity.label(forHostPane: paneID)
     }
 
     /// A first grid size; the view resizes the pane to fit once laid out.
@@ -140,7 +173,8 @@ final class PaneView: NSView, TerminalViewDelegate {
         return TerminalSize(cols: 80, rows: 24, cellWidth: render.cellWidth, cellHeight: render.cellHeight)
     }
 
-    private init(hostTerminal: Terminal, directory: String?, shellToken: String? = nil) {
+    private init(id: UUID, hostTerminal: Terminal, directory: String?, shellToken: String? = nil) {
+        self.id = id
         let app = AppConfig.shared
         let session = TerminalSession(terminal: hostTerminal, size: Self.initialSize)
         terminal = TerminalView(session: session, renderConfig: app.terminalRenderConfig)
@@ -468,8 +502,9 @@ final class PaneView: NSView, TerminalViewDelegate {
         let shellName = shellPID.flatMap(ShellProcess.name(of:))
         let process = processName.map(AppIcons.displayName(for:)) ?? shellName
         // A program that names itself over OSC 7501 wins over whatever the shell put in the title.
-        let new = reportedApp.map { PaneLabel(name: AppIcons.displayName(for: $0), detail: directory.map { Naming.abbreviatingHome($0) }) }
+        var new = reportedApp.map { PaneLabel(name: AppIcons.displayName(for: $0), detail: directory.map { Naming.abbreviatingHome($0) }) }
             ?? PaneLabel.make(title: terminal.session.title, process: process, directory: directory)
+        if let customLabel, !customLabel.isEmpty { new = PaneLabel(name: customLabel, detail: new.detail) }
         if new != label {
             label = new
             header.needsDisplay = true
@@ -493,6 +528,32 @@ final class PaneView: NSView, TerminalViewDelegate {
         }
         if let msg = status.msg, !msg.isEmpty { parts.append(msg) }
         return parts.joined(separator: " · ")
+    }
+
+    /// Who sent each OSC 7501 record, and when: the process in front when
+    /// the record last changed, as Rex's `program_status` reports `owner`.
+    private(set) var statusOwners: [String: (pid: pid_t, name: String, updated: Date)] = [:]
+    private var lastRecords: [String: ProgramStatusRecord] = [:]
+
+    private func noteStatusOwners(_ records: [ProgramStatusRecord]) {
+        let front = foregroundPID
+        let name = front.flatMap(ShellProcess.name(of:)) ?? ""
+        var seen: [String: ProgramStatusRecord] = [:]
+        for record in records {
+            seen[record.id] = record
+            if lastRecords[record.id] != record || statusOwners[record.id] == nil {
+                statusOwners[record.id] = (front ?? 0, name, Date())
+            }
+        }
+        statusOwners = statusOwners.filter { seen[$0.key] != nil }
+        lastRecords = seen
+    }
+
+    /// The program the pane started (usually the shell), and the one in front.
+    var childPID: pid_t? { shellPID }
+    var foregroundPID: pid_t? {
+        guard let shell = shellPID, ShellProcess.isAlive(shell) else { return nil }
+        return ShellProcess.foreground(of: shell)
     }
 
     /// The state the program last reported, for notifying on changes.
@@ -522,11 +583,19 @@ final class PaneView: NSView, TerminalViewDelegate {
 
     func terminalView(_ view: TerminalView, didChangeTitle title: String?) {
         updateLabel()
+        PluginEvents.blockEvent(self, "title_changed", ["title": title as Any])
     }
 
     func terminalView(_ view: TerminalView, didReceive event: TerminalEvent) {
         switch event {
-        case .workingDirectory, .programStatus, .shellCommandFinished:
+        case .programStatus(let records):
+            noteStatusOwners(records)
+            refreshProcess()
+            PluginEvents.blockEvent(self, "program_status", ["records": PluginAPI.statusRecords(of: self)])
+        case .shellCommandFinished(let code):
+            if runsCommand { exitCode = code }
+            refreshProcess()
+        case .workingDirectory:
             refreshProcess()
         default:
             break
@@ -538,6 +607,8 @@ final class PaneView: NSView, TerminalViewDelegate {
     /// OSC 52 copies, as Claude Code and Neovim send over SSH: allowed from
     /// the pane you're working in, never from one in the background.
     func terminalView(_ view: TerminalView, shouldWriteClipboard text: String) -> Bool {
+        // Plugins can read what a program copied (Rex's clipboard_read).
+        PluginAPI.shared.recordClipboard(text, from: self)
         guard isFocused, window?.isKeyWindow == true, NSApp.isActive else { return false }
         showBadge("Copied")
         return true
@@ -576,6 +647,19 @@ final class PaneView: NSView, TerminalViewDelegate {
     }
 
     func terminalViewDidExit(_ view: TerminalView) {
+        hasExited = true
+        PluginEvents.blockEvent(self, "child_exited", ["exit_code": exitCode.map { Int($0) } ?? -1])
+        // Rex's keep_open: the output stays to read; ⌘W closes the pane. A
+        // command that fails within moments stays too, to show why.
+        let failedFast = runsCommand && (exitCode ?? 0) != 0 && Date().timeIntervalSince(startedAt) < 5
+        if keepOpen || failedFast {
+            if failedFast, !keepOpen {
+                let note = "\r\n\u{1b}[2m[exited with status \(exitCode ?? -1) · ⌘W closes the pane]\u{1b}[0m\r\n"
+                try? terminal.session.feed(Data(note.utf8))
+            }
+            header.needsDisplay = true
+            return
+        }
         // The window that last showed the pane may be gone.
         if let delegate { delegate.paneDidExit(self) } else { AppDelegate.shared.paneExitedOffScreen(self) }
     }

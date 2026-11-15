@@ -1,0 +1,45 @@
+---
+// The htop example from the Termy Next README: a palette action and its key.
+// Kept as HTML because Lua's braces would read as Astro expressions.
+const code = `<span class="text-brand">termy</span>.<span class="text-blocked">action</span>{
+  name  = <span class="text-done">"htop_beside"</span>,
+  title = <span class="text-done">"htop Beside"</span>,
+  run   = <span class="text-[#bb9af7]">function</span>(ctx)
+    <span class="text-brand">termy</span>.session.<span class="text-blocked">new_split</span>{
+      anchor_id = ctx.block_id, side = <span class="text-done">"after"</span>,
+      layout = <span class="text-brand">termy</span>.layout.<span class="text-blocked">block</span>{ options = { command = { <span class="text-done">"htop"</span> } } },
+    }
+  <span class="text-[#bb9af7]">end</span>,
+}
+<span class="text-brand">termy</span>.<span class="text-blocked">bind</span>(<span class="text-done">"ctrl+shift+h"</span>, <span class="text-done">"htop_beside"</span>)`
+---
+
+<section id="plugins" class="mx-auto flex max-w-[1440px] flex-col gap-12 px-6 py-20 md:px-16 md:py-32 lg:flex-row lg:items-center lg:gap-16">
+  <div class="reveal flex shrink-0 flex-col gap-5 lg:w-[440px]">
+    <h2 class="text-[32px] leading-[1.1] font-semibold tracking-[-0.03em] text-balance md:text-[44px] md:leading-[48px]">Script it in Lua.</h2>
+    <p class="text-[17px] leading-[1.6] text-soft md:text-[18px] md:leading-[28px]">
+      Add your own actions and keys in a few lines. Termy Next speaks Rex's plugin API, so Rex plugins run unchanged.
+    </p>
+  </div>
+
+  <div class="flex min-w-0 grow flex-col gap-5 rounded-[22px] bg-panel p-4 ring-1 ring-white/6 md:p-10">
+    <div class="overflow-hidden rounded-[14px] border border-white/9 bg-popover shadow-[0_24px_64px_rgb(0_0_0/40%)]">
+      <div class="flex h-11 items-center justify-between gap-4 border-b border-white/7 px-[18px]">
+        <span class="truncate font-mono text-[13px] text-[#a8a8a8]">~/.config/termy-next/init.lua</span>
+        <span class="text-[13px] text-faint">Lua</span>
+      </div>
+      <pre class="overflow-x-auto px-[18px] py-5 font-mono text-[12px] leading-[22px] text-code md:text-[14px] md:leading-6"><code set:html={code} /></pre>
+    </div>
+
+    <div
+      class="flex h-14 items-center gap-3 rounded-[14px] border border-brand/30 bg-popover px-[18px] shadow-[0_24px_64px_rgb(0_0_0/40%)]"
+      role="img"
+      aria-label="The command palette offering the plugin action htop Beside, bound to Control-Shift-H"
+    >
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" class="shrink-0"><path d="M2 3.5h12M2 8h12M2 12.5h7" stroke="#7aa2f7" stroke-width="1.6" stroke-linecap="round" fill="none"></path></svg>
+      <span class="grow text-[15px] font-medium">htop Beside</span>
+      <span class="hidden text-[13px] text-faint sm:inline">Plugin action</span>
+      <kbd class="flex h-6 items-center rounded-md bg-white/6 px-2 font-sans text-[13px] text-code">⌃⇧H</kbd>
+    </div>
+  </div>
+</section>

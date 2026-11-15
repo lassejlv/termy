@@ -11,6 +11,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var keyMonitor: Any?
     private var processTimer: Timer?
     private var spinnerTimer: Timer?
+    /// Polls panes nobody can see, which take no wakeups, so a program
+    /// there still gets answers to its terminal queries (and a TUI a plugin
+    /// opens in a hidden window starts).
+    private var hiddenPollTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // `swift run` starts an unbundled executable; make it a regular app.
@@ -19,9 +23,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // Before the menu, which shows Check for Updates only when this build updates itself.
         Updates.shared.start()
         NSApp.mainMenu = buildMainMenu()
+        // Menus show the keys as they are now.
+        NotificationCenter.default.addObserver(forName: Shortcuts.didChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { NSApp.mainMenu = self?.buildMainMenu() }
+        }
         installKeyMonitor()
         PaneNotifier.shared.start()
         ShellPlugins.shared.start()
+        // Lua plugins: Termy Next's init.lua, then Rex's (leaf and friends).
+        PluginHost.shared.start()
+        hiddenPollTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
+            MainActor.assumeIsolated { AppDelegate.shared.pollHiddenPanes() }
+        }
         startTimers()
         // Nothing of the app shows (hidden, minimized, covered): the timers
         // stop, so an idle app doesn't wake 16 times a second. Program status,
@@ -40,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private func startSessionHost() {
         guard Preferences.shared.usesSessionHost else {
             newWindow(directory: ProcessInfo.processInfo.environment["TERMY_NEXT_CWD"] ?? AppConfig.shared.startDirectory)
+            Onboarding.presentIfDue()
             return
         }
         SessionHost.shared.connect { [weak self] result in
@@ -63,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     }
                 }
                 HostLayoutSync.shared.scheduleWrite()
+                Onboarding.presentIfDue()
             case .failure(let error):
                 // Say why it failed rather than quietly run shells in the app.
                 let alert = NSAlert()
@@ -353,6 +368,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if session.tabs.isEmpty { Workspace.shared.remove(session) } else { Workspace.shared.changed() }
     }
 
+    private func pollHiddenPanes() {
+        for session in Workspace.shared.sessions {
+            for pane in session.tabs.flatMap(\.allPanes) + session.detached where !pane.hasExited {
+                let shown = pane.window?.occlusionState.contains(.visible) == true && !pane.isHiddenOrHasHiddenAncestor
+                if !shown { pane.terminal.session.poll() }
+            }
+        }
+    }
+
     func windowClosed(_ controller: WindowController) {
         controllers.removeAll { $0 === controller }
     }
@@ -420,6 +444,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             NSAlert(error: error).runModal()
         }
         reloadConfig()
+    }
+
+    /// Installs `termy` for every shell, not only Termy Next's panes.
+    func installCLI() {
+        CLIInstall.install(attachedTo: NSApp.keyWindow)
+    }
+
+    /// Sets `id` as the theme; with separate light and dark themes, as the
+    /// one for `slot` (the current appearance's by default).
+    func useTheme(_ id: String, for slot: Appearance? = nil) {
+        let app = AppConfig.shared
+        guard app.followsAppearance else { return applySetting("theme", id) }
+        applySetting((slot ?? app.appearance) == .dark ? "theme_dark" : "theme_light", id)
     }
 
     /// Sets the config's font size; zoomed panes keep their zoom on top.
@@ -518,7 +555,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         for (tab, old, directory) in hosted {
             old.stop()
-            guard let fresh = try? PaneView(workingDirectory: directory ?? AppConfig.shared.startDirectory) else {
+            guard let fresh = try? PaneView(workingDirectory: directory ?? AppConfig.shared.startDirectory, session: tab.session?.id) else {
                 tab.remove(old.id)
                 continue
             }
@@ -619,6 +656,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         setAppearance(toDark == systemIsDark ? .system : (toDark ? .dark : .light))
     }
 
+    /// Opens ~/.config/termy-next/init.lua, writing a starting point first.
+    func openPluginConfig() {
+        let url = PluginPaths.termyConfig
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? PluginPaths.starterConfig.write(to: url, atomically: true, encoding: .utf8)
+        }
+        NSWorkspace.shared.open(url)
+    }
+
     @objc func openConfig() {
         AppConfig.shared.reload()
         // Plain text files open in the user's text editor.
@@ -650,6 +697,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // The zsh completion popup takes ⌃N, ⌃P, Return, Tab and Esc while it's up.
         if let pane = (window.firstResponder as? TerminalView)?.delegate as? PaneView, pane.shellUI.handleKey(event) {
             return true
+        }
+        // Keys plugins bind (termy.bind / rex.bind) come before the app's own.
+        if !editingText {
+            switch PluginKeys.shared.handle(event, controller: controller) {
+            case .consumed:
+                return true
+            case .terminal:
+                // Unbound from Termy Next's shortcuts: the program gets the key.
+                if let terminal = window.firstResponder as? TerminalView {
+                    terminal.keyDown(with: event)
+                    return true
+                }
+            case .none:
+                break
+            }
         }
         if var command = Command.matching(event) {
             // ⇧⌘E is the terminal's own key while the zsh plugins are off.
@@ -685,6 +747,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if command == .restartSessionHost { return restartSessionHost() }
         if command == .checkForUpdates { return Updates.shared.checkForUpdates() }
         if command == .toggleTheme { return toggleTheme() }
+        if command == .welcomeTour { return (keyController ?? controllersFrontToBack.first)?.presentOnboarding() ?? () }
+        if command == .installCLI { return installCLI() }
         // Close commands close the key window when it isn't a terminal window, such as Settings.
         if [.closePane, .closeTab, .closeWindow].contains(command), let key = NSApp.keyWindow,
            !controllers.contains(where: { $0.window === key }) {
@@ -743,7 +807,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         main.addItem(submenu(appName, [
             NSMenuItem(title: "About \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""),
         ] + updates + [
-            sep(), settings, config, reload, c(.restartSessionHost), sep(),
+            sep(), settings, config, reload, c(.restartSessionHost), sep(), c(.installCLI), sep(),
             NSMenuItem(title: "Hide \(appName)", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"),
             NSMenuItem(title: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"),
         ]))
@@ -784,7 +848,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         ])
         main.addItem(windowMenu)
         NSApp.windowsMenu = windowMenu.submenu
-        main.addItem(submenu("Help", []))
+        main.addItem(submenu("Help", [c(.welcomeTour)]))
         return main
     }
 }

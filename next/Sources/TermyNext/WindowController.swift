@@ -99,6 +99,8 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     private var activity: ActivityView?
     private let scrim = ScrimView()
     private var picker: PickerView?
+    /// The welcome tour, while it shows.
+    private var onboarding: OnboardingView?
     private var sidebarHidden = false
     private var lastTabStyle = Preferences.shared.tabStyle
 
@@ -182,6 +184,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         scrim.onClick = { [weak self] in
             self?.picker?.dismiss()
             self?.activity?.dismiss()
+            self?.onboarding?.dismiss()
         }
         applyTheme()
     }
@@ -202,6 +205,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         strip.applyStyle()
         sidebar.applyStyle()
         for tab in session.tabs { tab.allPanes.forEach { $0.themeChanged() } }
+        onboarding?.applyTheme()
         root.needsLayout = true
         root.needsDisplay = true
     }
@@ -274,6 +278,12 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
             let width: CGFloat = 340
             let height = min(picker.preferredHeight, bounds.height - 80)
             picker.frame = NSRect(x: (bounds.width - width) / 2, y: titlebarHeight + 4, width: width, height: height)
+        }
+        if let onboarding {
+            let size = OnboardingView.preferredSize
+            let width = min(size.width, bounds.width - 32), height = min(size.height, bounds.height - titlebarHeight - 24)
+            onboarding.frame = NSRect(x: (bounds.width - width) / 2, y: titlebarHeight + max(8, (bounds.height - titlebarHeight - height) / 2 - 10),
+                                      width: width, height: height)
         }
         positionTrafficLights()
         // AppKit lays the titlebar out after us on resize and focus changes.
@@ -418,7 +428,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     @discardableResult
     private func newTab(directory: String? = nil, command: String? = nil) -> PaneView? {
         do {
-            let pane = try PaneView(workingDirectory: directory ?? newPaneDirectory(), command: command)
+            let pane = try PaneView(workingDirectory: directory ?? newPaneDirectory(), command: command, session: session.id)
             session.append(TerminalTab(pane: pane))
             Workspace.shared.noteDirectory(pane.directory)
             showSelectedTab()
@@ -539,7 +549,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     private func split(_ direction: Direction, from anchor: PaneView? = nil) {
         guard let tab = currentTab, let anchor = anchor ?? focusedPane else { return }
         do {
-            let pane = try PaneView(workingDirectory: newPaneDirectory(from: anchor))
+            let pane = try PaneView(workingDirectory: newPaneDirectory(from: anchor), session: session.id)
             pane.zoom = anchor.zoom  // A split keeps the zoom of the pane it came from.
             pane.delegate = self
             if tab.floating[anchor.id] != nil { tab.toggleFloating(anchor.id) }
@@ -1189,6 +1199,17 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         case .resetFontSize: focusedPane?.changeZoom(by: nil)
         case .clearScrollback: focusedPane?.terminal.clearScrollback(nil)
         case .selectLastTab: selectTab(at: session.tabs.count - 1)
+        case .reloadPlugins:
+            PluginHost.shared.reload { snapshot in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        if !snapshot.diagnostics.isEmpty { PluginHost.report(LuaError(snapshot.diagnostics.joined(separator: "\n\n"))) }
+                    }
+                }
+            }
+        case .openPluginConfig: AppDelegate.shared.openPluginConfig()
+        case .welcomeTour: presentOnboarding()
+        case .installCLI: AppDelegate.shared.installCLI()
         default:
             if let n = command.tabNumber { selectTab(at: n - 1) }
         }
@@ -1280,6 +1301,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
                 run: { [weak self] in self?.run(command) })
         }
         items += taskItems()
+        items += pluginPaletteItems()
         for (i, tab) in session.tabs.enumerated() where i != session.selectedIndex {
             items.append(PickerItem(title: tab.title, subtitle: tab.detail, symbol: "program:\(tab.program ?? "")",
                                     status: tab.activity, keywords: "tab", run: { [weak self] in self?.selectTab(at: i) }))
@@ -1412,5 +1434,144 @@ enum SSHConfig {
             hosts += parts.dropFirst().map(String.init).filter { !$0.contains("*") && !$0.contains("?") }
         }
         return hosts
+    }
+}
+
+// MARK: - Plugins
+
+/// What the plugin API (`termy.*`, `rex.*` and the `rex` command) needs from
+/// a window: showing what it changed in the session, focus, prompts, errors.
+extension WindowController {
+    /// Shows changes the plugin API made to `tab`: new panes appear, focus
+    /// moves to `focus`, and with `select` the tab comes to the front.
+    func pluginRefresh(tab: TerminalTab?, appearing: [PaneView] = [], focus: PaneView? = nil, select: Bool = false) {
+        if select, let tab, let index = session.tabs.firstIndex(where: { $0 === tab }), index != session.selectedIndex {
+            session.selectedIndex = index
+            showSelectedTab()
+        }
+        for tab in session.tabs { tab.allPanes.forEach { $0.delegate = self } }
+        if let tab, tab === currentTab {
+            container.reloadPanes()
+            container.animateLayout(appearing: appearing.first)
+            if let focus, tab.panes[focus.id] != nil {
+                tab.setFocus(focus.id)
+                focus.focus()
+            }
+        }
+        strip.needsDisplay = true
+        sidebar.needsLayout = true
+        sidebar.needsDisplay = true
+        updateTitle()
+        syncFocus()
+    }
+
+    /// Closes `pane` the way ⌘W does, ending its program.
+    func pluginClose(pane: PaneView) {
+        guard let tab = session.tabs.first(where: { $0.panes[pane.id] != nil }) else { return }
+        if tab.allPanes.count <= 1 { return close(tab: tab) }
+        tab.remove(pane.id)
+        if tab === currentTab {
+            container.animateRemoval(of: pane) { pane.terminate() }
+            container.animateLayout()
+            tab.focusedPane?.focus()
+        } else {
+            pane.terminate()
+            pane.removeFromSuperview()
+        }
+        Workspace.shared.changed()
+    }
+
+    func pluginClose(tab: TerminalTab) { close(tab: tab) }
+
+    func pluginCloseSession() {
+        session.tabs.forEach { $0.allPanes.forEach { $0.removeFromSuperview() } }
+        closeCurrentSession()
+    }
+
+    func pluginShow(session target: TerminalSessionGroup) { switchTo(target) }
+
+    func pluginFocus(_ direction: Direction) { moveFocus(direction) }
+
+    func pluginPrompt(placeholder: String, initial: String = "", submit: @escaping (String) -> Void) {
+        showPrompt(placeholder: placeholder, initial: initial, submit: submit)
+    }
+
+    /// The actions plugins define, for the command palette.
+    func pluginPaletteItems() -> [PickerItem] {
+        let snapshot = PluginHost.shared.snapshot
+        var items: [PickerItem] = snapshot.actions.filter { !$0.hidden }.map { action in
+            let shortcut = snapshot.chord(for: action.name)?.symbolLabel
+            let asks = action.arguments.contains { !$0.optional }
+            return PickerItem(
+                title: action.title, subtitle: action.description, symbol: "puzzlepiece.extension",
+                accessory: asks ? .chevron(shortcut) : shortcut.map { .shortcut($0) } ?? .none,
+                keywords: [action.category, action.keywords, action.name, "plugin"].compactMap { $0 }.joined(separator: " "),
+                run: { [weak self] in self?.runPluginAction(action) })
+        }
+        if !snapshot.diagnostics.isEmpty {
+            let message = snapshot.diagnostics.joined(separator: "\n\n")
+            items.append(PickerItem(title: "Plugins Failed to Load", subtitle: snapshot.diagnostics.first, symbol: "exclamationmark.triangle",
+                                    keywords: "plugin error lua config", run: { [weak self] in self?.pluginShowError(message) }))
+        }
+        return items
+    }
+
+    /// Runs a plugin action, first asking for each argument it requires.
+    func runPluginAction(_ action: PluginActionInfo, collected: [String: Any] = [:]) {
+        if let missing = action.arguments.first(where: { !$0.optional && collected[$0.name] == nil }) {
+            let title = action.title.hasSuffix("…") ? String(action.title.dropLast()) : action.title
+            DispatchQueue.main.async { [weak self] in
+                self?.pluginPrompt(placeholder: "\(title): \(missing.description ?? missing.name)") { text in
+                    var next = collected
+                    next[missing.name] = text
+                    self?.runPluginAction(action, collected: next)
+                }
+            }
+            return
+        }
+        let context = PluginAPI.shared.context(for: self, origin: "palette")
+        PluginHost.shared.perform(action: action.name, args: collected, context: context) { result in
+            if case .failure(let error) = result { PluginHost.report(error) }
+        }
+    }
+
+    /// Shows the welcome tour over this window.
+    func presentOnboarding() {
+        guard onboarding == nil else { return }
+        picker?.dismiss()
+        activity?.dismiss()
+        window?.makeKeyAndOrderFront(nil)
+        let view = OnboardingView(frame: .zero)
+        view.onDismiss = { [weak self, weak view] in
+            guard let self, self.onboarding === view else { return }
+            self.onboarding = nil
+            self.scrim.removeFromSuperview()
+            self.focusedPane?.focus()
+            self.syncFocus()
+        }
+        onboarding = view
+        root.addSubview(scrim)
+        root.addSubview(view)
+        layoutRoot()
+        view.layoutSubtreeIfNeeded()
+        Motion.appear(view, scale: 0.94, offsetY: 10, duration: 0.42)
+        window?.makeFirstResponder(view)
+    }
+
+    func pluginShowError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Plugin action failed"
+        alert.informativeText = message
+        if let window { alert.beginSheetModal(for: window) } else { alert.runModal() }
+    }
+
+    /// The window's frames of the shown tab's panes as fractions of the pane
+    /// area, so a floating layer laid over a pane covers it exactly.
+    func pluginUnitFrames(of tab: TerminalTab) -> [UUID: CGRect]? {
+        guard tab === currentTab, container.bounds.width > 0, container.bounds.height > 0 else { return nil }
+        let size = container.bounds.size
+        return container.paneFrames.mapValues {
+            CGRect(x: $0.minX / size.width, y: $0.minY / size.height, width: $0.width / size.width, height: $0.height / size.height)
+        }
     }
 }
