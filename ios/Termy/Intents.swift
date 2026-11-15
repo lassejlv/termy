@@ -49,7 +49,7 @@ struct OpenComputerIntent: AppIntent {
 struct RunCommandIntent: AppIntent {
     static let title: LocalizedStringResource = "Run Command on Computer"
     static let description = IntentDescription(
-        "Opens a new tab in a Termy Next session on your Mac and runs a command in it.")
+        "Opens a new tab in a Termy Next session on your computer and runs a command in it.")
     static let openAppWhenRun = true
 
     @Parameter(title: "Command", inputOptions: String.IntentInputOptions(capitalizationType: .none, autocorrect: false))
