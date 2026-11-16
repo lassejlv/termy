@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use axum::http::HeaderMap;
+use uuid::Uuid;
 
 /// Addresses tracked at once; beyond this, unseen addresses wait for a window to end.
 const MAX_CLIENTS: usize = 100_000;
@@ -177,12 +178,72 @@ impl RateLimiter {
     }
 }
 
+/// A token bucket per device: `burst` at once, then one each `every`.
+pub struct DeviceLimiter {
+    burst: u32,
+    every: Duration,
+    state: Mutex<Buckets>,
+}
+
+struct Buckets {
+    /// When each device's bucket is full again; past that it can be forgotten.
+    full_at: HashMap<Uuid, Instant>,
+    pruned: Instant,
+}
+
+impl DeviceLimiter {
+    pub fn new(burst: u32, every: Duration) -> Self {
+        Self {
+            burst,
+            every,
+            state: Mutex::new(Buckets {
+                full_at: HashMap::new(),
+                pruned: Instant::now(),
+            }),
+        }
+    }
+
+    pub fn allow(&self, device: Uuid) -> bool {
+        self.allow_at(device, Instant::now())
+    }
+
+    fn allow_at(&self, device: Uuid, now: Instant) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let since_prune = now.saturating_duration_since(state.pruned);
+        if since_prune >= self.every * self.burst
+            || (state.full_at.len() >= MAX_CLIENTS && since_prune >= Duration::from_secs(1))
+        {
+            state.full_at.retain(|_, full| *full > now);
+            state.pruned = now;
+        }
+        let full = state.full_at.len() >= MAX_CLIENTS;
+        let capacity = self.every * self.burst;
+        match state.full_at.get_mut(&device) {
+            Some(full_at) => {
+                let start = (*full_at).max(now);
+                if start.saturating_duration_since(now) + self.every > capacity {
+                    return false;
+                }
+                *full_at = start + self.every;
+                true
+            }
+            None if full => false,
+            None => {
+                state.full_at.insert(device, now + self.every);
+                true
+            }
+        }
+    }
+}
+
 pub struct Limits {
     proxies: Proxies,
     /// New device registrations, the only unauthenticated write.
     pub registrations: RateLimiter,
     /// Every API request, counted before it costs a database query.
     pub requests: RateLimiter,
+    /// Push notifications, per sending Mac.
+    pub pushes: DeviceLimiter,
     warned: AtomicBool,
 }
 
@@ -192,6 +253,7 @@ impl Limits {
             proxies,
             registrations: RateLimiter::new(30, Duration::from_secs(300)),
             requests: RateLimiter::new(600, Duration::from_secs(60)),
+            pushes: DeviceLimiter::new(20, Duration::from_secs(3)),
             warned: AtomicBool::new(false),
         }
     }
@@ -286,6 +348,27 @@ mod tests {
         assert!(!limiter.allow_at(ip("203.0.113.9"), start));
         assert!(limiter.allow_at(ip("203.0.113.10"), start));
         assert!(limiter.allow_at(ip("203.0.113.9"), start + Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn a_device_bursts_then_refills_one_at_a_time() {
+        let limiter = DeviceLimiter::new(3, Duration::from_secs(3));
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        let start = Instant::now();
+        for _ in 0..3 {
+            assert!(limiter.allow_at(a, start));
+        }
+        assert!(!limiter.allow_at(a, start));
+        assert!(limiter.allow_at(b, start));
+        assert!(!limiter.allow_at(a, start + Duration::from_millis(2999)));
+        assert!(limiter.allow_at(a, start + Duration::from_secs(3)));
+        assert!(!limiter.allow_at(a, start + Duration::from_secs(3)));
+        // A rested device has its whole burst again, and no more.
+        let rested = start + Duration::from_secs(3600);
+        for _ in 0..3 {
+            assert!(limiter.allow_at(a, rested));
+        }
+        assert!(!limiter.allow_at(a, rested));
     }
 
     #[test]

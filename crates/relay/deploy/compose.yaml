@@ -26,6 +26,12 @@ services:
       # Only Caddy reaches this port, from the compose network, so its
       # X-Forwarded-For names the real client for per-address limits.
       TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7
+      # Push notifications stay off unless the key, key ID and team ID are set.
+      APNS_KEY: ${APNS_KEY:-}
+      APNS_KEY_FILE: ${APNS_KEY_FILE:-}
+      APNS_KEY_ID: ${APNS_KEY_ID:-}
+      APNS_TEAM_ID: ${APNS_TEAM_ID:-}
+      APNS_TOPIC: ${APNS_TOPIC:-}
     depends_on:
       db:
         condition: service_healthy

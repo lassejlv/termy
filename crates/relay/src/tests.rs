@@ -100,10 +100,12 @@ async fn pairing_api_lifecycle() {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::raw_sql(include_str!("../migrations/0003_private_metadata.sql"))
-        .execute(&pool)
-        .await
-        .unwrap();
+    for migration in [
+        include_str!("../migrations/0003_private_metadata.sql"),
+        include_str!("../migrations/0004_push.sql"),
+    ] {
+        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+    }
     let private_columns: i64 = sqlx::query_scalar("SELECT count(*) FROM information_schema.columns WHERE table_schema=current_schema() AND (column_name IN ('name','email','password_hash') OR table_name IN ('users','sessions','devices'))").fetch_one(&pool).await.unwrap();
     assert_eq!(private_columns, 0);
     assert_eq!(
@@ -430,6 +432,311 @@ async fn pairing_api_lifecycle() {
         .await
         .unwrap();
     assert_eq!(db.prune(&[online]).await.unwrap(), vec![inviting]);
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+}
+
+/// A fresh schema on `TEST_DATABASE_URL` with every migration applied.
+async fn isolated_pool(prefix: &str) -> (PgPool, PgPool, String) {
+    let url = std::env::var("TEST_DATABASE_URL")
+        .expect("set TEST_DATABASE_URL to an isolated database")
+        .replace("-pooler.", ".");
+    let schema = format!("{prefix}_{}", Uuid::new_v4().simple());
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let search = format!("SET search_path TO {schema}");
+    let pool = PgPoolOptions::new()
+        .max_connections(3)
+        .after_connect(move |c, _| {
+            let search = search.clone();
+            Box::pin(async move {
+                sqlx::query(&search).execute(c).await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    for migration in [
+        include_str!("../migrations/0001_init.sql"),
+        include_str!("../migrations/0002_device_pairing.sql"),
+        include_str!("../migrations/0003_private_metadata.sql"),
+        include_str!("../migrations/0004_push.sql"),
+    ] {
+        sqlx::raw_sql(migration).execute(&pool).await.unwrap();
+    }
+    (admin, pool, schema)
+}
+
+/// What the mock APNs received, and what it answers with next.
+#[derive(Default)]
+struct MockApns {
+    received: Vec<(String, axum::http::HeaderMap, Vec<u8>)>,
+    answer: (u16, String),
+}
+
+async fn mock_apns() -> (String, Arc<std::sync::Mutex<MockApns>>) {
+    let mock = Arc::new(std::sync::Mutex::new(MockApns {
+        answer: (200, String::new()),
+        ..Default::default()
+    }));
+    let state = mock.clone();
+    let app = Router::new().fallback(
+        async move |uri: axum::http::Uri,
+                    headers: axum::http::HeaderMap,
+                    body: axum::body::Bytes| {
+            let mut mock = state.lock().unwrap();
+            mock.received
+                .push((uri.path().to_owned(), headers, body.to_vec()));
+            let (status, reason) = mock.answer.clone();
+            (StatusCode::from_u16(status).unwrap(), reason)
+        },
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (format!("http://{address}"), mock)
+}
+
+fn id(device: &Value) -> Uuid {
+    Uuid::parse_str(device["device"]["id"].as_str().unwrap()).unwrap()
+}
+fn token(device: &Value) -> &str {
+    device["token"].as_str().unwrap()
+}
+
+#[tokio::test]
+async fn push_api() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter("termy_relay=debug,sqlx=warn")
+        .try_init();
+    let (admin, pool, schema) = isolated_pool("push_test").await;
+    let (mock_url, mock) = mock_apns().await;
+    let (key, public_key) = push::tests::test_key();
+    let state = AppState::new(pool.clone(), limit::Proxies::default());
+    let app_off = api::router(state.clone());
+    let app = api::router(state.with_push(Some(push::tests::test_apns(key, Some(mock_url)))));
+    let stored = async |device: Uuid| -> Option<(Vec<u8>, String)> {
+        db::Db::new(pool.clone()).push_token(device).await.unwrap()
+    };
+    let link = async |host: Uuid, client: Uuid| {
+        sqlx::query("INSERT INTO remote_links(host_id,client_id) VALUES($1,$2)")
+            .bind(host)
+            .bind(client)
+            .execute(&pool)
+            .await
+            .unwrap();
+    };
+
+    let host = register(&app, "host").await;
+    let other_host = register(&app, "host").await;
+    let phone = register(&app, "client").await;
+    let reinstalled = register(&app, "client").await;
+    let (hid, pid) = (id(&host), id(&phone));
+    link(hid, pid).await;
+    let apns_token = "a1".repeat(32);
+    let register_push = json!({"token": apns_token, "environment": "sandbox"});
+
+    // Registering and deleting a token.
+    let put = async |app: &Router, device: &Value, body: Value| {
+        request(app, "PUT", "/v2/device/push", Some(token(device)), body).await
+    };
+    assert_eq!(
+        put(&app, &host, register_push.clone()).await.0,
+        StatusCode::FORBIDDEN
+    );
+    for (bad_token, environment) in [
+        ("a1".repeat(31), "sandbox"),
+        ("zz".repeat(32), "sandbox"),
+        ("a1".repeat(32), "development"),
+    ] {
+        let body = json!({"token": bad_token, "environment": environment});
+        assert_eq!(put(&app, &phone, body).await.0, StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(
+        put(&app, &phone, register_push.clone()).await,
+        (StatusCode::OK, json!({}))
+    );
+    assert_eq!(stored(pid).await, Some((vec![0xa1; 32], "sandbox".into())));
+    // The same token on a new registration moves there.
+    put(&app, &reinstalled, register_push.clone()).await;
+    assert_eq!(stored(pid).await, None);
+    assert!(stored(id(&reinstalled)).await.is_some());
+    let production = json!({"token": apns_token, "environment": "production"});
+    put(&app, &phone, production).await;
+    assert_eq!(stored(id(&reinstalled)).await, None);
+    assert_eq!(stored(pid).await.unwrap().1, "production");
+    for _ in 0..2 {
+        let deleted = request(
+            &app,
+            "DELETE",
+            "/v2/device/push",
+            Some(token(&phone)),
+            json!({}),
+        )
+        .await;
+        assert_eq!(deleted, (StatusCode::OK, json!({})));
+        assert_eq!(stored(pid).await, None);
+    }
+    put(&app, &phone, register_push.clone()).await;
+
+    // Who may push.
+    let sealed = vec![9u8; 100];
+    let notification = json!({"sealed": STANDARD.encode(&sealed), "collapseId": "cmd-1.done"});
+    let push_path = format!("/v2/push/{pid}");
+    let notify = async |app: &Router, device: &Value, path: &str, body: Value| {
+        request(app, "POST", path, Some(token(device)), body).await
+    };
+    assert_eq!(
+        notify(&app, &phone, &push_path, notification.clone())
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        notify(&app, &other_host, &push_path, notification.clone())
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, body) = notify(&app_off, &host, &push_path, notification.clone()).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        body["reason"],
+        "Push notifications aren't set up on this relay."
+    );
+    for bad in [
+        json!({"sealed": STANDARD.encode([1u8; push::MAX_SEALED + 1])}),
+        json!({"sealed": ""}),
+        json!({"sealed": "not base64!"}),
+        json!({"sealed": STANDARD.encode(&sealed), "collapseId": "no spaces"}),
+        json!({"sealed": STANDARD.encode(&sealed), "collapseId": "a".repeat(65)}),
+    ] {
+        assert_eq!(
+            notify(&app, &host, &push_path, bad).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert!(mock.lock().unwrap().received.is_empty());
+
+    // A linked Mac's notification reaches APNs as a generic sealed alert.
+    let before = chrono::Utc::now().timestamp();
+    assert_eq!(
+        notify(&app, &host, &push_path, notification.clone()).await,
+        (StatusCode::OK, json!({"sent": true}))
+    );
+    let (path, headers, body) = mock.lock().unwrap().received.pop().unwrap();
+    assert_eq!(path, format!("/3/device/{apns_token}"));
+    let header = |name: &str| headers.get(name).unwrap().to_str().unwrap().to_owned();
+    let jwt = header("authorization");
+    let (jwt_header, claims) =
+        push::tests::verify_jwt(jwt.strip_prefix("bearer ").unwrap(), &public_key);
+    assert_eq!(jwt_header, json!({"alg": "ES256", "kid": "KEY1234567"}));
+    assert_eq!(claims["iss"], "TEAM123456");
+    assert_eq!(header("apns-topic"), "sh.termy.app");
+    assert_eq!(header("apns-push-type"), "alert");
+    assert_eq!(header("apns-priority"), "10");
+    assert_eq!(header("apns-collapse-id"), "cmd-1.done");
+    let expiration: i64 = header("apns-expiration").parse().unwrap();
+    assert!((before + 3600..=chrono::Utc::now().timestamp() + 3600).contains(&expiration));
+    assert_eq!(
+        String::from_utf8(body).unwrap(),
+        push::payload(hid, &sealed)
+    );
+    let without_collapse = json!({"sealed": STANDARD.encode(&sealed)});
+    notify(&app, &host, &push_path, without_collapse.clone()).await;
+    let (_, headers, _) = mock.lock().unwrap().received.pop().unwrap();
+    assert!(headers.get("apns-collapse-id").is_none());
+
+    // Other APNs failures are a bad gateway and keep the token.
+    mock.lock().unwrap().answer = (500, r#"{"reason":"InternalServerError"}"#.into());
+    assert_eq!(
+        notify(&app, &host, &push_path, without_collapse.clone())
+            .await
+            .0,
+        StatusCode::BAD_GATEWAY
+    );
+    assert!(stored(pid).await.is_some());
+    // A token APNs no longer knows is forgotten.
+    for answer in [
+        (410, r#"{"reason":"Unregistered"}"#),
+        (400, r#"{"reason":"BadDeviceToken"}"#),
+        (400, r#"{"reason":"DeviceTokenNotForTopic"}"#),
+    ] {
+        put(&app, &phone, register_push.clone()).await;
+        mock.lock().unwrap().answer = (answer.0, answer.1.into());
+        assert_eq!(
+            notify(&app, &host, &push_path, without_collapse.clone()).await,
+            (StatusCode::OK, json!({"sent": false}))
+        );
+        assert_eq!(stored(pid).await, None, "{answer:?}");
+    }
+    // A phone without a token isn't sent anything.
+    let received = mock.lock().unwrap().received.len();
+    assert_eq!(
+        notify(&app, &host, &push_path, without_collapse.clone()).await,
+        (StatusCode::OK, json!({"sent": false}))
+    );
+    assert_eq!(mock.lock().unwrap().received.len(), received);
+
+    // Unpairing from its last Mac, or deleting the phone, removes its token.
+    link(id(&other_host), pid).await;
+    put(&app, &phone, register_push.clone()).await;
+    let unpair = format!("/v2/links/{pid}");
+    request(&app, "DELETE", &unpair, Some(token(&other_host)), json!({})).await;
+    assert!(stored(pid).await.is_some());
+    request(&app, "DELETE", &unpair, Some(token(&host)), json!({})).await;
+    assert_eq!(stored(pid).await, None);
+    put(&app, &reinstalled, register_push.clone()).await;
+    request(
+        &app,
+        "DELETE",
+        "/v2/device",
+        Some(token(&reinstalled)),
+        json!({}),
+    )
+    .await;
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM remote_push_tokens")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+
+    // A Mac may send a burst of 20, then has to wait.
+    let busy = register(&app, "host").await;
+    for _ in 0..20 {
+        assert_eq!(
+            notify(&app, &busy, &push_path, without_collapse.clone())
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        notify(&app, &busy, &push_path, without_collapse.clone())
+            .await
+            .0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Another Mac is unaffected.
+    assert_eq!(
+        notify(&app, &other_host, &push_path, without_collapse)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
         .execute(&admin)

@@ -11,6 +11,7 @@ mod error;
 mod gate;
 mod hub;
 mod limit;
+mod push;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -36,6 +37,8 @@ pub struct AppState {
     pub hub: Arc<hub::Hub>,
     pub gates: Arc<gate::Gates>,
     pub limits: Arc<limit::Limits>,
+    /// `None` when APNs isn't configured.
+    pub push: Option<Arc<push::Apns>>,
 }
 
 impl AppState {
@@ -45,7 +48,13 @@ impl AppState {
             hub: Arc::new(hub::Hub::default()),
             gates: Arc::new(gate::Gates::default()),
             limits: Arc::new(limit::Limits::new(proxies)),
+            push: None,
         }
+    }
+
+    pub fn with_push(mut self, push: Option<push::Apns>) -> Self {
+        self.push = push.map(Arc::new);
+        self
     }
 }
 
@@ -60,6 +69,14 @@ async fn main() -> anyhow::Result<()> {
     let database_url = std::env::var("DATABASE_URL")
         .context("set DATABASE_URL to a Postgres connection string")?;
     let proxies = limit::Proxies::parse(&std::env::var("TRUSTED_PROXIES").unwrap_or_default())?;
+    let push = push::Config::from_env()?.map(push::Apns::new).transpose()?;
+    if let Some(apns) = &push {
+        tracing::info!("push notifications on, for topic {}", apns.topic());
+    } else {
+        tracing::info!(
+            "push notifications off: set APNS_KEY (or APNS_KEY_FILE), APNS_KEY_ID and APNS_TEAM_ID"
+        );
+    }
     let pool = PgPoolOptions::new()
         .max_connections(10)
         // Fail a request rather than hold its place in line when the pool is busy.
@@ -72,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("running migrations")?;
 
-    let state = AppState::new(pool, proxies);
+    let state = AppState::new(pool, proxies).with_push(push);
     tokio::spawn(prune(state.clone()));
     let host = std::env::var("HOST").unwrap_or_else(|_| "0.0.0.0".into());
     let port: u16 = std::env::var("PORT")

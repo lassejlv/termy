@@ -82,8 +82,37 @@ through the database provider's retention policy; do not treat this migration
 as proof that historical plaintext has been physically erased.
 
 Configuration: `DATABASE_URL` (required), `HOST` (default `0.0.0.0`), `PORT`
-(default `8080`; `just relay` uses `8787`), `TRUSTED_PROXIES` (default none)
-and `RUST_LOG`.
+(default `8080`; `just relay` uses `8787`), `TRUSTED_PROXIES` (default none),
+`RUST_LOG`, and the optional `APNS_*` variables (see Push notifications).
+
+## Push notifications
+
+A Mac can wake a paired iPhone through Apple Push Notification service. The
+relay never sees what a notification says: the Mac sends a blob sealed for the
+phone, and the relay wraps it in a generic alert (`Termy` / `A command finished
+on your computer.`, `mutable-content: 1`) with the blob in `termy.s` and the
+Mac's device ID in `termy.h`. The phone's Notification Service Extension opens
+the blob and replaces the title and body. The relay stores only each phone's
+APNs device token and environment, and logs neither the token nor the blob,
+only a short hash of the token. Unpairing a phone from its last Mac, or
+deleting its registration, deletes its token; so does APNs answering 410, or
+400 with `BadDeviceToken` or `DeviceTokenNotForTopic`.
+
+Push is off unless all of these are set; setting only some of them stops the
+relay at startup. The startup log says whether push is on. The key is never
+logged.
+
+| Variable | Meaning |
+| --- | --- |
+| `APNS_KEY` | Contents of the APNs auth key (`AuthKey_XXXXXXXXXX.p8`, PEM). `\n` written out is accepted. |
+| `APNS_KEY_FILE` | Path to the `.p8` instead of `APNS_KEY` |
+| `APNS_KEY_ID` | The key's 10-character Key ID |
+| `APNS_TEAM_ID` | The Apple Developer Team ID |
+| `APNS_TOPIC` | Bundle ID notifications go to (default `sh.termy.app`) |
+| `APNS_URL` | Overrides the APNs base URL, for tests. Otherwise each token's environment picks `https://api.push.apple.com` or `https://api.sandbox.push.apple.com`. |
+
+The relay signs an ES256 provider token with the key and reuses it for 50
+minutes. Requests to APNs use HTTP/2 over rustls and time out after 10 seconds.
 
 ## Limits
 
@@ -99,6 +128,8 @@ that header, and only when clients can't reach the relay around them.
   it is authenticated. A source on a private or loopback address that isn't
   a listed proxy is not counted, because it would stand for all its users.
 - Requests: 16 KiB body, 15 seconds to send the headers and 15 to finish.
+- Push notifications: a Mac may send 20 at once, then one every 3 seconds;
+  past that it gets 429. A sealed notification is 1 to 1536 bytes.
 - Sockets: 4 MiB per frame. A device may send a 32 MiB burst, then 2 MiB/s;
   beyond that the relay reads its socket more slowly and drops nothing.
 - A device may have 32 frames or 16 MiB waiting, and all devices together
@@ -173,6 +204,9 @@ Device private keys and credentials live in the clients' Keychain.
 | DELETE | `/v2/pairings/{id}` | Host cancels an unapproved invitation |
 | POST | `/v2/pairings/{id}/claim` | Phone submits `{initPacket,proof,encryptedClientName}` (base64) |
 | POST | `/v2/pairings/{id}/approve` | Host submits `{clientId,initPacket,responsePacket}` |
+| PUT | `/v2/device/push` | Phone stores its APNs token `{token,environment}` (hex; `sandbox` or `production`) |
+| DELETE | `/v2/device/push` | Phone removes its APNs token |
+| POST | `/v2/push/{phone}` | Paired Mac sends `{sealed,collapseId?}` → `{sent}`; 503 if push is off |
 | GET | `/v2/relay` | Authenticated WebSocket |
 
 Socket framing is unchanged: binary `0x01`, recipient UUID (16 bytes), then
@@ -184,11 +218,14 @@ are disconnected rather than accumulating an unbounded output queue (see Limits)
 
 The Rust tests cover pairing-only routing, non-transitive permissions, socket
 replacement, and a database-backed API lifecycle (expiry, cancellation,
-approval, retries, revocation, isolation and device deletion).
+approval, retries, revocation, isolation and device deletion). `push_api`
+covers token registration, who may push, the request a mock APNs receives,
+forgetting refused tokens, and the push rate limit.
 
 ```sh
 # Use an isolated branch/database and a direct (non-pooler) connection.
 RELAY_SWIFT_E2E=1 TEST_DATABASE_URL=postgresql://… cargo test -p termy_relay --features integration-tests pairing_api_lifecycle
+TEST_DATABASE_URL=postgresql://… cargo test -p termy_relay --features integration-tests push_api
 just test-remote
 # With a local relay backed by an isolated database and the staged Swift SDK:
 RELAY_TEST_URL=http://127.0.0.1:8787 swift test --package-path next --filter RemoteHostTests

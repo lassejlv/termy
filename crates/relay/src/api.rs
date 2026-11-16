@@ -4,6 +4,7 @@ use crate::{
     error::{ApiError, ApiResult},
     hub::{Hub, Inbox, Outbox},
     limit::Client,
+    push::{self, Delivery, Environment},
 };
 use axum::{
     Extension, Json, Router,
@@ -14,7 +15,7 @@ use axum::{
     http::{StatusCode, request::Parts},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use base64::{
     Engine,
@@ -45,7 +46,12 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v2/devices", post(register).get(devices))
         .route("/v2/device", delete(delete_self).put(update_name))
+        .route(
+            "/v2/device/push",
+            put(set_push_token).delete(clear_push_token),
+        )
         .route("/v2/links/{id}", delete(unpair))
+        .route("/v2/push/{id}", post(push_to))
         .route("/v2/pairings", post(create_pairing))
         .route("/v2/pairings/{id}", get(pairing).delete(cancel_pairing))
         .route("/v2/pairings/{id}/claim", post(claim))
@@ -240,6 +246,8 @@ async fn unpair(
     sqlx::query("DELETE FROM remote_links WHERE (host_id=$1 AND client_id=$2) OR (host_id=$2 AND client_id=$1)").bind(d.id).bind(id).execute(&state.db.pool).await?;
     // Delete pending/approved retrieval too: a delayed poll must not resurrect removed access.
     sqlx::query("DELETE FROM remote_pairings WHERE (host_id=$1 AND client_id=$2) OR (host_id=$2 AND client_id=$1)").bind(d.id).bind(id).execute(&state.db.pool).await?;
+    // A phone no Mac can reach any more has nothing to be woken for.
+    state.db.drop_unlinked_push_tokens(&[d.id, id]).await?;
     state.hub.revoke(d.id, id).await;
     Ok(Json(Empty {}))
 }
@@ -257,6 +265,118 @@ async fn delete_self(State(state): State<AppState>, Authed(d): Authed) -> ApiRes
     }
     state.hub.kick(d.id).await;
     Ok(Json(Empty {}))
+}
+#[derive(Deserialize)]
+struct PushRegistration {
+    token: String,
+    environment: String,
+}
+async fn set_push_token(
+    State(state): State<AppState>,
+    Authed(d): Authed,
+    Json(body): Json<PushRegistration>,
+) -> ApiResult<Json<Empty>> {
+    if d.kind != "client" {
+        return Err(forbidden());
+    }
+    let token = push::parse_token(&body.token)
+        .ok_or_else(|| ApiError::bad_request("Invalid push token."))?;
+    let environment = Environment::parse(&body.environment)
+        .ok_or_else(|| ApiError::bad_request("Unknown push environment."))?;
+    state
+        .db
+        .set_push_token(d.id, &token, environment.as_str())
+        .await?;
+    Ok(Json(Empty {}))
+}
+async fn clear_push_token(
+    State(state): State<AppState>,
+    Authed(d): Authed,
+) -> ApiResult<Json<Empty>> {
+    state.db.clear_push_token(d.id).await?;
+    Ok(Json(Empty {}))
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PushRequest {
+    sealed: String,
+    collapse_id: Option<String>,
+}
+#[derive(Serialize)]
+struct Pushed {
+    sent: bool,
+}
+/// A Mac wakes a phone it is paired with. The relay can't read `sealed`.
+async fn push_to(
+    State(state): State<AppState>,
+    Authed(d): Authed,
+    Path(id): Path<Uuid>,
+    Json(body): Json<PushRequest>,
+) -> ApiResult<Json<Pushed>> {
+    if d.kind != "host" {
+        return Err(forbidden());
+    }
+    let Some(apns) = state.push.clone() else {
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Push notifications aren't set up on this relay.",
+        ));
+    };
+    let sealed = STANDARD
+        .decode(&body.sealed)
+        .ok()
+        .filter(|b| (1..=push::MAX_SEALED).contains(&b.len()))
+        .ok_or_else(|| ApiError::bad_request("Invalid notification."))?;
+    if let Some(id) = &body.collapse_id
+        && !push::valid_collapse_id(id)
+    {
+        return Err(ApiError::bad_request("Invalid collapse ID."));
+    }
+    if !state.limits.pushes.allow(d.id) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many notifications. Try again shortly.",
+        ));
+    }
+    if !state.db.linked(d.id, id).await? {
+        return Err(forbidden());
+    }
+    let Some((token, environment)) = state.db.push_token(id).await? else {
+        return Ok(Json(Pushed { sent: false }));
+    };
+    let environment = Environment::parse(&environment).unwrap_or(Environment::Production);
+    let delivery = apns
+        .send(
+            &token,
+            environment,
+            d.id,
+            &sealed,
+            body.collapse_id.as_deref(),
+        )
+        .await;
+    match delivery {
+        Ok(Delivery::Sent) => Ok(Json(Pushed { sent: true })),
+        Ok(Delivery::Unregistered) => {
+            tracing::info!(
+                "apns: token {} is no longer valid; forgetting it",
+                push::token_tag(&token)
+            );
+            state.db.forget_push_token(id, &token).await?;
+            Ok(Json(Pushed { sent: false }))
+        }
+        Err(failure) => {
+            tracing::warn!(
+                "apns: refused token {} with status {:?}: {}",
+                push::token_tag(&token),
+                failure.status,
+                failure.reason
+            );
+            Err(ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "Apple's push service didn't take the notification. Try again.",
+            ))
+        }
+    }
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
