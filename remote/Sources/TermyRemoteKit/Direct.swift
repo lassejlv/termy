@@ -251,8 +251,12 @@ public final class DirectConnection: @unchecked Sendable {
             case .ready:
                 self.continuation.yield(.ready)
                 self.receive()
-            // Waiting means no route or a refused port; the caller decides when to try again.
-            case .failed(let error), .waiting(let error): self.finish(error)
+            case .failed(let error): self.finish(error)
+            // No route yet: an app that was just reopened dials before its Wi-Fi or its
+            // tunnel is back, and the connection goes on by itself once there is one, until
+            // the timeout. A refused port stays refused.
+            case .waiting(let error):
+                if case .posix(.ECONNREFUSED) = error { self.finish(error) }
             case .cancelled: self.finish(nil)
             default: break
             }

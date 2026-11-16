@@ -21,7 +21,7 @@ struct TermyApp: App {
             case .active:
                 model.resume()
                 Task { await CommandNotifier.shared.refreshPermission() }
-            case .background: model.suspend()
+            case .background: model.background()
             default: break
             }
         }

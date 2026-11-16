@@ -63,6 +63,11 @@ final class AppModel: HostTransport {
     /// The Macs reached directly, and over what.
     private(set) var directKinds: [UUID: DirectEndpoint.Kind] = [:]
     @ObservationIgnored private let pathMonitor = NWPathMonitor()
+    /// Connections kept for a while after the app left the screen (see `background`).
+    @ObservationIgnored private var lingering: Task<Void, Never>?
+    @ObservationIgnored private var backgroundTask = UIBackgroundTaskIdentifier.invalid
+    @ObservationIgnored private var backgroundedAt: Date?
+    static let lingerSeconds: TimeInterval = 20
     @ObservationIgnored private var active = true
     @ObservationIgnored private var identityError: Error?
     /// Where the UI should go next; the views clear it once they got there.
@@ -485,61 +490,101 @@ final class AppModel: HostTransport {
         for profile in profiles.values { for host in profile.pins.keys { dial(host) } }
     }
 
-    /// Tries the Mac's addresses this phone's network reaches, nearest first. Without one,
-    /// or when none answers, the relay carries the link as before. Only for a Mac a view
-    /// has open: the Mac hangs up on a connection that doesn't start a session.
+    /// Opens a connection of the phone's own to a Mac a view has open: every address this
+    /// phone's network reaches is dialed at once and the first to answer is used, so one the
+    /// Mac no longer has costs nothing. Without one, the relay carries the link as before.
+    /// A failed try is repeated soon: a reopened app dials before its network is back.
     func dial(_ host: UUID) {
         guard active, directs[host] == nil, links[host]?.wanted == true, let k = key(for: host),
             profiles[k]?.pins[host] != nil
         else { return }
-        let interfaces = NetworkInterface.current()
         let relayless = !relays(k)
-        var candidates: [DirectEndpoint?] = DirectEndpoint.reachable(profiles[k]?.endpoints?[host] ?? [], from: interfaces)
-        // Last, by the name the Mac advertises on the local network, in case its address
-        // there changed. Only when no relay is there to say so: the question names the Mac
-        // to whatever network the phone is on.
-        if interfaces.contains(where: \.isLocalNetwork), relayless || states[k] != .connected { candidates.append(nil) }
-        guard !candidates.isEmpty else {
-            if relayless { links[host]?.unreachable() }
-            return
-        }
         let task = Task { [weak self] in
-            var opened = false
-            for candidate in candidates {
-                guard !Task.isCancelled, let self else { return }
-                let kind = candidate?.kind ?? .localNetwork
-                guard let connection = candidate.map({ DirectConnection(to: $0) }) ?? DirectConnection(advertised: host.uuidString)
-                else { continue }
-                self.directs[host]?.connection = connection
-                for await event in connection.events {
-                    guard !Task.isCancelled else { break }
-                    switch event {
-                    case .ready:
-                        if candidate == nil, let found = connection.reached { self.found(found, for: host) }
-                        self.directKinds[host] = kind
-                        self.links[host]?.directReady()
-                    case .packet(let packet): self.links[host]?.receive(packet, via: .direct)
-                    case .closed: break
+            guard let self else { return }
+            var failures = 0
+            while !Task.isCancelled, self.active {
+                let started = Date()
+                let candidates = self.candidates(for: host)
+                let winner = await Self.firstReady(candidates.map(\.connection))
+                guard !Task.isCancelled else {
+                    winner?.close()
+                    return
+                }
+                if let winner, let candidate = candidates.first(where: { $0.connection === winner }) {
+                    self.directs[host]?.connection = winner
+                    if candidate.advertised, let found = winner.reached { self.found(found, for: host) }
+                    self.directKinds[host] = candidate.kind
+                    self.links[host]?.directReady()
+                    for await event in winner.events {
+                        if case .packet(let packet) = event { self.links[host]?.receive(packet, via: .direct) }
                     }
-                }
-                connection.close()
-                guard !Task.isCancelled else { return }
-                // It was open and closed: the link falls back before the next address is tried.
-                if self.directKinds.removeValue(forKey: host) != nil {
-                    opened = true
+                    winner.close()
+                    guard !Task.isCancelled else { return }
+                    self.directs[host]?.connection = nil
+                    self.directKinds[host] = nil
                     self.links[host]?.directWentAway()
+                    // One that lasted was a working path, and the Mac may be right back (it
+                    // restarts its listener with its settings). One that didn't counts as a miss.
+                    failures = Date().timeIntervalSince(started) > 10 ? 0 : failures + 1
+                    if failures == 0 { continue }
+                } else {
+                    failures += 1
                 }
+                // No relay says when such a Mac is back: asking again is the only way to
+                // know. Through a relay, a few tries cover the network coming back.
+                if relayless, failures >= 2 { self.links[host]?.unreachable() }
+                guard relayless || failures <= 4 else { break }
+                let pause = min(500 << min(failures - 1, 5), relayless ? 8000 : 4000)
+                try? await Task.sleep(for: .milliseconds(pause))
             }
-            // A Mac that was there a moment ago may be back (it restarts its listener with
-            // its settings). One that wasn't waits for the network to change, unless no relay
-            // is there to say when it is back: then asking again is the only way to know.
-            if !opened, relayless, !Task.isCancelled { self?.links[host]?.unreachable() }
-            if opened || relayless { try? await Task.sleep(for: .seconds(opened ? 5 : 10)) }
-            guard !Task.isCancelled, let self else { return }
-            self.directs[host] = nil
-            if opened || relayless { self.dial(host) }
+            if !Task.isCancelled { self.directs[host] = nil }
         }
         directs[host] = Direct(connection: nil, task: task)
+    }
+
+    /// A connection to each address of a Mac this phone's network reaches right now.
+    private func candidates(for host: UUID) -> [(connection: DirectConnection, kind: DirectEndpoint.Kind, advertised: Bool)] {
+        guard let k = key(for: host) else { return [] }
+        let interfaces = NetworkInterface.current()
+        var result = DirectEndpoint.reachable(profiles[k]?.endpoints?[host] ?? [], from: interfaces).compactMap {
+            endpoint in
+            DirectConnection(to: endpoint).flatMap { connection in
+                endpoint.kind.map { (connection: connection, kind: $0, advertised: false) }
+            }
+        }
+        // And by the name the Mac advertises on the local network, in case its address
+        // there changed. Only when no relay is there to say so: the question names the Mac
+        // to whatever network the phone is on.
+        if interfaces.contains(where: \.isLocalNetwork), !relays(k) || states[k] != .connected {
+            result.append(
+                (connection: DirectConnection(advertised: host.uuidString), kind: .localNetwork, advertised: true))
+        }
+        return result
+    }
+
+    /// The first of `connections` to open; the others are closed.
+    private nonisolated static func firstReady(_ connections: [DirectConnection]) async -> DirectConnection? {
+        await withTaskGroup(of: DirectConnection?.self) { group in
+            for connection in connections {
+                group.addTask {
+                    for await event in connection.events {
+                        if case .ready = event { return connection }
+                        if case .closed = event { return nil }
+                    }
+                    return nil
+                }
+            }
+            var winner: DirectConnection?
+            for await opened in group {
+                if let opened {
+                    winner = opened
+                    break
+                }
+            }
+            group.cancelAll()
+            for connection in connections where connection !== winner { connection.close() }
+            return winner
+        }
     }
 
     /// The Mac answered to its name at an address the phone didn't have: that replaces
@@ -563,7 +608,41 @@ final class AppModel: HostTransport {
         guard let k = key(for: host.id), let pin = profiles[k]?.pins[host.id] else { return .unknown }
         return host.publicKeyData == pin ? .trusted : .changed
     }
+    /// The app left the screen. A short trip to another app and back shouldn't cost a
+    /// reconnect, so the connections stay for a while, as long as iOS lets the app run.
+    func background() {
+        guard active, lingering == nil else { return }
+        backgroundedAt = Date()
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Keep sessions for a quick return") {
+            [weak self] in
+            // iOS is about to stop the app: hang up, so nothing looks connected when it isn't.
+            MainActor.assumeIsolated { self?.stopLingering(suspending: true) }
+        }
+        guard backgroundTask != .invalid else { return suspend() }
+        lingering = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(Self.lingerSeconds))
+            guard !Task.isCancelled else { return }
+            self?.stopLingering(suspending: true)
+        }
+    }
+
+    private func stopLingering(suspending: Bool) {
+        lingering?.cancel()
+        lingering = nil
+        if suspending { suspend() }
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
+    }
+
     func resume() {
+        if lingering != nil {
+            // Stopped by iOS before the time was up and back much later: what still
+            // looks connected has long been dropped at the other end.
+            let stale = backgroundedAt.map { Date().timeIntervalSince($0) > Self.lingerSeconds + 5 } ?? true
+            stopLingering(suspending: stale)
+        }
         active = true
         for k in profiles.keys where !profiles[k]!.pins.isEmpty && relays(k) && loops[k] == nil { start(k) }
         dialAll()
@@ -592,17 +671,21 @@ final class AppModel: HostTransport {
         var delay = 1
         while !Task.isCancelled, active {
             states[k] = .connecting
-            await refresh(k)
-            guard !Task.isCancelled, let profile = profiles[k], !profile.pins.isEmpty else { break }
+            guard let profile = profiles[k], !profile.pins.isEmpty else { break }
             let connection = RelayConnection(api: profile.credentials.api)
             connections[k] = connection
+            // The paired-computer list is brought up to date meanwhile: waiting for it first
+            // put two requests in front of every reconnect. A removed Mac is dropped when it
+            // answers, and the relay routes nothing to one before that.
+            let refreshing = Task { [weak self] in await self?.refresh(k) }
+            defer { refreshing.cancel() }
             for await event in connection.events {
                 guard !Task.isCancelled else { break }
                 switch event {
                 case .ready:
                     states[k] = .connected
                     delay = 1
-                    for id in profile.pins.keys { links[id]?.relayReady() }
+                    for id in (profiles[k]?.pins ?? [:]).keys { links[id]?.relayReady() }
                 case .packet(let from, let packet):
                     if profiles[k]?.pins[from] != nil { links[from]?.receive(packet, via: .relay) }
                 case .presence(let id, let online):
