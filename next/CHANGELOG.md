@@ -6,6 +6,12 @@ update window Sparkle shows, so write for the people updating: what they can
 do now, not how it was built. Rename `Unreleased` to the version when you tag
 it.
 
+## 0.4.1
+
+### Fixed
+
+- You can drag the window by its titlebar again.
+
 ## 0.4.0
 
 ### New

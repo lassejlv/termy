@@ -31,12 +31,27 @@ final class TermyWindow: NSWindow, TerminalGridHolding {
     /// A press on empty titlebar: drags the window, and a double-click does
     /// what System Settings → Desktop & Dock says (zoom by default).
     func titlebarMouseDown(_ event: NSEvent) {
-        guard event.clickCount == 2 else { return performDrag(with: event) }
+        guard event.clickCount == 2 else { return dragWindow(with: event) }
         switch UserDefaults.standard.string(forKey: "AppleActionOnDoubleClick") {
         case "Minimize": performMiniaturize(nil)
         case "None": break
         default: performZoom(nil)
         }
+    }
+
+    /// `performDrag` does nothing while `isMovable` is false, so the window
+    /// is movable for just this drag. The drag runs in the window server and
+    /// returns at once; the window locks again when the button comes up, so
+    /// the next press on a tab can't move it.
+    private func dragWindow(with event: NSEvent) {
+        isMovable = true
+        performDrag(with: event)
+        lockWhenReleased()
+    }
+
+    private func lockWhenReleased() {
+        guard NSEvent.pressedMouseButtons & 1 != 0 else { isMovable = false; return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.lockWhenReleased() }
     }
 }
 
