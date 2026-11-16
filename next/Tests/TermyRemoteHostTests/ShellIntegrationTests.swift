@@ -139,4 +139,14 @@ import Testing
         #expect(FileManager.default.fileExists(atPath: later))
         #expect(throws: (any Error).self) { try Uploads.save(Data(), name: "empty", in: folder) }
     }
+
+    /// The relay accepts collapse IDs of at most 64 plain characters; pane IDs may hold anything.
+    @Test func notificationCollapseIDsSuitTheRelay() {
+        for pane in ["p1", "weird pane/\u{1F600}", String(repeating: "x", count: 500)] {
+            let id = RemoteHostAgent.collapseID(pane)
+            #expect(id.count <= 64 && id.allSatisfy { $0.isLetter || $0.isNumber || "._-".contains($0) })
+            #expect(id == RemoteHostAgent.collapseID(pane))
+        }
+        #expect(RemoteHostAgent.collapseID("a") != RemoteHostAgent.collapseID("b"))
+    }
 }

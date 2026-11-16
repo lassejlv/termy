@@ -27,9 +27,15 @@ struct HostsView: View {
                     }
                 } else {
                     Section {
-                        ForEach(model.hosts) { host in NavigationLink(value: host.id) { HostRow(host: host) } }
+                        ForEach(model.hosts) { host in
+                            NavigationLink(value: host.id) {
+                                HostRow(
+                                    host: host, direct: model.directKinds[host.id],
+                                    relayless: model.isRelayless(host.id))
+                            }
+                        }
                     } footer: {
-                        if model.relayState != .connected {
+                        if model.usesRelay, model.relayState != .connected {
                             Text(model.relayState == .connecting ? "Connecting…" : "Offline")
                         }
                     }
@@ -80,15 +86,26 @@ struct HostsView: View {
 }
 struct HostRow: View {
     let host: RelayDevice
+    /// Set while the phone has a connection of its own to the computer.
+    var direct: DirectEndpoint.Kind?
+    /// Paired without a relay: nothing says whether it is on until the phone reaches it.
+    var relayless = false
+    private var reachable: Bool { host.online || direct != nil }
+    private var status: String {
+        switch direct {
+        case .localNetwork: "Direct · This network"
+        case .tailscale: "Direct · Tailscale"
+        case nil: relayless ? "No relay · Same network or Tailscale" : host.online ? "Online" : "Offline"
+        }
+    }
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "desktopcomputer").font(.title2).foregroundStyle(
-                host.online ? Color.accentColor : .secondary
+                reachable ? Color.accentColor : .secondary
             ).frame(width: 34)
             VStack(alignment: .leading, spacing: 2) {
                 Text(host.name).font(.body.weight(.medium))
-                Text(host.online ? "Online" : "Offline").font(.caption).foregroundStyle(
-                    host.online ? .green : .secondary)
+                Text(status).font(.caption).foregroundStyle(reachable ? .green : .secondary)
             }
         }.padding(.vertical, 4)
     }

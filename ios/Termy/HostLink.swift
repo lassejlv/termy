@@ -3,13 +3,26 @@ import Observation
 import TermyRemoteKit
 import UIKit
 
-/// What a `HostLink` needs from the app: trust decisions and the relay.
+/// How packets reach a computer: through the relay, or over a connection of the phone's
+/// own to it on the same network or tailnet.
+enum HostPath: Equatable {
+    case relay, direct
+}
+
+/// What a `HostLink` needs from the app: trust decisions and the ways to the computer.
 @MainActor
 protocol HostTransport: AnyObject {
     var identity: DeviceIdentity { get }
     func verdict(for host: RelayDevice) -> TrustStore.Verdict
-    func isConnected(to host: UUID) -> Bool
-    func send(_ packet: Data, to host: UUID)
+    /// The best way to the computer right now: direct when there is one, else the relay.
+    func path(to host: UUID) -> HostPath?
+    func send(_ packet: Data, to host: UUID, via path: HostPath)
+    /// A view wants the computer: open a connection of the phone's own to it, where one can be.
+    func dial(_ host: UUID)
+    /// The computer said where it can be reached without the relay.
+    func endpointsChanged(_ endpoints: [DirectEndpoint], for host: UUID)
+    /// The computer didn't answer, or didn't prove its key, on the direct path.
+    func directFailed(for host: UUID)
     func configuration(for host: UUID) -> RemoteConfiguration?
     func saveConfiguration(_ configuration: RemoteConfiguration, for host: UUID)
     func sessionsChanged(for host: UUID)
@@ -53,14 +66,17 @@ final class HostLink {
 
     @ObservationIgnored private weak var model: (any HostTransport)?
     @ObservationIgnored private var handshake: SecureChannel.ClientHandshake?
+    @ObservationIgnored private var handshakePath: HostPath?
     @ObservationIgnored private var channel: SecureChannel?
+    /// The way the channel goes; nil while there is none.
+    private(set) var path: HostPath?
     @ObservationIgnored private var nextStream = 1
     /// Glyphs the host sent before, which later frames name by key only.
     /// Every frame goes through it, whichever screen it is for.
     @ObservationIgnored private let glyphs = GlyphCache()
     @ObservationIgnored private var timeout: Task<Void, Never>?
     /// Whether a view wants this link open.
-    @ObservationIgnored private var wanted = false
+    @ObservationIgnored private(set) var wanted = false
 
     init(device: RelayDevice, model: any HostTransport) {
         self.device = device
@@ -83,21 +99,33 @@ final class HostLink {
         case .trusted:
             break
         }
-        guard model.isConnected(to: device.id) else {
-            state = .connecting
+        model.dial(device.id)
+        guard let best = model.path(to: device.id) else {
+            if state != .connected { state = .connecting }
             return
         }
-        guard state != .connected, handshake == nil else { return }
-        guard let hostKey = device.publicKeyData else { return }
-        state = .connecting
+        // A channel through the relay moves to the direct path when one opens. The relay's
+        // keeps working until the new one is up, so nothing typed meanwhile is lost.
+        if state == .connected, !(best == .direct && path == .relay) { return }
+        guard handshake == nil, let hostKey = device.publicKeyData else { return }
+        if state != .connected { state = .connecting }
         let handshake = SecureChannel.startClient(identity: model.identity, hostStaticKey: hostKey)
         self.handshake = handshake
-        model.send(handshake.initPacket, to: device.id)
+        handshakePath = best
+        model.send(handshake.initPacket, to: device.id, via: best)
         timeout?.cancel()
         timeout = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            // The Mac is a few milliseconds away on the direct path; the relay may be slow.
+            try? await Task.sleep(for: .seconds(best == .direct ? 4 : 10))
             guard let self, !Task.isCancelled, self.handshake != nil else { return }
             self.handshake = nil
+            self.handshakePath = nil
+            if best == .direct {
+                // Whatever answers at that address isn't serving us: back to the relay.
+                self.model?.directFailed(for: self.device.id)
+                return
+            }
+            guard self.state != .connected else { return }
             self.state =
                 self.device.online
                 ? .failed("\(self.device.name) didn't answer. Is Termy Next running with Mobile access enabled?")
@@ -111,8 +139,11 @@ final class HostLink {
         screens.removeAll()
         creating = false
         creationTimeout?.cancel()
+        timeout?.cancel()
         channel = nil
+        path = nil
         handshake = nil
+        handshakePath = nil
         state = .idle
     }
 
@@ -121,34 +152,75 @@ final class HostLink {
     }
 
     func relayWentAway() {
-        creating = false
-        creationTimeout?.cancel()
-        channel = nil
-        handshake = nil
-        timeout?.cancel()
-        if state == .connected || state == .connecting { state = .offline }
-        for screen in screens.values { screen.live = false }
+        went(away: .relay)
     }
 
+    /// The phone's own connection to the computer opened: use it, also for a channel
+    /// the relay carries or a handshake under way there.
+    func directReady() {
+        guard wanted else { return }
+        if handshakePath == .relay {
+            handshake = nil
+            handshakePath = nil
+            timeout?.cancel()
+        }
+        connect()
+    }
+
+    /// The direct connection closed. The relay takes over when it is there.
+    func directWentAway() {
+        went(away: .direct)
+        if wanted { connect() }
+    }
+
+    /// No way to the computer opened and no relay will find one. Dialing goes on.
+    func unreachable() {
+        guard wanted, channel == nil, handshake == nil, state == .connecting || state == .offline else { return }
+        state = .failed(
+            "Can’t reach \(device.name). It uses no relay: join its network, or turn on Tailscale on both devices.")
+    }
+
+    private func went(away gone: HostPath) {
+        if handshakePath == gone {
+            handshake = nil
+            handshakePath = nil
+            timeout?.cancel()
+        }
+        if path == gone {
+            creating = false
+            creationTimeout?.cancel()
+            channel = nil
+            path = nil
+            for screen in screens.values { screen.live = false }
+        }
+        // The other path may still carry the channel, or a handshake that will make one.
+        guard channel == nil else { return }
+        guard handshake == nil else {
+            if state == .connected { state = .connecting }
+            return
+        }
+        if state == .connected || state == .connecting { state = .offline }
+    }
+
+    /// What the relay sees of the computer. A direct channel doesn't depend on it.
     func presenceChanged(online: Bool) {
         device.online = online
         if online {
             if wanted, state != .connected { connect() }
         } else {
-            channel = nil
-            handshake = nil
-            if state == .connected || state == .connecting { state = .offline }
-            for screen in screens.values { screen.live = false }
+            went(away: .relay)
         }
     }
 
     // MARK: Packets
 
-    func receive(_ packet: Data) {
-        if let handshake {
+    func receive(_ packet: Data, via: HostPath = .relay) {
+        if let handshake, via == handshakePath {
             do {
                 channel = try handshake.finish(packet)
+                path = via
                 self.handshake = nil
+                handshakePath = nil
                 timeout?.cancel()
                 state = .connected
                 lastError = nil
@@ -160,11 +232,19 @@ final class HostLink {
                 }
             } catch {
                 self.handshake = nil
-                state = .failed("\(device.name) couldn't prove it holds the key you trusted.")
+                handshakePath = nil
+                timeout?.cancel()
+                // Another device has the address the Mac had: nothing was given away, use the relay.
+                if via == .direct {
+                    model?.directFailed(for: device.id)
+                } else {
+                    state = .failed("\(device.name) couldn't prove it holds the key you trusted.")
+                }
             }
             return
         }
-        guard var channel else { return }
+        // Packets still on their way along a path the channel left are not for it.
+        guard via == path, var channel else { return }
         do {
             let plaintext = try channel.open(packet: packet)
             self.channel = channel
@@ -217,6 +297,8 @@ final class HostLink {
             screens[stream]?.apply(shell: event)
         case .uploaded(let stream, let path):
             screens[stream]?.uploadedPath = path
+        case .endpoints(let endpoints):
+            model?.endpointsChanged(endpoints, for: device.id)
         case .commandOutput(let stream, let output):
             outputRequests.removeValue(forKey: stream)?.reply(output)
         case .images(let list):
@@ -238,7 +320,7 @@ final class HostLink {
     }
 
     func send(_ message: ClientMessage) {
-        guard var channel, let model else { return }
+        guard var channel, let path, let model else { return }
         switch message {
         case .createPane, .createSession, .createTab, .splitPane:
             guard !creating else { return }
@@ -257,7 +339,7 @@ final class HostLink {
         do {
             let packet = try channel.seal(try MessageCodec.encode(message))
             self.channel = channel
-            model.send(packet, to: device.id)
+            model.send(packet, to: device.id, via: path)
         } catch {
             lastError = "Couldn't send: \(error.localizedDescription)"
         }

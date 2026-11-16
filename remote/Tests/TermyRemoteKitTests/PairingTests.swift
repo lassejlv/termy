@@ -62,7 +62,7 @@ import Testing
         #expect(throws: (any Error).self) { try code.verify(altered) }
         // Another invite has another secret even for the same Mac/device IDs.
         let otherCode = try PairingCode(
-            status: original, relayURL: code.relayURL, hostName: "Private Mac")
+            status: original, relayURL: #require(code.relayURL), hostName: "Private Mac")
         #expect(throws: (any Error).self) { try otherCode.verify(original) }
     }
     @Test func rejectsExpiredAndUntrustedTransportURLs() throws {

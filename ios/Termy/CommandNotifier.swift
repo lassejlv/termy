@@ -31,6 +31,7 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
         guard on else {
             enabled = false
             UserDefaults.standard.set(false, forKey: Self.defaultsKey)
+            await AppModel.shared.pushDisabled()
             return true
         }
         let center = UNUserNotificationCenter.current()
@@ -42,6 +43,8 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
         denied = !allowed
         enabled = allowed
         UserDefaults.standard.set(allowed, forKey: Self.defaultsKey)
+        // The token arrives in the app delegate, which hands it to the relays.
+        if allowed { UIApplication.shared.registerForRemoteNotifications() }
         return allowed
     }
 
@@ -52,23 +55,9 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
         if enabled, status == .denied { await setEnabled(false) }
     }
 
-    /// A command that ran long and just finished, between two session lists.
-    struct Finished: Equatable {
-        var pane: RemotePane
-        var state: RemoteCommandState
-        var duration: TimeInterval
-    }
-
     /// Commands that finished between `old` and `new` after running at least `minimumDuration`.
-    nonisolated static func finished(old: [RemotePane], new: [RemotePane], now: Date = Date()) -> [Finished] {
-        let before = Dictionary(old.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        return new.compactMap { pane in
-            guard let state = pane.command, !state.running, let was = before[pane.id]?.command, was.running,
-                state.finished > was.finished, let since = was.runningSince
-            else { return nil }
-            let duration = now.timeIntervalSince(since)
-            return duration >= minimumDuration ? Finished(pane: pane, state: state, duration: duration) : nil
-        }
+    nonisolated static func finished(old: [RemotePane], new: [RemotePane], now: Date = Date()) -> [FinishedCommand] {
+        FinishedCommand.between(old, new, now: now, atLeast: minimumDuration)
     }
 
     /// Called with each new session list from a computer.
@@ -82,17 +71,9 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    private func post(_ done: Finished, host: RelayDevice) {
+    private func post(_ done: FinishedCommand, host: RelayDevice) {
         let content = UNMutableNotificationContent()
-        let name = done.pane.title.flatMap { $0.isEmpty ? nil : $0 } ?? "A command"
-        let time = CommandFormat.duration(done.duration)
-        if done.state.failed {
-            content.title = "\(name) failed"
-            content.body = "Exit \(done.state.exitCode ?? 0) after \(time) on \(host.name)"
-        } else {
-            content.title = "\(name) finished"
-            content.body = "Done in \(time) on \(host.name)"
-        }
+        (content.title, content.body) = done.notification(on: host.name)
         content.sound = .default
         content.threadIdentifier = host.id.uuidString
         content.userInfo = ["url": TermyLink.open(host: host.id, pane: done.pane.id).absoluteString]

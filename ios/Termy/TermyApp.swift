@@ -35,7 +35,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) -> Bool {
         // Before launch ends, so tapping a notification opens its pane even when Termy wasn't running.
         _ = CommandNotifier.shared
+        // Tokens can change; asking again each launch keeps the relays' copy current.
+        if CommandNotifier.shared.enabled { application.registerForRemoteNotifications() }
         return true
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken token: Data) {
+        AppModel.shared.pushRegistered(token)
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        AppModel.shared.pushFailed(error)
     }
 
     func application(

@@ -2,6 +2,7 @@ import AppKit
 import CoreImage.CIFilterBuiltins
 import Observation
 import SwiftUI
+import Termy
 import TermyRemoteHost
 import TermyRemoteKit
 
@@ -16,19 +17,42 @@ final class MobileController {
         }
     }
     var relayAddress = UserDefaults.standard.string(forKey: "mobile.relay") ?? RelayAPI.defaultURL.absoluteString
+    /// Off: no relay at all. Phones pair with this Mac and reach it directly, on its
+    /// network or tailnet, and nowhere else.
+    var useRelay = UserDefaults.standard.object(forKey: "mobile.useRelay") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(useRelay, forKey: "mobile.useRelay")
+            configure()
+        }
+    }
+    /// Where the pins and names of phones paired without a relay are kept, beside each relay's.
+    private static let directKey = "direct"
+    /// Phones on this Mac's network or tailnet connect to it without the relay.
+    var directEnabled = UserDefaults.standard.object(forKey: "mobile.direct") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(directEnabled, forKey: "mobile.direct")
+            configure()
+        }
+    }
+    /// Where phones reach this Mac directly right now.
+    private(set) var directEndpoints: [DirectEndpoint] = []
     private(set) var status = "Mobile access is off"
     private(set) var devices: [RelayDevice] = []
     private(set) var error: String?
     var showPairing = false
     private(set) var code: PairingCode?
     private(set) var pending: PairingStatus?
+    /// A phone that claimed a relay-free invitation.
+    private(set) var directPending: RelayDevice?
+    /// The phone waiting for approval, whichever way it asked.
+    var pendingClient: RelayDevice? { directPending ?? pending?.client }
     private(set) var pairingBusy = false
     private(set) var pairingError: String?
 
     @ObservationIgnored private let store = DeviceStore(service: "sh.termy.next.mobile")
     @ObservationIgnored private var credentials: DeviceCredentials?
-    /// This Mac's relay device ID, which paired phones know it by; nil while Mobile access is off.
-    var deviceID: UUID? { credentials?.device.id }
+    /// The ID paired phones know this Mac by, the relay's or its own; nil while Mobile access is off.
+    var deviceID: UUID? { credentials?.device.id ?? agent?.hostID }
     @ObservationIgnored private var agent: RemoteHostAgent?
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var pairingTask: Task<Void, Never>?
@@ -61,6 +85,7 @@ final class MobileController {
         task = Task { [weak self] in
             guard let self else { return }
             do {
+                guard useRelay else { return try await serveWithoutRelay(mux, generation: current) }
                 guard let url = URL(string: relayAddress.trimmingCharacters(in: .whitespacesAndNewlines)) else {
                     throw PairingError.invalidCode
                 }
@@ -95,13 +120,8 @@ final class MobileController {
                 let host = RemoteHostAgent(
                     multiplexer: mux, credentials: c, identity: identity,
                     trustedDevices: allPins[relay.absoluteString] ?? [:])
-                host.configPath = AppConfig.configURL.path
-                host.launchEnvironment.merge(ShellPlugins.shared.environment(token: nil)) { $1 }
-                host.configurationProvider = {
-                    RemoteConfiguration(render: AppConfig.shared.renderConfig,
-                        contents: (try? String(contentsOf: AppConfig.configURL, encoding: .utf8)) ?? "",
-                        reduceMotion: Preferences.shared.reduceMotion, appearance: AppConfig.shared.appearance)
-                }
+                prepare(host, generation: current)
+                host.directEnabled = directEnabled
                 host.onConnectionState = { [weak self] state in
                     guard let self, current == self.generation else { return }
                     switch state {
@@ -124,6 +144,7 @@ final class MobileController {
                             // 3 s, day and night, while nobody is looking at it.
                             guard SettingsWindowController.isShowingMobile else { continue }
                             self?.devices = try self?.localNames(try await c.api.devices(), relay: relay) ?? []
+                            self?.markConnected()
                         } catch is CancellationError { return } catch {
                             self?.error = error.localizedDescription
                         }
@@ -138,6 +159,120 @@ final class MobileController {
             }
         }
     }
+    /// What a host needs from the app, with or without a relay.
+    private func prepare(_ host: RemoteHostAgent, generation current: UUID) {
+        host.configPath = AppConfig.configURL.path
+        host.launchEnvironment.merge(ShellPlugins.shared.environment(token: nil)) { $1 }
+        host.configurationProvider = {
+            RemoteConfiguration(render: AppConfig.shared.renderConfig,
+                contents: (try? String(contentsOf: AppConfig.configURL, encoding: .utf8)) ?? "",
+                reduceMotion: Preferences.shared.reduceMotion, appearance: AppConfig.shared.appearance)
+        }
+        host.onDirectEndpoints = { [weak self] endpoints in
+            guard let self, current == self.generation else { return }
+            self.directEndpoints = endpoints
+        }
+        host.onPeersChanged = { [weak self] in
+            guard let self, current == self.generation else { return }
+            if self.useRelay { self.markConnected() } else { self.reloadDirectDevices() }
+        }
+    }
+
+    /// A phone connected on the direct path is online whatever the relay sees of it.
+    private func markConnected() {
+        guard let connected = agent?.connectedDevices else { return }
+        for index in devices.indices where connected.contains(devices[index].id) { devices[index].online = true }
+    }
+
+    // MARK: Without a relay
+
+    private func serveWithoutRelay(_ mux: Multiplexer, generation current: UUID) async throws {
+        let identity = try store.identity()
+        // The ID phones know this Mac by, where a relay would have assigned one.
+        var hostID = try store.load(UUID.self, key: "directHostID")
+        if hostID == nil {
+            hostID = UUID()
+            try store.save(hostID, key: "directHostID")
+        }
+        let pins = (try store.load([String: [UUID: Data]].self, key: "pins") ?? [:])[Self.directKey] ?? [:]
+        guard !Task.isCancelled, current == generation, let hostID else { return }
+        let host = RemoteHostAgent(multiplexer: mux, hostID: hostID, identity: identity, trustedDevices: pins)
+        prepare(host, generation: current)
+        host.directEnabled = true
+        host.onPairingRequest = { [weak self] device in
+            guard let self, current == self.generation, self.showPairing else { return }
+            self.directPending = device
+            if device == nil, self.code != nil { self.pairingError = "The iPhone stopped waiting. Scan the code again." }
+        }
+        agent = host
+        status = "Mobile access enabled, without a relay"
+        error = nil
+        reloadDirectDevices()
+        try await host.run()
+    }
+
+    private func reloadDirectDevices() {
+        let names = (try? store.load([String: [UUID: RelayDevice]].self, key: "peerNames"))??[Self.directKey] ?? [:]
+        let connected = agent?.connectedDevices ?? []
+        devices = (agent?.trustedDevices ?? [:]).compactMap { id, key in
+            var device = names[id] ?? RelayDevice(id: id, name: "iPhone", kind: .client, publicKey: key)
+            device.online = connected.contains(id)
+            return device
+        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private func beginDirectPairing() {
+        pairingBusy = false
+        guard let agent else {
+            pairingError = "Enable mobile access first."
+            return
+        }
+        do {
+            let code = try agent.beginPairing(hostName: Host.current().localizedName ?? "Mac")
+            self.code = code
+            let current = pairingGeneration
+            pairingTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(max(0, code.expiresAt.timeIntervalSinceNow)))
+                guard let self, !Task.isCancelled, current == self.pairingGeneration else { return }
+                self.agent?.cancelPairing()
+                self.directPending = nil
+                self.code = nil
+                self.pairingError = PairingError.expired.localizedDescription
+            }
+        } catch {
+            pairingError =
+                "This Mac has no address an iPhone could reach. Join a Wi-Fi or Ethernet network, or start Tailscale, then try again."
+        }
+    }
+
+    private func approveDirect() {
+        guard !pairingBusy, let agent, let client = agent.pairingClaimant, let key = client.publicKeyData else { return }
+        pairingBusy = true
+        do {
+            // Persist the verified pin before answering the phone. A failed write grants no access.
+            var pins = try store.load([String: [UUID: Data]].self, key: "pins") ?? [:]
+            let previous = pins[Self.directKey]?[client.id]
+            pins[Self.directKey, default: [:]][client.id] = key
+            try store.save(pins, key: "pins")
+            var names = try store.load([String: [UUID: RelayDevice]].self, key: "peerNames") ?? [:]
+            names[Self.directKey, default: [:]][client.id] = client
+            try store.save(names, key: "peerNames")
+            do { try agent.approvePairing() } catch {
+                // The invitation ran out meanwhile: the phone got no answer, so it keeps no access either.
+                pins[Self.directKey]?[client.id] = previous
+                try? store.save(pins, key: "pins")
+                throw error
+            }
+            showPairing = false
+            reloadDirectDevices()
+        } catch {
+            pairingBusy = false
+            directPending = nil
+            code = nil
+            pairingError = error.localizedDescription
+        }
+    }
+
     func stop() {
         generation = UUID()
         task?.cancel()
@@ -149,6 +284,7 @@ final class MobileController {
         credentials = nil
         PaneHandoff.stop()
         devices = []
+        directEndpoints = []
     }
     func applyRelay() {
         do {
@@ -167,6 +303,7 @@ final class MobileController {
         showPairing = true
         pairingBusy = true
         pairingError = nil
+        guard useRelay else { return beginDirectPairing() }
         guard let credentials else {
             pairingBusy = false
             pairingError = "Enable mobile access and connect to the relay first."
@@ -219,6 +356,7 @@ final class MobileController {
         }
     }
     func approve() async {
+        guard useRelay else { return approveDirect() }
         guard !pairingBusy, let credentials, let code, let pending else { return }
         pairingBusy = true
         do {
@@ -246,9 +384,31 @@ final class MobileController {
         pairingTask?.cancel()
         pairingTask = nil
         if let code, let credentials { Task { try? await credentials.api.cancelPairing(code.invitationID) } }
+        agent?.cancelPairing()
         code = nil
         pending = nil
+        directPending = nil
         pairingBusy = false
+    }
+    var directStatus: String {
+        guard enabled, directEnabled || !useRelay else {
+            return "Your iPhone reaches this Mac through the relay only."
+        }
+        let local = directEndpoints.contains { $0.kind == .localNetwork }
+        let tailnet = directEndpoints.first { $0.kind == .tailscale }
+        let elsewhere = useRelay ? "The relay is used everywhere else." : "Nowhere else: no relay is used."
+        switch (local, tailnet) {
+        case (true, let tailnet?):
+            return "Your iPhone connects directly on this network and over Tailscale (\(tailnet.host)). \(elsewhere)"
+        case (true, nil):
+            return "Your iPhone connects directly on this network. Start Tailscale on both devices to connect directly from anywhere. \(elsewhere)"
+        case (false, let tailnet?):
+            return "Your iPhone connects directly over Tailscale (\(tailnet.host)). \(elsewhere)"
+        case (false, nil):
+            return useRelay
+                ? "This Mac has no local network or Tailscale address right now. Your iPhone uses the relay."
+                : "This Mac has no local network or Tailscale address right now, so no iPhone can reach it. Join a network or start Tailscale."
+        }
     }
     private func localNames(_ peers: [RelayDevice], relay: URL) throws -> [RelayDevice] {
         let saved = try store.load([String: [UUID: RelayDevice]].self, key: "peerNames") ?? [:]
@@ -257,6 +417,19 @@ final class MobileController {
         }
     }
     func remove(_ device: RelayDevice) async {
+        guard useRelay else {
+            do {
+                var pins = try store.load([String: [UUID: Data]].self, key: "pins") ?? [:]
+                pins[Self.directKey]?[device.id] = nil
+                try store.save(pins, key: "pins")
+                var names = try store.load([String: [UUID: RelayDevice]].self, key: "peerNames") ?? [:]
+                names[Self.directKey]?[device.id] = nil
+                try store.save(names, key: "peerNames")
+                // Restarting the host drops the phone's connection and forgets its key.
+                configure()
+            } catch { self.error = error.localizedDescription }
+            return
+        }
         guard let credentials else { return }
         do {
             try await credentials.api.removeDevice(device.id)
@@ -300,15 +473,28 @@ struct MobileSettingsView: View {
                 }
             }
             Divider()
+            Text("Direct Connection").font(.headline)
+            Toggle("Connect directly on the same network or over Tailscale", isOn: $mobile.directEnabled)
+                .disabled(!mobile.useRelay)
+            Text(mobile.directStatus).font(.callout).foregroundStyle(.secondary)
+            Divider()
             Text("Relay Server").font(.headline)
-            HStack {
-                TextField("https://relay.example.com", text: $mobile.relayAddress).textFieldStyle(.roundedBorder)
-                Button("Apply") { mobile.applyRelay() }
+            Toggle("Use a relay server", isOn: $mobile.useRelay)
+            if mobile.useRelay {
+                HStack {
+                    TextField("https://relay.example.com", text: $mobile.relayAddress).textFieldStyle(.roundedBorder)
+                    Button("Apply") { mobile.applyRelay() }
+                }
+                Text(
+                    "Use Termy’s relay or an HTTPS relay on your own VPS. The QR code configures the phone automatically. Switching relays requires pairing again on that server."
+                )
+                .font(.callout).foregroundStyle(.secondary)
+            } else {
+                Text(
+                    "No server is involved: your iPhone pairs with this Mac and reaches it directly, on the same network or over Tailscale. Notifications about finished commands only arrive while Termy is open on the iPhone, because Apple delivers the others through a server. iPhones paired through a relay pair again."
+                )
+                .font(.callout).foregroundStyle(.secondary)
             }
-            Text(
-                "Use Termy’s relay or an HTTPS relay on your own VPS. The QR code configures the phone automatically. Switching relays requires pairing again on that server."
-            )
-            .font(.callout).foregroundStyle(.secondary)
             if let error = mobile.error {
                 Text(error).foregroundStyle(.red)
                 Button("Retry Connection") { mobile.configure() }
@@ -330,8 +516,8 @@ struct MobileSettingsView: View {
     }
     private var pairingSheet: some View {
         VStack(spacing: 16) {
-            Text(mobile.pending == nil ? "Pair Your iPhone" : "Allow This iPhone?").font(.title2.bold())
-            if let pending = mobile.pending, let client = pending.client {
+            Text(mobile.pendingClient == nil ? "Pair Your iPhone" : "Allow This iPhone?").font(.title2.bold())
+            if let client = mobile.pendingClient {
                 Text("Allow \(client.name) to view and control this Mac’s terminal sessions?").multilineTextAlignment(
                     .center)
                 Text("Only approve a pairing you just started.").foregroundStyle(.secondary)
@@ -342,7 +528,8 @@ struct MobileSettingsView: View {
                         .padding(16).background(.white).accessibilityLabel("Pairing QR code")
                 }
                 Text("Open Termy on your iPhone and tap Scan QR Code.")
-                Text(code.relayURL.host ?? "").font(.caption).foregroundStyle(.secondary)
+                Text(code.relayURL?.host ?? "No relay: keep the iPhone on this Mac’s network or tailnet.")
+                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text("Expires in \(max(0, Int(code.expiresAt.timeIntervalSince(context.date)))) seconds").font(
                         .caption

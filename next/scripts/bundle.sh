@@ -98,7 +98,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>NSMicrophoneUsageDescription</key><string>A program in Termy Next wants to use the microphone.</string>
   <key>NSAppleEventsUsageDescription</key><string>A program in Termy Next wants to control other apps.</string>
   <key>NSBluetoothAlwaysUsageDescription</key><string>A program in Termy Next wants to use Bluetooth.</string>
-  <key>NSLocalNetworkUsageDescription</key><string>A program in Termy Next wants to reach devices on your local network, such as SSH hosts.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>A program in Termy Next wants to reach devices on your local network, such as SSH hosts, or your paired iPhone connects to this Mac directly.</string>
+  <key>NSBonjourServices</key><array><string>_termy._tcp</string></array>
   <key>NSContactsUsageDescription</key><string>A program in Termy Next wants to access your contacts.</string>
   <key>NSCalendarsUsageDescription</key><string>A program in Termy Next wants to access your calendars.</string>
   <key>NSCalendarsFullAccessUsageDescription</key><string>A program in Termy Next wants to access your calendars.</string>

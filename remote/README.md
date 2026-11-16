@@ -17,6 +17,8 @@ no command-line process or account is required.
 - `RelayAPI`: accountless device registration, expiring invitations, explicit
   approval, paired-device discovery and revocation.
 - `RelayConnection`: authenticated WebSocket transport and presence events.
+- `DirectConnection`, `DirectListener`, `DirectEndpoint`: the same sealed packets
+  over TCP between the two devices, without the relay (see Direct connections).
 - `Messages`: logical keys, paste, resize, scroll, session operations and
   changed-row screen frames. The terminal engine stays on the Mac.
 - `TrustStore`: existing file-backed pinning utility, retained for embedders.
@@ -37,6 +39,67 @@ just test-remote
 The package does not import Next's UI, AppKit, or libtermy; a future client can
 reuse it. `TermyRemoteHost` adds the Mac-specific terminal/session bridge as a
 separate library product in `next/Package.swift`.
+
+## Direct connections
+
+The relay is the fallback, not the only way. With **Settings → Mobile → Connect
+directly** on (the default), Termy Next listens on TCP port 47126 (any free port
+when that one is taken) and, from protocol version 6, tells each connected phone
+inside the encrypted channel which addresses it has: its Wi-Fi/Ethernet addresses
+on private networks and its Tailscale address (100.64.0.0/10 on a `utun`
+interface). The phone keeps the list in its Keychain with the Mac's pin and dials
+an address only when its own network reaches it: a local one from the same
+subnet, the Tailscale one when the phone is on a tailnet. The same network is
+tried before the tailnet.
+
+The connection carries the same `SecureChannel` packets, length-prefixed, so the
+network is trusted with nothing: the Mac answers only a handshake naming a key
+pinned on it, and a phone becomes a session only once its first sealed message
+opens, so knowing a phone's public key replaces nobody's session. Whatever
+answers at a stale address can't prove the Mac's key and the phone goes back to
+the relay. Connections from outside private, Tailscale and loopback ranges are
+closed unread. The relay never sees the addresses.
+
+A channel through the relay moves to the direct path when one opens, and keeps
+working until the direct one is up; a lost direct path falls back to the relay.
+The Mac serves the direct path whether or not the relay is reachable. Reaching
+the Mac from another network without Tailscale (NAT traversal) is not attempted.
+iOS asks for Local Network access the first time a local address is dialed;
+without it the relay is used.
+
+## Without a relay
+
+With **Settings → Mobile → Use a relay server** off, Termy Next registers
+nowhere and contacts no server. It makes its own device ID, kept in its
+Keychain, and its pairing QR code is version 4: no relay URL, but the Mac's
+addresses, its key, and the same one-time 256-bit secret. The phone connects
+to one of the addresses and sends a claim (`DirectPairing`): the ID it chose
+for itself, its handshake, its sealed name and an HMAC of all of it made with
+the QR secret. The Mac shows the approval sheet only for a claim that verifies,
+and on approval pins the phone and answers with the handshake response, which
+proves to the phone that the Mac holds the key the QR code showed. An invitation
+lasts two minutes and pairs one phone.
+
+After that the phone reaches the Mac at the addresses it knows, which the Mac
+keeps current inside the encrypted channel. Since no relay can say where the Mac
+went, the Mac also advertises its ID as a Bonjour service (`_termy._tcp`) and the
+phone looks it up by that name on the local network when the addresses fail.
+Tailscale addresses don't change. A phone that can reach neither keeps trying
+while the Mac is open on screen and says why.
+
+Everything inside the channel works as through a relay: sessions, panes,
+uploads, search, config sync, Shortcuts, the widget and Handoff. What a relay
+does and nothing else can:
+
+- **Notifications while Termy is closed.** Apple delivers them only from a
+  server holding the app's push key. A connected phone still notifies itself.
+- **Reaching the Mac from another network** without Tailscale.
+- **Telling the phone it was removed.** Removing a phone on the Mac forgets its
+  key at once; the phone only finds it can no longer connect.
+
+A Mac serves either through a relay or without one, and phones pair again when
+it switches: their IDs and pins belong to the mode they were made in. One phone
+can hold Macs of both kinds.
 
 ## Mobile terminal and session controls
 

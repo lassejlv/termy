@@ -358,6 +358,9 @@ public enum HostMessage: Codable, Hashable, Sendable {
     case commandOutput(stream: Int, output: RemoteCommandOutput?)
     /// An upload was saved at `path` and the path pasted into the pane.
     case uploaded(stream: Int, path: String)
+    /// Where this Mac can be reached without the relay, empty when nowhere. Sent to
+    /// phones of version 6 or later, after their hello and whenever it changes.
+    case endpoints([DirectEndpoint])
 
 }
 
@@ -367,7 +370,8 @@ public enum RemoteProtocol {
     /// and takes grids up to `RemoteFrame.maxCols` by `maxRows`.
     /// 5: shell integration: `HostMessage.shell`, `RemotePane.command`,
     /// `RemoteFrame.promptRows`, prompt jumps, command output and uploads.
-    public static let version = 5
+    /// 6: the direct path: `HostMessage.endpoints` (see `DirectEndpoint`).
+    public static let version = 6
 }
 
 /// JSON, deflated when that saves space. The first byte says which.

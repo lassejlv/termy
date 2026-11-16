@@ -3,12 +3,7 @@ import TermyRemoteKit
 
 enum CommandFormat {
     /// "45s", "3m 12s", "1h 4m".
-    static func duration(_ seconds: TimeInterval) -> String {
-        let total = max(0, Int(seconds.rounded()))
-        if total < 60 { return "\(total)s" }
-        if total < 3600 { return "\(total / 60)m \(total % 60)s" }
-        return "\(total / 3600)h \((total % 3600) / 60)m"
-    }
+    static func duration(_ seconds: TimeInterval) -> String { DurationText.short(seconds) }
 
     static func finished(_ command: TerminalScreen.FinishedCommand) -> String {
         let time = duration(command.duration)

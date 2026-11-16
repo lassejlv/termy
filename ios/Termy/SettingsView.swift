@@ -15,7 +15,8 @@ struct SettingsView: View {
                     ForEach(model.hosts) { host in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(host.name)
-                            Text(model.relayURL(for: host.id)?.host ?? "").font(.caption).foregroundStyle(.secondary)
+                            Text(model.relayURL(for: host.id)?.host ?? "No relay").font(.caption).foregroundStyle(
+                                .secondary)
                             Button("Remove Computer", role: .destructive) { removing = host }
                         }
                     }
@@ -50,7 +51,7 @@ struct SettingsView: View {
                     Text("Notifications")
                 } footer: {
                     Text(
-                        "Tells you when a command that ran \(Int(CommandNotifier.minimumDuration)) seconds or more finishes in a pane you aren’t looking at, while Termy is open. Needs shell integration on your Mac."
+                        "Tells you when a command that ran \(Int(CommandNotifier.minimumDuration)) seconds or more finishes in a pane you aren’t looking at, even when Termy is closed. Your Mac seals each notification so only this iPhone can read it. Needs shell integration on your Mac. A Mac paired without a relay notifies you only while Termy is open."
                     )
                 }
                 Section("Shortcuts") {
@@ -65,7 +66,7 @@ struct SettingsView: View {
                 }
                 Section {
                     Text(
-                        "Sessions are encrypted between your iPhone and Mac. The relay cannot read them. To use your own relay, set its HTTPS URL in Termy Next → Settings → Mobile before pairing."
+                        "Sessions are encrypted between your iPhone and Mac. The relay cannot read them. To use your own relay, or none at all, choose it in Termy Next → Settings → Mobile before pairing."
                     )
                     .font(.footnote).foregroundStyle(.secondary)
                 }

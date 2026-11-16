@@ -8,12 +8,29 @@ import XCTest
     let identity = DeviceIdentity()
     var verdict = TrustStore.Verdict.trusted
     var relayConnected = true
+    var directConnected = false
     var sent: [Data] = []
+    /// The path each packet in `sent` went along.
+    var paths: [HostPath] = []
     var savedConfiguration: RemoteConfiguration?
+    var endpoints: [DirectEndpoint]?
+    var directFailures = 0
+    weak var link: HostLink?
 
     func verdict(for host: RelayDevice) -> TrustStore.Verdict { verdict }
-    func isConnected(to host: UUID) -> Bool { relayConnected }
-    func send(_ packet: Data, to host: UUID) { sent.append(packet) }
+    func path(to host: UUID) -> HostPath? { directConnected ? .direct : relayConnected ? .relay : nil }
+    func send(_ packet: Data, to host: UUID, via path: HostPath) {
+        sent.append(packet)
+        paths.append(path)
+    }
+    func dial(_ host: UUID) {}
+    func endpointsChanged(_ endpoints: [DirectEndpoint], for host: UUID) { self.endpoints = endpoints }
+    /// As the app does: hang up, then tell the link.
+    func directFailed(for host: UUID) {
+        directFailures += 1
+        directConnected = false
+        link?.directWentAway()
+    }
     func configuration(for host: UUID) -> RemoteConfiguration? { nil }
     func saveConfiguration(_ configuration: RemoteConfiguration, for host: UUID) { savedConfiguration = configuration }
     func sessionsChanged(for host: UUID) {}
@@ -34,19 +51,26 @@ import XCTest
     static let id = UUID()
 
     /// Answers the link's handshake init.
-    mutating func accept(_ initPacket: Data, on link: HostLink) throws {
+    mutating func accept(_ initPacket: Data, on link: HostLink, via path: HostPath = .relay) throws {
         let (channel, response) = try SecureChannel.respond(identity: identity, initPacket: initPacket)
         self.channel = channel
-        link.receive(response)
+        self.path = path
+        link.receive(response, via: path)
     }
 
+    /// The path the channel was made on.
+    var path = HostPath.relay
+
     mutating func send(_ message: HostMessage, to link: HostLink) throws {
-        link.receive(try channel!.seal(try MessageCodec.encode(message)))
+        link.receive(try channel!.seal(try MessageCodec.encode(message)), via: path)
     }
 
     /// Decodes everything the phone sent since the handshake.
     mutating func read(_ transport: FakeTransport) throws -> [ClientMessage] {
-        defer { transport.sent.removeAll() }
+        defer {
+            transport.sent.removeAll()
+            transport.paths.removeAll()
+        }
         return try transport.sent.map { try MessageCodec.decode(ClientMessage.self, from: try channel!.open(packet: $0)) }
     }
 }
@@ -60,14 +84,121 @@ import XCTest
         transport = FakeTransport()
         host = FakeHost()
         link = HostLink(device: host.device, model: transport)
+        transport.link = link
     }
 
     private func connect() throws {
         link.connect()
         XCTAssertEqual(link.state, .connecting)
         XCTAssertEqual(transport.sent.count, 1)
+        transport.paths.removeAll()
         let initPacket = transport.sent.removeFirst()
         try host.accept(initPacket, on: link)
+    }
+
+    // MARK: The direct path
+
+    func testADirectPathIsUsedBeforeTheRelay() throws {
+        transport.directConnected = true
+        link.connect()
+        XCTAssertEqual(transport.paths, [.direct])
+        try host.accept(transport.sent.removeFirst(), on: link, via: .direct)
+        XCTAssertEqual(link.state, .connected)
+        XCTAssertEqual(link.path, .direct)
+        transport.paths.removeAll()
+        XCTAssertEqual(try host.read(transport), [.listSessions])
+
+        // The relay coming and going doesn't touch a direct channel.
+        link.relayWentAway()
+        link.presenceChanged(online: false)
+        XCTAssertEqual(link.state, .connected)
+        link.send(.listSessions)
+        XCTAssertEqual(transport.paths, [.direct])
+    }
+
+    func testAChannelMovesFromTheRelayToADirectPathWithoutAGap() throws {
+        try connect()
+        let screen = link.open(RemotePane(id: "p1", title: nil, workingDirectory: nil, exited: false))
+        var relayHost = host!
+        _ = try relayHost.read(transport)
+
+        transport.directConnected = true
+        link.directReady()
+        XCTAssertEqual(transport.paths, [.direct])
+        let initPacket = transport.sent.removeFirst()
+        transport.paths.removeAll()
+        // Until the Mac answers there, the relay's channel still carries everything.
+        XCTAssertEqual(link.state, .connected)
+        link.send(.key(stream: screen.stream, key: .text("a")))
+        XCTAssertEqual(transport.paths, [.relay])
+        XCTAssertEqual(try relayHost.read(transport), [.key(stream: screen.stream, key: .text("a"))])
+        try relayHost.send(.frame(Self.frame(stream: screen.stream, text: "old")), to: link)
+        XCTAssertTrue(screen.live)
+
+        try host.accept(initPacket, on: link, via: .direct)
+        XCTAssertEqual(link.path, .direct)
+        XCTAssertEqual(transport.paths, [.direct, .direct])
+        XCTAssertEqual(try host.read(transport), [.listSessions, .attach(stream: screen.stream, paneID: "p1")])
+        // What the relay still delivers of the old channel is dropped, not shown as damage.
+        try relayHost.send(.title(stream: screen.stream, title: "stale"), to: link)
+        XCTAssertNil(link.lastError)
+        XCTAssertNotEqual(screen.title, "stale")
+    }
+
+    func testALostDirectPathFallsBackToTheRelay() throws {
+        transport.directConnected = true
+        link.connect()
+        try host.accept(transport.sent.removeFirst(), on: link, via: .direct)
+        let screen = link.open(RemotePane(id: "p1", title: nil, workingDirectory: nil, exited: false))
+        _ = try host.read(transport)
+
+        transport.directConnected = false
+        link.directWentAway()
+        XCTAssertFalse(screen.live)
+        XCTAssertEqual(link.state, .connecting)
+        XCTAssertEqual(transport.paths, [.relay])
+        try host.accept(transport.sent.removeFirst(), on: link)
+        XCTAssertEqual(link.state, .connected)
+        XCTAssertEqual(link.path, .relay)
+    }
+
+    func testSomethingElseAtTheMacsAddressSendsTheLinkToTheRelay() throws {
+        transport.directConnected = true
+        link.connect()
+        // Another device answers there: it can't prove the Mac's key.
+        var impostor = FakeHost()
+        try impostor.accept(transport.sent.removeFirst(), on: link, via: .direct)
+        XCTAssertEqual(transport.directFailures, 1)
+        XCTAssertEqual(link.state, .connecting)
+        XCTAssertEqual(transport.paths.last, .relay)
+        try host.accept(transport.sent.removeLast(), on: link)
+        XCTAssertEqual(link.state, .connected)
+        XCTAssertEqual(link.path, .relay)
+    }
+
+    func testAMacWithoutARelaySaysWhyItCantBeReachedAndConnectsOnceItCan() throws {
+        transport.relayConnected = false
+        link.connect()
+        XCTAssertEqual(link.state, .connecting)
+        link.unreachable()
+        guard case .failed(let message) = link.state else { return XCTFail("\(link.state)") }
+        XCTAssertTrue(message.contains("no relay"))
+        // Dialing goes on; the Mac's network is joined.
+        transport.directConnected = true
+        link.directReady()
+        XCTAssertEqual(link.state, .connecting)
+        try host.accept(transport.sent.removeFirst(), on: link, via: .direct)
+        XCTAssertEqual(link.state, .connected)
+        // Connected, a failed look elsewhere changes nothing.
+        link.unreachable()
+        XCTAssertEqual(link.state, .connected)
+    }
+
+    func testTheMacsAddressesReachTheApp() throws {
+        try connect()
+        let endpoints = [DirectEndpoint(host: "192.168.1.20", port: 47126)]
+        try host.send(.endpoints(endpoints), to: link)
+        XCTAssertEqual(transport.endpoints, endpoints)
     }
 
     func testUnpinnedOrChangedKeysNeverHandshake() {

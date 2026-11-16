@@ -33,6 +33,15 @@ struct SessionsView: View {
             case .connected: sessionSections
             }
             if let error = link.lastError { Text(error).font(.footnote).foregroundStyle(.red) }
+            if link.state == .connected, let path = link.path {
+                Label(
+                    path == .relay
+                        ? "Connected through the relay"
+                        : model.directKinds[link.device.id] == .tailscale
+                            ? "Connected directly over Tailscale" : "Connected directly on this network",
+                    systemImage: path == .relay ? "arrow.triangle.branch" : "bolt.horizontal"
+                ).font(.footnote).foregroundStyle(.secondary)
+            }
             if link.state == .connected, link.protocolVersion < 2 {
                 Text("Update Termy Next on your Mac for config sync and session controls.").font(.footnote)
                     .foregroundStyle(.secondary)

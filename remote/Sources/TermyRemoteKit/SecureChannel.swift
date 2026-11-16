@@ -46,6 +46,9 @@ enum PacketKind: UInt8 {
     case handshakeInit = 1
     case handshakeResponse = 2
     case transport = 3
+    /// Pairing without a relay, on a direct connection (see `DirectPairing`).
+    case pairingClaim = 4
+    case pairingAnswer = 5
 }
 
 /// Directional keys and counters for one authenticated session between a

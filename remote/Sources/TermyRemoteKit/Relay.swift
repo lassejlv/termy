@@ -33,6 +33,15 @@ public struct RelayDevice: Codable, Hashable, Sendable, Identifiable {
     public var fingerprint: String { publicKeyData.map(Fingerprint.of) ?? "?" }
 }
 
+extension RelayDevice {
+    /// A device known without a relay: paired over a direct connection.
+    public init(id: UUID, name: String, kind: DeviceKind, publicKey: Data, online: Bool = false) {
+        self.init(
+            id: id, name: name, kind: kind, publicKey: publicKey.base64EncodedString(), online: online,
+            createdAt: Date(), lastSeenAt: nil)
+    }
+}
+
 public struct DeviceRegistration: Codable, Sendable {
     public var encryptedName: Data
     public var kind: DeviceKind
@@ -55,6 +64,14 @@ public struct DeviceCredentials: Codable, Sendable {
         self.device = device
     }
     public var api: RelayAPI { RelayAPI(baseURL: relayURL, token: token) }
+
+    /// What a device that uses no relay keeps in the place of a registration: its own ID,
+    /// made up locally, which the devices it pairs with directly know it by.
+    public static func relayless(device: RelayDevice) -> Self {
+        DeviceCredentials(relayURL: relaylessURL, token: "", device: device)
+    }
+    static let relaylessURL = URL(string: "termy-direct://local")!
+    public var isRelayless: Bool { relayURL == Self.relaylessURL }
 }
 public struct DeviceRegistrationResponse: Codable, Sendable {
     public var token: String
@@ -139,6 +156,13 @@ public struct RelayAPI: Sendable {
     }()
     private func request<R: Decodable>(_ method: String, _ path: String) async throws -> R {
         try await request(method, path, body: Optional<Empty>.none)
+    }
+    /// For requests defined in other files of the package.
+    func exchange<B: Encodable, R: Decodable>(_ method: String, _ path: String, body: B?) async throws -> R {
+        try await request(method, path, body: body)
+    }
+    func send<B: Encodable>(_ method: String, _ path: String, body: B?) async throws {
+        let _: Empty = try await request(method, path, body: body)
     }
     private func request<B: Encodable, R: Decodable>(_ method: String, _ path: String, body: B?) async throws -> R {
         var r = URLRequest(url: baseURL.appendingPathComponent(path))

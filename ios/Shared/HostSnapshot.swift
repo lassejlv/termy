@@ -24,11 +24,12 @@ struct HostSnapshot: Codable, Equatable, Sendable {
     var onlineCount: Int { hosts.filter(\.online).count }
 }
 
-enum HostSnapshotStore {
-    private static let account = "host-snapshot"
+/// Keychain items the app shares with its extensions (the widget and the
+/// notification decrypter), in a group no other app can read.
+enum SharedKeychain {
     private static let service = "sh.termy.shared"
 
-    /// `$(AppIdentifierPrefix)sh.termy.shared`, from Info.plist; empty when unsigned.
+    /// `$(AppIdentifierPrefix)sh.termy.shared`, from Info.plist; nil when unsigned.
     private static var accessGroup: String? {
         guard let group = Bundle.main.object(forInfoDictionaryKey: "TermyKeychainGroup") as? String,
             // Unsigned builds leave the team prefix out, and Keychain refuses such a group.
@@ -37,7 +38,7 @@ enum HostSnapshotStore {
         return group
     }
 
-    private static func query() -> [String: Any] {
+    private static func query(_ account: String) -> [String: Any] {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -47,34 +48,70 @@ enum HostSnapshotStore {
         return query
     }
 
-    static func load() -> HostSnapshot {
-        var query = query()
+    static func load(_ account: String) -> Data? {
+        var query = query(account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data,
-            let snapshot = try? JSONDecoder().decode(HostSnapshot.self, from: data)
-        else { return .empty }
-        return snapshot
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
+        return result as? Data
     }
 
-    /// Saves the snapshot. False when Keychain refused it.
+    /// False when Keychain refused it.
     @discardableResult
-    static func save(_ snapshot: HostSnapshot) -> Bool {
-        guard let data = try? JSONEncoder().encode(snapshot) else { return false }
-        let query = query()
+    static func save(_ data: Data, account: String) -> Bool {
+        let query = query(account)
         let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
             var item = query
             item[kSecValueData as String] = data
-            // The widget renders while the phone is locked, after the first unlock.
+            // Extensions run while the phone is locked, after the first unlock.
             item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             return SecItemAdd(item as CFDictionary, nil) == errSecSuccess
         }
         return status == errSecSuccess
     }
 
-    static func clear() { SecItemDelete(query() as CFDictionary) }
+    static func delete(_ account: String) { SecItemDelete(query(account) as CFDictionary) }
+}
+
+enum HostSnapshotStore {
+    private static let account = "host-snapshot"
+
+    static func load() -> HostSnapshot {
+        SharedKeychain.load(account).flatMap { try? JSONDecoder().decode(HostSnapshot.self, from: $0) } ?? .empty
+    }
+
+    /// Saves the snapshot. False when Keychain refused it.
+    @discardableResult
+    static func save(_ snapshot: HostSnapshot) -> Bool {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return false }
+        return SharedKeychain.save(data, account: account)
+    }
+
+    static func clear() { SharedKeychain.delete(account) }
+}
+
+/// The key each paired computer seals its notifications with (`PushSeal`),
+/// for the notification extension, which can't reach the app's own keys.
+enum PushKeyStore {
+    private static let account = "push-keys"
+
+    static func load() -> [UUID: Data] {
+        guard let data = SharedKeychain.load(account),
+            let keys = try? JSONDecoder().decode([String: Data].self, from: data)
+        else { return [:] }
+        return Dictionary(uniqueKeysWithValues: keys.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } })
+    }
+
+    @discardableResult
+    static func save(_ keys: [UUID: Data]) -> Bool {
+        let raw = Dictionary(uniqueKeysWithValues: keys.map { ($0.key.uuidString, $0.value) })
+        guard let data = try? JSONEncoder().encode(raw) else { return false }
+        return SharedKeychain.save(data, account: account)
+    }
+
+    static func clear() { SharedKeychain.delete(account) }
 }
 
 /// `termy://` links the widget, quick actions and Spotlight open.

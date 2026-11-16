@@ -6,6 +6,22 @@ update window Sparkle shows, so write for the people updating: what they can
 do now, not how it was built. Rename `Unreleased` to the version when you tag
 it.
 
+## 0.4.0
+
+### New
+
+- **Your iPhone connects directly.** On the same network, or over Tailscale when both devices are on your tailnet, the Termy iPhone app talks to this Mac itself instead of through the relay. It moves between the two as you come and go, without dropping what you were doing. Settings → Mobile → Direct Connection shows what is in use.
+- **No relay needed.** Turn off Use a relay server in Settings → Mobile and Termy Next contacts no server at all: the iPhone pairs with the QR code and reaches this Mac on your network or tailnet. Notifications while Termy is closed on the iPhone, and reaching the Mac from elsewhere without Tailscale, still need a relay. iPhones pair again when you switch.
+- **Handoff.** The pane you are in is offered to your iPhone, to carry on there.
+- **More from the iPhone.** Jump between prompts, read a command's output, and send photos and files into a pane.
+
+### Better
+
+- A long command that finishes can notify your iPhone while Termy is closed there, on relays set up to send notifications.
+- Paired Devices shows an iPhone as online when it is connected directly, whatever the relay sees.
+
+These need the matching Termy iPhone app; older ones keep working through the relay.
+
 ## 0.3.0
 
 ### New

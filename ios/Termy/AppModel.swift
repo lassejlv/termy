@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 import TermyRemoteKit
 import UIKit
@@ -14,7 +15,20 @@ struct Route: Equatable, Identifiable {
     var sessionName = "Shortcuts"
 }
 
-/// One device identity, with separate credentials and pairings for each relay.
+/// Pairing a Mac that uses no relay, on a connection of the phone's own.
+enum DirectPairingError: LocalizedError {
+    case unreachable(String), refused(String)
+    var errorDescription: String? {
+        switch self {
+        case .unreachable(let name):
+            "This iPhone can’t reach \(name). It uses no relay: join the same Wi-Fi network, or turn on Tailscale on both devices, then scan again."
+        case .refused(let name): "\(name) didn’t accept the pairing. Generate a new QR code on it and scan again."
+        }
+    }
+}
+
+/// One device identity, with separate credentials and pairings for each relay, and one
+/// more set for the Macs paired without any.
 @MainActor @Observable
 final class AppModel: HostTransport {
     /// One model per process, so App Intents and the widget's links reach the UI's.
@@ -24,6 +38,13 @@ final class AppModel: HostTransport {
         var pins: [UUID: Data] = [:]
         var hosts: [RelayDevice] = []
         var configurations: [UUID: RemoteConfiguration]?
+        /// Where each Mac said it can be reached without the relay.
+        var endpoints: [UUID: [DirectEndpoint]]?
+    }
+    /// The phone's own connection to one Mac, open or being opened.
+    private struct Direct {
+        var connection: DirectConnection?
+        var task: Task<Void, Never>
     }
     enum RelayState { case offline, connecting, connected }
     let identity: DeviceIdentity
@@ -38,6 +59,10 @@ final class AppModel: HostTransport {
     @ObservationIgnored private var connections: [String: RelayConnection] = [:]
     @ObservationIgnored private var loops: [String: Task<Void, Never>] = [:]
     private(set) var states: [String: RelayState] = [:]
+    @ObservationIgnored private var directs: [UUID: Direct] = [:]
+    /// The Macs reached directly, and over what.
+    private(set) var directKinds: [UUID: DirectEndpoint.Kind] = [:]
+    @ObservationIgnored private let pathMonitor = NWPathMonitor()
     @ObservationIgnored private var active = true
     @ObservationIgnored private var identityError: Error?
     /// Where the UI should go next; the views clear it once they got there.
@@ -45,6 +70,9 @@ final class AppModel: HostTransport {
     /// The pairing sheet should open, e.g. after removing a computer to pair it again.
     var pairingRequested = false
     @ObservationIgnored private var publishedSnapshot: HostSnapshot?
+    /// The APNs token, once iOS gave one, and the notification keys last shared with the extension.
+    @ObservationIgnored private var pushToken: Data?
+    @ObservationIgnored private var sharedPushKeys: [UUID: Data]?
 
     init() {
         do {
@@ -62,21 +90,38 @@ final class AppModel: HostTransport {
         }
         rebuildDevices()
         resume()
+        // Joining the Mac's Wi-Fi, or Tailscale connecting, opens a direct path.
+        pathMonitor.pathUpdateHandler = { [weak self] _ in Task { @MainActor in self?.dialAll() } }
+        pathMonitor.start(queue: .main)
     }
     var hosts: [RelayDevice] { devices }
     var relayState: RelayState {
         if states.values.contains(where: { $0 == .connecting }) { return .connecting }
         return states.values.contains(where: { $0 == .connected }) ? .connected : .offline
     }
+    /// The profile of the Macs paired without a relay.
+    private static let directKey = "direct"
     private func key(for host: UUID) -> String? { profiles.first(where: { $0.value.pins[host] != nil })?.key }
-    func relayURL(for host: UUID) -> URL? { key(for: host).flatMap { profiles[$0]?.credentials.relayURL } }
-    func isConnected(to host: UUID) -> Bool { key(for: host).map { states[$0] == .connected } ?? false }
+    /// Nil for a Mac paired without a relay.
+    func relayURL(for host: UUID) -> URL? {
+        key(for: host).flatMap { profiles[$0]?.credentials }.flatMap { $0.isRelayless ? nil : $0.relayURL }
+    }
+    func isRelayless(_ host: UUID) -> Bool { key(for: host) == Self.directKey }
+    /// Whether any paired Mac is reached through a relay.
+    var usesRelay: Bool { devices.contains { !isRelayless($0.id) } }
+    private func relays(_ k: String) -> Bool { profiles[k].map { !$0.credentials.isRelayless } ?? false }
+    func path(to host: UUID) -> HostPath? {
+        if directKinds[host] != nil { return .direct }
+        return key(for: host).map { states[$0] == .connected } == true ? .relay : nil
+    }
     private func persist() throws { try store.save(profiles, key: "profiles") }
     private func rebuildDevices() {
         devices = profiles.values.flatMap(\.hosts).sorted {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
         publishDevices()
+        // A Mac paired or removed: the extension's keys follow.
+        if CommandNotifier.shared.enabled { sharePushKeys() }
     }
 
     // MARK: Routes, widget and quick actions
@@ -111,6 +156,68 @@ final class AppModel: HostTransport {
 
     func sessionsChanged(for host: UUID) { publishDevices() }
 
+    // MARK: Push notifications
+
+    static var pushEnvironment: PushEnvironment {
+        #if DEBUG
+            .sandbox
+        #else
+            .production
+        #endif
+    }
+
+    /// iOS gave a token for this phone: every relay it's paired through can now wake it.
+    func pushRegistered(_ token: Data) {
+        pushToken = token
+        Task { await syncPush() }
+    }
+
+    func pushFailed(_ error: Error) {
+        lastError = "iOS couldn’t set up notifications: \(error.localizedDescription)"
+    }
+
+    /// Shares each paired Mac's notification key with the extension, and the token with each relay.
+    func syncPush() async {
+        guard CommandNotifier.shared.enabled else { return }
+        sharePushKeys()
+        guard let token = pushToken else { return }
+        for profile in profiles.values where !profile.pins.isEmpty && !profile.credentials.isRelayless {
+            do { try await profile.credentials.api.setPushToken(token, environment: Self.pushEnvironment) } catch {
+                lastError = "Couldn’t turn on notifications with the relay: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Notifications turned off: relays forget the token and the extension its keys.
+    func pushDisabled() async {
+        PushKeyStore.clear()
+        sharedPushKeys = nil
+        for profile in profiles.values where !profile.credentials.isRelayless {
+            try? await profile.credentials.api.removePushToken()
+        }
+    }
+
+    /// The key each paired Mac seals notifications with: our identity with its pinned key.
+    private func pushKeys() -> [UUID: Data] {
+        var keys: [UUID: Data] = [:]
+        for profile in profiles.values {
+            for (host, pin) in profile.pins {
+                if let key = try? PushSeal.key(
+                    identity: identity, peerPublicKey: pin, host: host, client: profile.credentials.device.id)
+                {
+                    keys[host] = key.withUnsafeBytes { Data($0) }
+                }
+            }
+        }
+        return keys
+    }
+
+    private func sharePushKeys() {
+        let keys = pushKeys()
+        guard keys != sharedPushKeys else { return }
+        if PushKeyStore.save(keys) { sharedPushKeys = keys }
+    }
+
     /// Shares the computer list with the widget, the Home Screen quick actions and Shortcuts.
     private func publishDevices() {
         let hosts = devices.map { device in
@@ -118,7 +225,8 @@ final class AppModel: HostTransport {
             let connected = link?.state == .connected
             let panes = connected ? link?.orderedPanes : nil
             return HostSnapshot.Host(
-                id: device.id, name: device.name, online: device.online, panes: panes?.count,
+                id: device.id, name: device.name, online: device.online || directKinds[device.id] != nil,
+                panes: panes?.count,
                 running: panes?.filter { $0.command?.running == true }.count)
         }
         let previous = publishedSnapshot ?? HostSnapshotStore.load()
@@ -148,17 +256,18 @@ final class AppModel: HostTransport {
         if let identityError { throw identityError }
         _ = try PairingCode.parse(code.text)
         pairingBusy = true
-        pairingMessage = "Connecting to \(code.relayURL.host ?? "relay")…"
         defer {
             pairingBusy = false
             pairingMessage = nil
         }
-        let relayKey = code.relayURL.absoluteString
+        guard let relayURL = code.relayURL else { return try await pairDirect(code) }
+        pairingMessage = "Connecting to \(relayURL.host ?? "relay")…"
+        let relayKey = relayURL.absoluteString
         var profile: Profile
         if let existing = profiles[relayKey] {
             profile = existing
         } else {
-            let credentials = try await RelayAPI(baseURL: code.relayURL).register(
+            let credentials = try await RelayAPI(baseURL: relayURL).register(
                 try DeviceRegistration(name: UIDevice.current.name, kind: .client, identity: identity))
             profile = Profile(credentials: credentials)
             profiles[relayKey] = profile
@@ -207,6 +316,7 @@ final class AppModel: HostTransport {
                 try persist()
                 rebuildDevices()
                 restart(relayKey)
+                Task { await syncPush() }
                 return
             }
             guard Date() < code.expiresAt else { throw PairingError.expired }
@@ -214,16 +324,71 @@ final class AppModel: HostTransport {
         }
         throw PairingError.expired
     }
+    /// Pairs a Mac that uses no relay: claims its invitation on a connection to one of the
+    /// addresses in the QR code and waits there for the Mac's user to approve.
+    private func pairDirect(_ code: PairingCode) async throws {
+        pairingMessage = "Looking for \(code.hostName)…"
+        // This phone's ID among the Macs it pairs directly, where a relay would have assigned one.
+        let own =
+            profiles[Self.directKey]?.credentials
+            ?? .relayless(
+                device: RelayDevice(
+                    id: UUID(), name: UIDevice.current.name, kind: .client, publicKey: identity.publicKey))
+        let handshake = SecureChannel.startClient(identity: identity, hostStaticKey: code.hostKey)
+        let claim = try DirectPairing.packet(
+            try code.claim(clientID: own.device.id, name: UIDevice.current.name, initPacket: handshake.initPacket))
+        for endpoint in DirectEndpoint.reachable(code.endpoints ?? [], from: NetworkInterface.current()) {
+            try Task.checkCancellation()
+            guard let connection = DirectConnection(to: endpoint) else { continue }
+            defer { connection.close() }
+            var reached = false
+            for await event in connection.events {
+                switch event {
+                case .ready:
+                    reached = true
+                    connection.send(claim)
+                    pairingMessage = "Approve this iPhone in Termy Next on \(code.hostName)."
+                case .packet(let packet):
+                    // The answer proves the Mac holds the key the QR code showed.
+                    guard let response = DirectPairing.handshakeResponse(in: packet) else {
+                        throw PairingError.invalidProof
+                    }
+                    _ = try handshake.finish(response)
+                    var profile = profiles[Self.directKey] ?? Profile(credentials: own)
+                    profile.pins[code.hostID] = code.hostKey
+                    profile.hosts.removeAll { $0.id == code.hostID }
+                    profile.hosts.append(
+                        RelayDevice(id: code.hostID, name: code.hostName, kind: .host, publicKey: code.hostKey))
+                    if profile.endpoints == nil { profile.endpoints = [:] }
+                    profile.endpoints?[code.hostID] = code.endpoints
+                    profiles[Self.directKey] = profile
+                    try persist()
+                    rebuildDevices()
+                    return
+                case .closed: break
+                }
+            }
+            try Task.checkCancellation()
+            // It answered and hung up: declined, expired, or not the code on its screen.
+            if reached { throw DirectPairingError.refused(code.hostName) }
+        }
+        throw DirectPairingError.unreachable(code.hostName)
+    }
     func removeHost(_ host: RelayDevice) async throws {
         guard let k = key(for: host.id), var profile = profiles[k] else { return }
-        do { try await profile.credentials.api.removeDevice(host.id) } catch let e as RelayAPIError
-            where e.status == 401
-        { /* Registration already revoked. */  }
+        // A Mac paired without a relay keeps this phone's key until it is removed there too.
+        if relays(k) {
+            do { try await profile.credentials.api.removeDevice(host.id) } catch let e as RelayAPIError
+                where e.status == 401
+            { /* Registration already revoked. */  }
+        }
         guard let latest = profiles[k], latest.credentials.token == profile.credentials.token else { return }
         profile = latest
         profile.pins[host.id] = nil
         profile.configurations?[host.id] = nil
+        profile.endpoints?[host.id] = nil
         profile.hosts.removeAll { $0.id == host.id }
+        hangUp(host.id)
         links.removeValue(forKey: host.id)?.disconnect()
         profiles[k] = profile
         revisions[k] = UUID()
@@ -235,7 +400,7 @@ final class AppModel: HostTransport {
         for k in Array(profiles.keys) { await refresh(k) }
     }
     private func refresh(_ k: String) async {
-        guard let original = profiles[k] else { return }
+        guard relays(k), let original = profiles[k] else { return }
         let revision = revisions[k]
         do {
             try await original.credentials.api.updateName(UIDevice.current.name, identity: identity)
@@ -247,6 +412,8 @@ final class AppModel: HostTransport {
             let allowed = Set(peers.map(\.id))
             for id in profile.pins.keys where !allowed.contains(id) {
                 profile.pins[id] = nil
+                profile.endpoints?[id] = nil
+                hangUp(id)
                 links[id]?.presenceChanged(online: false)
             }
             let names = Dictionary(uniqueKeysWithValues: profile.hosts.map { ($0.id, $0) })
@@ -285,9 +452,112 @@ final class AppModel: HostTransport {
         links[host.id] = link
         return link
     }
-    func send(_ packet: Data, to host: UUID) {
+    func send(_ packet: Data, to host: UUID, via path: HostPath) {
+        switch path {
+        case .direct: directs[host]?.connection?.send(packet)
+        case .relay:
+            guard let k = key(for: host) else { return }
+            connections[k]?.send(packet, to: host)
+        }
+    }
+
+    // MARK: Direct connections
+
+    /// A Mac said where it listens. Nothing but the Mac itself, inside the encrypted
+    /// channel, can say so; the list is kept with its pin.
+    func endpointsChanged(_ endpoints: [DirectEndpoint], for host: UUID) {
         guard let k = key(for: host) else { return }
-        connections[k]?.send(packet, to: host)
+        let kept = Array(endpoints.filter { $0.kind != nil }.prefix(DirectEndpoint.maxCount))
+        if profiles[k]?.endpoints?[host] ?? [] != kept {
+            if profiles[k]?.endpoints == nil { profiles[k]?.endpoints = [:] }
+            profiles[k]?.endpoints?[host] = kept.isEmpty ? nil : kept
+            try? persist()
+        }
+        dial(host)
+    }
+
+    func directFailed(for host: UUID) {
+        hangUp(host)
+        links[host]?.directWentAway()
+    }
+
+    private func dialAll() {
+        for profile in profiles.values { for host in profile.pins.keys { dial(host) } }
+    }
+
+    /// Tries the Mac's addresses this phone's network reaches, nearest first. Without one,
+    /// or when none answers, the relay carries the link as before. Only for a Mac a view
+    /// has open: the Mac hangs up on a connection that doesn't start a session.
+    func dial(_ host: UUID) {
+        guard active, directs[host] == nil, links[host]?.wanted == true, let k = key(for: host),
+            profiles[k]?.pins[host] != nil
+        else { return }
+        let interfaces = NetworkInterface.current()
+        let relayless = !relays(k)
+        var candidates: [DirectEndpoint?] = DirectEndpoint.reachable(profiles[k]?.endpoints?[host] ?? [], from: interfaces)
+        // Last, by the name the Mac advertises on the local network, in case its address
+        // there changed. Only when no relay is there to say so: the question names the Mac
+        // to whatever network the phone is on.
+        if interfaces.contains(where: \.isLocalNetwork), relayless || states[k] != .connected { candidates.append(nil) }
+        guard !candidates.isEmpty else {
+            if relayless { links[host]?.unreachable() }
+            return
+        }
+        let task = Task { [weak self] in
+            var opened = false
+            for candidate in candidates {
+                guard !Task.isCancelled, let self else { return }
+                let kind = candidate?.kind ?? .localNetwork
+                guard let connection = candidate.map({ DirectConnection(to: $0) }) ?? DirectConnection(advertised: host.uuidString)
+                else { continue }
+                self.directs[host]?.connection = connection
+                for await event in connection.events {
+                    guard !Task.isCancelled else { break }
+                    switch event {
+                    case .ready:
+                        if candidate == nil, let found = connection.reached { self.found(found, for: host) }
+                        self.directKinds[host] = kind
+                        self.links[host]?.directReady()
+                    case .packet(let packet): self.links[host]?.receive(packet, via: .direct)
+                    case .closed: break
+                    }
+                }
+                connection.close()
+                guard !Task.isCancelled else { return }
+                // It was open and closed: the link falls back before the next address is tried.
+                if self.directKinds.removeValue(forKey: host) != nil {
+                    opened = true
+                    self.links[host]?.directWentAway()
+                }
+            }
+            // A Mac that was there a moment ago may be back (it restarts its listener with
+            // its settings). One that wasn't waits for the network to change, unless no relay
+            // is there to say when it is back: then asking again is the only way to know.
+            if !opened, relayless, !Task.isCancelled { self?.links[host]?.unreachable() }
+            if opened || relayless { try? await Task.sleep(for: .seconds(opened ? 5 : 10)) }
+            guard !Task.isCancelled, let self else { return }
+            self.directs[host] = nil
+            if opened || relayless { self.dial(host) }
+        }
+        directs[host] = Direct(connection: nil, task: task)
+    }
+
+    /// The Mac answered to its name at an address the phone didn't have: that replaces
+    /// the local ones it had, and its tailnet address stays.
+    private func found(_ endpoint: DirectEndpoint, for host: UUID) {
+        guard endpoint.kind == .localNetwork, let k = key(for: host) else { return }
+        let kept = (profiles[k]?.endpoints?[host] ?? []).filter { $0.kind == .tailscale }
+        if profiles[k]?.endpoints == nil { profiles[k]?.endpoints = [:] }
+        profiles[k]?.endpoints?[host] = [endpoint] + kept
+        try? persist()
+    }
+
+    /// Closes the direct connection to a Mac without telling its link.
+    private func hangUp(_ host: UUID) {
+        guard let direct = directs.removeValue(forKey: host) else { return }
+        direct.task.cancel()
+        direct.connection?.close()
+        directKinds[host] = nil
     }
     func verdict(for host: RelayDevice) -> TrustStore.Verdict {
         guard let k = key(for: host.id), let pin = profiles[k]?.pins[host.id] else { return .unknown }
@@ -295,15 +565,20 @@ final class AppModel: HostTransport {
     }
     func resume() {
         active = true
-        for k in profiles.keys where !profiles[k]!.pins.isEmpty && loops[k] == nil { start(k) }
+        for k in profiles.keys where !profiles[k]!.pins.isEmpty && relays(k) && loops[k] == nil { start(k) }
+        dialAll()
     }
     func suspend() {
         active = false
         for k in Array(loops.keys) { stop(k) }
+        for host in Array(directs.keys) {
+            hangUp(host)
+            links[host]?.directWentAway()
+        }
     }
     private func restart(_ k: String) {
         stop(k)
-        if active, let profile = profiles[k], !profile.pins.isEmpty { start(k) }
+        if active, relays(k), let profile = profiles[k], !profile.pins.isEmpty { start(k) }
     }
     private func start(_ k: String) { loops[k] = Task { [weak self] in await self?.runRelay(k) } }
     private func stop(_ k: String) {
@@ -329,7 +604,7 @@ final class AppModel: HostTransport {
                     delay = 1
                     for id in profile.pins.keys { links[id]?.relayReady() }
                 case .packet(let from, let packet):
-                    if profiles[k]?.pins[from] != nil { links[from]?.receive(packet) }
+                    if profiles[k]?.pins[from] != nil { links[from]?.receive(packet, via: .relay) }
                 case .presence(let id, let online):
                     if let i = profiles[k]?.hosts.firstIndex(where: { $0.id == id }) {
                         profiles[k]?.hosts[i].online = online
