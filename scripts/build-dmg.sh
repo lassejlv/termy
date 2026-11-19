@@ -24,7 +24,7 @@ Build options:
 
 Signing options (optional — omit for an unsigned DMG):
   --sign-identity NAME    Developer ID Application identity (enables signing)
-  --entitlements PATH     Entitlements plist for app signing
+  --entitlements PATH     Entitlements plist for app signing (default: scripts/macos/termy.entitlements; pass "" to disable)
   --no-sign-dmg           Sign the app but not the final DMG
 
 Notarization options (require a signing identity):
@@ -148,6 +148,32 @@ ensure_local_network_usage_description() {
   /usr/bin/plutil -lint "$plist_path" >/dev/null
 }
 
+ensure_bluetooth_usage_description() {
+  local plist_path="$1/Contents/Info.plist"
+  local plist_buddy="/usr/libexec/PlistBuddy"
+
+  [[ -f "$plist_path" ]] || die "App bundle Info.plist not found at $plist_path"
+  [[ -x "$plist_buddy" ]] || die "PlistBuddy is required to patch $plist_path"
+
+  "$plist_buddy" -c "Delete :NSBluetoothAlwaysUsageDescription" "$plist_path" >/dev/null 2>&1 || true
+  "$plist_buddy" -c "Add :NSBluetoothAlwaysUsageDescription string Termy uses Bluetooth so terminal sessions and tools can discover and communicate with Bluetooth devices." "$plist_path"
+  "$plist_buddy" -c "Delete :NSBluetoothPeripheralUsageDescription" "$plist_path" >/dev/null 2>&1 || true
+  "$plist_buddy" -c "Add :NSBluetoothPeripheralUsageDescription string Termy uses Bluetooth so terminal sessions and tools can discover and communicate with Bluetooth devices." "$plist_path"
+  /usr/bin/plutil -lint "$plist_path" >/dev/null
+}
+
+ensure_microphone_usage_description() {
+  local plist_path="$1/Contents/Info.plist"
+  local plist_buddy="/usr/libexec/PlistBuddy"
+
+  [[ -f "$plist_path" ]] || die "App bundle Info.plist not found at $plist_path"
+  [[ -x "$plist_buddy" ]] || die "PlistBuddy is required to patch $plist_path"
+
+  "$plist_buddy" -c "Delete :NSMicrophoneUsageDescription" "$plist_path" >/dev/null 2>&1 || true
+  "$plist_buddy" -c "Add :NSMicrophoneUsageDescription string Termy uses the microphone so terminal sessions and tools can record or process audio input." "$plist_path"
+  /usr/bin/plutil -lint "$plist_path" >/dev/null
+}
+
 ensure_app_icon() {
   local app_path="$1"
   local plist_path="$app_path/Contents/Info.plist"
@@ -216,7 +242,10 @@ TARGET=""
 SKIP_LAYOUT=0
 
 SIGN_IDENTITY="${TERMY_SIGN_IDENTITY:-}"
-ENTITLEMENTS="${TERMY_ENTITLEMENTS:-}"
+DEFAULT_ENTITLEMENTS="$REPO_ROOT/scripts/macos/termy.entitlements"
+ENTITLEMENTS_EXPLICIT=0
+[[ -n "${TERMY_ENTITLEMENTS+x}" ]] && ENTITLEMENTS_EXPLICIT=1
+ENTITLEMENTS="${TERMY_ENTITLEMENTS-$DEFAULT_ENTITLEMENTS}"
 NOTARY_PROFILE="${TERMY_NOTARY_PROFILE:-}"
 NOTARY_KEY="${TERMY_NOTARY_KEY:-}"
 NOTARY_KEY_ID="${TERMY_NOTARY_KEY_ID:-}"
@@ -230,7 +259,7 @@ while [[ $# -gt 0 ]]; do
     --arch) [[ $# -ge 2 ]] || die "--arch requires a value"; ARCH="$2"; shift 2 ;;
     --target) [[ $# -ge 2 ]] || die "--target requires a value"; TARGET="$2"; shift 2 ;;
     --sign-identity) [[ $# -ge 2 ]] || die "--sign-identity requires a value"; SIGN_IDENTITY="$2"; shift 2 ;;
-    --entitlements) [[ $# -ge 2 ]] || die "--entitlements requires a value"; ENTITLEMENTS="$2"; shift 2 ;;
+    --entitlements) [[ $# -ge 2 ]] || die "--entitlements requires a value"; ENTITLEMENTS="$2"; ENTITLEMENTS_EXPLICIT=1; shift 2 ;;
     --notary-profile) [[ $# -ge 2 ]] || die "--notary-profile requires a value"; NOTARY_PROFILE="$2"; shift 2 ;;
     --notary-key) [[ $# -ge 2 ]] || die "--notary-key requires a value"; NOTARY_KEY="$2"; shift 2 ;;
     --notary-key-id) [[ $# -ge 2 ]] || die "--notary-key-id requires a value"; NOTARY_KEY_ID="$2"; shift 2 ;;
@@ -269,7 +298,9 @@ else
   # Nothing to sign with — disable downstream signing/notarization cleanly.
   NOTARIZE=0
   SIGN_DMG=0
-  if [[ -n "$NOTARY_PROFILE$NOTARY_KEY$NOTARY_KEY_ID$NOTARY_ISSUER$ENTITLEMENTS" ]]; then
+  IGNORED_SIGN_OPTS="$NOTARY_PROFILE$NOTARY_KEY$NOTARY_KEY_ID$NOTARY_ISSUER"
+  [[ "$ENTITLEMENTS_EXPLICIT" -eq 1 ]] && IGNORED_SIGN_OPTS+="$ENTITLEMENTS"
+  if [[ -n "$IGNORED_SIGN_OPTS" ]]; then
     log "No signing identity set; ignoring signing/notarization options (unsigned build)"
   fi
 fi
@@ -294,8 +325,9 @@ if [[ "$NOTARIZE" -eq 1 ]]; then
   fi
 fi
 
-if [[ -n "$ENTITLEMENTS" ]]; then
+if [[ "$SIGN" -eq 1 && -n "$ENTITLEMENTS" ]]; then
   [[ -f "$ENTITLEMENTS" ]] || die "Entitlements file not found: $ENTITLEMENTS"
+  /usr/bin/plutil -lint "$ENTITLEMENTS" >/dev/null || die "Invalid entitlements plist: $ENTITLEMENTS"
 fi
 
 # One feed per architecture, served from the latest GitHub release.
@@ -363,6 +395,12 @@ ensure_folder_document_type "$APP_PATH"
 log "Declaring local network usage in app bundle"
 ensure_local_network_usage_description "$APP_PATH"
 
+log "Declaring Bluetooth usage in app bundle"
+ensure_bluetooth_usage_description "$APP_PATH"
+
+log "Declaring microphone usage in app bundle"
+ensure_microphone_usage_description "$APP_PATH"
+
 log "Installing Finder Open new Termy tab here service"
 install_finder_open_tab_service "$APP_PATH"
 
@@ -375,12 +413,12 @@ embed_sparkle "$APP_PATH"
 if [[ "$SIGN" -eq 1 ]]; then
   log "Signing app bundle with: $SIGN_IDENTITY"
   xattr -rc "$APP_PATH"
-  # The bundled CLI is a separate executable. Sign it before the enclosing app.
-  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" \
-    "$APP_PATH/Contents/MacOS/termy-cli"
   sign_sparkle "$APP_PATH"
   CODESIGN_ARGS=(--force --options runtime --timestamp --sign "$SIGN_IDENTITY")
   [[ -n "$ENTITLEMENTS" ]] && CODESIGN_ARGS+=(--entitlements "$ENTITLEMENTS")
+  # The bundled CLI is a separate executable that can host detached multiplexer sessions.
+  # Sign it with the same runtime options and entitlements before the enclosing app.
+  codesign "${CODESIGN_ARGS[@]}" "$APP_PATH/Contents/MacOS/termy-cli"
   codesign "${CODESIGN_ARGS[@]}" "$APP_PATH"
   codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 else

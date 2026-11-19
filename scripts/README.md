@@ -6,6 +6,7 @@ This directory owns local and CI packaging entrypoints plus repository maintenan
 
 - `build-dmg.sh`: builds the macOS DMG into `dist/`.
 - `build-dmg-signed.sh`: signed-DMG wrapper around `build-dmg.sh`.
+- `macos/termy.entitlements`: default macOS Hardened Runtime entitlements plist used by `build-dmg.sh`.
 - `setup-macos-signing.sh`: imports GitHub Actions Developer ID and notarization credentials into an ephemeral keychain.
 - `build-setup.ps1`: builds the Windows installer into `target/dist/`.
 - `build-linux.sh`: builds Linux tarballs and AppImages into `target/dist/`.
