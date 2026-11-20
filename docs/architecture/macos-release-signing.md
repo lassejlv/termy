@@ -28,7 +28,7 @@ Add these **repository secrets**:
 
 On macOS, `base64 < /path/to/file | tr -d '\n'` produces the value for either file secret. Avoid putting these values in shell history, logs, issue comments, or PRs. GitHub secrets have a 48 KB value limit; these files should fit when encoded. [GitHub's secrets documentation](https://docs.github.com/en/actions/reference/security/secrets).
 
-The release job checks that the imported certificate belongs to `APPLE_TEAM_ID`, signs the bundled CLI and app with hardened runtime, signs the DMG, submits the DMG to Apple's notary service, staples the accepted ticket, and verifies the result. Missing or invalid credentials fail the macOS job. The stable release finalization also waits for both signed macOS DMGs before marking the release latest.
+The release job checks that the imported certificate belongs to `APPLE_TEAM_ID`, signs the bundled CLI and app with hardened runtime and [`scripts/macos/termy.entitlements`](../../scripts/macos/termy.entitlements), signs the DMG, submits the DMG to Apple's notary service, staples the accepted ticket, and verifies the result. Missing or invalid credentials fail the macOS job. The stable release finalization also waits for both signed macOS DMGs before marking the release latest.
 
 After adding or rotating credentials, run the manual **Verify macOS signing credentials** workflow on GitHub. It imports the `.p12` into a temporary keychain and checks that the Team API key can reach Apple's notary service, without publishing a release.
 
@@ -44,6 +44,6 @@ for dmg in Termy-*-signed.dmg; do
 done
 ```
 
-Mount each DMG, copy `Termy.app` to `/Applications`, and launch it on matching Apple silicon and Intel Macs. Inspect the app with `codesign --verify --deep --strict --verbose=2 /Applications/Termy.app` and `codesign -dv --verbose=4 /Applications/Termy.app`. Inspect the bundled CLI with `codesign --verify --verbose=2 /Applications/Termy.app/Contents/MacOS/termy-cli`. The reported Team ID must match the GitHub variable. After a signed release is published and this install check passes, update the unsigned-build notices on the website and in `README.md`.
+Mount each DMG, copy `Termy.app` to `/Applications`, and launch it on matching Apple silicon and Intel Macs. Inspect the app with `codesign --verify --deep --strict --verbose=2 /Applications/Termy.app`, `codesign -dv --verbose=4 /Applications/Termy.app`, and `codesign -d --entitlements :- /Applications/Termy.app`. Inspect the bundled CLI with `codesign --verify --verbose=2 /Applications/Termy.app/Contents/MacOS/termy-cli` and `codesign -d --entitlements :- /Applications/Termy.app/Contents/MacOS/termy-cli`. The reported Team ID must match the GitHub variable. After a signed release is published and this install check passes, update the unsigned-build notices on the website and in `README.md`.
 
 If notarization fails, inspect the submission log with `xcrun notarytool log <submission-id> --key <p8-file> --key-id <key-id> --issuer <issuer-id>`. Do not print private keys in CI logs. [Apple's notarization troubleshooting](https://developer.apple.com/documentation/security/resolving-common-notarization-issues).

@@ -239,6 +239,19 @@ require_pattern 'ensure_folder_document_type' \
 require_pattern 'NSLocalNetworkUsageDescription' \
   "scripts/build-dmg.sh" \
   "macOS DMG packaging must declare local network usage permission"
+require_pattern 'NSBluetoothAlwaysUsageDescription' \
+  "scripts/build-dmg.sh" \
+  "macOS DMG packaging must declare Bluetooth usage permission"
+require_pattern 'NSMicrophoneUsageDescription' \
+  "scripts/build-dmg.sh" \
+  "macOS DMG packaging must declare microphone usage permission"
+require_path "scripts/macos/termy.entitlements"
+require_pattern 'com\.apple\.security\.device\.audio-input' \
+  "scripts/macos/termy.entitlements" \
+  "macOS entitlements must allow audio input for microphone access under Hardened Runtime"
+require_pattern 'scripts/macos/termy\.entitlements' \
+  "scripts/build-dmg.sh" \
+  "macOS DMG packaging must wire up the default macOS entitlements plist"
 require_pattern 'public.folder' \
   "scripts/build-dmg.sh" \
   "macOS DMG packaging must declare public.folder document support"
