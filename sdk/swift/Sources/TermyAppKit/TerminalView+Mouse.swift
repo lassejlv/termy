@@ -46,11 +46,14 @@ extension TerminalView {
     public override func mouseDragged(with event: NSEvent) {
         let position = gridPosition(for: event)
         if drag(.left, at: position, event: event) { return }
-        guard let anchor = gesture.selectionAnchor else { return }
-        selection = TerminalSelection(anchor: anchor, head: position, granularity: gesture.granularity)
+        guard gesture.selectionAnchor != nil else { return }
+        gesture.selectionPoint = convert(event.locationInWindow, from: nil)
+        extendSelection()
     }
 
     public override func mouseUp(with event: NSEvent) {
+        stopAutoscroll()
+        gesture.selectionPoint = nil
         if release(.left, at: gridPosition(for: event), event: event) { return }
         gesture.selectionAnchor = nil
         if renderConfig.copyOnSelect, selection != nil { copy(nil) }
@@ -105,6 +108,62 @@ extension TerminalView {
         gesture.lastDrag = nil
         _ = try? session.send(MouseInput(.release(button), at: position, modifiers: reportingModifiers(event)))
         return true
+    }
+
+    // MARK: Selection autoscroll
+
+    /// Moves the selection's head to the pointer, and keeps scrolling while
+    /// the pointer is above or below the text, held still or not.
+    private func extendSelection() {
+        guard let anchor = gesture.selectionAnchor, let point = gesture.selectionPoint else { return }
+        let frame = session.frame
+        selection = TerminalSelection(
+            anchor: anchor, head: renderer.position(at: point, cols: frame.cols, rows: frame.rows),
+            granularity: gesture.granularity)
+        guard autoscrollRate(at: point) != 0 else { return stopAutoscroll() }
+        guard autoscrollTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.autoscrollInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.autoscrollTick() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        autoscrollTimer = timer
+    }
+
+    func autoscrollTick() {
+        guard let point = gesture.selectionPoint else { return stopAutoscroll() }
+        gesture.autoscrollAccumulator += autoscrollRate(at: point) * Self.autoscrollInterval
+        let lines = Int32(gesture.autoscrollAccumulator.rounded(.towardZero))
+        guard lines != 0 else { return }
+        gesture.autoscrollAccumulator -= CGFloat(lines)
+        session.scroll(lines: lines)
+        extendSelection()
+    }
+
+    private func stopAutoscroll() {
+        autoscrollTimer?.invalidate()
+        autoscrollTimer = nil
+        gesture.autoscrollAccumulator = 0
+    }
+
+    private func autoscrollRate(at point: CGPoint) -> CGFloat {
+        let top = renderer.paddingY
+        return Self.autoscrollRate(
+            pointerY: point.y, textTop: top, textBottom: top + CGFloat(session.frame.rows) * renderer.cellHeight,
+            cellHeight: renderer.cellHeight)
+    }
+
+    static let autoscrollInterval: CGFloat = 1.0 / 30
+
+    /// Lines per second to scroll while drag-selecting with the pointer at
+    /// `pointerY` (flipped): positive into history above the text, negative
+    /// back toward the screen below it, faster the farther out the pointer is.
+    nonisolated static func autoscrollRate(
+        pointerY: CGFloat, textTop: CGFloat, textBottom: CGFloat, cellHeight: CGFloat
+    ) -> CGFloat {
+        let cell = max(cellHeight, 1)
+        if pointerY < textTop { return 10 * (1 + (textTop - pointerY) / cell) }
+        if pointerY >= textBottom { return -10 * (1 + (pointerY - textBottom) / cell) }
+        return 0
     }
 
     // MARK: Motion and wheel
@@ -162,6 +221,9 @@ extension TerminalView {
 /// Per-gesture mouse state for `TerminalView`.
 struct MouseGestureState {
     var selectionAnchor: GridPosition?
+    /// Where a selection drag's pointer last was, in the view.
+    var selectionPoint: CGPoint?
+    var autoscrollAccumulator: CGFloat = 0
     var granularity: TerminalSelection.Granularity = .character
     var reportingButton: MouseButton?
     var lastDrag: GridPosition?
