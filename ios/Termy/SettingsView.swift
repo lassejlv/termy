@@ -51,7 +51,7 @@ struct SettingsView: View {
                     Text("Notifications")
                 } footer: {
                     Text(
-                        "Tells you when a command that ran \(Int(CommandNotifier.minimumDuration)) seconds or more finishes in a pane you aren’t looking at, even when Termy is closed. Your Mac seals each notification so only this iPhone can read it. Needs shell integration on your Mac. A Mac paired without a relay notifies you only while Termy is open."
+                        "Tells you when a command that ran \(Int(CommandNotifier.minimumDuration)) seconds or more finishes in a pane you aren’t looking at, while Termy is connected to your Mac. Needs shell integration on your Mac."
                     )
                 }
                 Section("Shortcuts") {

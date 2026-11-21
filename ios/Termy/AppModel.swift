@@ -75,9 +75,6 @@ final class AppModel: HostTransport {
     /// The pairing sheet should open, e.g. after removing a computer to pair it again.
     var pairingRequested = false
     @ObservationIgnored private var publishedSnapshot: HostSnapshot?
-    /// The APNs token, once iOS gave one, and the notification keys last shared with the extension.
-    @ObservationIgnored private var pushToken: Data?
-    @ObservationIgnored private var sharedPushKeys: [UUID: Data]?
 
     init() {
         do {
@@ -125,8 +122,6 @@ final class AppModel: HostTransport {
             $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
         publishDevices()
-        // A Mac paired or removed: the extension's keys follow.
-        if CommandNotifier.shared.enabled { sharePushKeys() }
     }
 
     // MARK: Routes, widget and quick actions
@@ -160,68 +155,6 @@ final class AppModel: HostTransport {
     }
 
     func sessionsChanged(for host: UUID) { publishDevices() }
-
-    // MARK: Push notifications
-
-    static var pushEnvironment: PushEnvironment {
-        #if DEBUG
-            .sandbox
-        #else
-            .production
-        #endif
-    }
-
-    /// iOS gave a token for this phone: every relay it's paired through can now wake it.
-    func pushRegistered(_ token: Data) {
-        pushToken = token
-        Task { await syncPush() }
-    }
-
-    func pushFailed(_ error: Error) {
-        lastError = "iOS couldn’t set up notifications: \(error.localizedDescription)"
-    }
-
-    /// Shares each paired Mac's notification key with the extension, and the token with each relay.
-    func syncPush() async {
-        guard CommandNotifier.shared.enabled else { return }
-        sharePushKeys()
-        guard let token = pushToken else { return }
-        for profile in profiles.values where !profile.pins.isEmpty && !profile.credentials.isRelayless {
-            do { try await profile.credentials.api.setPushToken(token, environment: Self.pushEnvironment) } catch {
-                lastError = "Couldn’t turn on notifications with the relay: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    /// Notifications turned off: relays forget the token and the extension its keys.
-    func pushDisabled() async {
-        PushKeyStore.clear()
-        sharedPushKeys = nil
-        for profile in profiles.values where !profile.credentials.isRelayless {
-            try? await profile.credentials.api.removePushToken()
-        }
-    }
-
-    /// The key each paired Mac seals notifications with: our identity with its pinned key.
-    private func pushKeys() -> [UUID: Data] {
-        var keys: [UUID: Data] = [:]
-        for profile in profiles.values {
-            for (host, pin) in profile.pins {
-                if let key = try? PushSeal.key(
-                    identity: identity, peerPublicKey: pin, host: host, client: profile.credentials.device.id)
-                {
-                    keys[host] = key.withUnsafeBytes { Data($0) }
-                }
-            }
-        }
-        return keys
-    }
-
-    private func sharePushKeys() {
-        let keys = pushKeys()
-        guard keys != sharedPushKeys else { return }
-        if PushKeyStore.save(keys) { sharedPushKeys = keys }
-    }
 
     /// Shares the computer list with the widget, the Home Screen quick actions and Shortcuts.
     private func publishDevices() {
@@ -321,7 +254,6 @@ final class AppModel: HostTransport {
                 try persist()
                 rebuildDevices()
                 restart(relayKey)
-                Task { await syncPush() }
                 return
             }
             guard Date() < code.expiresAt else { throw PairingError.expired }

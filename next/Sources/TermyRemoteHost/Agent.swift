@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Termy
 import TermyRemoteKit
@@ -41,8 +40,6 @@ public final class RemoteHostAgent {
     private var lastSessions: RemoteSessionList?
     /// When each pane's running command was first seen, for phones to show how long it runs.
     private var runningSince: [String: Date] = [:]
-    /// The relay answered that it can't push; don't ask again until the next start.
-    var pushUnavailable = false
     /// Pane sizes phones asked for, across every phone, so the last one to
     /// leave a pane gives it back the size it had before any phone came.
     let paneSizes = PaneSizes()
@@ -350,14 +347,11 @@ public final class RemoteHostAgent {
     private func watchSessions() async {
         while !Task.isCancelled {
             do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
-            // Without a phone connected, still watch for finished commands to push.
-            guard !peers.isEmpty || !trustedDevices.isEmpty else { continue }
-            if !peers.isEmpty {
-                let configuration = configurationProvider()
-                if configuration != lastConfiguration {
-                    lastConfiguration = configuration
-                    for peer in peers.values { peer.configure(configuration) }
-                }
+            guard !peers.isEmpty else { continue }
+            let configuration = configurationProvider()
+            if configuration != lastConfiguration {
+                lastConfiguration = configuration
+                for peer in peers.values { peer.configure(configuration) }
             }
             await broadcastSessionsIfChanged()
         }
@@ -374,54 +368,8 @@ public final class RemoteHostAgent {
         guard read > sessionReadShown else { return }
         sessionReadShown = read
         guard sessions != lastSessions else { return }
-        if let previous = lastSessions {
-            notifyOfflinePhones(FinishedCommand.between(previous.panes, sessions.panes, atLeast: Self.notifyAfter))
-        }
         lastSessions = sessions
         for peer in peers.values { peer.send(.sessions(sessions)) }
-    }
-}
-
-// MARK: Push notifications
-
-extension RemoteHostAgent {
-    /// Commands shorter than this finish without a notification, as on the phone.
-    static let notifyAfter: TimeInterval = 10
-
-    /// Tells paired phones that aren't connected, through the relay, that a long command
-    /// finished. A connected phone notifies itself. Each notification is sealed with a key
-    /// only that phone shares with this Mac, so the relay can't read it.
-    func notifyOfflinePhones(_ commands: [FinishedCommand]) {
-        // Apple delivers a notification only from a server; without a relay there is none.
-        guard !commands.isEmpty, !pushUnavailable, let api else { return }
-        let offline = trustedDevices.filter { peers[$0.key] == nil }
-        guard !offline.isEmpty else { return }
-        let (identity, host, name) = (identity, hostID, hostName)
-        Task {
-            for command in commands {
-                let text = command.notification(on: name)
-                let payload = PushPayload(title: text.title, body: text.body, pane: command.pane.id)
-                for (phone, publicKey) in offline {
-                    do {
-                        let key = try PushSeal.key(identity: identity, peerPublicKey: publicKey, host: host, client: phone)
-                        _ = try await api.push(
-                            to: phone, sealed: try PushSeal.seal(payload, key: key),
-                            collapseID: Self.collapseID(command.pane.id))
-                    } catch let error as RelayAPIError where error.status == 503 {
-                        pushUnavailable = true
-                        log("This relay doesn’t send push notifications.")
-                        return
-                    } catch {
-                        log("Couldn’t notify a phone: \(error.localizedDescription)")
-                    }
-                }
-            }
-        }
-    }
-
-    /// One notification per pane on the phone: a newer one replaces it. The relay accepts only plain characters.
-    nonisolated static func collapseID(_ pane: String) -> String {
-        "pane-" + SHA256.hash(data: Data(pane.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 }
 

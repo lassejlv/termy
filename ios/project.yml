@@ -25,12 +25,9 @@ targets:
       - package: TermyRemote
         product: TermyRemoteKit
       - target: TermyWidgets
-      - target: TermyNotifications
     entitlements:
       path: Termy/Termy.entitlements
       properties:
-        # Xcode makes this production when exporting for TestFlight and the App Store.
-        aps-environment: development
         # The app's own group stays first, so its pairing secrets keep defaulting to it;
         # only the widget snapshot goes to the shared group.
         keychain-access-groups:
@@ -72,28 +69,6 @@ targets:
         PRODUCT_NAME: TermyWidgets
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_FILE: Widgets/Info.plist
-        SKIP_INSTALL: YES
-
-  TermyNotifications:
-    type: app-extension
-    platform: iOS
-    sources:
-      - path: Notifications
-      - path: Shared
-    dependencies:
-      - package: TermyRemote
-        product: TermyRemoteKit
-    entitlements:
-      path: Notifications/Notifications.entitlements
-      properties:
-        keychain-access-groups:
-          - $(AppIdentifierPrefix)sh.termy.shared
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: sh.termy.app.notifications
-        PRODUCT_NAME: TermyNotifications
-        TARGETED_DEVICE_FAMILY: "1,2"
-        INFOPLIST_FILE: Notifications/Info.plist
         SKIP_INSTALL: YES
 
   TermyTests:

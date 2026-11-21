@@ -7,8 +7,7 @@ import UserNotifications
 /// Notifies when a long command finishes in a pane you aren't looking at.
 ///
 /// Off until turned on in Settings, which is when Termy asks for permission.
-/// It works from the session lists the Mac sends while Termy is open; once
-/// the relay can push, the same switch covers notifications in the background.
+/// It works from the session lists the Mac sends while Termy is connected to it.
 @MainActor @Observable
 final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
     static let shared = CommandNotifier()
@@ -31,7 +30,6 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
         guard on else {
             enabled = false
             UserDefaults.standard.set(false, forKey: Self.defaultsKey)
-            await AppModel.shared.pushDisabled()
             return true
         }
         let center = UNUserNotificationCenter.current()
@@ -43,8 +41,6 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
         denied = !allowed
         enabled = allowed
         UserDefaults.standard.set(allowed, forKey: Self.defaultsKey)
-        // The token arrives in the app delegate, which hands it to the relays.
-        if allowed { UIApplication.shared.registerForRemoteNotifications() }
         return allowed
     }
 
