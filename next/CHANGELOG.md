@@ -6,6 +6,12 @@ update window Sparkle shows, so write for the people updating: what they can
 do now, not how it was built. Rename `Unreleased` to the version when you tag
 it.
 
+## Unreleased
+
+### Fixed
+
+- Dragging a selection above or below a pane scrolls it, faster the farther out you go, so you can select more than fits on screen.
+
 ## 0.4.1
 
 ### Fixed

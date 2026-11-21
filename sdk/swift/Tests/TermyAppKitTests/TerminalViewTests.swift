@@ -295,6 +295,69 @@ struct TerminalViewTests {
         #expect(view.selection == nil)
     }
 
+    @Test func dragSelectingPastTheEdgesScrollsAndKeepsTheAnchor() throws {
+        let view = try makeView(feeding: (0..<20).map { "line \($0)" }.joined(separator: "\r\n"))
+        func mouse(_ type: NSEvent.EventType, x: CGFloat, y: CGFloat) throws -> NSEvent {
+            try #require(NSEvent.mouseEvent(
+                with: type, location: view.convert(NSPoint(x: x, y: y), to: nil), modifierFlags: [],
+                timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        let anchor = view.renderer.cellRect(row: 2, col: 3)
+        #expect(view.session.frame.text(row: 2) == "line 17")
+        view.mouseDown(with: try mouse(.leftMouseDown, x: anchor.midX, y: anchor.midY))
+
+        // Above the text: scrolls into history, the head on the top row.
+        view.mouseDragged(with: try mouse(.leftMouseDragged, x: anchor.midX, y: -40))
+        #expect(view.autoscrollTimer != nil)
+        for _ in 0..<6 { view.autoscrollTick() }
+        let scrolled = view.session.frame.displayOffset
+        #expect(scrolled > 0)
+        #expect(view.selection?.head == GridPosition(row: 0, col: 3))
+        #expect(view.selection?.anchor == GridPosition(row: 2 + scrolled, col: 3))
+        #expect(view.session.frame.text(row: 0) == "line \(15 - scrolled)")
+
+        // Back inside it stops.
+        view.mouseDragged(with: try mouse(.leftMouseDragged, x: anchor.midX, y: anchor.midY))
+        #expect(view.autoscrollTimer == nil)
+
+        // Below the text: back toward the screen, and mouse-up stops it.
+        view.mouseDragged(with: try mouse(.leftMouseDragged, x: anchor.midX, y: view.bounds.height + 40))
+        #expect(view.autoscrollTimer != nil)
+        for _ in 0..<30 { view.autoscrollTick() }
+        #expect(view.session.frame.displayOffset == 0)
+        #expect(view.selection?.anchor == GridPosition(row: 2, col: 3))
+        view.mouseUp(with: try mouse(.leftMouseUp, x: anchor.midX, y: view.bounds.height + 40))
+        #expect(view.autoscrollTimer == nil)
+        #expect(view.selection?.text(in: view.session.frame) == "e 17\nline 18\nline")
+    }
+
+    @Test func programsTrackingTheMouseGetTheDragInsteadOfAutoscroll() throws {
+        let view = try makeView(feeding: (0..<20).map { "line \($0)" }.joined(separator: "\r\n") + "\u{1b}[?1002h")
+        func mouse(_ type: NSEvent.EventType, y: CGFloat) throws -> NSEvent {
+            try #require(NSEvent.mouseEvent(
+                with: type, location: view.convert(NSPoint(x: 20, y: y), to: nil), modifierFlags: [],
+                timestamp: 0, windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        view.mouseDown(with: try mouse(.leftMouseDown, y: 30))
+        view.mouseDragged(with: try mouse(.leftMouseDragged, y: -40))
+        #expect(view.autoscrollTimer == nil)
+        #expect(view.selection == nil)
+        #expect(view.session.frame.displayOffset == 0)
+        view.mouseUp(with: try mouse(.leftMouseUp, y: -40))
+    }
+
+    @Test func selectionAutoscrollGrowsWithDistance() {
+        func rate(_ y: CGFloat) -> CGFloat {
+            TerminalView.autoscrollRate(pointerY: y, textTop: 4, textBottom: 84, cellHeight: 16)
+        }
+        #expect(rate(4) == 0)
+        #expect(rate(83) == 0)
+        #expect(rate(3) > 0)
+        #expect(rate(-40) > rate(3))
+        #expect(rate(84) < 0)
+        #expect(rate(200) < rate(84))
+    }
+
     @Test func copyReportsTextAndSelectionRects() throws {
         final class Recorder: TerminalViewDelegate {
             var copied: [String] = []

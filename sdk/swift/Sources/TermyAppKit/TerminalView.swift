@@ -132,6 +132,8 @@ public final class TerminalView: NSView {
     private var imageCellSize = CGSize.zero
     private static let idleImageBytes = 64 * 1024 * 1024
     private var blinkTimer: Timer?
+    /// Scrolls while a selection drag is above or below the text.
+    var autoscrollTimer: Timer?
     private var metalFrameScheduled = false
     /// The scheduled frame draws in this run-loop turn, not at the display link.
     private var metalFrameRunsThisTurn = false
@@ -193,6 +195,7 @@ public final class TerminalView: NSView {
 
     isolated deinit {
         blinkTimer?.invalidate()
+        autoscrollTimer?.invalidate()
         animationTimer?.invalidate()
         stopDisplayLink()
         windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
