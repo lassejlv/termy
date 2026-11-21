@@ -79,12 +79,4 @@ import Testing
         #expect(throws: ChannelError.self) { try MessageCodec.inflate(small, limit: 299_999) }
         #expect(throws: ChannelError.self) { try MessageCodec.inflate(Data([1, 2, 3, 4]), limit: 1000) }
     }
-
-    @Test func wireRoundTrips() {
-        let peer = UUID()
-        let frame = RelayWire.encode(peer: peer, packet: Data([3, 4, 5]))
-        let decoded = RelayWire.decode(frame)
-        #expect(decoded?.peer == peer)
-        #expect(decoded?.packet == Data([3, 4, 5]))
-    }
 }

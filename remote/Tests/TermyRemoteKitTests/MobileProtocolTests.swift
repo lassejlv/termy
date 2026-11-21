@@ -139,20 +139,6 @@ struct MobileProtocolTests {
         #expect(older.row == 1 && older.wrapped == nil)
     }
 
-    /// Sends count toward the backlog until the socket finishes with them,
-    /// including when they fail.
-    @Test(.timeLimit(.minutes(1))) func relaySendsAreCountedUntilTheSocketIsDone() async throws {
-        let connection = RelayConnection(api: RelayAPI(baseURL: URL(string: "http://127.0.0.1:9")!))
-        defer { connection.close() }
-        connection.send(Data(repeating: 7, count: 1000), to: UUID())
-        #expect(connection.pendingSendBytes == 1000 + 17)
-        let deadline = Date().addingTimeInterval(20)
-        while connection.pendingSendBytes != 0, Date() < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(connection.pendingSendBytes == 0)
-    }
-
     @Test func imagesRoundTripAndMalformedPlacementsAreRejected() throws {
         let placement = RemoteImagePlacement(
             key: "7:3", frame: [2, 1, 10.5, 4], clip: [2, 1, 10.5, 4], crop: [0, 0, 1, 1], z: -1)

@@ -30,17 +30,11 @@
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Choose a photo to send to your Mac’s terminal.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Connects straight to your Mac when both are on the same network, instead of through the relay.</string>
+	<string>Connects straight to your Mac when both are on the same network.</string>
 	<!-- How a Mac is found again on the local network when its address there changed. -->
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_termy._tcp</string>
 	</array>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<!-- A relay on this Mac or the local network during development. -->
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
 </dict>
 </plist>

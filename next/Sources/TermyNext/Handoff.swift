@@ -3,7 +3,7 @@ import TermyRemoteKit
 
 /// Handoff with the Termy iPhone app. The focused session-host pane is
 /// offered to the phone, which opens it; a pane the phone shows opens here.
-/// Both apps name the computer by its relay device ID, so Handoff needs
+/// Both apps name the computer by the host ID it paired under, so Handoff needs
 /// Mobile access on, and both apps signed by the same team.
 @MainActor
 enum PaneHandoff {

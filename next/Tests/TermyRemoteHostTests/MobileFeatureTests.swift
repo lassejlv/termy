@@ -1,10 +1,11 @@
 import AppKit
 import Foundation
+import Network
 import Termy
-import TermyRemoteKit
 import Testing
 
 @testable import TermyRemoteHost
+@testable import TermyRemoteKit
 
 @MainActor struct MobileFeatureTests {
     @Test func unicodeCellsUseHostGlyphsAndKeepColumns() throws {
@@ -84,8 +85,8 @@ import Testing
         #expect(runs.map(\.col) == [0, 200, 204, 205, 207])
     }
 
-    /// The relay closes a socket that sends more than 4 MiB, dropping every
-    /// phone; a frame that large must go as several that rebuild the screen.
+    /// A packet over 4 MiB closes the connection, dropping every session on
+    /// it; a frame that large must go as several that rebuild the screen.
     @Test func oversizedFramesSplitIntoRowPatches() throws {
         let cursor = RemoteCursor(row: 0, col: 0, visible: true, style: "block")
         let rows = (0..<40).map { row in
@@ -126,20 +127,13 @@ import Testing
             ).paneID)
         let identity = DeviceIdentity()
         let phone = DeviceIdentity()
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let device = try decoder.decode(
-            RelayDevice.self,
-            from: Data(
-                #"{"id":"\#(UUID().uuidString)","name":"Mac","kind":"host","publicKey":"\#(identity.publicKey.base64EncodedString())","online":true,"createdAt":"2026-01-01T00:00:00Z"}"#
-                    .utf8))
-        let agent = RemoteHostAgent(
-            multiplexer: mux,
-            credentials: DeviceCredentials(relayURL: URL(string: "http://127.0.0.1:9")!, token: "", device: device),
-            identity: identity, trustedDevices: [:])
+        let agent = RemoteHostAgent(multiplexer: mux, hostID: UUID(), identity: identity, trustedDevices: [:])
         let handshake = SecureChannel.startClient(identity: phone, hostStaticKey: identity.publicKey)
         let (channel, _) = try SecureChannel.respond(identity: identity, initPacket: handshake.initPacket)
-        let peer = Peer(id: UUID(), name: "iPhone", channel: channel, agent: agent)
+        // Nothing listens on the discard port: what the peer sends goes nowhere.
+        let connection = DirectConnection(
+            NWConnection(host: "127.0.0.1", port: 9, using: DirectConnection.parameters()), remote: nil, timeout: nil)
+        let peer = Peer(id: UUID(), name: "iPhone", channel: channel, agent: agent, connection: connection)
         defer { peer.close() }
 
         peer.handle(.attach(stream: 1, paneID: pane))

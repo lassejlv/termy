@@ -1,7 +1,7 @@
 import Compression
 import Foundation
 
-/// What travels inside a `SecureChannel`. The relay never sees any of it.
+/// What travels inside a `SecureChannel`. The network in between never sees any of it.
 
 /// A key the phone sends; the host encodes it for the program's current
 /// keyboard mode, so the phone needs no terminal state.
@@ -184,8 +184,8 @@ public struct RemoteImagePlacement: Codable, Hashable, Sendable {
 /// Every image on a stream's screen. It replaces the list the phone had.
 public struct RemoteImages: Codable, Hashable, Sendable {
     public static let maxPlacements = 4096
-    /// The largest image the host sends, encoded. The relay carries
-    /// messages up to 4 MiB, and JSON takes a third more than the PNG.
+    /// The largest image the host sends, encoded. A packet is at most
+    /// 4 MiB (`DirectWire.maxPacketBytes`), and JSON takes a third more than the PNG.
     public static let maxImageBytes = 2 * 1024 * 1024
 
     public var stream: Int
@@ -358,7 +358,7 @@ public enum HostMessage: Codable, Hashable, Sendable {
     case commandOutput(stream: Int, output: RemoteCommandOutput?)
     /// An upload was saved at `path` and the path pasted into the pane.
     case uploaded(stream: Int, path: String)
-    /// Where this Mac can be reached without the relay, empty when nowhere. Sent to
+    /// Where this Mac can be reached, empty when nowhere. Sent to
     /// phones of version 6 or later, after their hello and whenever it changes.
     case endpoints([DirectEndpoint])
 
@@ -392,7 +392,7 @@ public enum MessageCodec {
         return Data([0]) + json
     }
 
-    /// The most a deflated message may inflate to. A relay message is at most
+    /// The most a deflated message may inflate to. A packet is at most
     /// 4 MiB; text inflates about tenfold, so a real message stays well
     /// below this, while a message built to inflate without end is refused.
     public static let maxInflatedBytes = 64 * 1024 * 1024
@@ -563,7 +563,7 @@ public final class GlyphCache {
 
 /// A command's output, as the host read it from the pane's history.
 public struct RemoteCommandOutput: Codable, Hashable, Sendable {
-    /// What fits a relay message with room to spare after JSON escaping.
+    /// What fits a packet with room to spare after JSON escaping.
     public static let maxBytes = 1024 * 1024
 
     public var command: String?
@@ -591,8 +591,8 @@ public struct RemoteCommandOutput: Codable, Hashable, Sendable {
 
 /// Files a phone sends into a pane.
 public enum RemoteUpload {
-    /// The largest file: base64 in JSON grows it by a third, and the relay
-    /// carries messages up to 4 MiB.
+    /// The largest file: base64 in JSON grows it by a third, and a packet
+    /// is at most 4 MiB.
     public static let maxBytes = 2_500_000
 
     /// A safe file name: letters, digits, dots, dashes and underscores, at
@@ -627,7 +627,7 @@ public enum RemoteUpload {
 }
 
 /// Handoff between the iPhone app and Termy Next: the pane on screen, and
-/// the computer it runs on (its relay device ID, which both apps know).
+/// the computer it runs on (the host ID it paired under, which both apps know).
 public enum RemoteHandoff {
     public static let activityType = "sh.termy.pane"
 

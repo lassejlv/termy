@@ -1,11 +1,10 @@
 import Foundation
 import Network
 
-// The direct path: a phone on the Mac's local network, or on its tailnet,
-// talks to the Mac over plain TCP instead of through the relay. The packets
-// are the same `SecureChannel` packets the relay would carry, so the network
-// in between is trusted with nothing: pairing, pinned keys and encryption are
-// unchanged, and the relay stays as the fallback (and for pairing and push).
+// How a phone reaches a Mac: over plain TCP to the Mac itself, on its local
+// network or its tailnet. The packets are sealed `SecureChannel` packets, so the
+// network in between is trusted with nothing: the Mac answers only a handshake
+// naming a key pinned on it, and the phone only a Mac that proves the key it pinned.
 
 // MARK: - Addresses
 
@@ -84,8 +83,8 @@ public struct NetworkInterface: Hashable, Sendable {
     }
 }
 
-/// Where a Mac can be reached without the relay. Sent only inside `SecureChannel`,
-/// so the relay never learns a device's addresses.
+/// Where a Mac can be reached. Sent in its pairing QR code and, after that, only
+/// inside `SecureChannel`.
 public struct DirectEndpoint: Codable, Hashable, Sendable {
     public enum Kind: Sendable { case localNetwork, tailscale }
 
@@ -150,8 +149,8 @@ public struct DirectEndpoint: Codable, Hashable, Sendable {
 
 /// Packets on a direct connection: a 4-byte big-endian length, then the packet.
 public enum DirectWire {
-    /// As large as the relay takes, so a host seals the same packets for both paths.
-    public static let maxPacketBytes = RelayWire.maxMessageBytes
+    /// The largest packet. A larger one closes the connection, and with it every session on it.
+    public static let maxPacketBytes = 4 * 1024 * 1024
 
     public static func frame(_ packet: Data) -> Data {
         var out = Data(capacity: packet.count + 4)
@@ -223,7 +222,7 @@ public final class DirectConnection: @unchecked Sendable {
     }
 
     /// Finds a Mac on the local network by the name it advertises (see `DirectListener`),
-    /// for when its address there changed and no relay is around to say so.
+    /// for when its address there changed.
     public convenience init(advertised name: String, timeout: TimeInterval = 3) {
         self.init(
             NWConnection(
@@ -285,7 +284,9 @@ public final class DirectConnection: @unchecked Sendable {
         return parameters
     }
 
-    /// Bytes handed to `send` that the socket hasn't taken yet (see `RelayConnection`).
+    /// Bytes handed to `send` that the socket hasn't taken yet. Network.framework
+    /// queues sends without limit, so a sender on a slow link checks this and holds
+    /// back what it can send later in one piece (screen updates).
     public var pendingSendBytes: Int { lock.withLock { queuedBytes } }
 
     public func send(_ packet: Data) {

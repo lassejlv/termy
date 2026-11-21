@@ -57,7 +57,7 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// Called with each new session list from a computer.
-    func sessionsChanged(from old: RemoteSessionList, to new: RemoteSessionList, on host: RelayDevice, watching: Set<String>) {
+    func sessionsChanged(from old: RemoteSessionList, to new: RemoteSessionList, on host: PairedDevice, watching: Set<String>) {
         guard enabled else { return }
         let appActive = UIApplication.shared.applicationState == .active
         for done in Self.finished(old: old.panes, new: new.panes) {
@@ -67,7 +67,7 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    private func post(_ done: FinishedCommand, host: RelayDevice) {
+    private func post(_ done: FinishedCommand, host: PairedDevice) {
         let content = UNMutableNotificationContent()
         (content.title, content.body) = done.notification(on: host.name)
         content.sound = .default

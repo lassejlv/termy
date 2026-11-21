@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-/// Both clients keep private identity and relay credentials in the device's Keychain.
+/// Both apps keep their private identity and their pairings in the device's Keychain.
 /// No account, password, or shared filesystem credentials are required.
 public struct DeviceStore: Sendable {
     private let service: String
@@ -18,6 +18,10 @@ public struct DeviceStore: Sendable {
         let identity = DeviceIdentity()
         try write(identity.rawRepresentation, key: "identity")
         return identity
+    }
+    /// Forgets what is saved under `key`, if anything.
+    public func remove(key: String) {
+        SecItemDelete(query(key) as CFDictionary)
     }
     private func read(_ key: String) throws -> Data? {
         var q = query(key)

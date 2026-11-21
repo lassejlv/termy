@@ -1,9 +1,8 @@
 import Foundation
 
-/// Public keys this device has pinned, by device ID. The relay lists every
-/// device's key, so a relay that lied could put its own key there; pinning
-/// the first key seen per device (and refusing a changed one) means a
-/// compromised relay can't silently step into a session that already worked.
+/// Public keys this device has pinned, by device ID. Pinning the first key
+/// seen per device (and refusing a changed one) means nothing can silently
+/// step into a session that already worked.
 public struct TrustStore: Sendable {
     public struct Entry: Codable, Hashable, Sendable {
         public var name: String

@@ -43,13 +43,7 @@ import Testing
             size: TerminalSize(cols: 80, rows: 24),
             options: TerminalOptions(startupCommand: "/bin/sh -c \"\(script)\""))
         let pane = try #require(terminal.paneID)
-        let device = try JSONDecoder().decode(
-            RelayDevice.self,
-            from: Data(#"{"id":"\#(UUID().uuidString)","name":"Mac","kind":"host","publicKey":"","online":true,"createdAt":0}"#.utf8))
-        let agent = RemoteHostAgent(
-            multiplexer: mux,
-            credentials: DeviceCredentials(relayURL: URL(string: "https://relay.invalid")!, token: "", device: device),
-            identity: DeviceIdentity(), trustedDevices: [:])
+        let agent = RemoteHostAgent(multiplexer: mux, hostID: UUID(), identity: DeviceIdentity(), trustedDevices: [:])
 
         func command() async -> RemoteCommandState? {
             await agent.currentSessions().panes.first { $0.id == pane }?.command

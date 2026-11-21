@@ -7,7 +7,7 @@ import Testing
 @testable import TermyRemoteHost
 @testable import TermyRemoteKit
 
-/// The direct path, against a real listener on this Mac and no relay at all.
+/// Phones and a real listener on this Mac.
 @Suite("Direct connections", .serialized)
 @MainActor struct DirectServerTests {
     /// A phone's end of a direct connection.
@@ -76,7 +76,7 @@ import Testing
         throw CancellationError()
     }
 
-    @Test(.timeLimit(.minutes(1))) func pairedPhonesConnectWithoutTheRelayAndOthersDoNot() async throws {
+    @Test(.timeLimit(.minutes(1))) func pairedPhonesConnectAndOthersDoNot() async throws {
         let executable = try #require(Multiplexer.bundledHostExecutable)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "termy-direct-\(UUID().uuidString.prefix(8))")
@@ -88,18 +88,8 @@ import Testing
         let identity = DeviceIdentity()
         let phoneIdentity = DeviceIdentity()
         let phoneID = UUID()
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let device = try decoder.decode(
-            RelayDevice.self,
-            from: Data(
-                #"{"id":"\#(UUID().uuidString)","name":"Mac","kind":"host","publicKey":"\#(identity.publicKey.base64EncodedString())","online":true,"createdAt":"2026-01-01T00:00:00Z"}"#
-                    .utf8))
-        // Nothing listens on the relay's address: the direct path has to work alone.
         let agent = RemoteHostAgent(
-            multiplexer: mux,
-            credentials: DeviceCredentials(relayURL: URL(string: "http://127.0.0.1:9")!, token: "", device: device),
-            identity: identity, trustedDevices: [phoneID: phoneIdentity.publicKey])
+            multiplexer: mux, hostID: UUID(), identity: identity, trustedDevices: [phoneID: phoneIdentity.publicKey])
         agent.directPort = nil
         agent.interfaces = {
             [
@@ -132,7 +122,7 @@ import Testing
         try phone.send(.clientHello(version: RemoteProtocol.version))
         try await eventually { phone.received.contains(.endpoints(advertised)) }
         #expect(phone.received.first == .hello(hostName: agent.hostName, version: RemoteProtocol.version))
-        #expect(agent.peers[phoneID]?.direct != nil)
+        #expect(agent.peers[phoneID] != nil)
         try phone.send(.listSessions)
         try await eventually { phone.sessionLists == 1 }
 
@@ -145,7 +135,7 @@ import Testing
         try await eventually { impostor.packets == 1 }  // The Mac answered the handshake.
         impostor.connection.send(Data([3]) + Data(repeating: 0, count: 40))
         try await eventually { impostor.closed }
-        #expect(agent.peers[phoneID]?.direct != nil)
+        #expect(agent.peers[phoneID] != nil)
         try phone.send(.listSessions)
         try await eventually { phone.sessionLists == 2 }
         #expect(!phone.closed)
@@ -163,12 +153,12 @@ import Testing
         try await eventually { agent.peers.isEmpty }
     }
 
-    /// No relay anywhere: the Mac makes its own invitation, the phone claims it on a direct
-    /// connection, the user approves, and the phone then connects as a paired one.
-    @Test(.timeLimit(.minutes(1))) func aPhonePairsAndConnectsWithNoRelayAtAll() async throws {
+    /// The Mac makes an invitation, the phone claims it on a direct connection,
+    /// the user approves, and the phone then connects as a paired one.
+    @Test(.timeLimit(.minutes(1))) func aPhonePairsAndConnects() async throws {
         let executable = try #require(Multiplexer.bundledHostExecutable)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "termy-relayless-\(UUID().uuidString.prefix(8))")
+            "termy-pairing-\(UUID().uuidString.prefix(8))")
         let mux = try Multiplexer.connect(root: root, hostExecutable: executable)
         defer {
             try? mux.shutdown()
@@ -181,7 +171,7 @@ import Testing
         agent.interfaces = { [NetworkInterface(name: "en0", address: IPv4("192.168.1.20")!, mask: 0xFFFF_FF00)] }
         var advertised: [DirectEndpoint] = []
         agent.onDirectEndpoints = { advertised = $0 }
-        var requests: [RelayDevice?] = []
+        var requests: [PairedDevice?] = []
         agent.onPairingRequest = { requests.append($0) }
         // Before it listens there is nowhere for a phone to go, so no code.
         #expect(throws: PairingError.self) { try agent.beginPairing(hostName: "Studio") }
@@ -233,14 +223,14 @@ import Testing
         try await eventually { replay.closed }
         #expect(requests.count == 1)
 
-        // Paired: a session over the direct path, with no relay ever involved.
+        // Paired: a session over the direct connection.
         let phone = Phone(port: port, identity: phoneIdentity, hostKey: identity.publicKey)
         try await eventually { phone.channel != nil }
         try phone.send(.clientHello(version: RemoteProtocol.version))
         try phone.send(.listSessions)
         try await eventually { phone.sessionLists == 1 }
         #expect(agent.connectedDevices == [phoneID])
-        try phone.send(.createSession(name: "No Relay"))
+        try phone.send(.createSession(name: "Paired"))
         try await eventually { phone.received.contains { if case .created = $0 { true } else { false } } }
     }
 }

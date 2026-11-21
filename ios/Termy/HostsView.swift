@@ -14,7 +14,7 @@ struct HostsView: View {
                 if let error = model.lastError {
                     Section { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.orange) }
                 }
-                if model.hosts.isEmpty {
+                if model.hosts.isEmpty, model.relayPaired.isEmpty {
                     Section {
                         VStack(alignment: .leading, spacing: 14) {
                             Image(systemName: "macbook.and.iphone").font(.largeTitle)
@@ -29,15 +29,20 @@ struct HostsView: View {
                     Section {
                         ForEach(model.hosts) { host in
                             NavigationLink(value: host.id) {
-                                HostRow(
-                                    host: host, direct: model.directKinds[host.id],
-                                    relayless: model.isRelayless(host.id))
+                                HostRow(host: host, direct: model.directKinds[host.id])
                             }
                         }
-                    } footer: {
-                        if model.usesRelay, model.relayState != .connected {
-                            Text(model.relayState == .connecting ? "Connecting…" : "Offline")
+                    }
+                }
+                if !model.relayPaired.isEmpty {
+                    Section {
+                        ForEach(model.relayPaired) { host in
+                            RelayPairedRow(host: host)
                         }
+                    } header: {
+                        Text("Pair Again")
+                    } footer: {
+                        Text("These were paired through the relay, which Termy no longer uses. Update Termy Next on the Mac, then pair it again.")
                     }
                 }
             }
@@ -45,7 +50,6 @@ struct HostsView: View {
             .navigationDestination(for: UUID.self) { id in
                 if let host = model.hosts.first(where: { $0.id == id }) { SessionsView(link: model.link(for: host)) }
             }
-            .refreshable { await model.refreshDevices() }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Settings", systemImage: "gearshape") { showSettings = true }
@@ -56,7 +60,6 @@ struct HostsView: View {
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showPairing) { PairComputerView() }
-            .task { await model.refreshDevices() }
         }
         .onAppear {
             if let route = model.route {
@@ -85,17 +88,15 @@ struct HostsView: View {
     }
 }
 struct HostRow: View {
-    let host: RelayDevice
-    /// Set while the phone has a connection of its own to the computer.
+    let host: PairedDevice
+    /// Set while the phone has a connection to the computer.
     var direct: DirectEndpoint.Kind?
-    /// Paired without a relay: nothing says whether it is on until the phone reaches it.
-    var relayless = false
-    private var reachable: Bool { host.online || direct != nil }
+    private var reachable: Bool { direct != nil }
     private var status: String {
         switch direct {
-        case .localNetwork: "Direct · This network"
-        case .tailscale: "Direct · Tailscale"
-        case nil: relayless ? "No relay · Same network or Tailscale" : host.online ? "Online" : "Offline"
+        case .localNetwork: "Connected · This network"
+        case .tailscale: "Connected · Tailscale"
+        case nil: "Same network or Tailscale"
         }
     }
     var body: some View {
@@ -107,6 +108,28 @@ struct HostRow: View {
                 Text(host.name).font(.body.weight(.medium))
                 Text(status).font(.caption).foregroundStyle(reachable ? .green : .secondary)
             }
+        }.padding(.vertical, 4)
+    }
+}
+
+/// A computer paired through the relay: it can't be reached until it is paired again.
+struct RelayPairedRow: View {
+    @Environment(AppModel.self) private var model
+    let host: PairedDevice
+    @State private var error: String?
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "desktopcomputer.trianglebadge.exclamationmark").font(.title2).foregroundStyle(.orange)
+                .frame(width: 34)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(host.name).font(.body.weight(.medium))
+                Text(error ?? "Paired through the relay · Pair again").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("Pair Again") {
+                do { try model.repair(host) } catch { self.error = error.localizedDescription }
+            }
+            .buttonStyle(.bordered)
         }.padding(.vertical, 4)
     }
 }

@@ -2,23 +2,9 @@ import CryptoKit
 import Foundation
 
 /// Private names are padded before sealing so their lengths do not identify devices.
-/// The relay receives only versioned, authenticated ciphertext, never these keys.
+/// The phone's name travels this way in its pairing claim, under a key from the QR secret.
 public enum PrivateMetadata {
     private static let size = 256
-    public static func sealName(_ name: String, identity: DeviceIdentity) throws -> Data {
-        try seal(
-            name, key: key(identity), context: Data("termy-device-name-v1".utf8) + identity.publicKey)
-    }
-    public static func openName(_ ciphertext: Data, identity: DeviceIdentity) throws -> String {
-        try open(
-            ciphertext, key: key(identity),
-            context: Data("termy-device-name-v1".utf8) + identity.publicKey)
-    }
-    private static func key(_ identity: DeviceIdentity) -> SymmetricKey {
-        HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: identity.rawRepresentation),
-            salt: identity.publicKey, info: Data("termy-private-metadata-v1".utf8), outputByteCount: 32)
-    }
     static func seal(_ name: String, key: SymmetricKey, context: Data) throws -> Data {
         let bytes = Data(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80).utf8)
         guard !bytes.isEmpty, bytes.count <= size - 2 else { throw PairingError.invalidProof }

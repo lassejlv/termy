@@ -183,10 +183,9 @@ import Testing
             try PairingCode(hostID: UUID(), hostName: "Studio", hostKey: host.publicKey, endpoints: endpoints).text)
     }
 
-    @Test func aCodeWithoutARelayCarriesTheMacsAddresses() throws {
+    @Test func aCodeCarriesTheMacsAddresses() throws {
         let code = try code()
-        #expect(code.version == 4)
-        #expect(code.relayURL == nil)
+        #expect(code.version == 5)
         #expect(code.endpoints == endpoints)
         #expect(try code.text.utf8.count < 900, "It has to fit a QR code a phone reads off a screen.")
         // Nowhere to reach the Mac, or only somewhere a phone must not dial: no code.
@@ -239,31 +238,9 @@ import Testing
             try code.verify(try other.claim(clientID: UUID(), name: "iPhone", initPacket: handshake.initPacket))
         }
         #expect(throws: PairingError.self) { try code.verify(claim, now: Date().addingTimeInterval(121)) }
-        // The relay's kind of code never pairs this way, and other packets aren't claims.
+        // Other packets aren't claims.
         #expect(DirectPairing.claim(in: handshake.initPacket) == nil)
         #expect(DirectPairing.claim(in: Data([4]) + Data(repeating: 0x7B, count: 5000)) == nil)
-    }
-
-    @Test func oldAndMixedCodesAreRefused() throws {
-        let text = try PairingCode(hostID: UUID(), hostName: "Studio", hostKey: host.publicKey, endpoints: endpoints)
-            .text
-        let raw = try #require(URLComponents(string: text)?.queryItems?.first?.value)
-        var b64 = raw.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-        b64 += String(repeating: "=", count: (4 - b64.count % 4) % 4)
-        let decoded = try #require(Data(base64Encoded: b64))
-        var json = try #require(try JSONSerialization.jsonObject(with: decoded) as? [String: Any])
-        // A relay-free code claiming to be the relay's version, and one naming both ways.
-        for change in [["version": 3], ["relayURL": "https://relay.example.com"]] as [[String: Any]] {
-            var changed = json
-            changed.merge(change) { $1 }
-            let data = try JSONSerialization.data(withJSONObject: changed)
-            #expect(throws: PairingError.self) {
-                try PairingCode.parse("termy://pair?data=" + data.base64EncodedString())
-            }
-        }
-        json["endpoints"] = [["host": "8.8.8.8", "port": 53]]
-        let data = try JSONSerialization.data(withJSONObject: json)
-        #expect(throws: PairingError.self) { try PairingCode.parse("termy://pair?data=" + data.base64EncodedString()) }
     }
 
     @Test(.timeLimit(.minutes(1))) func aMacIsFoundByTheNameItAdvertises() async throws {

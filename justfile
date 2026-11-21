@@ -146,10 +146,6 @@ bundle-next profile="release":
 test-next:
     swift test --package-path next
 
-# Run the relay locally; reads DATABASE_URL from crates/relay/.env
-relay:
-    set -a; . crates/relay/.env; set +a; PORT="${PORT:-8787}" cargo run -p termy_relay
-
 # Generate ios/Termy.xcodeproj and build the iPhone app for the simulator (macOS)
 ios:
     cd ios && xcodegen generate && xcodebuild -project Termy.xcodeproj -scheme Termy -destination 'generic/platform=iOS Simulator' -derivedDataPath build/DerivedData build

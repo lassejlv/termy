@@ -8,6 +8,13 @@ it.
 
 ## Unreleased
 
+### Changed
+
+- **No relay server.** Termy Next no longer uses or offers a relay: your iPhone always connects to this Mac directly, on the same network or over Tailscale. iPhones paired through a relay are listed under Paired Through the Relay in Settings → Mobile and pair again.
+- **Notifications only while Termy is open on the iPhone.** Notifications while it was closed came through the relay. A connected iPhone still tells you when a long command finishes.
+
+These need the matching Termy iPhone app, which pairs again with Macs it paired through a relay.
+
 ### Fixed
 
 - Dragging a selection above or below a pane scrolls it, faster the farther out you go, so you can select more than fits on screen.

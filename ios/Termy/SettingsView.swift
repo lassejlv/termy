@@ -4,7 +4,7 @@ import TermyRemoteKit
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
-    @State private var removing: RelayDevice?
+    @State private var removing: PairedDevice?
     @State private var error: String?
     @AppStorage("predictiveEcho") private var predictiveEcho = true
     @State private var notifier = CommandNotifier.shared
@@ -15,12 +15,20 @@ struct SettingsView: View {
                     ForEach(model.hosts) { host in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(host.name)
-                            Text(model.relayURL(for: host.id)?.host ?? "No relay").font(.caption).foregroundStyle(
-                                .secondary)
                             Button("Remove Computer", role: .destructive) { removing = host }
                         }
                     }
-                    if model.hosts.isEmpty { Text("No paired computers").foregroundStyle(.secondary) }
+                    ForEach(model.relayPaired) { host in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(host.name)
+                            Text("Paired through the relay, which Termy no longer uses. Pair it again to connect.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Button("Remove Computer", role: .destructive) { removing = host }
+                        }
+                    }
+                    if model.hosts.isEmpty, model.relayPaired.isEmpty {
+                        Text("No paired computers").foregroundStyle(.secondary)
+                    }
                 }
                 Section {
                     NavigationLink("Snippets") { SnippetsSettingsView() }
@@ -66,7 +74,7 @@ struct SettingsView: View {
                 }
                 Section {
                     Text(
-                        "Sessions are encrypted between your iPhone and Mac. The relay cannot read them. To use your own relay, or none at all, choose it in Termy Next → Settings → Mobile before pairing."
+                        "Sessions are encrypted between your iPhone and Mac. Your iPhone connects to your Mac directly, with no server in between."
                     )
                     .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -79,7 +87,7 @@ struct SettingsView: View {
                 isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing
             ) { host in
                 Button("Remove Computer", role: .destructive) {
-                    Task { do { try await model.removeHost(host) } catch { self.error = error.localizedDescription } }
+                    do { try model.removeHost(host) } catch { self.error = error.localizedDescription }
                 }
             } message: { _ in
                 Text("You’ll need to scan a new QR code to connect again. Your terminal sessions keep running.")
