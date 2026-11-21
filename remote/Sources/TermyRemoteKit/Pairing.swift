@@ -51,7 +51,7 @@ public struct PairedDevice: Codable, Hashable, Sendable, Identifiable {
     public var fingerprint: String { publicKeyData.map(Fingerprint.of) ?? "?" }
 }
 
-/// What the QR code on a Mac carries: where the Mac listens, its key, and a one-time
+/// What the QR code on a Mac carries: its Tailscale address, its key, and a one-time
 /// secret that never leaves the two devices. The phone claims the invitation on a
 /// direct connection (`DirectPairing`), and the secret's HMAC authenticates the claim.
 ///
@@ -74,7 +74,7 @@ public struct PairingCode: Codable, Sendable {
     public init(
         hostID: UUID, hostName: String, hostKey: Data, endpoints: [DirectEndpoint], lifetime: TimeInterval = 120
     ) throws {
-        let usable = Array(endpoints.filter { $0.kind != nil }.prefix(DirectEndpoint.maxCount))
+        let usable = Array(endpoints.filter(\.isDialable).prefix(DirectEndpoint.maxCount))
         guard hostKey.count == 32, !usable.isEmpty, !hostName.isEmpty else { throw PairingError.invalidCode }
         version = Self.currentVersion
         self.endpoints = usable
@@ -114,7 +114,7 @@ public struct PairingCode: Codable, Sendable {
         guard let code = try? JSONDecoder().decode(Self.self, from: data),
             code.hostKey.count == 32, code.secret.count == 32, !code.hostName.isEmpty,
             !code.endpoints.isEmpty, code.endpoints.count <= DirectEndpoint.maxCount,
-            code.endpoints.allSatisfy({ $0.kind != nil })
+            code.endpoints.allSatisfy(\.isDialable)
         else { throw PairingError.invalidCode }
         guard code.expiresAt > now, code.expiresAt.timeIntervalSince(now) <= 180 else { throw PairingError.expired }
         return code

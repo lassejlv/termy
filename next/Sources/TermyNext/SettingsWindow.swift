@@ -430,7 +430,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
             sections = keyboardSections()
         case .mobile:
             let host = NSHostingView(rootView: MobileSettingsView())
-            sections = [Section(rows: [.full(host)], footer: "Connect your iPhone to this Mac with a QR code. It connects to this Mac directly, with no server in between.")]
+            sections = [Section(rows: [.full(host)], footer: "Connect your iPhone to this Mac with a QR code. It connects to this Mac directly over Tailscale, with no server in between.")]
         case .sessions:
             sections = [
                 Section(rows: [

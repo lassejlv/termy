@@ -20,7 +20,7 @@ struct HostsView: View {
                             Image(systemName: "macbook.and.iphone").font(.largeTitle)
                             Text("Connect Your Mac").font(.title2.bold())
                             Text(
-                                "In Termy Next, open Settings → Mobile and choose Pair iPhone. Then scan the QR code here."
+                                "Termy connects to your Mac over Tailscale: run it on this iPhone and the Mac, on the same tailnet. Then, in Termy Next, open Settings → Mobile, choose Pair iPhone… and scan the QR code here."
                             ).foregroundStyle(.secondary)
                             Button("Scan QR Code", systemImage: "qrcode.viewfinder") { showPairing = true }
                         }.padding(.vertical, 12)
@@ -29,7 +29,7 @@ struct HostsView: View {
                     Section {
                         ForEach(model.hosts) { host in
                             NavigationLink(value: host.id) {
-                                HostRow(host: host, direct: model.directKinds[host.id])
+                                HostRow(host: host, connected: model.connectedHosts.contains(host.id))
                             }
                         }
                     }
@@ -90,15 +90,9 @@ struct HostsView: View {
 struct HostRow: View {
     let host: PairedDevice
     /// Set while the phone has a connection to the computer.
-    var direct: DirectEndpoint.Kind?
-    private var reachable: Bool { direct != nil }
-    private var status: String {
-        switch direct {
-        case .localNetwork: "Connected · This network"
-        case .tailscale: "Connected · Tailscale"
-        case nil: "Same network or Tailscale"
-        }
-    }
+    var connected = false
+    private var reachable: Bool { connected }
+    private var status: String { connected ? "Connected · Tailscale" : "Over Tailscale" }
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: "desktopcomputer").font(.title2).foregroundStyle(

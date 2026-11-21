@@ -15,7 +15,8 @@ struct PairComputerView: View {
                 if let code {
                     Image(systemName: "macbook.and.iphone").font(.system(size: 50))
                     Text("Connect to \(code.hostName)?").font(.title2.bold())
-                    Text("Reached on the same network or over Tailscale").font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Text(NetworkInterface.onTailnet ? "Reached over Tailscale" : "Start Tailscale on this iPhone to pair.")
+                        .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     Text(
                         "After connecting, approve this iPhone on your Mac. It will be able to view and control that Mac’s Termy Next sessions."
                     )

@@ -1,6 +1,6 @@
 # TermyRemoteKit
 
-Reusable device pairing, trust, messages and the encrypted direct transport
+Reusable device pairing, trust, messages and the encrypted Tailscale transport
 shared by the iPhone app (`ios/`) and the Mac host library
 (`next/Sources/TermyRemoteHost`). Termy Next owns the host's settings and lifetime;
 no command-line process, account or server is required.
@@ -14,7 +14,7 @@ no command-line process, account or server is required.
   ChaCha20-Poly1305, directional counters and replay rejection. It is the
   existing Termy protocol, not an implementation of a standard Noise protocol.
 - `DirectConnection`, `DirectListener`, `DirectEndpoint`: sealed packets over
-  TCP between the two devices (see Connections).
+  TCP between the two devices, over their tailnet (see Connections).
 - `Messages`: logical keys, paste, resize, scroll, session operations and
   changed-row screen frames. The terminal engine stays on the Mac.
 - `FinishedCommand`: long commands that finished, for the phone's own notifications.
@@ -37,8 +37,8 @@ separate library product in `next/Package.swift`.
 
 With **Settings → Mobile → Allow mobile access** on, Termy Next makes its own
 device ID, kept in its Keychain, and its pairing QR code (version 5) carries
-the Mac's addresses, its key, and a one-time 256-bit secret. The phone connects
-to one of the addresses and sends a claim (`DirectPairing`): the ID it chose
+the Mac's Tailscale address, its key, and a one-time 256-bit secret. The phone
+connects to that address and sends a claim (`DirectPairing`): the ID it chose
 for itself, its handshake, its sealed name and an HMAC of all of it made with
 the QR secret. The Mac shows the approval sheet only for a claim that verifies,
 and on approval pins the phone and answers with the handshake response, which
@@ -53,27 +53,24 @@ they are removed.
 
 ## Connections
 
-Termy Next listens on TCP port 47126 (any free port when that one is taken)
-and, from protocol version 6, tells each connected phone inside the encrypted
-channel which addresses it has: its Wi-Fi/Ethernet addresses on private
-networks and its Tailscale address (100.64.0.0/10 on a `utun` interface). The
-phone keeps the list in its Keychain with the Mac's pin and dials an address
-only when its own network reaches it: a local one from the same subnet, the
-Tailscale one when the phone is on a tailnet. Every reachable address is dialed
-at once and the first to answer is used. Since addresses on a local network
-change, the Mac also advertises its ID as a Bonjour service (`_termy._tcp`) and
-the phone looks it up by that name when the addresses it knows fail. iOS asks
-for Local Network access the first time a local address is dialed.
+Phones reach the Mac over Tailscale only. Termy Next listens on TCP port 47126
+(any free port when that one is taken) and, from protocol version 6, tells each
+connected phone inside the encrypted channel its Tailscale address
+(100.64.0.0/10 on a `utun` interface). The phone keeps it in its Keychain with
+the Mac's pin and dials it only while it is on a tailnet itself; Tailscale
+addresses don't change. A Mac without a Tailscale address has nothing to put in
+a QR code and says to start Tailscale; a phone without one says the same.
+Addresses on the local network are neither advertised nor dialed, and nothing
+is announced over Bonjour.
 
 The connection carries `SecureChannel` packets, length-prefixed, so the network
 is trusted with nothing: the Mac answers only a handshake naming a key pinned
 on it, and a phone becomes a session only once its first sealed message opens,
 so knowing a phone's public key replaces nobody's session. Whatever answers at
 a stale address can't prove the Mac's key, and the phone dials again.
-Connections from outside private, Tailscale and loopback ranges are closed
-unread. Reaching the Mac from another network without Tailscale (NAT
-traversal) is not attempted. A phone that can't reach the Mac keeps trying
-while the Mac is open on screen and says why.
+Connections from outside Tailscale and loopback ranges are closed unread. A
+phone that can't reach the Mac keeps trying while the Mac is open on screen and
+says why.
 
 What needs a server, and so isn't there:
 

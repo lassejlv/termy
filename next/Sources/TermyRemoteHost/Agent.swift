@@ -3,7 +3,7 @@ import Termy
 import TermyRemoteKit
 
 /// Serves this computer's session host to its paired phones, over connections they
-/// open to it on its local network or tailnet (see `DirectServer.swift`). Each phone
+/// open to it over its tailnet (see `DirectServer.swift`). Each phone
 /// gets one `SecureChannel`; every screen and key inside it is sealed end to end.
 @MainActor
 public final class RemoteHostAgent {

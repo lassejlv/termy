@@ -33,11 +33,8 @@ struct SessionsView: View {
             case .connected: sessionSections
             }
             if let error = link.lastError { Text(error).font(.footnote).foregroundStyle(.red) }
-            if link.state == .connected, let kind = model.directKinds[link.device.id] {
-                Label(
-                    kind == .tailscale ? "Connected over Tailscale" : "Connected on this network",
-                    systemImage: "bolt.horizontal"
-                ).font(.footnote).foregroundStyle(.secondary)
+            if link.state == .connected {
+                Label("Connected over Tailscale", systemImage: "bolt.horizontal").font(.footnote).foregroundStyle(.secondary)
             }
             if link.state == .connected, link.protocolVersion < 2 {
                 Text("Update Termy Next on your Mac for config sync and session controls.").font(.footnote)

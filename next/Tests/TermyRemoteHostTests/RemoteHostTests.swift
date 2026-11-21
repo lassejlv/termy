@@ -24,7 +24,7 @@ import Testing
             multiplexer: mux, hostID: UUID(), identity: hostIdentity,
             trustedDevices: [phoneID: phoneIdentity.publicKey])
         agent.directPort = nil
-        agent.interfaces = { [NetworkInterface(name: "utun8", address: IPv4("100.81.122.65")!, mask: 0xFFFF_FFFF)] }
+        agent.interfaces = { [NetworkInterface(name: "utun8", address: IPv4("100.81.122.65")!)] }
         var advertised: [DirectEndpoint] = []
         agent.onDirectEndpoints = { advertised = $0 }
         let configURL = root.appendingPathComponent("config.txt")

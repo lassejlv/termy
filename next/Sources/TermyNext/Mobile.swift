@@ -155,8 +155,7 @@ final class MobileController {
                 self.pairingError = PairingError.expired.localizedDescription
             }
         } catch {
-            pairingError =
-                "This Mac has no address an iPhone could reach. Join a Wi-Fi or Ethernet network, or start Tailscale, then try again."
+            pairingError = "Start Tailscale on this Mac, then try again. Your iPhone pairs and connects over your tailnet."
         }
     }
 
@@ -216,18 +215,10 @@ final class MobileController {
         pairingBusy = false
     }
     var directStatus: String {
-        let local = directEndpoints.contains { $0.kind == .localNetwork }
-        let tailnet = directEndpoints.first { $0.kind == .tailscale }
-        switch (local, tailnet) {
-        case (true, let tailnet?):
-            return "Your iPhone connects on this network and over Tailscale (\(tailnet.host))."
-        case (true, nil):
-            return "Your iPhone connects on this network. Start Tailscale on both devices to connect from anywhere."
-        case (false, let tailnet?):
-            return "Your iPhone connects over Tailscale (\(tailnet.host))."
-        case (false, nil):
-            return "This Mac has no local network or Tailscale address right now, so no iPhone can reach it. Join a network or start Tailscale."
+        guard let tailnet = directEndpoints.first else {
+            return "Start Tailscale on this Mac. Your iPhone connects to it over your tailnet, and can’t until Tailscale is running."
         }
+        return "Your iPhone connects over Tailscale (\(tailnet.host)), from anywhere, when Tailscale runs on both on the same tailnet."
     }
     func remove(_ device: PairedDevice) {
         do {
@@ -299,7 +290,7 @@ struct MobileSettingsView: View {
                 Text("Connection").font(.headline)
                 Text(mobile.directStatus).font(.callout).foregroundStyle(.secondary)
                 Text(
-                    "No server is involved: your iPhone pairs with this Mac and connects to it directly. Notifications about finished commands arrive while Termy is open on the iPhone."
+                    "No server is involved: your iPhone pairs with this Mac and connects to it directly over Tailscale. Notifications about finished commands arrive while Termy is open on the iPhone."
                 )
                 .font(.callout).foregroundStyle(.secondary)
             }
@@ -336,7 +327,7 @@ struct MobileSettingsView: View {
                         .padding(16).background(.white).accessibilityLabel("Pairing QR code")
                 }
                 Text("Open Termy on your iPhone and tap Scan QR Code.")
-                Text("Keep the iPhone on this Mac’s network or tailnet.")
+                Text("Your iPhone needs Tailscale running, on the same tailnet as this Mac.")
                     .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     Text("Expires in \(max(0, Int(code.expiresAt.timeIntervalSince(context.date)))) seconds").font(

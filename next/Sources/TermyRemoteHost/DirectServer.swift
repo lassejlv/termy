@@ -17,7 +17,7 @@ final class DirectClient {
     }
 }
 
-// Phones on this Mac's local network or tailnet connect to it here. Every packet
+// Phones on this Mac's tailnet connect to it here. Every packet
 // is sealed and only keys pinned on this Mac are let in, so the listener trusts
 // the network with nothing.
 extension RemoteHostAgent {
@@ -28,16 +28,11 @@ extension RemoteHostAgent {
 
     func serveDirect() async {
         var port = directPort
-        // Advertising needs Local Network access on this Mac. Without it the listener
-        // must still serve the tailnet and the addresses phones already know.
-        var advertise = true
         while !Task.isCancelled, running {
             var ready = false
-            var failed = false
             var announcing: Task<Void, Never>?
             do {
-                // The name lets a phone find this Mac again when its address on the network changed.
-                let listener = try DirectListener(port: port, advertisedAs: advertise ? hostID.uuidString : nil)
+                let listener = try DirectListener(port: port)
                 self.listener = listener
                 for await event in listener.events {
                     switch event {
@@ -48,22 +43,16 @@ extension RemoteHostAgent {
                     case .connection(let connection):
                         adopt(connection)
                     case .closed(let error):
-                        failed = error != nil
                         if let error { log("Stopped listening for phones: \(error.localizedDescription)") }
                     }
                 }
             } catch {
-                failed = true
                 log("Couldn’t listen for phones: \(error.localizedDescription)")
             }
             announcing?.cancel()
             listener = nil
             setEndpoints([])
             guard running, !Task.isCancelled else { return }
-            if failed, advertise {
-                advertise = false
-                continue
-            }
             // Another program has the usual port: any free one works, phones are told which.
             if !ready, port != nil {
                 port = nil
@@ -73,8 +62,7 @@ extension RemoteHostAgent {
         }
     }
 
-    /// Keeps phones told of this Mac's addresses, which change with the network it is on
-    /// and with Tailscale starting and stopping.
+    /// Keeps phones told of this Mac's Tailscale address, which comes and goes with Tailscale.
     private func announce(port: Int) async {
         while !Task.isCancelled {
             setEndpoints(DirectEndpoint.advertised(by: interfaces(), port: port))

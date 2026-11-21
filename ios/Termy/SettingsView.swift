@@ -74,7 +74,7 @@ struct SettingsView: View {
                 }
                 Section {
                     Text(
-                        "Sessions are encrypted between your iPhone and Mac. Your iPhone connects to your Mac directly, with no server in between."
+                        "Sessions are encrypted between your iPhone and Mac. Your iPhone connects to your Mac directly over Tailscale, with no server in between."
                     )
                     .font(.footnote).foregroundStyle(.secondary)
                 }

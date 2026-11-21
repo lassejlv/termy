@@ -4,69 +4,58 @@ import Testing
 @testable import TermyRemoteKit
 
 @Suite struct DirectTests {
-    private func interface(_ name: String, _ address: String, mask: UInt32 = 0xFFFF_FF00) -> NetworkInterface {
-        NetworkInterface(name: name, address: IPv4(address)!, mask: mask)
+    private func interface(_ name: String, _ address: String) -> NetworkInterface {
+        NetworkInterface(name: name, address: IPv4(address)!)
     }
 
     @Test func addressesAreDottedQuadsOnly() {
-        #expect(IPv4("192.168.1.20")?.text == "192.168.1.20")
+        #expect(IPv4("100.81.122.65")?.text == "100.81.122.65")
         for bad in ["", "1.2.3", "1.2.3.4.5", "256.1.1.1", "1..2.3", "mac.tailnet.ts.net", "1.2.3.4 ", "0x7f.0.0.1"] {
             #expect(IPv4(bad) == nil, "\(bad)")
         }
     }
 
-    @Test func rangesMatchTailscaleAndPrivateNetworks() {
+    @Test func rangesMatchTailscale() {
         #expect(IPv4("100.64.0.1")!.isTailnet)
         #expect(IPv4("100.127.255.254")!.isTailnet)
         #expect(!IPv4("100.63.255.255")!.isTailnet)
         #expect(!IPv4("100.128.0.0")!.isTailnet)
-        for address in ["10.0.0.5", "172.16.0.1", "172.31.255.255", "192.168.0.9"] {
-            #expect(IPv4(address)!.isPrivate, "\(address)")
-        }
-        for address in ["172.32.0.1", "192.169.0.1", "8.8.8.8", "100.64.0.1"] {
-            #expect(!IPv4(address)!.isPrivate, "\(address)")
-        }
+        #expect(!IPv4("192.168.1.20")!.isTailnet)
+        // Only Tailscale's tunnel counts, not the same range on Wi-Fi (carrier-grade NAT).
+        #expect(interface("utun8", "100.81.122.65").isTailnet)
+        #expect(!interface("en0", "100.81.122.65").isTailnet)
     }
 
-    @Test func aMacAdvertisesItsLocalAndTailnetAddresses() {
+    @Test func aMacAdvertisesOnlyItsTailnetAddress() {
         let interfaces = [
-            interface("lo0", "127.0.0.1", mask: 0xFF00_0000),
+            interface("lo0", "127.0.0.1"),
             interface("en0", "192.168.1.20"),
             interface("bridge100", "192.168.64.1"),
             interface("en5", "203.0.113.7"),
-            interface("utun8", "100.81.122.65", mask: 0xFFFF_FFFF),
-            interface("utun3", "10.8.0.2", mask: 0xFFFF_FFFF),
+            interface("utun8", "100.81.122.65"),
+            interface("utun3", "10.8.0.2"),
         ]
-        #expect(
-            DirectEndpoint.advertised(by: interfaces, port: 47126) == [
-                DirectEndpoint(host: "192.168.1.20", port: 47126), DirectEndpoint(host: "100.81.122.65", port: 47126),
-            ])
-        #expect(DirectEndpoint.advertised(by: [interface("lo0", "127.0.0.1")], port: 1).isEmpty)
+        #expect(DirectEndpoint.advertised(by: interfaces, port: 47126) == [DirectEndpoint(host: "100.81.122.65", port: 47126)])
+        // Off the tailnet a Mac has nowhere to tell phones about.
+        #expect(DirectEndpoint.advertised(by: [interface("en0", "192.168.1.20")], port: 1).isEmpty)
     }
 
-    @Test func aPhoneDialsOnlyWhatItsNetworkReaches() {
-        let local = DirectEndpoint(host: "192.168.1.20", port: 47126)
+    @Test func aPhoneDialsOnlyOverItsTailnet() {
         let tailnet = DirectEndpoint(host: "100.81.122.65", port: 47126)
-        let all = [tailnet, local]
+        let local = DirectEndpoint(host: "192.168.1.20", port: 47126)
         let wifi = interface("en0", "192.168.1.77")
-        let tailscale = interface("utun4", "100.90.1.2", mask: 0xFFFF_FFFF)
-        // The same network is nearer than the tailnet.
-        #expect(DirectEndpoint.reachable(all, from: [wifi, tailscale]) == [local, tailnet])
-        #expect(DirectEndpoint.reachable(all, from: [wifi]) == [local])
-        // Another network with the same kind of addresses, and mobile data.
-        #expect(DirectEndpoint.reachable(all, from: [interface("en0", "192.168.2.77")]).isEmpty)
-        #expect(DirectEndpoint.reachable(all, from: [interface("pdp_ip0", "10.20.30.40"), tailscale]) == [tailnet])
+        let tailscale = interface("utun4", "100.90.1.2")
+        #expect(DirectEndpoint.reachable([local, tailnet], from: [wifi, tailscale]) == [tailnet])
+        #expect(DirectEndpoint.reachable([local, tailnet], from: [wifi]).isEmpty)
+        #expect(DirectEndpoint.reachable([tailnet], from: [interface("pdp_ip0", "10.20.30.40"), tailscale]) == [tailnet])
     }
 
-    @Test func aPhoneNeverDialsNamesPublicAddressesOrBadPorts() {
-        let everywhere = [
-            NetworkInterface(name: "en0", address: IPv4("192.168.1.77")!, mask: 0),
-            NetworkInterface(name: "en1", address: IPv4("8.8.4.4")!, mask: 0xFF00_0000),
-            interface("utun4", "100.90.1.2"),
-        ]
+    @Test func aPhoneNeverDialsNamesOtherAddressesOrBadPorts() {
+        let everywhere = [interface("en0", "192.168.1.77"), interface("en1", "8.8.4.4"), interface("utun4", "100.90.1.2")]
         let bad = [
             DirectEndpoint(host: "evil.example.com", port: 443), DirectEndpoint(host: "8.8.8.8", port: 53),
-            DirectEndpoint(host: "192.168.1.20", port: 0), DirectEndpoint(host: "100.64.0.1", port: 70000),
+            DirectEndpoint(host: "192.168.1.20", port: 47126), DirectEndpoint(host: "100.64.0.1", port: 0),
+            DirectEndpoint(host: "100.64.0.1", port: 70000),
         ]
         #expect(DirectEndpoint.reachable(bad, from: everywhere).isEmpty)
         #expect(bad.allSatisfy { DirectConnection(to: $0) == nil })
@@ -176,7 +165,7 @@ import Testing
 @Suite struct DirectPairingTests {
     let host = DeviceIdentity()
     let phone = DeviceIdentity()
-    let endpoints = [DirectEndpoint(host: "192.168.1.20", port: 47126), DirectEndpoint(host: "100.81.122.65", port: 47126)]
+    let endpoints = [DirectEndpoint(host: "100.81.122.65", port: 47126)]
 
     func code() throws -> PairingCode {
         try PairingCode.parse(
@@ -192,10 +181,12 @@ import Testing
         #expect(throws: PairingError.self) {
             try PairingCode(hostID: UUID(), hostName: "Studio", hostKey: host.publicKey, endpoints: [])
         }
-        #expect(throws: PairingError.self) {
-            try PairingCode(
-                hostID: UUID(), hostName: "Studio", hostKey: host.publicKey,
-                endpoints: [DirectEndpoint(host: "evil.example.com", port: 443)])
+        for elsewhere in ["evil.example.com", "192.168.1.20"] {
+            #expect(throws: PairingError.self) {
+                try PairingCode(
+                    hostID: UUID(), hostName: "Studio", hostKey: host.publicKey,
+                    endpoints: [DirectEndpoint(host: elsewhere, port: 47126)])
+            }
         }
     }
 
@@ -241,27 +232,5 @@ import Testing
         // Other packets aren't claims.
         #expect(DirectPairing.claim(in: handshake.initPacket) == nil)
         #expect(DirectPairing.claim(in: Data([4]) + Data(repeating: 0x7B, count: 5000)) == nil)
-    }
-
-    @Test(.timeLimit(.minutes(1))) func aMacIsFoundByTheNameItAdvertises() async throws {
-        let name = UUID().uuidString
-        let listener = try DirectListener(port: nil, advertisedAs: name)
-        defer { listener.close() }
-        var events = listener.events.makeAsyncIterator()
-        guard case .ready = await events.next() else {
-            Issue.record("The listener didn't start.")
-            return
-        }
-        // Bonjour answers on this Mac alone when it is on no network; give it a few tries.
-        for _ in 0..<5 {
-            let client = DirectConnection(advertised: name, timeout: 3)
-            var seen = client.events.makeAsyncIterator()
-            if case .ready = await seen.next() {
-                #expect(client.reached?.port != nil)
-                client.close()
-                return
-            }
-        }
-        Issue.record("The advertised name didn't lead to the listener.")
     }
 }

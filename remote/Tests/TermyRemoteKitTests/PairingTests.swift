@@ -57,6 +57,10 @@ import Testing
         #expect(throws: PairingError.invalidCode) {
             try PairingCode.parse(try relink(code) { $0["endpoints"] = [["host": "8.8.8.8", "port": 53]] })
         }
+        // A Mac's address on its Wi-Fi isn't one a phone dials.
+        #expect(throws: PairingError.invalidCode) {
+            try PairingCode.parse(try relink(code) { $0["endpoints"] = [["host": "192.168.1.20", "port": 47126]] })
+        }
         #expect(throws: PairingError.invalidCode) {
             try PairingCode.parse(try relink(code) { $0["endpoints"] = [] as [Any] })
         }

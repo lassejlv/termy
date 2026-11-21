@@ -5,15 +5,16 @@ description: Pair the Termy iPhone app to browse, view and control this Mac's se
 
 ## Pair an iPhone
 
-1. Open **Settings → Mobile**, enable mobile access, and choose **Pair iPhone…**.
-2. Scan the QR code in the Termy iPhone app.
-3. Approve the phone on your Mac.
+1. Start [Tailscale](https://tailscale.com) on this Mac and on your iPhone, signed in to the same tailnet.
+2. Open **Settings → Mobile**, enable mobile access, and choose **Pair iPhone…**.
+3. Scan the QR code in the Termy iPhone app.
+4. Approve the phone on your Mac.
 
 No account, server or terminal command is needed. Paired phones can browse, view, create, control and end this Mac's sessions. Remove a phone's access in the same settings pane.
 
 ## How the iPhone connects
 
-The iPhone connects to this Mac directly: on the same Wi-Fi or Ethernet network, or over [Tailscale](https://tailscale.com) when both devices are on your tailnet, which works from anywhere. Nothing sits in between, and sessions are end-to-end encrypted. **Settings → Mobile → Connection** shows the addresses your iPhone can use.
+The iPhone connects to this Mac directly over Tailscale, from anywhere, as long as Tailscale runs on both devices on the same tailnet. Nothing sits in between, and sessions are end-to-end encrypted. Being on the same Wi-Fi isn't enough: without Tailscale, Termy Next says to start it. **Settings → Mobile → Connection** shows the Tailscale address your iPhone uses.
 
 Notifications about finished commands arrive while Termy is open on the iPhone.
 

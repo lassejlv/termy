@@ -362,9 +362,9 @@ account, server or terminal command is needed. Paired phones can browse, view,
 create, control and end this Mac’s sessions. Remove a phone’s access in the
 same settings pane.
 
-The iPhone connects to this Mac directly: on the same network, or over
-Tailscale when both devices are on your tailnet. Nothing sits in between, and
-sessions are end-to-end encrypted. iPhones paired through the relay of earlier
+The iPhone connects to this Mac directly over [Tailscale](https://tailscale.com),
+so run Tailscale on both, signed in to the same tailnet; that works from
+anywhere. Nothing sits in between, and sessions are end-to-end encrypted. iPhones paired through the relay of earlier
 versions pair again.
 
 Termy Next must be running, with its session host enabled. Closing all windows

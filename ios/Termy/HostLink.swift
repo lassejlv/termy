@@ -143,10 +143,27 @@ final class HostLink {
         if wanted { connect() }
     }
 
+    enum Unreachable {
+        /// This iPhone isn't on a tailnet.
+        case phoneOffTailnet
+        /// The computer never said where it is on the tailnet: it paired on its local network.
+        case noTailnetAddress
+        /// Nothing answered at the computer's tailnet address.
+        case noAnswer
+    }
+
     /// No connection to the computer opened. Dialing goes on.
-    func unreachable() {
+    func unreachable(_ reason: Unreachable) {
         guard wanted, channel == nil, handshake == nil, state == .connecting || state == .offline else { return }
-        state = .failed("Can’t reach \(device.name). Join its network, or turn on Tailscale on both devices.")
+        let message =
+            switch reason {
+            case .phoneOffTailnet: "Start Tailscale on this iPhone to reach \(device.name)."
+            case .noTailnetAddress:
+                "This iPhone doesn’t know \(device.name)’s Tailscale address. Start Tailscale on the Mac, then remove it here and pair it again."
+            case .noAnswer:
+                "Can’t reach \(device.name) over Tailscale. Check that Tailscale is running on the Mac, on the same tailnet, and Termy Next is open with Mobile access on."
+            }
+        state = .failed(message)
     }
 
     // MARK: Packets

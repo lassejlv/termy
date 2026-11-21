@@ -15,13 +15,14 @@ struct Route: Equatable, Identifiable {
     var sessionName = "Shortcuts"
 }
 
-/// Pairing a Mac on a connection of the phone's own.
+/// Pairing a Mac on a connection of the phone's own, over Tailscale.
 enum DirectPairingError: LocalizedError {
-    case unreachable(String), refused(String)
+    case noTailscale, unreachable(String), refused(String)
     var errorDescription: String? {
         switch self {
+        case .noTailscale: "Start Tailscale on this iPhone, then scan again. Termy connects to your Mac over your tailnet."
         case .unreachable(let name):
-            "This iPhone can’t reach \(name). Join the same Wi-Fi network, or turn on Tailscale on both devices, then scan again."
+            "This iPhone can’t reach \(name) over Tailscale. Make sure Tailscale is running on both, on the same tailnet, then scan again."
         case .refused(let name): "\(name) didn’t accept the pairing. Generate a new QR code on it and scan again."
         }
     }
@@ -94,8 +95,8 @@ final class AppModel: HostTransport {
     @ObservationIgnored private var pairings = Pairings()
     @ObservationIgnored private var links: [UUID: HostLink] = [:]
     @ObservationIgnored private var directs: [UUID: Direct] = [:]
-    /// The Macs reached directly, and over what.
-    private(set) var directKinds: [UUID: DirectEndpoint.Kind] = [:]
+    /// The Macs the phone has a connection to right now.
+    private(set) var connectedHosts: Set<UUID> = []
     @ObservationIgnored private let pathMonitor = NWPathMonitor()
     /// Connections kept for a while after the app left the screen (see `background`).
     @ObservationIgnored private var lingering: Task<Void, Never>?
@@ -126,7 +127,7 @@ final class AppModel: HostTransport {
         }
         rebuildDevices()
         resume()
-        // Joining the Mac's Wi-Fi, or Tailscale connecting, opens a way to it.
+        // Tailscale connecting opens a way to the Macs.
         pathMonitor.pathUpdateHandler = { [weak self] _ in Task { @MainActor in self?.dialAll() } }
         pathMonitor.start(queue: .main)
     }
@@ -191,7 +192,7 @@ final class AppModel: HostTransport {
             let connected = link?.state == .connected
             let panes = connected ? link?.orderedPanes : nil
             return HostSnapshot.Host(
-                id: device.id, name: device.name, online: directKinds[device.id] != nil,
+                id: device.id, name: device.name, online: connectedHosts.contains(device.id),
                 panes: panes?.count,
                 running: panes?.filter { $0.command?.running == true }.count)
         }
@@ -231,6 +232,7 @@ final class AppModel: HostTransport {
             pairingBusy = false
             pairingMessage = nil
         }
+        guard NetworkInterface.onTailnet else { throw DirectPairingError.noTailscale }
         pairingMessage = "Looking for \(code.hostName)…"
         let handshake = SecureChannel.startClient(identity: identity, hostStaticKey: code.hostKey)
         let claim = try DirectPairing.packet(
@@ -310,7 +312,7 @@ final class AppModel: HostTransport {
     /// channel, can say so; the list is kept with its pin.
     func endpointsChanged(_ endpoints: [DirectEndpoint], for host: UUID) {
         guard pairings.pins[host] != nil else { return }
-        let kept = Array(endpoints.filter { $0.kind != nil }.prefix(DirectEndpoint.maxCount))
+        let kept = Array(endpoints.filter(\.isDialable).prefix(DirectEndpoint.maxCount))
         if pairings.endpoints[host] ?? [] != kept {
             pairings.endpoints[host] = kept.isEmpty ? nil : kept
             try? persist()
@@ -327,8 +329,8 @@ final class AppModel: HostTransport {
         for host in pairings.pins.keys { dial(host) }
     }
 
-    /// Opens a connection of the phone's own to a Mac a view has open: every address this
-    /// phone's network reaches is dialed at once and the first to answer is used, so one the
+    /// Opens a connection of the phone's own to a Mac a view has open, over the tailnet:
+    /// every address it knows is dialed at once and the first to answer is used, so one the
     /// Mac no longer has costs nothing. A failed try is repeated: a reopened app dials
     /// before its network is back, and nothing else says when the Mac is.
     func dial(_ host: UUID) {
@@ -338,16 +340,16 @@ final class AppModel: HostTransport {
             var failures = 0
             while !Task.isCancelled, self.active {
                 let started = Date()
-                let candidates = self.candidates(for: host)
-                let winner = await Self.firstReady(candidates.map(\.connection))
+                let candidates = DirectEndpoint.reachable(self.pairings.endpoints[host] ?? [], from: NetworkInterface.current())
+                    .compactMap { DirectConnection(to: $0) }
+                let winner = await Self.firstReady(candidates)
                 guard !Task.isCancelled else {
                     winner?.close()
                     return
                 }
-                if let winner, let candidate = candidates.first(where: { $0.connection === winner }) {
+                if let winner {
                     self.directs[host]?.connection = winner
-                    if candidate.advertised, let found = winner.reached { self.found(found, for: host) }
-                    self.directKinds[host] = candidate.kind
+                    self.connectedHosts.insert(host)
                     self.links[host]?.directReady()
                     for await event in winner.events {
                         if case .packet(let packet) = event { self.links[host]?.receive(packet) }
@@ -355,7 +357,7 @@ final class AppModel: HostTransport {
                     winner.close()
                     guard !Task.isCancelled else { return }
                     self.directs[host]?.connection = nil
-                    self.directKinds[host] = nil
+                    self.connectedHosts.remove(host)
                     self.links[host]?.directWentAway()
                     // One that lasted was a working path, and the Mac may be right back (it
                     // restarts its listener with its settings). One that didn't counts as a miss.
@@ -364,7 +366,7 @@ final class AppModel: HostTransport {
                 } else {
                     failures += 1
                 }
-                if failures >= 2 { self.links[host]?.unreachable() }
+                if failures >= 2 { self.links[host]?.unreachable(self.unreachableReason(host)) }
                 try? await Task.sleep(for: .milliseconds(min(500 << min(failures - 1, 5), 8000)))
             }
             if !Task.isCancelled { self.directs[host] = nil }
@@ -372,21 +374,10 @@ final class AppModel: HostTransport {
         directs[host] = Direct(connection: nil, task: task)
     }
 
-    /// A connection to each address of a Mac this phone's network reaches right now.
-    private func candidates(for host: UUID) -> [(connection: DirectConnection, kind: DirectEndpoint.Kind, advertised: Bool)] {
-        let interfaces = NetworkInterface.current()
-        var result = DirectEndpoint.reachable(pairings.endpoints[host] ?? [], from: interfaces).compactMap {
-            endpoint in
-            DirectConnection(to: endpoint).flatMap { connection in
-                endpoint.kind.map { (connection: connection, kind: $0, advertised: false) }
-            }
-        }
-        // And by the name the Mac advertises on the local network, in case its address there changed.
-        if interfaces.contains(where: \.isLocalNetwork) {
-            result.append(
-                (connection: DirectConnection(advertised: host.uuidString), kind: .localNetwork, advertised: true))
-        }
-        return result
+    /// Why a Mac doesn't answer, as far as the phone can tell.
+    private func unreachableReason(_ host: UUID) -> HostLink.Unreachable {
+        guard NetworkInterface.onTailnet else { return .phoneOffTailnet }
+        return (pairings.endpoints[host] ?? []).contains(where: \.isDialable) ? .noAnswer : .noTailnetAddress
     }
 
     /// The first of `connections` to open; the others are closed.
@@ -414,21 +405,12 @@ final class AppModel: HostTransport {
         }
     }
 
-    /// The Mac answered to its name at an address the phone didn't have: that replaces
-    /// the local ones it had, and its tailnet address stays.
-    private func found(_ endpoint: DirectEndpoint, for host: UUID) {
-        guard endpoint.kind == .localNetwork, pairings.pins[host] != nil else { return }
-        let kept = (pairings.endpoints[host] ?? []).filter { $0.kind == .tailscale }
-        pairings.endpoints[host] = [endpoint] + kept
-        try? persist()
-    }
-
     /// Closes the direct connection to a Mac without telling its link.
     private func hangUp(_ host: UUID) {
         guard let direct = directs.removeValue(forKey: host) else { return }
         direct.task.cancel()
         direct.connection?.close()
-        directKinds[host] = nil
+        connectedHosts.remove(host)
     }
     func verdict(for host: PairedDevice) -> TrustStore.Verdict {
         guard let pin = pairings.pins[host.id] else { return .unknown }

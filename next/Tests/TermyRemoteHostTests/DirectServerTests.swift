@@ -93,8 +93,8 @@ import Testing
         agent.directPort = nil
         agent.interfaces = {
             [
-                NetworkInterface(name: "en0", address: IPv4("192.168.1.20")!, mask: 0xFFFF_FF00),
-                NetworkInterface(name: "utun8", address: IPv4("100.81.122.65")!, mask: 0xFFFF_FFFF),
+                NetworkInterface(name: "en0", address: IPv4("192.168.1.20")!),
+                NetworkInterface(name: "utun8", address: IPv4("100.81.122.65")!),
             ]
         }
         var advertised: [DirectEndpoint] = []
@@ -104,10 +104,10 @@ import Testing
             serving.cancel()
             agent.stop()
         }
-        try await eventually { advertised.count == 2 }
+        try await eventually { advertised.count == 1 }
         let port = advertised[0].port
-        #expect(advertised.map(\.host) == ["192.168.1.20", "100.81.122.65"])
-        #expect(advertised[1].port == port)
+        // Only the tailnet address: phones on the Mac's Wi-Fi aren't told of it.
+        #expect(advertised.map(\.host) == ["100.81.122.65"])
 
         // A device that was never paired gets no answer.
         let stranger = Phone(port: port, identity: DeviceIdentity(), hostKey: identity.publicKey)
@@ -168,7 +168,7 @@ import Testing
         let hostID = UUID()
         let agent = RemoteHostAgent(multiplexer: mux, hostID: hostID, identity: identity, trustedDevices: [:])
         agent.directPort = nil
-        agent.interfaces = { [NetworkInterface(name: "en0", address: IPv4("192.168.1.20")!, mask: 0xFFFF_FF00)] }
+        agent.interfaces = { [NetworkInterface(name: "utun8", address: IPv4("100.81.122.65")!)] }
         var advertised: [DirectEndpoint] = []
         agent.onDirectEndpoints = { advertised = $0 }
         var requests: [PairedDevice?] = []

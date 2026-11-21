@@ -97,9 +97,9 @@ import XCTest
         transport.connected = false
         link.connect()
         XCTAssertEqual(link.state, .connecting)
-        link.unreachable()
+        link.unreachable(.phoneOffTailnet)
         guard case .failed(let message) = link.state else { return XCTFail("\(link.state)") }
-        XCTAssertTrue(message.contains("Tailscale"))
+        XCTAssertTrue(message.contains("Start Tailscale on this iPhone"))
         // Dialing goes on, and the Mac answers.
         transport.connected = true
         link.directReady()
@@ -107,13 +107,13 @@ import XCTest
         try host.accept(transport.sent.removeFirst(), on: link)
         XCTAssertEqual(link.state, .connected)
         // Connected, a failed look elsewhere changes nothing.
-        link.unreachable()
+        link.unreachable(.noAnswer)
         XCTAssertEqual(link.state, .connected)
     }
 
     func testTheMacsAddressesReachTheApp() throws {
         try connect()
-        let endpoints = [DirectEndpoint(host: "192.168.1.20", port: 47126)]
+        let endpoints = [DirectEndpoint(host: "100.81.122.65", port: 47126)]
         try host.send(.endpoints(endpoints), to: link)
         XCTAssertEqual(transport.endpoints, endpoints)
     }
