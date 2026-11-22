@@ -1,29 +1,31 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
-import { TriangleAlert } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import {
-  MarketingPageShell,
-  marketingFontLinks,
-  marketingLinkClass,
-  marketingMono,
-} from '@/components/marketing-page-shell';
+  AppleIcon,
+  MarginNote,
+  SiteShell,
+  containerClass,
+  primaryButtonClass,
+  repoUrl,
+} from '@/components/site-shell';
 import {
   assetArch,
-  assetLabel,
+  assetRow,
   fetchLatestGitHubRelease,
-  formatBytes,
-  formatReleaseDate,
+  formatLongDate,
   groupReleaseAssets,
+  releaseVersion,
   type GitHubRelease,
   type GitHubReleaseAsset,
   type PlatformAssetGroup,
 } from '@/lib/github-release';
 
 const AUR_PACKAGE_URL = 'https://aur.archlinux.org/packages/termy-bin';
+const LATEST_RELEASE_URL = `${repoUrl}/releases/latest`;
 
 /**
  * The AUR package is published independently of the GitHub release assets, so
- * the Linux section renders even when a release attaches no Linux binaries —
+ * the Linux section renders even when a release attaches no Linux binaries,
  * or when the release could not be loaded at all.
  */
 function withLinuxGroup(groups: PlatformAssetGroup[]): PlatformAssetGroup[] {
@@ -40,8 +42,20 @@ function withLinuxGroup(groups: PlatformAssetGroup[]): PlatformAssetGroup[] {
   return next;
 }
 
+/** Signed DMGs carry a `-signed` suffix; anything else gets a warning first. */
+function isUnsignedMacBuild(asset: GitHubReleaseAsset): boolean {
+  const lower = asset.name.toLowerCase();
+  return lower.endsWith('.dmg') && !lower.endsWith('-signed.dmg');
+}
+
+/** Apple silicon leads on macOS; everywhere else x64 comes before ARM64. */
+function byArch(platform: PlatformAssetGroup['id']) {
+  const first = platform === 'macos' ? 'arm64' : 'x64';
+  return (a: GitHubReleaseAsset, b: GitHubReleaseAsset) =>
+    Number(assetArch(b.name) === first) - Number(assetArch(a.name) === first);
+}
+
 export const Route = createFileRoute('/download')({
-  head: () => ({ links: marketingFontLinks }),
   component: DownloadPage,
 });
 
@@ -53,27 +67,10 @@ type ReleaseState =
 function DownloadPage() {
   // The repo is public, so the browser asks GitHub directly instead of going
   // through a server function that needs a token.
-  const [releaseState, setReleaseState] = useState<ReleaseState>({
-    status: 'loading',
-  });
-  const release =
-    releaseState.status === 'loaded' ? releaseState.release : null;
+  const [releaseState, setReleaseState] = useState<ReleaseState>({ status: 'loading' });
+  const release = releaseState.status === 'loaded' ? releaseState.release : null;
   const dialogRef = useRef<HTMLDialogElement>(null);
-  const [pendingDownload, setPendingDownload] = useState<{
-    name: string;
-    url: string;
-  } | null>(null);
-
-  const groups = withLinuxGroup(
-    release ? groupReleaseAssets(release.assets) : [],
-  );
-  const githubUrl =
-    release?.htmlUrl ?? 'https://github.com/lassejlv/termy/releases';
-
-  const warnBeforeMacDownload = (name: string, url: string) => {
-    setPendingDownload({ name, url });
-    dialogRef.current?.showModal();
-  };
+  const [pendingDownload, setPendingDownload] = useState<GitHubReleaseAsset | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -91,334 +88,203 @@ function DownloadPage() {
     };
   }, []);
 
-  const continueMacDownload = () => {
-    const url = pendingDownload?.url;
-    dialogRef.current?.close();
-    if (url) window.location.assign(url);
+  const groups = withLinuxGroup(release ? groupReleaseAssets(release.assets) : []);
+  const appleSilicon = groups
+    .find((group) => group.id === 'macos')
+    ?.assets.find((asset) => assetArch(asset.name) === 'arm64');
+  const checksums = release?.assets.find((asset) => asset.name === 'checksums.txt');
+
+  const download = (asset: GitHubReleaseAsset) => (event: MouseEvent) => {
+    if (!isUnsignedMacBuild(asset)) return;
+    event.preventDefault();
+    setPendingDownload(asset);
+    dialogRef.current?.showModal();
   };
 
   return (
-    <MarketingPageShell>
-      <main className="mx-auto flex w-full max-w-[40rem] flex-col px-6 pt-16 pb-20 md:pt-20">
-        <h1
-          className="text-4xl font-medium leading-none tracking-tight text-[#e8eeff] md:text-5xl"
-          style={{ fontFamily: marketingMono }}
-        >
-          Download
+    <SiteShell>
+      <section className={`${containerClass} relative flex flex-col items-start gap-5 pt-14 sm:pt-24`}>
+        <h1 className="text-[40px] leading-12 font-medium tracking-[-0.025em] text-fg sm:text-5xl sm:leading-14">
+          Download Termy
         </h1>
-
-        {release && (
-          <p
-            className="mt-5 text-sm text-[#787c99]"
-            style={{ fontFamily: marketingMono }}
+        <ReleaseLine state={releaseState} />
+        <div className="flex flex-wrap items-center gap-x-7 gap-y-3 pt-4 text-[15px] leading-5">
+          <a
+            href={appleSilicon?.downloadUrl ?? LATEST_RELEASE_URL}
+            onClick={appleSilicon ? download(appleSilicon) : undefined}
+            className={primaryButtonClass}
           >
-            <span className="text-[#c0caf5]">{release.tagName}</span>
-            {' · '}
-            {formatReleaseDate(release.publishedAt)}
-            {' · '}
-            <Link to="/releases" className={marketingLinkClass}>
-              release notes
-            </Link>
-          </p>
-        )}
+            <AppleIcon />
+            Download for Apple silicon
+          </a>
+          {appleSilicon && <span className="text-muted">{assetRow(appleSilicon).detail}</span>}
+        </div>
+        <div
+          aria-hidden
+          className="mt-8 aspect-[560/320] w-full max-w-[560px] min-[1180px]:absolute min-[1180px]:top-10 min-[1180px]:left-[calc(40px+620px)] min-[1180px]:mt-0 min-[1180px]:w-[560px]"
+        >
+          <img src="/art/laptop-light.png" alt="" width={560} height={320} className="dither dither-light size-full" />
+          <img src="/art/laptop-dark.png" alt="" width={560} height={320} className="dither dither-dark size-full" />
+        </div>
+      </section>
 
-        <div className="mt-12">
-          <AssetPanel
-            status={releaseState.status}
-            release={release}
-            groups={groups}
-            githubUrl={githubUrl}
-            onMacDownload={warnBeforeMacDownload}
-          />
+      <section className={`${containerClass} flex flex-col gap-14 pt-20 sm:pt-30`}>
+        {groups.map((group) => (
+          <div key={group.id} id={group.id} className="relative w-full max-w-[760px] scroll-mt-8">
+            <h2 className="pb-2 text-[15px] leading-5 font-normal text-muted">{group.title}</h2>
+            {[...group.assets].sort(byArch(group.id)).map((asset) => {
+              const row = assetRow(asset);
+              return (
+                <DownloadRow
+                  key={asset.id}
+                  label={row.label}
+                  detail={row.detail}
+                  action={
+                    <a href={asset.downloadUrl} title={asset.name} onClick={download(asset)} className="site-link text-fg">
+                      Download
+                    </a>
+                  }
+                />
+              );
+            })}
+            {group.id === 'linux' && (
+              <DownloadRow
+                label="Arch Linux"
+                detail={<code className="font-mono text-[13px] sm:text-sm">yay -S termy-bin</code>}
+                action={
+                  <a href={AUR_PACKAGE_URL} target="_blank" rel="noreferrer" className="site-link text-fg">
+                    AUR
+                  </a>
+                }
+              />
+            )}
+            {group.id === 'macos' && group.assets.every((asset) => !isUnsignedMacBuild(asset)) && (
+              <MarginNote top={40}>Signed and notarized.</MarginNote>
+            )}
+            {group.id === 'windows' && (
+              <MarginNote top={40}>{'Not code-signed, so\nSmartScreen may ask first.'}</MarginNote>
+            )}
+          </div>
+        ))}
+
+        <div id="source" className="flex w-full max-w-[760px] scroll-mt-8 flex-col gap-3">
+          <h2 className="text-[15px] leading-5 font-normal text-muted">From source</h2>
+          <pre className="overflow-x-auto rounded-[10px] bg-surface px-6 py-5 font-mono text-[13px] leading-6 text-fg sm:text-sm">
+            {`git clone ${repoUrl}\ncd termy\ncargo run --release -p termy`}
+          </pre>
+          <p className="text-[15px] leading-5 text-muted">
+            Needs Rust and the platform dependencies of the desktop app.
+          </p>
         </div>
 
-        <footer
-          className="mt-8 flex flex-wrap gap-x-6 gap-y-2 text-xs text-[#787c99]"
-          style={{ fontFamily: marketingMono }}
-        >
-          <Link to="/releases" className="hover:text-white">
-            all releases →
-          </Link>
-          <a
-            href={githubUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="hover:text-white"
-          >
-            GitHub ↗
-          </a>
-          {release && (
-            <a href={release.tarballUrl} className="hover:text-white">
-              source tarball ↓
+        <div className="flex flex-wrap gap-x-7 gap-y-3 text-[15px] leading-5 text-fg">
+          {checksums && (
+            <a href={checksums.downloadUrl} className="site-link">
+              checksums.txt
             </a>
           )}
-        </footer>
+          <Link to="/releases" className="site-link">
+            All releases
+          </Link>
+          <a href={repoUrl} target="_blank" rel="noreferrer" className="site-link">
+            Source on GitHub
+          </a>
+        </div>
+      </section>
 
-        <dialog
-          ref={dialogRef}
-          aria-labelledby="macos-download-warning-title"
-          aria-describedby="macos-download-warning-description"
-          onClose={() => setPendingDownload(null)}
-          className="download-warning m-auto w-[min(34rem,calc(100%-2rem))] rounded-2xl border border-white/[0.1] bg-[#16161e] p-0 text-[#c0caf5] shadow-[0_30px_100px_rgba(0,0,0,0.55)] backdrop:bg-[#080a10]/70 backdrop:backdrop-blur-sm"
-        >
-          <div className="p-6 sm:p-7">
-            <div className="flex items-start gap-4">
-              <span className="flex size-10 shrink-0 items-center justify-center rounded-full border border-[#7aa2f7]/25 bg-[#7aa2f7]/10 text-[#7aa2f7]">
-                <TriangleAlert className="size-5" />
-              </span>
-              <div className="min-w-0">
-                <p
-                  className="text-[10px] text-[#565f89]"
-                  style={{ fontFamily: marketingMono }}
-                >
-                  macOS installation
-                </p>
-                <h2
-                  id="macos-download-warning-title"
-                  className="mt-1 text-2xl font-medium leading-tight text-[#e8eeff]"
-                  style={{ fontFamily: marketingMono }}
-                >
-                  This macOS build is unsigned.
-                </h2>
-              </div>
-            </div>
-
-            <p
-              id="macos-download-warning-description"
-              className="mt-5 text-sm leading-relaxed text-[#787c99]"
+      <dialog
+        ref={dialogRef}
+        aria-labelledby="macos-download-warning-title"
+        aria-describedby="macos-download-warning-description"
+        onClose={() => setPendingDownload(null)}
+        className="download-warning m-auto w-[min(32rem,calc(100%-2rem))] rounded-xl border border-rule bg-paper p-0 text-text shadow-[0_24px_60px_-12px_rgba(0,0,0,0.25)] backdrop:bg-black/40"
+      >
+        <div className="flex flex-col gap-4 p-6 sm:p-7">
+          <h2 id="macos-download-warning-title" className="text-[21px] leading-7 font-medium tracking-[-0.01em] text-fg">
+            This macOS build is unsigned.
+          </h2>
+          <p id="macos-download-warning-description" className="text-[15px] leading-6 text-muted">
+            macOS may prevent this download from opening. Choose a signed release if one is available, or
+            continue if you specifically need this unsigned build.{' '}
+            <Link to="/docs/$" params={{ _splat: 'getting-started/troubleshooting' }} className="site-link text-fg">
+              Troubleshooting
+            </Link>
+          </p>
+          <p className="truncate font-mono text-[13px] leading-5 text-muted">{pendingDownload?.name}</p>
+          <div className="flex items-center justify-end gap-6 pt-2 text-[15px] leading-5">
+            <button
+              type="button"
+              onClick={() => dialogRef.current?.close()}
+              className="text-muted transition-colors hover:text-fg"
             >
-              macOS may prevent this download from opening. Choose a signed
-              release if one is available, or continue if you specifically need
-              this unsigned build.
-            </p>
-
-            <a
-              href="https://termy.sh/docs/getting-started/troubleshooting"
-              target="_blank"
-              rel="noreferrer"
-              className="mt-4 inline-block text-xs text-[#7aa2f7] underline decoration-[#7aa2f7]/35 underline-offset-4 hover:decoration-[#7aa2f7]"
-              style={{ fontFamily: marketingMono }}
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const url = pendingDownload?.downloadUrl;
+                dialogRef.current?.close();
+                if (url) window.location.assign(url);
+              }}
+              className={primaryButtonClass}
             >
-              Read the troubleshooting guide ↗
-            </a>
-
-            <div className="mt-7 flex flex-col-reverse gap-3 border-t border-white/[0.08] pt-5 sm:flex-row sm:items-center sm:justify-between">
-              <p
-                className="min-w-0 truncate text-[10px] text-[#565f89]"
-                style={{ fontFamily: marketingMono }}
-              >
-                {pendingDownload?.name}
-              </p>
-              <div className="flex shrink-0 gap-3">
-                <button
-                  type="button"
-                  onClick={() => dialogRef.current?.close()}
-                  className="rounded-full border border-white/[0.1] px-4 py-2 text-xs text-[#787c99] transition-colors hover:text-white active:scale-[0.97]"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={continueMacDownload}
-                  className="rounded-full bg-[#9fc0ff] px-4 py-2 text-xs font-medium text-[#10192e] transition-transform hover:scale-[1.02] active:scale-[0.97]"
-                >
-                  Continue download
-                </button>
-              </div>
-            </div>
+              Continue download
+            </button>
           </div>
-        </dialog>
-      </main>
-    </MarketingPageShell>
+        </div>
+      </dialog>
+    </SiteShell>
   );
 }
 
-function AssetPanel({
-  status,
-  release,
-  groups,
-  githubUrl,
-  onMacDownload,
-}: {
-  status: ReleaseState['status'];
-  release: GitHubRelease | null;
-  groups: PlatformAssetGroup[];
-  githubUrl: string;
-  onMacDownload: (name: string, url: string) => void;
-}) {
-  // The sections still render underneath a notice, because the Arch Linux
-  // install command does not depend on the release having loaded.
-  const notice = status === 'loading' ? (
-    <p className="pb-8 font-mono text-sm text-fd-muted-foreground">
-      Loading the latest release…
-    </p>
-  ) : status === 'error' ? (
-    <p className="pb-8 font-mono text-sm text-fd-muted-foreground">
-      <span className="text-fd-error">error:</span> could not reach GitHub.{' '}
-      <a
-        href="https://github.com/lassejlv/termy/releases/latest"
-        target="_blank"
-        rel="noreferrer"
-        className={marketingLinkClass}
-      >
-        Download from GitHub →
-      </a>
-    </p>
-  ) : !release ? (
-    <p className="pb-8 font-mono text-sm text-fd-muted-foreground">
-      No release published yet.{' '}
-      <a
-        href={githubUrl}
-        target="_blank"
-        rel="noreferrer"
-        className={marketingLinkClass}
-      >
-        View on GitHub →
-      </a>
-    </p>
-  ) : groups.every((group) => group.assets.length === 0) ? (
-    <p className="pb-8 font-mono text-sm text-fd-muted-foreground">
-      No binaries for this release yet.{' '}
-      <a
-        href={githubUrl}
-        target="_blank"
-        rel="noreferrer"
-        className={marketingLinkClass}
-      >
-        View on GitHub →
-      </a>
-    </p>
-  ) : null;
+function ReleaseLine({ state }: { state: ReleaseState }) {
+  if (state.status === 'loading') {
+    return <p className="text-[17px] leading-6 text-muted">Loading the latest release…</p>;
+  }
 
+  if (state.status === 'error') {
+    return (
+      <p className="text-[17px] leading-6 text-muted">
+        Could not reach GitHub.{' '}
+        <a href={LATEST_RELEASE_URL} className="site-link text-fg">
+          Download from GitHub
+        </a>
+      </p>
+    );
+  }
+
+  const { release } = state;
   return (
-    <>
-      {notice}
-      <div className="divide-y divide-white/[0.08]">
-        {groups.map((group) => (
-          <section key={group.id} className="py-7 first:pt-2 last:pb-2">
-            <h2
-              className="text-[11px] font-medium tracking-[0.12em] text-[#565f89] uppercase"
-              style={{ fontFamily: marketingMono }}
-            >
-              {group.title}
-            </h2>
-            {group.assets.length > 0 && (
-              <ul className="mt-3">
-                {group.assets.map((asset) => {
-                  const arch = assetArch(asset.name);
-                  return (
-                    <li key={asset.id}>
-                      <a
-                        href={asset.downloadUrl}
-                        title={asset.name}
-                        onClick={(event) => {
-                          if (
-                            group.id === 'macos' &&
-                            (arch === 'arm64' || arch === 'x64') &&
-                            !asset.name.toLowerCase().endsWith('-signed.dmg')
-                          ) {
-                            event.preventDefault();
-                            onMacDownload(asset.name, asset.downloadUrl);
-                          }
-                        }}
-                        className="group flex items-center gap-4 py-3 transition-colors hover:text-white"
-                      >
-                        <span className="min-w-0 flex-1 text-[15px] font-medium text-[#c0caf5] transition-colors group-hover:text-white">
-                          {assetLabel(asset.name)}
-                        </span>
-                        {arch && (
-                          <span
-                            className="hidden w-12 shrink-0 text-xs text-[#565f89] sm:block"
-                            style={{ fontFamily: marketingMono }}
-                          >
-                            {arch}
-                          </span>
-                        )}
-                        <span
-                          className="w-14 shrink-0 text-right text-xs text-[#787c99] tabular-nums"
-                          style={{ fontFamily: marketingMono }}
-                        >
-                          {formatBytes(asset.size)}
-                        </span>
-                      </a>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            {group.id === 'linux' && (
-              <LinuxInstallHints assets={group.assets} />
-            )}
-          </section>
-        ))}
-      </div>
-    </>
-  );
-}
-
-function LinuxInstallHints({ assets }: { assets: GitHubReleaseAsset[] }) {
-  const deb = assets.find((asset) => asset.name.toLowerCase().endsWith('.deb'));
-  const rpm = assets.find((asset) => asset.name.toLowerCase().endsWith('.rpm'));
-
-  return (
-    <div className="mt-4 flex flex-col gap-3">
-      {deb && (
-        <InstallCommand
-          label="Debian / Ubuntu"
-          command={`sudo apt install ./${deb.name}`}
-        />
-      )}
-      {rpm && (
-        <InstallCommand
-          label="Fedora / RHEL"
-          command={`sudo dnf install ./${rpm.name}`}
-        />
-      )}
-      {/* Packaged in the AUR rather than attached to the release. */}
-      <InstallCommand
-        label="Arch Linux (AUR)"
-        command="yay -S termy-bin"
-        href={AUR_PACKAGE_URL}
-      />
+    <div className="flex flex-wrap items-baseline gap-x-5 gap-y-2">
+      <p className="text-[17px] leading-6 text-muted">
+        {releaseVersion(release.tagName)}, released {formatLongDate(release.publishedAt)}.
+      </p>
+      <Link
+        to="/releases/$slug"
+        params={{ slug: release.tagName }}
+        className="site-link text-[15px] leading-5 text-fg"
+      >
+        Release notes
+      </Link>
     </div>
   );
 }
 
-function InstallCommand({
+function DownloadRow({
   label,
-  command,
-  href,
+  detail,
+  action,
 }: {
   label: string;
-  command: string;
-  href?: string;
+  detail: ReactNode;
+  action: ReactNode;
 }) {
   return (
-    <div>
-      {href ? (
-        <a
-          href={href}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-block text-[10px] text-[#565f89] transition-colors hover:text-[#7aa2f7]"
-          style={{ fontFamily: marketingMono }}
-        >
-          {label} ↗
-        </a>
-      ) : (
-        <p
-          className="text-[10px] text-[#565f89]"
-          style={{ fontFamily: marketingMono }}
-        >
-          {label}
-        </p>
-      )}
-      <pre
-        className="mt-1 overflow-x-auto rounded-xl border border-white/[0.08] bg-[#0d0f17] px-4 py-3 text-xs leading-relaxed text-[#9ece6a]"
-        style={{ fontFamily: marketingMono }}
-      >
-        <code>{command}</code>
-      </pre>
+    <div className="grid grid-cols-[auto_minmax(16px,1fr)_auto] items-center gap-x-4 gap-y-0.5 py-3 sm:flex sm:h-13 sm:py-0">
+      <span className="text-[17px] leading-6 text-fg sm:order-1">{label}</span>
+      <span aria-hidden className="leader sm:order-2" />
+      <span className="text-right text-[15px] leading-5 sm:order-4 sm:w-[84px]">{action}</span>
+      <span className="col-span-3 text-[15px] leading-5 text-muted sm:order-3 sm:text-right">{detail}</span>
     </div>
   );
 }

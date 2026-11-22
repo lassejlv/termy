@@ -23,6 +23,12 @@ export const Route = createRootRoute({
       { rel: 'icon', type: 'image/svg+xml', href: '/termy-icon.svg' },
       { rel: 'icon', type: 'image/png', sizes: '512x512', href: '/termy-icon.png' },
       { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' },
+      { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
+      { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossOrigin: 'anonymous' },
+      {
+        rel: 'stylesheet',
+        href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=JetBrains+Mono:wght@400;500&family=Reenie+Beanie&display=swap',
+      },
     ],
   }),
   component: RootComponent,
@@ -33,15 +39,14 @@ function RootComponent() {
     <html suppressHydrationWarning>
       <head>
         <HeadContent />
-
       </head>
-      <body className="flex flex-col min-h-screen">
+      <body className="flex min-h-screen flex-col">
         <Databuddy clientId='e1f706f1-7956-482d-9b32-3748354abd8a' trackOutgoingLinks={true} />
         <RootProvider
           search={{ options: { type: 'static', api: '/api/search.json' } }}
           theme={{
             attribute: 'class',
-            defaultTheme: 'dark',
+            defaultTheme: 'light',
             themes: ['light', 'dark'],
             enableSystem: false,
           }}

@@ -1,20 +1,15 @@
-import { createFileRoute, Link } from '@tanstack/react-router';
+import { createFileRoute } from '@tanstack/react-router';
 import { useEffect, useState } from 'react';
-import {
-  MarketingPageShell,
-  marketingFontLinks,
-  marketingLinkClass,
-  marketingMono,
-} from '@/components/marketing-page-shell';
+import { Markdown } from '@/components/markdown';
+import { SiteShell, containerClass, repoUrl } from '@/components/site-shell';
 import {
   fetchGitHubReleaseByTag,
-  formatReleaseDate,
+  formatLongDate,
+  releaseVersion,
   type GitHubRelease,
 } from '@/lib/github-release';
-import { Markdown } from '@/components/markdown';
 
 export const Route = createFileRoute('/releases/$slug')({
-  head: () => ({ links: marketingFontLinks }),
   component: ReleaseDetail,
 });
 
@@ -34,9 +29,7 @@ function ReleaseDetail() {
     fetchGitHubReleaseByTag(slug).then(
       (release) => {
         if (cancelled) return;
-        setState(
-          release ? { status: 'loaded', release } : { status: 'not-found' },
-        );
+        setState(release ? { status: 'loaded', release } : { status: 'not-found' });
       },
       (error: unknown) => {
         console.error(`Failed to load release ${slug}`, error);
@@ -51,86 +44,51 @@ function ReleaseDetail() {
   const release = state.status === 'loaded' ? state.release : null;
 
   return (
-    <MarketingPageShell>
-      <main className="mx-auto flex w-full max-w-[40rem] flex-col px-6 pt-16 pb-20 md:pt-20">
-        <Link
-          to="/releases"
-          className="text-xs text-[#787c99] hover:text-white"
-          style={{ fontFamily: marketingMono }}
+    <SiteShell>
+      <article className={`${containerClass} flex flex-col items-start pt-14 sm:pt-24`}>
+        <a
+          href={release?.line === 'next' ? '/releases?line=next' : '/releases'}
+          className="site-link text-[15px] leading-5 text-muted"
         >
-          ← all releases
-        </Link>
+          All releases
+        </a>
 
-        {state.status === 'loading' && (
-          <p className="mt-10 font-mono text-sm text-fd-muted-foreground">
-            Loading {slug}…
-          </p>
-        )}
-
+        {state.status === 'loading' && <p className="mt-10 text-[17px] leading-6 text-muted">Loading {slug}…</p>}
         {state.status === 'not-found' && (
-          <p className="mt-10 font-mono text-sm text-fd-muted-foreground">
-            No release named {slug}.
-          </p>
+          <p className="mt-10 text-[17px] leading-6 text-muted">No release named {slug}.</p>
         )}
-
         {state.status === 'error' && (
-          <p className="mt-10 font-mono text-sm text-fd-muted-foreground">
-            <span className="text-fd-error">error:</span> could not load this
-            release.{' '}
-            <a
-              href={`https://github.com/lassejlv/termy/releases/tag/${encodeURIComponent(slug)}`}
-              target="_blank"
-              rel="noreferrer"
-              className={marketingLinkClass}
-            >
-              View on GitHub →
+          <p className="mt-10 text-[17px] leading-6 text-muted">
+            Could not load this release.{' '}
+            <a href={`${repoUrl}/releases/tag/${encodeURIComponent(slug)}`} className="site-link text-fg">
+              View it on GitHub
             </a>
           </p>
         )}
 
         {release && (
           <>
-          <article className="mt-10">
-            <time
-              dateTime={release.publishedAt}
-              className="text-xs text-[#787c99]"
-              style={{ fontFamily: marketingMono }}
-            >
-              {formatReleaseDate(release.publishedAt)}
-            </time>
-            <h1
-              className="mt-3 text-4xl font-medium leading-none tracking-tight text-[#e8eeff] md:text-5xl"
-              style={{ fontFamily: marketingMono }}
-            >
-              {release.tagName}
+            <h1 className="mt-8 text-[40px] leading-12 font-medium tracking-[-0.025em] text-fg sm:text-5xl sm:leading-14">
+              {release.line === 'next' ? 'Termy Next ' : ''}
+              {releaseVersion(release.tagName)}
             </h1>
-
-            <div className="release-notes prose prose-invert mt-10 max-w-none">
-              <Markdown
-                text={release.body || '_No release notes were provided._'}
-              />
+            <p className="mt-5 text-[17px] leading-6 text-muted">
+              {release.prerelease ? 'Pre-release, released' : 'Released'} {formatLongDate(release.publishedAt)}.
+            </p>
+            <div className="docs-prose mt-10 w-full max-w-[760px]">
+              <Markdown text={release.body || '_No release notes were provided._'} />
             </div>
-          </article>
-
-          <div
-            className="mt-8 flex flex-wrap gap-x-6 gap-y-2 text-xs text-[#787c99]"
-            style={{ fontFamily: marketingMono }}
-          >
-            <a
-              href={release.htmlUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="hover:text-white"
-            >
-              View on GitHub ↗
-            </a>
-            <a href={release.tarballUrl} className="hover:text-white">
-              Source tarball ↓
-            </a>
-          </div>
+            <div className="mt-12 flex flex-wrap gap-x-7 gap-y-3 text-[15px] leading-5 text-fg">
+              <a href={release.htmlUrl} target="_blank" rel="noreferrer" className="site-link">
+                View on GitHub
+              </a>
+              <a href={release.tarballUrl} className="site-link">
+                Source tarball
+              </a>
+            </div>
           </>
         )}
-      </main>
-    </MarketingPageShell>
+      </article>
+    </SiteShell>
   );
 }

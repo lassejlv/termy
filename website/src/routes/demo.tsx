@@ -1,13 +1,7 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { Minus, Plus } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import {
-  MarketingPageShell,
-  marketingFontLinks,
-  marketingLinkClass,
-  marketingMono,
-  marketingPanelClass,
-} from '@/components/marketing-page-shell';
+import { SiteShell, containerClass } from '@/components/site-shell';
 import { DEMO_COMMANDS, DemoShell } from '@/lib/demo-shell';
 
 // The @termysh/web bundle is vendored into public/web-terminal/ by
@@ -43,7 +37,6 @@ export const Route = createFileRoute('/demo')({
       },
     ],
     links: [
-      ...marketingFontLinks,
       { rel: 'modulepreload', href: BUNDLE_URL },
       { rel: 'preload', href: '/web-terminal/termy.wasm', as: 'fetch', crossOrigin: 'anonymous' as const },
     ],
@@ -52,7 +45,7 @@ export const Route = createFileRoute('/demo')({
 });
 
 const controlClass =
-  'rounded-lg border border-white/[0.1] bg-white/[0.04] px-3 py-1.5 text-sm text-[#c0caf5] transition-colors hover:bg-white/[0.08]';
+  'rounded-lg border border-rule bg-surface px-3 py-1.5 text-sm text-text transition-colors hover:bg-rule';
 
 function DemoPage() {
   const container = useRef<HTMLDivElement>(null);
@@ -75,7 +68,7 @@ function DemoPage() {
         term = new mod.Terminal({
           theme: 'tokyo-night',
           fontSize: 14,
-          fontFamily: marketingMono,
+          fontFamily: "'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
           cursorBlink: true,
           padding: 12,
           scrollback: 5000,
@@ -131,21 +124,20 @@ function DemoPage() {
   };
 
   return (
-    <MarketingPageShell>
-      <main className="mx-auto flex w-full max-w-6xl flex-col px-6 pt-12 pb-20 md:pt-16">
-        <p className="text-sm text-[#787c99]" style={{ fontFamily: marketingMono }}>
+    <SiteShell>
+      <section className={`${containerClass} flex flex-col pt-14 sm:pt-24`}>
+        <p className="text-sm text-muted">
           @termysh/web · WebAssembly
         </p>
         <h1
-          className="mt-3 text-4xl font-medium leading-[1.1] tracking-tight text-[#e8eeff] md:text-5xl"
-          style={{ fontFamily: marketingMono }}
+          className="mt-3 text-[40px] leading-12 font-medium tracking-[-0.025em] text-fg sm:text-5xl sm:leading-14"
         >
           Termy in your browser
         </h1>
-        <p className="mt-4 max-w-[44rem] leading-relaxed text-[#787c99]">
+        <p className="mt-4 max-w-[44rem] leading-relaxed text-muted">
           The same Rust terminal engine as the desktop app, compiled to
           WebAssembly and drawn on a canvas. This shell runs entirely in your
-          browser. Type <code className="text-[#9ece6a]">help</code>, or try a
+          browser. Type <code className="text-fg">help</code>, or try a
           command below.
         </p>
 
@@ -156,8 +148,7 @@ function DemoPage() {
               type="button"
               disabled={status !== 'ready'}
               onClick={() => run(command)}
-              className={`${controlClass} disabled:opacity-40`}
-              style={{ fontFamily: marketingMono }}
+              className={` font-mono disabled:opacity-40`}
             >
               {command}
             </button>
@@ -175,7 +166,7 @@ function DemoPage() {
                 setTheme(event.target.value);
                 update({ theme: event.target.value });
               }}
-              className={`${controlClass} bg-[#16161e]`}
+              className={`${controlClass} bg-surface`}
             >
               {themes.map((id) => (
                 <option key={id} value={id}>
@@ -184,11 +175,11 @@ function DemoPage() {
               ))}
             </select>
 
-            <div className="flex items-center rounded-lg border border-white/[0.1] bg-white/[0.04]">
+            <div className="flex items-center rounded-lg border border-rule bg-surface">
               <button
                 type="button"
                 aria-label="Smaller text"
-                className="px-2 py-1.5 text-[#c0caf5] hover:text-white disabled:opacity-40"
+                className="px-2 py-1.5 text-text hover:text-fg disabled:opacity-40"
                 disabled={fontSize <= 9}
                 onClick={() => {
                   const next = fontSize - 1;
@@ -198,11 +189,11 @@ function DemoPage() {
               >
                 <Minus className="size-3.5" />
               </button>
-              <span className="w-10 text-center text-sm tabular-nums text-[#a9b1d6]">{fontSize}px</span>
+              <span className="w-10 text-center text-sm tabular-nums text-muted">{fontSize}px</span>
               <button
                 type="button"
                 aria-label="Larger text"
-                className="px-2 py-1.5 text-[#c0caf5] hover:text-white disabled:opacity-40"
+                className="px-2 py-1.5 text-text hover:text-fg disabled:opacity-40"
                 disabled={fontSize >= 24}
                 onClick={() => {
                   const next = fontSize + 1;
@@ -214,7 +205,7 @@ function DemoPage() {
               </button>
             </div>
 
-            <div className="flex rounded-lg border border-white/[0.1] bg-white/[0.04] p-0.5" role="radiogroup" aria-label="Cursor style">
+            <div className="flex rounded-lg border border-rule bg-surface p-0.5" role="radiogroup" aria-label="Cursor style">
               {(['block', 'bar', 'underline'] as const).map((style) => (
                 <button
                   key={style}
@@ -226,7 +217,7 @@ function DemoPage() {
                     update({ cursorStyle: style });
                   }}
                   className={`rounded-md px-2.5 py-1 text-sm transition-colors ${
-                    cursorStyle === style ? 'bg-white/[0.1] text-white' : 'text-[#a9b1d6] hover:text-[#c0caf5]'
+                    cursorStyle === style ? 'bg-paper text-fg' : 'text-muted hover:text-text'
                   }`}
                 >
                   {style}
@@ -248,12 +239,11 @@ function DemoPage() {
           </div>
         </div>
 
-        <div className={`${marketingPanelClass} relative mt-4 h-[min(560px,65vh)] min-h-[320px]`}>
+        <div className={`overflow-hidden rounded-xl bg-term-bg shadow-[0_0_0_1px_rgba(0,0,0,0.9),0_30px_60px_-20px_rgba(0,0,0,0.35)] relative mt-4 h-[min(560px,65vh)] min-h-[320px]`}>
           <div ref={container} className="absolute inset-0" />
           {status !== 'ready' && (
             <div
-              className="absolute inset-0 flex items-center justify-center text-sm text-[#787c99]"
-              style={{ fontFamily: marketingMono }}
+              className="absolute inset-0 flex items-center justify-center text-sm text-muted"
             >
               {status === 'loading'
                 ? 'Loading WebAssembly engine…'
@@ -264,12 +254,11 @@ function DemoPage() {
 
         <section className="mt-12 grid gap-8 md:grid-cols-2">
           <div>
-            <h2 className="text-lg font-medium text-[#e8eeff]" style={{ fontFamily: marketingMono }}>
+            <h2 className="text-lg font-medium text-fg">
               Use it in your app
             </h2>
             <pre
-              className="mt-4 overflow-x-auto rounded-xl border border-white/[0.08] bg-[#16161e] p-4 text-[13px] leading-relaxed text-[#a9b1d6]"
-              style={{ fontFamily: marketingMono }}
+              className="font-mono mt-4 overflow-x-auto rounded-xl border border-rule bg-surface p-4 text-[13px] leading-relaxed text-muted"
             >
               {`npm install @termysh/web
 
@@ -282,26 +271,26 @@ socket.onmessage = (e) => term.write(e.data)`}
             </pre>
           </div>
           <div>
-            <h2 className="text-lg font-medium text-[#e8eeff]" style={{ fontFamily: marketingMono }}>
+            <h2 className="text-lg font-medium text-fg">
               What you are looking at
             </h2>
-            <ul className="mt-4 space-y-2 leading-relaxed text-[#787c99]">
+            <ul className="mt-4 space-y-2 leading-relaxed text-muted">
               <li>Parsing, scrollback and key encoding from Termy's Rust engine</li>
               <li>Kitty keyboard and graphics protocols, OSC 8 links, truecolor</li>
               <li>Pixel-exact box drawing, blocks and Braille</li>
               <li>14 bundled themes and live options</li>
               <li>
-                An xterm.js-compatible API in <code className="text-[#c0caf5]">@termysh/xterm</code>
+                An xterm.js-compatible API in <code className="text-text">@termysh/xterm</code>
               </li>
             </ul>
             <p className="mt-5">
-              <Link to="/docs/$" params={{ _splat: 'developer/web' }} className={marketingLinkClass}>
+              <Link to="/docs/$" params={{ _splat: 'developer/web' }} className="site-link text-fg">
                 Read the web terminal docs
               </Link>
             </p>
           </div>
         </section>
-      </main>
-    </MarketingPageShell>
+      </section>
+    </SiteShell>
   );
 }
