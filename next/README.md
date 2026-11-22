@@ -357,19 +357,19 @@ TERMY_SIGN_IDENTITY=- next/scripts/release.sh --version 0.1.0 --native
 ## Mobile access
 
 Open **Settings → Mobile**, enable mobile access, and choose **Pair iPhone…**.
-Scan the QR in the Termy iPhone app, confirm the computer/relay there, and
-approve the phone on your Mac. No account or terminal command is needed.
-Paired phones can browse, view, create, control and end this Mac’s sessions.
-Remove a phone’s access in the same settings pane.
+Scan the QR in the Termy iPhone app and approve the phone on your Mac. No
+account, server or terminal command is needed. Paired phones can browse, view,
+create, control and end this Mac’s sessions. Remove a phone’s access in the
+same settings pane.
+
+The iPhone connects to this Mac directly over [Tailscale](https://tailscale.com),
+so run Tailscale on both, signed in to the same tailnet; that works from
+anywhere. Nothing sits in between, and sessions are end-to-end encrypted. iPhones paired through the relay of earlier
+versions pair again.
 
 Termy Next must be running, with its session host enabled. Closing all windows
 keeps mobile access available; quitting or disabling it stops remote access
 without ending hosted programs. Your Mac must be awake and reachable.
-
-The default relay is `https://relay.termy.sh`. To use your own VPS, deploy the
-[relay stack](../crates/relay/README.md#self-host-on-a-vps), enter its HTTPS URL
-in **Mobile → Relay Server**, click **Apply**, and pair again. The QR configures
-the phone’s relay automatically. Sessions remain end-to-end encrypted.
 
 The reusable host is the `TermyRemoteHost` library product; pairing and
 transport live in `../remote`. The old `termy remote` executable flow is retired.

@@ -68,8 +68,8 @@ enum FrameEncoder {
         }
     }
 
-    /// `message` encoded as payloads of at most `limit` bytes. The relay
-    /// closes a socket that sends a larger message, so a frame too large for
+    /// `message` encoded as payloads of at most `limit` bytes. A larger
+    /// packet closes the connection, so a frame too large for
     /// it (a wide screen of glyph images) goes as several: the first keeps
     /// `full`, and the rest patch their rows into it.
     static func payloads(for message: HostMessage, limit: Int) throws -> [Data] {

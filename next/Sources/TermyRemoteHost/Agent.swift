@@ -1,30 +1,20 @@
-import CryptoKit
 import Foundation
 import Termy
 import TermyRemoteKit
 
-/// Serves this computer's session host to its paired phones: through the relay,
-/// over connections of their own on the local network or tailnet, or both. A host
-/// made without relay credentials uses no relay at all. Each phone gets one
-/// `SecureChannel`; every screen and key inside it is sealed end to end.
+/// Serves this computer's session host to its paired phones, over connections they
+/// open to it over its tailnet (see `DirectServer.swift`). Each phone
+/// gets one `SecureChannel`; every screen and key inside it is sealed end to end.
 @MainActor
 public final class RemoteHostAgent {
-    public enum ConnectionState: Sendable { case connecting, connected, offline }
-    public var onConnectionState: ((ConnectionState) -> Void)?
-    /// Nil for a host that uses no relay.
-    private let credentials: DeviceCredentials?
-    /// What paired phones know this Mac by: its relay device ID, or one it made up itself.
+    /// What paired phones know this Mac by, an ID it made up itself.
     public let hostID: UUID
     let identity: DeviceIdentity
     /// The phones paired with this Mac, and the key each is pinned to.
     public internal(set) var trustedDevices: [UUID: Data]
     private let multiplexer: Multiplexer
-    private var connection: RelayConnection?
     var peers: [UUID: Peer] = [:]
     var running = false
-    /// Also serve paired phones on this Mac's local network and tailnet, without the relay
-    /// in between (see `DirectServer.swift`). Set before `run()`.
-    public var directEnabled = true
     /// The addresses phones are told to reach this Mac at; empty when there are none.
     public var onDirectEndpoints: (([DirectEndpoint]) -> Void)?
     var endpoints: [DirectEndpoint] = []
@@ -41,47 +31,30 @@ public final class RemoteHostAgent {
     private var lastSessions: RemoteSessionList?
     /// When each pane's running command was first seen, for phones to show how long it runs.
     private var runningSince: [String: Date] = [:]
-    /// The relay answered that it can't push; don't ask again until the next start.
-    var pushUnavailable = false
     /// Pane sizes phones asked for, across every phone, so the last one to
     /// leave a pane gives it back the size it had before any phone came.
     let paneSizes = PaneSizes()
 
-    public init(
-        multiplexer: Multiplexer, credentials: DeviceCredentials, identity: DeviceIdentity, trustedDevices: [UUID: Data]
-    ) {
-        self.multiplexer = multiplexer
-        self.credentials = credentials
-        hostID = credentials.device.id
-        self.identity = identity
-        self.trustedDevices = trustedDevices
-    }
-
-    /// A host that uses no relay: phones pair with it and reach it directly.
     public init(multiplexer: Multiplexer, hostID: UUID, identity: DeviceIdentity, trustedDevices: [UUID: Data]) {
         self.multiplexer = multiplexer
-        credentials = nil
         self.hostID = hostID
         self.identity = identity
         self.trustedDevices = trustedDevices
     }
-    private var api: RelayAPI? { credentials?.api }
 
-    /// The phones connected right now, by either path.
+    /// The phones connected right now.
     public var connectedDevices: Set<UUID> { Set(peers.keys) }
     /// A phone connected or left.
     public var onPeersChanged: (() -> Void)?
 
-    /// Pairing without a relay (see `DirectServer.swift`).
+    /// Pairing (see `DirectServer.swift`).
     var invitation: PairingCode?
-    var claimant: (client: DirectClient, device: RelayDevice, initPacket: Data)?
+    var claimant: (client: DirectClient, device: PairedDevice, initPacket: Data)?
     /// A phone that read the QR code asks to be paired and the user decides; nil when it gave up.
-    public var onPairingRequest: ((RelayDevice?) -> Void)?
+    public var onPairingRequest: ((PairedDevice?) -> Void)?
 
     public func stop() {
         running = false
-        connection?.close()
-        connection = nil
         listener?.close()
         listener = nil
         invitation = nil
@@ -99,133 +72,21 @@ public final class RemoteHostAgent {
         lastConfiguration = configurationProvider()
         log("Serving \(hostName) to your phones. This computer's key: \(identity.fingerprint)")
         let watcher = Task { await self.watchSessions() }
-        let direct = directEnabled ? Task { await self.serveDirect() } : nil
+        let direct = Task { await self.serveDirect() }
         defer {
             watcher.cancel()
-            direct?.cancel()
+            direct.cancel()
             stop()
         }
-        guard let api, let credentials else {
-            // No relay: the direct listener is all there is, for as long as this runs.
-            onConnectionState?(.connected)
-            while true { try await Task.sleep(for: .seconds(3600)) }
-        }
-        var delay: UInt64 = 1
-        while !Task.isCancelled {
-            onConnectionState?(.connecting)
-            let connection = RelayConnection(api: api)
-            self.connection = connection
-            var wasReady = false
-            for await event in connection.events {
-                switch event {
-                case .ready:
-                    onConnectionState?(.connected)
-                    wasReady = true
-                    delay = 1
-                    log("Connected to \(credentials.relayURL.host ?? "the relay").")
-                case .packet(let from, let packet):
-                    await handle(packet, from: from)
-                // A phone on the direct path stays connected whatever the relay sees of it.
-                case .presence(let device, let online):
-                    if !online, peers[device]?.direct == nil, let peer = peers.removeValue(forKey: device) {
-                        peer.close()
-                        onPeersChanged?()
-                        log("\(peer.name) disconnected.")
-                    }
-                case .undeliverable(let device):
-                    if peers[device]?.direct == nil {
-                        peers.removeValue(forKey: device)?.close()
-                        onPeersChanged?()
-                    }
-                case .closed(let error):
-                    if let error { log("Relay connection closed: \(error.localizedDescription)") }
-                }
-            }
-            onConnectionState?(.offline)
-            for (id, peer) in peers where peer.direct == nil {
-                peer.close()
-                peers[id] = nil
-            }
-            onPeersChanged?()
-            if !wasReady, try await !sessionIsValid(api) {
-                throw AgentError.signedOut
-            }
-            try await Task.sleep(nanoseconds: delay * 1_000_000_000)
-            delay = min(delay * 2, 30)
-        }
-    }
-
-    private func sessionIsValid(_ api: RelayAPI) async throws -> Bool {
-        do {
-            _ = try await api.devices()
-            return true
-        } catch let error as RelayAPIError where error.status == 401 {
-            return false
-        } catch {
-            return true
-        }
+        // The listener is all there is, for as long as this runs.
+        while true { try await Task.sleep(for: .seconds(3600)) }
     }
 
     var hostName: String {
         Host.current().localizedName ?? ProcessInfo.processInfo.hostName
     }
 
-    // MARK: Handshakes
-
-    private func handle(_ packet: Data, from device: UUID) async {
-        if SecureChannel.isHandshakeInit(packet) {
-            await accept(packet, from: device)
-            return
-        }
-        // A phone that moved to the direct path may still have packets on their way through the relay.
-        guard let peer = peers[device], peer.direct == nil else { return }
-        do {
-            let message = try MessageCodec.decode(ClientMessage.self, from: try peer.channel.open(packet: packet))
-            peer.handle(message)
-        } catch {
-            log("Dropped a packet from \(peer.name): \(error)")
-        }
-    }
-
-    private func accept(_ initPacket: Data, from deviceID: UUID) async {
-        do {
-            let clientKey = try SecureChannel.clientStaticKey(inInit: initPacket)
-            // Both the relay link and the locally pinned phone key must authorize access.
-            guard let api else { return }
-            let devices = try await api.devices()
-            guard running, !Task.isCancelled else { return }
-            guard let device = devices.first(where: { $0.id == deviceID }), device.kind == .client,
-                device.publicKeyData == clientKey
-            else {
-                log("Refused a connection from an unknown device.")
-                return
-            }
-            guard trustedDevices[deviceID] == clientKey else {
-                log("Refused a phone that has not been paired with this Mac.")
-                return
-            }
-            let (channel, response) = try SecureChannel.respond(identity: identity, initPacket: initPacket)
-            peers.removeValue(forKey: deviceID)?.close()
-            let peer = Peer(id: deviceID, name: device.name, channel: channel, agent: self)
-            peers[deviceID] = peer
-            connection?.send(response, to: deviceID)
-            peer.send(.hello(hostName: hostName, version: RemoteProtocol.version))
-            peer.send(.sessions(await currentSessions()))
-            onPeersChanged?()
-            log("\(device.name) connected.")
-        } catch {
-            log("Handshake with a phone failed: \(error)")
-        }
-    }
-
     // MARK: Sessions
-
-    func send(_ packet: Data, to device: UUID) {
-        connection?.send(packet, to: device)
-    }
-
-    /// Bytes queued on the relay socket and not yet written.
-    var sendBacklog: Int { connection?.pendingSendBytes ?? 0 }
 
     func attach(paneID: String) async throws -> Terminal {
         // A new terminal has no other owner yet, so handing it over is safe.
@@ -350,14 +211,11 @@ public final class RemoteHostAgent {
     private func watchSessions() async {
         while !Task.isCancelled {
             do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
-            // Without a phone connected, still watch for finished commands to push.
-            guard !peers.isEmpty || !trustedDevices.isEmpty else { continue }
-            if !peers.isEmpty {
-                let configuration = configurationProvider()
-                if configuration != lastConfiguration {
-                    lastConfiguration = configuration
-                    for peer in peers.values { peer.configure(configuration) }
-                }
+            guard !peers.isEmpty else { continue }
+            let configuration = configurationProvider()
+            if configuration != lastConfiguration {
+                lastConfiguration = configuration
+                for peer in peers.values { peer.configure(configuration) }
             }
             await broadcastSessionsIfChanged()
         }
@@ -374,54 +232,8 @@ public final class RemoteHostAgent {
         guard read > sessionReadShown else { return }
         sessionReadShown = read
         guard sessions != lastSessions else { return }
-        if let previous = lastSessions {
-            notifyOfflinePhones(FinishedCommand.between(previous.panes, sessions.panes, atLeast: Self.notifyAfter))
-        }
         lastSessions = sessions
         for peer in peers.values { peer.send(.sessions(sessions)) }
-    }
-}
-
-// MARK: Push notifications
-
-extension RemoteHostAgent {
-    /// Commands shorter than this finish without a notification, as on the phone.
-    static let notifyAfter: TimeInterval = 10
-
-    /// Tells paired phones that aren't connected, through the relay, that a long command
-    /// finished. A connected phone notifies itself. Each notification is sealed with a key
-    /// only that phone shares with this Mac, so the relay can't read it.
-    func notifyOfflinePhones(_ commands: [FinishedCommand]) {
-        // Apple delivers a notification only from a server; without a relay there is none.
-        guard !commands.isEmpty, !pushUnavailable, let api else { return }
-        let offline = trustedDevices.filter { peers[$0.key] == nil }
-        guard !offline.isEmpty else { return }
-        let (identity, host, name) = (identity, hostID, hostName)
-        Task {
-            for command in commands {
-                let text = command.notification(on: name)
-                let payload = PushPayload(title: text.title, body: text.body, pane: command.pane.id)
-                for (phone, publicKey) in offline {
-                    do {
-                        let key = try PushSeal.key(identity: identity, peerPublicKey: publicKey, host: host, client: phone)
-                        _ = try await api.push(
-                            to: phone, sealed: try PushSeal.seal(payload, key: key),
-                            collapseID: Self.collapseID(command.pane.id))
-                    } catch let error as RelayAPIError where error.status == 503 {
-                        pushUnavailable = true
-                        log("This relay doesn’t send push notifications.")
-                        return
-                    } catch {
-                        log("Couldn’t notify a phone: \(error.localizedDescription)")
-                    }
-                }
-            }
-        }
-    }
-
-    /// One notification per pane on the phone: a newer one replaces it. The relay accepts only plain characters.
-    nonisolated static func collapseID(_ pane: String) -> String {
-        "pane-" + SHA256.hash(data: Data(pane.utf8)).prefix(12).map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -432,8 +244,8 @@ final class Peer {
     let name: String
     var channel: SecureChannel
     private weak var agent: RemoteHostAgent?
-    /// The phone's own connection to this Mac; nil when its packets go through the relay.
-    let direct: DirectConnection?
+    /// The phone's connection to this Mac.
+    let connection: DirectConnection
     private var streams: [Int: Stream] = [:]
     /// The attach each stream is waiting for. A detach, or a newer attach of
     /// the same stream, replaces it, so the older one is dropped on arrival
@@ -445,12 +257,12 @@ final class Peer {
     private var glyphs = GlyphLedger()
     private var active = true
     var streamCount: Int { streams.count }
-    /// The largest payload sealed into one packet. The relay closes a socket
-    /// that sends a larger message, which would drop every phone.
-    static let maxPayloadBytes = RelayWire.maxMessageBytes - 1024
+    /// The largest payload sealed into one packet. The phone closes a connection
+    /// that sends a larger one, which would drop every session on it.
+    static let maxPayloadBytes = DirectWire.maxPacketBytes - 1024
     /// Screen updates wait while more than this is queued on the socket the phone is reached through.
     static let maxBacklogBytes = 1024 * 1024
-    var isCongested: Bool { (direct?.pendingSendBytes ?? agent?.sendBacklog ?? 0) > Self.maxBacklogBytes }
+    var isCongested: Bool { connection.pendingSendBytes > Self.maxBacklogBytes }
     private var clientVersion = 1
     /// Whether the phone understands `HostMessage.image` and `.images`.
     var showsImages: Bool { clientVersion >= 3 }
@@ -464,15 +276,15 @@ final class Peer {
         Task { await agent?.broadcastSessionsIfChanged() }
     }
 
-    init(id: UUID, name: String, channel: SecureChannel, agent: RemoteHostAgent, direct: DirectConnection? = nil) {
+    init(id: UUID, name: String, channel: SecureChannel, agent: RemoteHostAgent, connection: DirectConnection) {
         self.id = id
         self.name = name
         self.channel = channel
         self.agent = agent
-        self.direct = direct
+        self.connection = connection
     }
 
-    /// Tells the phone where to reach this Mac without the relay (protocol 6).
+    /// Tells the phone where to reach this Mac (protocol 6).
     func advertise(_ endpoints: [DirectEndpoint]) {
         if clientVersion >= 6 { send(.endpoints(endpoints)) }
     }
@@ -502,7 +314,7 @@ final class Peer {
             if strippedGlyphs { glyphs.reset() }
             for payload in payloads {
                 let packet = try channel.seal(payload)
-                if let direct { direct.send(packet) } else { agent?.send(packet, to: id) }
+                connection.send(packet)
             }
         } catch {
             log("Couldn't send to \(name): \(error)")
@@ -515,7 +327,7 @@ final class Peer {
     }
     func close() {
         active = false
-        direct?.close()
+        connection.close()
         for stream in streams.values { stream.close() }
         streams.removeAll()
         attaching.removeAll()
@@ -579,7 +391,7 @@ final class Peer {
                         stream: id,
                         matches: matches.prefix(500).map {
                             // The phone shows a few lines of each; full lines of a
-                            // wide pane could push the list past the relay's limit.
+                            // wide pane could push the list past a packet's limit.
                             RemoteSearchMatch(
                                 row: $0.row, startCol: $0.startCol, endCol: $0.endCol, line: String($0.line.prefix(512)))
                         }))
@@ -956,12 +768,10 @@ struct Handoff<Value>: @unchecked Sendable {
 
 enum AgentError: Error, CustomStringConvertible {
     case missingHost
-    case signedOut
 
     var description: String {
         switch self {
         case .missingHost: "Couldn't find termy-session-host. Install Termy Next, or run from a build next to libtermy."
-        case .signedOut: "This Mac’s relay registration ended. Pair your phone again in Settings → Mobile."
         }
     }
 }

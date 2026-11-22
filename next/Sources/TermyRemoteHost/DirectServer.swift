@@ -17,11 +17,9 @@ final class DirectClient {
     }
 }
 
-// The direct path: phones on this Mac's local network or tailnet connect to it
-// without the relay. The packets and the pinned keys are the relay path's, so
-// the listener trusts the network with nothing. The relay isn't asked whether a
-// phone may connect, only the keys pinned on this Mac are, so the direct path
-// works when the relay can't be reached.
+// Phones on this Mac's tailnet connect to it here. Every packet
+// is sealed and only keys pinned on this Mac are let in, so the listener trusts
+// the network with nothing.
 extension RemoteHostAgent {
     /// Unproven connections included. A handful of phones never needs more.
     static let maxDirectClients = 16
@@ -30,16 +28,11 @@ extension RemoteHostAgent {
 
     func serveDirect() async {
         var port = directPort
-        // Advertising needs Local Network access on this Mac. Without it the listener
-        // must still serve the tailnet and the addresses phones already know.
-        var advertise = true
         while !Task.isCancelled, running {
             var ready = false
-            var failed = false
             var announcing: Task<Void, Never>?
             do {
-                // The name lets a phone find this Mac again when its address on the network changed.
-                let listener = try DirectListener(port: port, advertisedAs: advertise ? hostID.uuidString : nil)
+                let listener = try DirectListener(port: port)
                 self.listener = listener
                 for await event in listener.events {
                     switch event {
@@ -50,22 +43,16 @@ extension RemoteHostAgent {
                     case .connection(let connection):
                         adopt(connection)
                     case .closed(let error):
-                        failed = error != nil
                         if let error { log("Stopped listening for phones: \(error.localizedDescription)") }
                     }
                 }
             } catch {
-                failed = true
                 log("Couldn’t listen for phones: \(error.localizedDescription)")
             }
             announcing?.cancel()
             listener = nil
             setEndpoints([])
             guard running, !Task.isCancelled else { return }
-            if failed, advertise {
-                advertise = false
-                continue
-            }
             // Another program has the usual port: any free one works, phones are told which.
             if !ready, port != nil {
                 port = nil
@@ -75,8 +62,7 @@ extension RemoteHostAgent {
         }
     }
 
-    /// Keeps phones told of this Mac's addresses, which change with the network it is on
-    /// and with Tailscale starting and stopping.
+    /// Keeps phones told of this Mac's Tailscale address, which comes and goes with Tailscale.
     private func announce(port: Int) async {
         while !Task.isCancelled {
             setEndpoints(DirectEndpoint.advertised(by: interfaces(), port: port))
@@ -109,7 +95,7 @@ extension RemoteHostAgent {
         }
     }
 
-    // MARK: Pairing without a relay
+    // MARK: Pairing
 
     /// Makes an invitation for a QR code. It replaces the one before; a phone claims it on
     /// a direct connection, so this Mac needs an address a phone can reach.
@@ -127,7 +113,7 @@ extension RemoteHostAgent {
     }
 
     /// The phone waiting for approval.
-    public var pairingClaimant: RelayDevice? { claimant?.device }
+    public var pairingClaimant: PairedDevice? { claimant?.device }
 
     /// Pins the waiting phone and answers it with the proof of this Mac's key. The caller
     /// saves the pin first: a pin that couldn't be saved must not grant access.
@@ -166,7 +152,7 @@ extension RemoteHostAgent {
 
     private func handle(_ packet: Data, from client: DirectClient) {
         if let device = client.device {
-            guard let peer = peers[device], peer.direct === client.connection else { return }
+            guard let peer = peers[device], peer.connection === client.connection else { return }
             do {
                 peer.handle(try MessageCodec.decode(ClientMessage.self, from: try peer.channel.open(packet: packet)))
             } catch {
@@ -185,12 +171,12 @@ extension RemoteHostAgent {
                 client.device = pending.device
                 peers.removeValue(forKey: pending.device)?.close()
                 let peer = Peer(
-                    id: pending.device, name: "iPhone", channel: channel, agent: self, direct: client.connection)
+                    id: pending.device, name: "iPhone", channel: channel, agent: self, connection: client.connection)
                 peers[pending.device] = peer
                 peer.send(.hello(hostName: hostName, version: RemoteProtocol.version))
                 peer.handle(message)
                 onPeersChanged?()
-                log("\(peer.name) connected directly\(client.connection.remote.map { " from \($0.text)" } ?? "").")
+                log("\(peer.name) connected\(client.connection.remote.map { " from \($0.text)" } ?? "").")
                 return
             }
             if let claim = DirectPairing.claim(in: packet) { return self.claim(claim, from: client) }
@@ -215,7 +201,7 @@ extension RemoteHostAgent {
             claimant = nil
             onPairingRequest?(nil)
         }
-        guard let device = client.device, let peer = peers[device], peer.direct === client.connection else { return }
+        guard let device = client.device, let peer = peers[device], peer.connection === client.connection else { return }
         peers[device] = nil
         peer.close()
         onPeersChanged?()

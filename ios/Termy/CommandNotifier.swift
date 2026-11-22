@@ -7,8 +7,7 @@ import UserNotifications
 /// Notifies when a long command finishes in a pane you aren't looking at.
 ///
 /// Off until turned on in Settings, which is when Termy asks for permission.
-/// It works from the session lists the Mac sends while Termy is open; once
-/// the relay can push, the same switch covers notifications in the background.
+/// It works from the session lists the Mac sends while Termy is connected to it.
 @MainActor @Observable
 final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
     static let shared = CommandNotifier()
@@ -31,7 +30,6 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
         guard on else {
             enabled = false
             UserDefaults.standard.set(false, forKey: Self.defaultsKey)
-            await AppModel.shared.pushDisabled()
             return true
         }
         let center = UNUserNotificationCenter.current()
@@ -43,8 +41,6 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
         denied = !allowed
         enabled = allowed
         UserDefaults.standard.set(allowed, forKey: Self.defaultsKey)
-        // The token arrives in the app delegate, which hands it to the relays.
-        if allowed { UIApplication.shared.registerForRemoteNotifications() }
         return allowed
     }
 
@@ -61,7 +57,7 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     /// Called with each new session list from a computer.
-    func sessionsChanged(from old: RemoteSessionList, to new: RemoteSessionList, on host: RelayDevice, watching: Set<String>) {
+    func sessionsChanged(from old: RemoteSessionList, to new: RemoteSessionList, on host: PairedDevice, watching: Set<String>) {
         guard enabled else { return }
         let appActive = UIApplication.shared.applicationState == .active
         for done in Self.finished(old: old.panes, new: new.panes) {
@@ -71,7 +67,7 @@ final class CommandNotifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    private func post(_ done: FinishedCommand, host: RelayDevice) {
+    private func post(_ done: FinishedCommand, host: PairedDevice) {
         let content = UNMutableNotificationContent()
         (content.title, content.body) = done.notification(on: host.name)
         content.sound = .default

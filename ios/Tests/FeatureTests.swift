@@ -218,7 +218,7 @@ final class PhoneInputTests: XCTestCase {
         XCTAssertEqual(SpokenCommand.normalize("  "), "")
     }
 
-    func testImagesShrinkToFitTheRelay() throws {
+    func testImagesShrinkToFitAMessage() throws {
         let small = try XCTUnwrap(UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).pngData { context in
             UIColor.red.setFill()
             context.fill(CGRect(x: 0, y: 0, width: 20, height: 20))

@@ -34,7 +34,7 @@ import XCTest
         view.screen = screen
         let image = UIGraphicsImageRenderer(size: view.bounds.size).image { view.layer.render(in: $0.cgContext) }
         let attachment = XCTAttachment(image: image)
-        attachment.name = "Real Claude Code through encrypted relay"
+        attachment.name = "Real Claude Code through the encrypted channel"
         attachment.lifetime = .keepAlways
         add(attachment)
         XCTAssertTrue(

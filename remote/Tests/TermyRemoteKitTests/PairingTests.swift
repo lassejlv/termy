@@ -4,79 +4,65 @@ import Testing
 @testable import TermyRemoteKit
 
 @Suite struct PairingTests {
-    private func device(_ identity: DeviceIdentity, kind: DeviceKind) -> RelayDevice {
-        RelayDevice(
-            id: UUID(), name: kind == .host ? "Mac" : "iPhone", kind: kind,
-            publicKey: identity.publicKey.base64EncodedString(), online: false, createdAt: Date(), lastSeenAt: nil)
+    let host = DeviceIdentity()
+    let endpoints = [DirectEndpoint(host: "100.81.122.65", port: 47126)]
+
+    private func code() throws -> PairingCode {
+        try PairingCode(hostID: UUID(), hostName: "Studio", hostKey: host.publicKey, endpoints: endpoints)
     }
-    private func fixture() throws -> (PairingCode, PairingStatus, SecureChannel.ClientHandshake, DeviceIdentity) {
-        let host = DeviceIdentity()
-        let phone = DeviceIdentity()
-        let h = device(host, kind: .host)
-        let c = device(phone, kind: .client)
-        var status = PairingStatus(
-            id: UUID(), expiresAt: Date().addingTimeInterval(120), host: h, client: nil, initPacket: nil, proof: nil,
-            responsePacket: nil)
-        let code = try PairingCode(
-            status: status, relayURL: URL(string: "https://my-vps.example/relay")!,
-            hostName: "Private Mac")
-        let handshake = SecureChannel.startClient(identity: phone, hostStaticKey: host.publicKey)
-        status.client = c
-        status.initPacket = handshake.initPacket
-        status.encryptedClientName = try code.sealClientName(
-            "Private iPhone", initPacket: handshake.initPacket)
-        status.proof = code.proof(
-            for: handshake.initPacket, encryptedClientName: status.encryptedClientName!)
-        return (code, status, handshake, host)
+
+    /// The QR payload as JSON, changed, and put back in a pairing link.
+    private func relink(_ code: PairingCode, _ change: (inout [String: Any]) -> Void) throws -> String {
+        let raw = try #require(URLComponents(string: try code.text)?.queryItems?.first?.value)
+        var b64 = raw.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+        b64 += String(repeating: "=", count: (4 - b64.count % 4) % 4)
+        let data = try #require(Data(base64Encoded: b64))
+        var json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        change(&json)
+        return "termy://pair?data=" + (try JSONSerialization.data(withJSONObject: json)).base64EncodedString()
     }
-    @Test func qrRoundTripAndAuthenticatedApproval() throws {
-        let (code, status, handshake, host) = try fixture()
+
+    @Test func qrRoundTrip() throws {
+        let code = try code()
         let scanned = try PairingCode.parse(code.text)
-        #expect(scanned.relayURL == code.relayURL)
-        #expect(scanned.secret == code.secret)
-        let verified = try scanned.verify(status)
-        #expect(verified.client.name == "Private iPhone")
-        let (_, response) = try SecureChannel.respond(identity: host, initPacket: verified.initPacket)
-        #expect(response.count == 59)
-        _ = try handshake.finish(response)
+        #expect(scanned.version == PairingCode.currentVersion)
+        #expect(scanned.endpoints == endpoints)
+        #expect(scanned.hostID == code.hostID && scanned.hostKey == code.hostKey && scanned.secret == code.secret)
+        #expect(scanned.hostName == "Studio")
     }
-    @Test func rejectsRelaySubstitutionAndReplayedInvitations() throws {
-        let (code, original, _, _) = try fixture()
-        var altered = original
-        altered.client = device(DeviceIdentity(), kind: .client)
-        #expect(throws: (any Error).self) { try code.verify(altered) }
-        altered = original
-        altered.id = UUID()
-        #expect(throws: (any Error).self) { try code.verify(altered) }
-        altered = original
-        altered.host = device(DeviceIdentity(), kind: .host)
-        #expect(throws: (any Error).self) { try code.verify(altered) }
-        altered = original
-        altered.initPacket![1] ^= 1
-        #expect(throws: (any Error).self) { try code.verify(altered) }
-        altered = original
-        altered.encryptedClientName![40] ^= 1
-        #expect(throws: (any Error).self) { try code.verify(altered) }
-        altered = original
-        altered.encryptedClientName = nil
-        #expect(throws: (any Error).self) { try code.verify(altered) }
-        // Another invite has another secret even for the same Mac/device IDs.
-        let otherCode = try PairingCode(
-            status: original, relayURL: #require(code.relayURL), hostName: "Private Mac")
-        #expect(throws: (any Error).self) { try otherCode.verify(original) }
+
+    @Test func codesFromOtherVersionsSayWhatToDo() throws {
+        let code = try code()
+        // A relay-era code, with or without its relay URL.
+        #expect(throws: PairingError.relayCode) {
+            try PairingCode.parse(try relink(code) { $0["version"] = 3; $0["relayURL"] = "https://relay.termy.sh" })
+        }
+        #expect(throws: PairingError.relayCode) { try PairingCode.parse(try relink(code) { $0["version"] = 3 }) }
+        #expect(throws: PairingError.relayCode) {
+            try PairingCode.parse(try relink(code) { $0["relayURL"] = "https://relay.termy.sh" })
+        }
+        #expect(throws: PairingError.outdatedCode) { try PairingCode.parse(try relink(code) { $0["version"] = 4 }) }
+        #expect(throws: PairingError.newerCode) { try PairingCode.parse(try relink(code) { $0["version"] = 6 }) }
+        for error in [PairingError.relayCode, .outdatedCode, .newerCode] {
+            #expect(error.errorDescription?.contains("Update") == true)
+        }
     }
-    @Test func rejectsExpiredAndUntrustedTransportURLs() throws {
-        let (code, _, _, _) = try fixture()
+
+    @Test func expiredDamagedAndUndialableCodesAreRefused() throws {
+        let code = try code()
         #expect(throws: PairingError.expired) {
             try PairingCode.parse(code.text, now: code.expiresAt.addingTimeInterval(1))
         }
-        for address in [
-            "http://relay.example.com", "https://user:password@relay.example.com", "file:///tmp/relay",
-            "https://relay.example.com?token=secret", "https://relay.example.com/#secret",
-        ] {
-            #expect(throws: (any Error).self) { try RelayAddress.validate(URL(string: address)!) }
+        #expect(throws: PairingError.invalidCode) { try PairingCode.parse("termy://pair?data=garbage") }
+        #expect(throws: PairingError.invalidCode) {
+            try PairingCode.parse(try relink(code) { $0["endpoints"] = [["host": "8.8.8.8", "port": 53]] })
         }
-        #expect(try RelayAddress.validate(URL(string: "http://127.0.0.1:8787")!).host == "127.0.0.1")
-        #expect(throws: (any Error).self) { try PairingCode.parse("termy://pair?data=garbage") }
+        // A Mac's address on its Wi-Fi isn't one a phone dials.
+        #expect(throws: PairingError.invalidCode) {
+            try PairingCode.parse(try relink(code) { $0["endpoints"] = [["host": "192.168.1.20", "port": 47126]] })
+        }
+        #expect(throws: PairingError.invalidCode) {
+            try PairingCode.parse(try relink(code) { $0["endpoints"] = [] as [Any] })
+        }
     }
 }

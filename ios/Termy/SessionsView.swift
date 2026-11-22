@@ -33,14 +33,8 @@ struct SessionsView: View {
             case .connected: sessionSections
             }
             if let error = link.lastError { Text(error).font(.footnote).foregroundStyle(.red) }
-            if link.state == .connected, let path = link.path {
-                Label(
-                    path == .relay
-                        ? "Connected through the relay"
-                        : model.directKinds[link.device.id] == .tailscale
-                            ? "Connected directly over Tailscale" : "Connected directly on this network",
-                    systemImage: path == .relay ? "arrow.triangle.branch" : "bolt.horizontal"
-                ).font(.footnote).foregroundStyle(.secondary)
+            if link.state == .connected {
+                Label("Connected over Tailscale", systemImage: "bolt.horizontal").font(.footnote).foregroundStyle(.secondary)
             }
             if link.state == .connected, link.protocolVersion < 2 {
                 Text("Update Termy Next on your Mac for config sync and session controls.").font(.footnote)
@@ -286,9 +280,7 @@ struct TrustSection: View {
             "Remove \(link.device.name) and pair it again?", isPresented: $confirming, titleVisibility: .visible
         ) {
             Button("Remove and Pair Again", role: .destructive) {
-                Task {
-                    do { try await model.repair(link.device) } catch { self.error = error.localizedDescription }
-                }
+                do { try model.repair(link.device) } catch { self.error = error.localizedDescription }
             }
         } message: {
             Text("You’ll scan a new QR code from Termy Next → Settings → Mobile on that Mac.")

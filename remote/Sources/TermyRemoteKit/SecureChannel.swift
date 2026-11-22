@@ -1,9 +1,9 @@
 import CryptoKit
 import Foundation
 
-/// A device's long-term key. The relay stores the public half with the device
-/// so peers can find it, but the private half never leaves the device, and a
-/// peer pins the public half the first time it sees it (see `TrustStore`).
+/// A device's long-term key. The private half never leaves the device; the
+/// public half travels in the pairing QR code and claim, and each side pins
+/// the other's when they pair.
 public struct DeviceIdentity: Sendable {
     public let privateKey: Curve25519.KeyAgreement.PrivateKey
 
@@ -36,17 +36,17 @@ public enum Fingerprint {
 public enum ChannelError: Error, Equatable, Sendable {
     case malformed
     case unexpected
-    /// The peer's handshake didn't prove it holds the key the relay listed.
+    /// The peer's handshake didn't prove it holds the key that was pinned.
     case authenticationFailed
     case replayed
 }
 
-/// Packet kinds inside a relay `data` message.
+/// Packet kinds on a direct connection.
 enum PacketKind: UInt8 {
     case handshakeInit = 1
     case handshakeResponse = 2
     case transport = 3
-    /// Pairing without a relay, on a direct connection (see `DirectPairing`).
+    /// Pairing on a direct connection (see `DirectPairing`).
     case pairingClaim = 4
     case pairingAnswer = 5
 }

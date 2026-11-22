@@ -43,13 +43,7 @@ import Testing
             size: TerminalSize(cols: 80, rows: 24),
             options: TerminalOptions(startupCommand: "/bin/sh -c \"\(script)\""))
         let pane = try #require(terminal.paneID)
-        let device = try JSONDecoder().decode(
-            RelayDevice.self,
-            from: Data(#"{"id":"\#(UUID().uuidString)","name":"Mac","kind":"host","publicKey":"","online":true,"createdAt":0}"#.utf8))
-        let agent = RemoteHostAgent(
-            multiplexer: mux,
-            credentials: DeviceCredentials(relayURL: URL(string: "https://relay.invalid")!, token: "", device: device),
-            identity: DeviceIdentity(), trustedDevices: [:])
+        let agent = RemoteHostAgent(multiplexer: mux, hostID: UUID(), identity: DeviceIdentity(), trustedDevices: [:])
 
         func command() async -> RemoteCommandState? {
             await agent.currentSessions().panes.first { $0.id == pane }?.command
@@ -138,15 +132,5 @@ import Testing
         #expect(!FileManager.default.fileExists(atPath: path) && !FileManager.default.fileExists(atPath: second))
         #expect(FileManager.default.fileExists(atPath: later))
         #expect(throws: (any Error).self) { try Uploads.save(Data(), name: "empty", in: folder) }
-    }
-
-    /// The relay accepts collapse IDs of at most 64 plain characters; pane IDs may hold anything.
-    @Test func notificationCollapseIDsSuitTheRelay() {
-        for pane in ["p1", "weird pane/\u{1F600}", String(repeating: "x", count: 500)] {
-            let id = RemoteHostAgent.collapseID(pane)
-            #expect(id.count <= 64 && id.allSatisfy { $0.isLetter || $0.isNumber || "._-".contains($0) })
-            #expect(id == RemoteHostAgent.collapseID(pane))
-        }
-        #expect(RemoteHostAgent.collapseID("a") != RemoteHostAgent.collapseID("b"))
     }
 }

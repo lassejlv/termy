@@ -92,28 +92,6 @@ enum HostSnapshotStore {
     static func clear() { SharedKeychain.delete(account) }
 }
 
-/// The key each paired computer seals its notifications with (`PushSeal`),
-/// for the notification extension, which can't reach the app's own keys.
-enum PushKeyStore {
-    private static let account = "push-keys"
-
-    static func load() -> [UUID: Data] {
-        guard let data = SharedKeychain.load(account),
-            let keys = try? JSONDecoder().decode([String: Data].self, from: data)
-        else { return [:] }
-        return Dictionary(uniqueKeysWithValues: keys.compactMap { key, value in UUID(uuidString: key).map { ($0, value) } })
-    }
-
-    @discardableResult
-    static func save(_ keys: [UUID: Data]) -> Bool {
-        let raw = Dictionary(uniqueKeysWithValues: keys.map { ($0.key.uuidString, $0.value) })
-        guard let data = try? JSONEncoder().encode(raw) else { return false }
-        return SharedKeychain.save(data, account: account)
-    }
-
-    static func clear() { SharedKeychain.delete(account) }
-}
-
 /// `termy://` links the widget, quick actions and Spotlight open.
 ///
 /// Links only navigate. They never type or run anything: any app or web page

@@ -5,7 +5,7 @@ import SwiftUI
 import TermyRemoteKit
 import UIKit
 
-/// Photos and screenshots made small enough for the relay.
+/// Photos and screenshots made small enough to send in one message.
 enum ImageUpload {
     /// The bytes to send and a name: the original when it already fits, else a JPEG scaled down until it does.
     static func prepare(_ data: Data, name: String? = nil) -> (data: Data, name: String)? {

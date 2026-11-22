@@ -190,19 +190,10 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         select(.general)
         window.center()
         window.setFrameAutosaveName("TermyNextSettings")
-        Self.current = self
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
-
-    private static weak var current: SettingsWindowController?
-
-    /// Whether the Mobile pane is on screen, without opening Settings to ask.
-    static var isShowingMobile: Bool {
-        guard let current, let window = current.window else { return false }
-        return current.pane == .mobile && window.isVisible
-    }
 
     func show() {
         refresh()
@@ -439,7 +430,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
             sections = keyboardSections()
         case .mobile:
             let host = NSHostingView(rootView: MobileSettingsView())
-            sections = [Section(rows: [.full(host)], footer: "Connect your iPhone to this Mac with a QR code. Mobile access uses your chosen relay server.")]
+            sections = [Section(rows: [.full(host)], footer: "Connect your iPhone to this Mac with a QR code. It connects to this Mac directly over Tailscale, with no server in between.")]
         case .sessions:
             sections = [
                 Section(rows: [
