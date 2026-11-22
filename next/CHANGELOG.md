@@ -6,6 +6,12 @@ update window Sparkle shows, so write for the people updating: what they can
 do now, not how it was built. Rename `Unreleased` to the version when you tag
 it.
 
+## 0.6.0
+
+### New
+
+- **A new icon, and 13 more to choose from.** Termy Next's icon is now a friendly glass mascot. Pick another in Settings → Appearance → App Icon: more of the mascot (Doodle, Candy, Matcha, Clay, Neon, Pixel, Holo) or the `>_` prompt (Classic, Pearl, Graphite, Sunset, Phosphor, Amber). Your pick shows in the Dock and the app switcher while Termy Next runs; Finder keeps the Glass icon.
+
 ## 0.5.0
 
 ### New
