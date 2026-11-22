@@ -6,7 +6,11 @@ update window Sparkle shows, so write for the people updating: what they can
 do now, not how it was built. Rename `Unreleased` to the version when you tag
 it.
 
-## Unreleased
+## 0.5.0
+
+### New
+
+- **Antigravity CLI (`agy`) logo and detection.** Tabs, the sidebar, pane headers, notifications, and shell completions now recognize Antigravity CLI and display its logo.
 
 ### Changed
 
@@ -16,9 +20,14 @@ it.
 
 These need the matching Termy iPhone app, which pairs again with Macs it paired through a relay.
 
+### Better
+
+- **Lower CPU usage.** Reduced idle and active CPU usage across terminal wakeups, tab loaders, process polling, and Metal rendering.
+
 ### Fixed
 
 - Dragging a selection above or below a pane scrolls it, faster the farther out you go, so you can select more than fits on screen.
+- Tab and pane header icons now refresh when the foreground program changes even if the pane has a custom title.
 
 ## 0.4.1
 

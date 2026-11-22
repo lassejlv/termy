@@ -9,7 +9,7 @@ live under `website/content/`.
 - [Development](development.md): crash logs, render metrics, benchmarks, and tmux testing.
 - [Testing](engineering/testing.md): the test pyramid and smallest useful validation commands.
 - [Release packaging](architecture/release-packaging.md): artifact and packaging ownership.
-- [1.0.0-rc.11 release notes](releases/1.0.0-rc.11.md): candidate changes, including a bracketed-paste fix and tmux and kitty graphics fixes.
+- [1.0.0-rc.12 release notes](releases/1.0.0-rc.12.md): candidate changes, including macOS Bluetooth/microphone entitlements, backend CPU/scroll improvements, and OSC 133 prompt marks.
 
 ## Architecture
 
