@@ -488,6 +488,8 @@ final class PaneView: NSView, TerminalViewDelegate {
     private var cachedShellName: String?
     private var lastForegroundPID: pid_t?
     private var lastForegroundName: String?
+    private var displayedProgram: String?
+    private var displayedExecutable: String?
     private var lastChildPIDLookup = Date.distantPast
 
     /// Re-reads the foreground program and directory from the kernel.
@@ -537,8 +539,10 @@ final class PaneView: NSView, TerminalViewDelegate {
         var new = reportedApp.map { PaneLabel(name: AppIcons.displayName(for: $0), detail: directory.map { Naming.abbreviatingHome($0) }) }
             ?? PaneLabel.make(title: terminal.session.title, process: process, directory: directory)
         if let customLabel, !customLabel.isEmpty { new = PaneLabel(name: customLabel, detail: new.detail) }
-        if new != label {
+        if new != label || foregroundProgram != displayedProgram || foregroundExecutable != displayedExecutable {
             label = new
+            displayedProgram = foregroundProgram
+            displayedExecutable = foregroundExecutable
             header.needsDisplay = true
             delegate?.paneDidChange(self)
         }

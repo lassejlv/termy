@@ -14,6 +14,8 @@ enum ProgramLogos {
         "codex": "codex",
         "grok": "grok", "grok-cli": "grok", "grok-build": "grok",
         "gemini": "gemini", "gemini-cli": "gemini",
+        "agy": "antigravity", "antigravity": "antigravity", "antigravity-cli": "antigravity",
+        "antigravity cli": "antigravity", "google-antigravity": "antigravity", "google antigravity": "antigravity",
         "copilot": "copilot", "github-copilot": "copilot", "gh-copilot": "copilot",
         "cursor": "cursor", "cursor-agent": "cursor",
         "opencode": "opencode",

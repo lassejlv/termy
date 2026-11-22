@@ -153,7 +153,7 @@ enum ProgramIcon {
         case "nvim", "vim", "vi", "hx", "helix", "nano", "emacs", "micro": return "chevron.left.forwardslash.chevron.right"
         case "git", "lazygit", "tig", "gitui": return "plus.forwardslash.minus"
         case "claude": return "sparkle"
-        case "codex", "opencode", "pi", "aider", "gemini": return "brain"
+        case "codex", "opencode", "pi", "aider", "gemini", "agy", "antigravity", "antigravity-cli": return "brain"
         case "python", "python3", "ipython", "uv": return "p.circle"
         case "ssh", "mosh", "et": return "network"
         case "docker", "podman", "kubectl", "k9s": return "shippingbox"
@@ -225,6 +225,8 @@ enum AppIcons {
         "gemini": "Gemini CLI", "copilot": "GitHub Copilot", "aider": "Aider", "pi": "Pi", "amp": "Amp",
         "grok": "Grok", "qwen": "Qwen Code", "kimi": "Kimi", "vibe": "Mistral Vibe", "ollama": "Ollama",
         "kilo": "Kilo Code", "kilocode": "Kilo Code", "cursor": "Cursor", "deepseek": "DeepSeek", "windsurf": "Windsurf",
+        "agy": "Antigravity", "antigravity": "Antigravity", "antigravity-cli": "Antigravity",
+        "antigravity cli": "Antigravity", "google-antigravity": "Antigravity", "google antigravity": "Antigravity",
     ]
 
     /// A readable name for an agent ("Claude Code" for `claude`), or the program as is.
