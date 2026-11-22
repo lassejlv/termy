@@ -65,6 +65,11 @@ public enum ShellProcess {
     ]
     private static let scriptExtensions: Set<String> = ["sh", "bash", "rb", "py", "js", "mjs", "cjs", "ts", "pl"]
 
+    /// Whether `name` is an interpreter whose argv may name a wrapped tool.
+    public static func isInterpreter(_ name: String) -> Bool {
+        interpreters.contains(((name as NSString).lastPathComponent as NSString).deletingPathExtension.lowercased())
+    }
+
     /// The tool an interpreter is running, named after its script: `bash
     /// …/Homebrew/brew.sh` and `ruby … …/brew.rb` are both "brew". Nil when
     /// argv[0] isn't an interpreter or no script file is among the first arguments.

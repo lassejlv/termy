@@ -310,7 +310,9 @@ public final class DirectListener: @unchecked Sendable {
             guard let self else { return }
             switch state {
             case .ready: self.continuation.yield(.ready(port: Int(self.listener.port?.rawValue ?? 0)))
-            case .failed(let error), .waiting(let error): self.finish(error)
+            case .failed(let error): self.finish(error)
+            // Keep waiting when interfaces come and go instead of churning listeners.
+            case .waiting: break
             case .cancelled: self.finish(nil)
             default: break
             }

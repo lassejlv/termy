@@ -172,6 +172,7 @@ public final class TerminalView: NSView {
         session.onGraphicsChange = { [weak self] in self?.refreshImagesIfNeeded() }
         session.onEvent = { [weak self] event in self?.handle(event) }
         session.poll(forceFull: true)
+        updateWakeups()
         registerForDraggedTypes(Self.droppableTypes)
     }
 
@@ -449,7 +450,7 @@ public final class TerminalView: NSView {
             }
             rebuildGlyphPlan(spans: spans)
             metalRenderer?.invalidate(rows: spans.map(\.row))
-            if change.resized || change.viewportChanged || !change.scrolls.isEmpty {
+            if metalRenderer != nil || change.resized || change.viewportChanged || !change.scrolls.isEmpty {
                 needsDisplay = true
             } else {
                 // Repaint whole rows: wide glyphs and glyph geometry can overhang.
@@ -625,7 +626,11 @@ public final class TerminalView: NSView {
         guard !frame.isEmpty else { return }
         if let spans {
             let rows = Set(spans.map(\.row))
-            glyphPlan = glyphPlan.filter { !rows.contains($0.key / frame.cols) }
+            if !glyphPlan.isEmpty {
+                for key in Array(glyphPlan.keys) where rows.contains(key / frame.cols) {
+                    glyphPlan.removeValue(forKey: key)
+                }
+            }
             let rowSpans = rows.map { DirtySpan(row: $0, leftCol: 0, rightCol: frame.cols - 1) }
             for entry in (try? frame.glyphPlan(metrics: renderConfig.glyphMetrics, spans: rowSpans)) ?? [] {
                 glyphPlan[entry.cellIndex] = entry
@@ -828,13 +833,15 @@ public final class TerminalView: NSView {
         // An unfocused cursor is drawn hollow and never blinks.
         let focused = window?.isKeyWindow == true && (becomingFirstResponder || window?.firstResponder === self)
         guard renderConfig.cursorBlink, focused, isOnScreen else { return }
-        blinkTimer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
+        let timer = Timer.scheduledTimer(withTimeInterval: 0.53, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.cursorBlinkVisible.toggle()
                 self.invalidateCursor(self.session.frame.cursor)
             }
         }
+        timer.tolerance = 0.05
+        blinkTimer = timer
     }
 
     private func resetCursorBlink() {

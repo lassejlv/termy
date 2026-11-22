@@ -21,9 +21,7 @@ final class TabStripView: GlassPanel {
     weak var navigator: TabNavigator?
     private var hoverIndex: Int?
     private var hoverClose = false
-    private var phase: CGFloat = 0
     private lazy var loaderSpots = LoaderSpots(host: self)
-    private var drawnLoader = Preferences.shared.tabLoader
     private var dragIndex: Int?
     private var dragStart: NSPoint = .zero
     private var dragOffset: CGFloat = 0
@@ -43,28 +41,6 @@ final class TabStripView: GlassPanel {
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden else { return nil }
         return frame.contains(point) ? self : nil
-    }
-
-    func advanceSpinner() {
-        guard navigator?.session.tabs.contains(where: { $0.activity == .working }) == true else { return }
-        phase = (phase - 24).truncatingRemainder(dividingBy: 360)
-        if drawnLoader != Preferences.shared.tabLoader {
-            needsDisplay = true
-        } else if StatusIndicator.hostAnimatesWorking {
-            // Only the dots move: redraw them, not the whole strip.
-            for rect in workingDotsRects() { overlay.setNeedsDisplay(rect.insetBy(dx: -2, dy: -2)) }
-        }
-    }
-
-    /// Where each working tab's three dots are drawn (see `drawContent`).
-    private func workingDotsRects() -> [NSRect] {
-        guard let tabs = navigator?.session.tabs else { return [] }
-        return zip(tabs.indices, computeFrames()).compactMap { i, tabFrame in
-            guard tabs[i].activity == .working else { return nil }
-            var frame = tabFrame
-            if i == dragIndex { frame.origin.x += dragOffset }
-            return NSRect(x: frame.maxX - 12 - StatusIndicator.dotsWidth, y: frame.minY, width: StatusIndicator.dotsWidth, height: frame.height)
-        }
     }
 
     func computeFrames() -> [NSRect] {
@@ -147,7 +123,6 @@ final class TabStripView: GlassPanel {
     override func drawContent(_ dirtyRect: NSRect) {
         loaderSpots.begin()
         defer { loaderSpots.end() }
-        drawnLoader = Preferences.shared.tabLoader
         guard let navigator else { return }
         let theme = AppConfig.shared.theme
         let tabs = navigator.session.tabs
@@ -162,9 +137,6 @@ final class TabStripView: GlassPanel {
         for (i, tab) in tabs.enumerated() {
             var frame = frames[i]
             if i == dragIndex { frame.origin.x += dragOffset }
-            // A spinner tick redraws only the dots. Tabs outside it are skipped,
-            // except with a live loader, whose spots must be placed every draw.
-            if StatusIndicator.hostAnimatesWorking, !frame.insetBy(dx: -3, dy: 0).intersects(dirtyRect) { continue }
             let selected = i == navigator.session.selectedIndex
             let radius = frame.height / 2
             if !selected, i == hoverIndex {
@@ -187,11 +159,11 @@ final class TabStripView: GlassPanel {
             let badge = NSRect(x: icon.maxX - 7, y: icon.minY - 2, width: 9, height: 9)
             theme.terminalBackground.setFill()
             NSBezierPath(ovalIn: badge.insetBy(dx: -1.5, dy: -1.5)).fill()
-            StatusIndicator.draw(tab.activity, in: badge.insetBy(dx: -2, dy: -2), theme: theme, phase: phase)
+            StatusIndicator.draw(tab.activity, in: badge.insetBy(dx: -2, dy: -2), theme: theme)
         }
 
         let showsClose = index == hoverIndex && (navigator?.session.tabs.count ?? 0) > 1
-        // Working tabs end in Rex's three-dot loader; hovering swaps it for the close button.
+        // Working tabs end in a live loader view; hovering swaps it for the close button.
         let showsDots = tab.activity == .working && !showsClose
         let textMaxX = frame.maxX - (showsClose ? 26 : showsDots ? StatusIndicator.dotsWidth + 18 : 12)
         let text = NSMutableAttributedString(string: tab.title, attributes: [
@@ -208,7 +180,7 @@ final class TabStripView: GlassPanel {
         drawFaded(text, in: rect)
         if showsDots {
             StatusIndicator.drawWorking(in: NSRect(x: frame.maxX - 12 - StatusIndicator.dotsWidth, y: frame.minY, width: StatusIndicator.dotsWidth, height: frame.height),
-                                     color: theme.textSecondary, phase: phase, spots: loaderSpots)
+                                     color: theme.textSecondary, spots: loaderSpots)
         }
 
         if showsClose {

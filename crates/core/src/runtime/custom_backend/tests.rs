@@ -904,3 +904,47 @@ fn restore_snapshot_drops_events_and_deadlines_from_the_replaced_state() {
     );
     assert_eq!(terminal.snapshot().cells[0].char, 'r');
 }
+
+#[test]
+fn clipboard_queries_and_command_finish_wake_a_paused_terminal() {
+    struct Host {
+        replies: Vec<u8>,
+    }
+    impl TerminalReplyHost for Host {
+        fn load_clipboard(&mut self, _: TerminalClipboardTarget) -> Option<String> {
+            None
+        }
+        fn protocol_reply(&mut self, bytes: &[u8]) {
+            self.replies.extend_from_slice(bytes);
+        }
+    }
+    let (send, receive) = std::sync::mpsc::channel();
+    let terminal = CustomBackend::new_display_with_wakeup_notifier(
+        TerminalSize::default(),
+        None,
+        Some(TerminalWakeupNotifier::new(move || {
+            let _ = send.send(());
+        })),
+    );
+    terminal.set_wakeup_enabled(false);
+    while receive.try_recv().is_ok() {}
+
+    // Plain output stays silent while render wakeups are paused.
+    terminal.feed_output(b"quiet");
+    assert!(receive.try_recv().is_err());
+
+    // OSC 52 ? wakes the host even while paused so draining can answer and
+    // unblock subsequent ordered replies (like CSI c).
+    terminal.feed_output(b"\x1b]52;c;?\x07\x1b[c");
+    assert!(receive.try_recv().is_ok());
+    let mut host = Host {
+        replies: Vec::new(),
+    };
+    let _ = terminal.drain_events(&mut host);
+    assert!(!host.replies.is_empty());
+
+    while receive.try_recv().is_ok() {}
+    // Shell command completion (OSC 133;D) also wakes a paused terminal.
+    terminal.feed_output(b"\x1b]133;D;0\x07");
+    assert!(receive.try_recv().is_ok());
+}

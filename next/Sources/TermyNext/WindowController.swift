@@ -185,7 +185,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         root.backdrops = [glass, tint]
         glass.material = .hudWindow
         glass.blendingMode = .behindWindow
-        glass.state = .active
+        glass.state = .followsWindowActiveState
         tint.wantsLayer = true
         root.addSubview(glass)
         root.addSubview(tint)
@@ -409,6 +409,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         syncFocus()
         strip.needsDisplay = true
         sidebar.needsLayout = true
+        AppDelegate.shared.updateTickTimer()
     }
 
     private var currentTab: TerminalTab? { session.selectedTab }
@@ -954,14 +955,17 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     /// Whether the focused pane has its find bar open.
     var isSearching: Bool { focusedPane?.isSearching ?? false }
 
+    /// Whether any visible pane in this window needs the 15 Hz follow timer.
+    var needsTick: Bool {
+        window?.occlusionState.contains(.visible) == true
+            && (currentTab?.allPanes.contains(where: \.needsTick) == true)
+    }
+
     func tick() {
-        // A minimized or covered window has nothing to animate or follow;
+        // A minimized or covered window has nothing to follow;
         // its find bars would still search the whole history every 0.6 s.
         guard window?.occlusionState.contains(.visible) == true else { return }
         currentTab?.allPanes.forEach { $0.searchTick() }
-        strip.advanceSpinner()
-        sidebar.advanceSpinner()
-        activity?.advanceSpinner()
     }
 
     // MARK: Notifications
@@ -1079,6 +1083,10 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     }
 
     func windowDidMove(_ notification: Notification) { rememberFrame() }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        AppDelegate.shared.updateTickTimer()
+    }
 
     /// New windows and the next launch open at this window's size and place.
     private func rememberFrame() {

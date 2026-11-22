@@ -231,27 +231,48 @@ final class PluginServer: @unchecked Sendable {
             guard (try? PluginWire.writeAll(client, data)) != nil else { return }
         }
         var last: String?
+        var lastGeneration: UInt64?
         var flags = fcntl(client, F_GETFL)
         flags |= O_NONBLOCK
         _ = fcntl(client, F_SETFL, flags)
+        enum StreamStep { case closed, unchanged, screen(String) }
         while true {
             var byte: UInt8 = 0
             let n = read(client, &byte, 1)
             if n == 0 || (n < 0 && errno != EAGAIN && errno != EINTR) { return }
-            let content: String?? = onMain {
-                guard let pane = PluginAPI.shared.findAnyPane(PluginID.make("block", paneID))?.pane else { return .some(nil) }
-                let screen = try? PluginAPI.shared.terminalMethod("format", ["format": format], pane: pane) as? [String: Any]
-                return .some(screen?["content"] as? String)
+            let previousGeneration = lastGeneration
+            let (step, nextGeneration): (StreamStep, UInt64?) = onMain {
+                guard let pane = PluginAPI.shared.findAnyPane(PluginID.make("block", paneID))?.pane else {
+                    return (.closed, previousGeneration)
+                }
+                let session = pane.terminal.session
+                let shown = pane.window?.occlusionState.contains(.visible) == true && !pane.isHiddenOrHasHiddenAncestor
+                if !shown { session.poll() }
+                let generation = session.contentGeneration
+                if let previousGeneration, generation == previousGeneration {
+                    return (.unchanged, generation)
+                }
+                guard let screen = try? PluginAPI.shared.terminalMethod("format", ["format": format], pane: pane) as? [String: Any],
+                      let content = screen["content"] as? String
+                else {
+                    return (.closed, generation)
+                }
+                return (.screen(content), session.contentGeneration)
             }
-            guard let current = content ?? nil else {
+            lastGeneration = nextGeneration
+            switch step {
+            case .closed:
                 if var data = try? JSONSerialization.data(withJSONObject: ["type": "closed"]) { data.append(0x0A); try? PluginWire.writeAll(client, data) }
                 return
-            }
-            if current != last {
-                last = current
-                guard var data = try? JSONSerialization.data(withJSONObject: ["type": "screen", "content": current]) else { return }
-                data.append(0x0A)
-                if (try? PluginWire.writeAll(client, data)) == nil { return }
+            case .unchanged:
+                break
+            case .screen(let current):
+                if current != last {
+                    last = current
+                    guard var data = try? JSONSerialization.data(withJSONObject: ["type": "screen", "content": current]) else { return }
+                    data.append(0x0A)
+                    if (try? PluginWire.writeAll(client, data)) == nil { return }
+                }
             }
             Thread.sleep(forTimeInterval: 0.1)
         }

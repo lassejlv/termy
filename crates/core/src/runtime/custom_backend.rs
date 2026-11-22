@@ -124,7 +124,8 @@ struct State {
     history_pending_since: Option<Instant>,
     // Whether the pending deadline is the idle delay rather than the cap.
     history_quiet: bool,
-    // A title event was queued since the last feed or commit woke the host.
+    // Set when an event arrives that must reach a paused host: title changes,
+    // command completion, or clipboard queries that block ordered replies.
     title_changed: bool,
     // False for replicas of another terminal: protocol replies are dropped.
     replies_enabled: bool,
@@ -452,10 +453,13 @@ impl State {
     fn engine_event(&mut self, event: engine::Event) {
         let event = match event {
             engine::Event::KittyClipboard(packet) => {
+                // Draining answers the clipboard query and unblocks ordered replies.
+                self.title_changed = true;
                 self.queue(PendingEvent::Kitty(packet));
                 return;
             }
             engine::Event::KittyClipboardControl(control) => {
+                self.title_changed = true;
                 self.queue(PendingEvent::KittyControl(control));
                 return;
             }
@@ -476,14 +480,19 @@ impl State {
                     Some("A") => TerminalEvent::ShellPromptStart,
                     Some("B") => TerminalEvent::ShellCommandStart,
                     Some("C") => TerminalEvent::ShellCommandExecuting,
-                    Some("D") => TerminalEvent::ShellCommandFinished(
-                        parts.next().and_then(|code| code.parse().ok()),
-                    ),
+                    Some("D") => {
+                        self.title_changed = true;
+                        TerminalEvent::ShellCommandFinished(
+                            parts.next().and_then(|code| code.parse().ok()),
+                        )
+                    }
                     _ => return,
                 }
             }
             engine::Event::Clipboard { selection, data } => {
                 if data == "?" {
+                    // Draining answers (or denies) OSC 52 ? and unblocks ordered replies.
+                    self.title_changed = true;
                     self.queue(PendingEvent::ClipboardLoad(selection));
                     return;
                 }

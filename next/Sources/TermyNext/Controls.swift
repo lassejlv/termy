@@ -5,14 +5,14 @@ import AppKit
 @MainActor
 final class IconButton: NSView {
     var action: (() -> Void)?
-    var symbol: String { didSet { needsDisplay = true } }
+    var symbol: String { didSet { if symbol != oldValue { needsDisplay = true } } }
     var pointSize: CGFloat
-    var tint: NSColor = .secondaryLabelColor { didSet { needsDisplay = true } }
+    var tint: NSColor = .secondaryLabelColor { didSet { if tint != oldValue { needsDisplay = true } } }
     var hoverTint: NSColor = .labelColor
     var hoverFill: NSColor = .clear
-    var isActive = false { didSet { needsDisplay = true } }
-    private var hovering = false { didSet { needsDisplay = true } }
-    private var pressed = false { didSet { needsDisplay = true } }
+    var isActive = false { didSet { if isActive != oldValue { needsDisplay = true } } }
+    private var hovering = false { didSet { if hovering != oldValue { needsDisplay = true } } }
+    private var pressed = false { didSet { if pressed != oldValue { needsDisplay = true } } }
 
     init(symbol: String, pointSize: CGFloat = 13, help: String? = nil, action: (() -> Void)? = nil) {
         self.symbol = symbol
@@ -56,9 +56,7 @@ final class IconButton: NSView {
             drawSidebarGlyph(color)
             return
         }
-        let config = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .regular)
-        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.withSymbolConfiguration(config) else { return }
-        let tinted = image.tinted(color)
+        guard let tinted = SymbolImages.tinted(symbol, pointSize: pointSize, weight: .regular, color: color) else { return }
         let size = tinted.size
         // Whole-pixel origin: thin symbol strokes blur on half points.
         let origin = backingAligned(NSPoint(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2))
@@ -303,7 +301,7 @@ enum IconStack {
 /// Status marks: Rex's three-dot loader for working, a dot for the rest.
 @MainActor
 final class StatusIndicator {
-    static func draw(_ state: PaneActivity, in rect: NSRect, theme: Theme, phase: CGFloat, spots: LoaderSpots? = nil) {
+    static func draw(_ state: PaneActivity, in rect: NSRect, theme: Theme, phase: CGFloat = 0, spots: LoaderSpots? = nil) {
         switch state {
         case .working:
             drawWorking(in: rect, color: theme.textSecondary, phase: phase, spots: spots)
@@ -316,20 +314,16 @@ final class StatusIndicator {
         }
     }
 
-    /// The working indicator picked in Settings, centered in `rect`: the
-    /// three dots by default (drawn here, ticked by the 15 Hz spinner timer),
-    /// or one of loading.dev's spinners, which `spots` shows as a live view.
+    /// The working indicator picked in Settings, centered in `rect`. When
+    /// `spots` is provided, every loader (including the default three dots)
+    /// animates in its own `LoaderView` so the surrounding chrome never redraws.
     /// Without `spots` a spinner is drawn as a still frame.
-    static func drawWorking(in rect: NSRect, color: NSColor, phase: CGFloat, spots: LoaderSpots? = nil) {
+    static func drawWorking(in rect: NSRect, color: NSColor, phase: CGFloat = 0, spots: LoaderSpots? = nil) {
+        if let spots { return spots.place(rect, color: color) }
         let loader = Preferences.shared.tabLoader
         guard loader != .dots else { return drawDots(in: rect, color: color, phase: phase) }
-        if let spots { return spots.place(rect, color: color) }
         LoaderDrawing.draw(loader, in: rect, size: min(12, rect.height), color: color, time: loader.duration * 0.3)
     }
-
-    /// Whether working rows need redrawing each spinner tick: only the dots
-    /// are drawn by their host; other loaders animate on their own.
-    static var hostAnimatesWorking: Bool { Preferences.shared.tabLoader == .dots }
 
     /// Three dots pulsing left to right, one wave per second. `rect` is the
     /// space for the whole row; dots are centered in it.
