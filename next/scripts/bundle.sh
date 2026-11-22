@@ -72,6 +72,11 @@ icon="$next_dir/Resources/icon/TermyNext.icns"
 if [[ -f "$icon" ]]; then
   cp "$icon" "$app/Contents/Resources/AppIcon.icns"
 fi
+# Alternate Dock icons, picked in Settings › Appearance (Sources/TermyNext/AppIcon.swift).
+if compgen -G "$next_dir/Resources/icon/alternates/*.png" >/dev/null; then
+  mkdir -p "$app/Contents/Resources/AppIcons"
+  cp "$next_dir"/Resources/icon/alternates/*.png "$app/Contents/Resources/AppIcons/"
+fi
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

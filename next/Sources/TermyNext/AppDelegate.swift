@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // `swift run` starts an unbundled executable; make it a regular app.
         NSApp.setActivationPolicy(.regular)
         applyAppearance()
+        Preferences.shared.appIcon.apply()
         // Before the menu, which shows Check for Updates only when this build updates itself.
         Updates.shared.start()
         NSApp.mainMenu = buildMainMenu()

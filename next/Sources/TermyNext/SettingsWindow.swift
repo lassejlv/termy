@@ -111,6 +111,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
     private let loaderPicker = LoaderPicker(width: SettingsWindowController.groupWidth - 24)
     private let copyShineSwitch = NSSwitch()
     private let reduceMotionSwitch = NSSwitch()
+    private let appIconPicker = AppIconPicker(width: SettingsWindowController.groupWidth - 24)
 
     // Theme & Font
     private let fontPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -379,6 +380,9 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
                     .control("Tabs", tabPopup),
                     .control("Pane spacing", paneControl),
                 ], footer: "Liquid puts the window chrome and panes on Liquid Glass; Classic draws them solid. Compact drops the gaps and headers around panes."),
+                Section(header: "App Icon", rows: [
+                    .full(appIconPicker),
+                ], footer: "Shown in the Dock and the app switcher while Termy Next runs. Finder keeps the Glass icon."),
                 Section(header: "Tab Loader", rows: [
                     .full(loaderPicker),
                     .control("Spinners from loading.dev", button("Visit Site", #selector(openLoadingDev)),
@@ -718,6 +722,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         loaderPicker.onPick = { loader in
             Preferences.shared.tabLoader = loader
         }
+        appIconPicker.onPick = { Preferences.shared.appIcon = $0 }
         copyShineSwitch.action = #selector(motionChanged)
         reduceMotionSwitch.action = #selector(motionChanged)
 
@@ -825,6 +830,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         tabPopup.selectItem(at: [TabStyle.above, .left, .right].firstIndex(of: prefs.tabStyle) ?? 0)
         paneControl.selectedSegment = prefs.paneStyle == .comfortable ? 0 : 1
         loaderPicker.selected = prefs.tabLoader
+        appIconPicker.selected = prefs.appIcon
         copyShineSwitch.state = prefs.copyShine ? .on : .off
         reduceMotionSwitch.state = prefs.reduceMotion ? .on : .off
         notifyCheckbox.state = prefs.notificationsEnabled ? .on : .off
