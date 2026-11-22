@@ -16,6 +16,16 @@ final class PaneSearch: NSObject, NSTextFieldDelegate {
     private var options = SearchOptions()
     private var lastSearch = Date.distantPast
     private var lastGeometry: [CGRect] = []
+    private struct RefreshSnapshot: Equatable {
+        var contentGeneration: UInt64
+        var displayOffset: Int
+        var historySize: Int
+        var bounds: CGRect
+        var matchCount: Int
+        var current: Int?
+        var hasQuery: Bool
+    }
+    private var lastRefresh: RefreshSnapshot?
     /// The terminal's content when it was last searched; re-running finds
     /// nothing new while it stays the same.
     private var searchedGeneration: UInt64?
@@ -222,10 +232,22 @@ final class PaneSearch: NSObject, NSTextFieldDelegate {
     }
 
     private func refresh(animated: Bool) {
+        let frame = terminal.session.frame
+        let snapshot = RefreshSnapshot(
+            contentGeneration: terminal.session.contentGeneration,
+            displayOffset: frame.displayOffset,
+            historySize: frame.historySize,
+            bounds: terminal.bounds,
+            matchCount: matches.count,
+            current: current,
+            hasQuery: !query.isEmpty)
+        if !animated, snapshot == lastRefresh { return }
+        lastRefresh = snapshot
+
         let visible: [(CGRect, Bool)] = matches.indices.compactMap { index in
             terminal.rect(for: matches[index]).map { ($0, index == current) }
         }
-        bar.update(count: matches.count, current: current, hasQuery: !query.isEmpty)
+        bar.update(count: matches.count, current: current, hasQuery: snapshot.hasQuery)
         let geometry = visible.map(\.0)
         guard animated || geometry != lastGeometry || spotlight.isActive != !matches.isEmpty else { return }
         lastGeometry = geometry

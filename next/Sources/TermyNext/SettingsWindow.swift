@@ -216,7 +216,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
         root.wantsLayer = true
         glass.material = .sidebar
         glass.blendingMode = .behindWindow
-        glass.state = .active
+        glass.state = .followsWindowActiveState
         tint.wantsLayer = true
         for view in [glass, tint] {
             view.frame = root.bounds

@@ -26,6 +26,8 @@ enum AppAppearance: String, CaseIterable {
 final class Preferences {
     static let shared = Preferences()
     static let didChange = Notification.Name("TermyNextPreferencesDidChange")
+    static let loaderDidChange = Notification.Name("TermyNextLoaderDidChange")
+    static let motionDidChange = Notification.Name("TermyNextMotionDidChange")
 
     private let defaults = UserDefaults.standard
 
@@ -88,7 +90,11 @@ final class Preferences {
     /// one of loading.dev's spinners.
     var tabLoader: TabLoader {
         get { TabLoader(rawValue: defaults.string(forKey: "tabLoader") ?? "") ?? .dots }
-        set { defaults.set(newValue.rawValue, forKey: "tabLoader") }
+        set {
+            guard newValue != tabLoader else { return }
+            defaults.set(newValue.rawValue, forKey: "tabLoader")
+            NotificationCenter.default.post(name: Self.loaderDidChange, object: nil)
+        }
     }
     /// Copied text catches the light (`CopyShine`). On by default.
     var copyShine: Bool {
@@ -99,7 +105,11 @@ final class Preferences {
     /// Motion does. Off by default; the system setting still applies.
     var reduceMotion: Bool {
         get { defaults.bool(forKey: "reduceMotion") }
-        set { defaults.set(newValue, forKey: "reduceMotion") }
+        set {
+            guard newValue != reduceMotion else { return }
+            defaults.set(newValue, forKey: "reduceMotion")
+            NotificationCenter.default.post(name: Self.motionDidChange, object: nil)
+        }
     }
     /// ssh sends COLORTERM along (zsh, tools zsh starts that run ssh, and
     /// Add Remote Host), so programs on
@@ -188,6 +198,8 @@ final class AppConfig {
     private var cachedThemes: [TermyTheme]?
     /// Render settings per zoomed font size, so panes zoomed alike share one.
     private var zoomedRenderConfigs: [Float: RenderConfig] = [:]
+    /// Cached raw contents of `config.txt`, keyed by file modification date.
+    private var cachedConfigContents: (mtime: Date?, text: String)?
 
     private init() {
         let config = try! TermyConfig(contents: "")
@@ -220,10 +232,20 @@ final class AppConfig {
         termyConfig = base
         cachedThemes = nil
         zoomedRenderConfigs = [:]
+        cachedConfigContents = nil
         if let render = try? base.renderConfig(for: appearance) { renderConfig = render }
         baseFontSize = renderConfig.fontSize
         theme = Theme(renderConfig)
         tasks = (try? base.tasksJSON()).map(TaskSpec.decodeList) ?? []
+    }
+
+    /// Raw text of `config.txt`, re-read only when the file's modification time changes.
+    func configContents() -> String {
+        let mtime = (try? Self.configURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        if let cached = cachedConfigContents, cached.mtime == mtime { return cached.text }
+        let text = (try? String(contentsOf: Self.configURL, encoding: .utf8)) ?? ""
+        cachedConfigContents = (mtime, text)
+        return text
     }
 
     /// Light or dark, as the app shows it: the Mac's appearance unless

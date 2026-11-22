@@ -11,11 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private(set) var controllers: [WindowController] = []
     private var keyMonitor: Any?
     private var processTimer: Timer?
-    private var spinnerTimer: Timer?
-    /// Polls panes nobody can see, which take no wakeups, so a program
-    /// there still gets answers to its terminal queries (and a TUI a plugin
-    /// opens in a hidden window starts).
-    private var hiddenPollTimer: Timer?
+    /// Runs at 15 Hz only while a visible window has an open find bar or shell popup.
+    private var tickTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // `swift run` starts an unbundled executable; make it a regular app.
@@ -33,9 +30,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         ShellPlugins.shared.start()
         // Lua plugins: Termy Next's init.lua, then Rex's (leaf and friends).
         PluginHost.shared.start()
-        hiddenPollTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in
-            MainActor.assumeIsolated { AppDelegate.shared.pollHiddenPanes() }
-        }
         startTimers()
         // Nothing of the app shows (hidden, minimized, covered): the timers
         // stop, so an idle app doesn't wake 16 times a second. Program status,
@@ -380,17 +374,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         if session.tabs.isEmpty { Workspace.shared.remove(session) } else { Workspace.shared.changed() }
     }
 
-    private func pollHiddenPanes() {
-        for session in Workspace.shared.sessions {
-            for pane in session.tabs.flatMap(\.allPanes) + session.detached where !pane.hasExited {
-                let shown = pane.window?.occlusionState.contains(.visible) == true && !pane.isHiddenOrHasHiddenAncestor
-                if !shown { pane.terminal.session.poll() }
-            }
-        }
-    }
-
     func windowClosed(_ controller: WindowController) {
         controllers.removeAll { $0 === controller }
+        updateTickTimer()
     }
 
     // MARK: Ticks and config
@@ -403,20 +389,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             timer.tolerance = 0.2
             processTimer = timer
         }
-        if spinnerTimer == nil {
-            let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15, repeats: true) { _ in
-                MainActor.assumeIsolated { AppDelegate.shared.controllers.forEach { $0.tick() } }
-            }
-            timer.tolerance = 0.01
-            spinnerTimer = timer
-        }
+        updateTickTimer()
     }
 
     private func stopTimers() {
         processTimer?.invalidate()
         processTimer = nil
-        spinnerTimer?.invalidate()
-        spinnerTimer = nil
+        tickTimer?.invalidate()
+        tickTimer = nil
+    }
+
+    /// Starts the 15 Hz UI follow timer only while a visible window has a
+    /// find bar or shell popup that tracks terminal scroll/cursor position.
+    func updateTickTimer() {
+        let active = NSApp.occlusionState.contains(.visible) && controllers.contains(where: \.needsTick)
+        if active, tickTimer == nil {
+            let timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 15, repeats: true) { _ in
+                MainActor.assumeIsolated { AppDelegate.shared.controllers.forEach { $0.tick() } }
+            }
+            timer.tolerance = 0.01
+            tickTimer = timer
+        } else if !active, let timer = tickTimer {
+            timer.invalidate()
+            tickTimer = nil
+        }
     }
 
     private func occlusionChanged() {
@@ -442,9 +438,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         for tab in session.tabs { tab.allPanes.forEach { $0.refreshProcess() } }
     }
 
-    /// The panes of the sessions windows show.
+    /// The panes of visible windows.
     private func refreshShownProcesses() {
-        for controller in controllers { refreshProcesses(in: controller.session) }
+        for controller in controllers where controller.window?.occlusionState.contains(.visible) == true {
+            refreshProcesses(in: controller.session)
+        }
     }
 
     /// Writes a setting to Termy Next's config and applies it to every pane;

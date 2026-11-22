@@ -29,7 +29,7 @@ final class GlassView: NSView {
             let material = StillVisualEffectView()
             material.material = .hudWindow
             material.blendingMode = .withinWindow
-            material.state = .active
+            material.state = .followsWindowActiveState
             material.wantsLayer = true
             effect = material
         }

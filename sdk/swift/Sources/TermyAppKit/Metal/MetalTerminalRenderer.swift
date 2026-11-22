@@ -61,6 +61,11 @@ final class MetalTerminalRenderer {
         var quads: [MetalQuad] = []
         var batches: [Batch] = []
 
+        mutating func reset() {
+            quads.removeAll(keepingCapacity: true)
+            batches.removeAll(keepingCapacity: true)
+        }
+
         mutating func append(_ newQuads: [MetalQuad], texture: MTLTexture, scissor: MTLScissorRect? = nil) {
             guard !newQuads.isEmpty else { return }
             let start = quads.count
@@ -83,6 +88,8 @@ final class MetalTerminalRenderer {
     private let inFlight = DispatchSemaphore(value: maxFramesInFlight)
     private var buffers: [MTLBuffer?] = Array(repeating: nil, count: maxFramesInFlight)
     private var bufferIndex = 0
+    /// Reused across frames so steady rendering doesn't reallocate quad arrays.
+    private var assembledFrame = Frame()
 
     private var config: RenderConfig?
     private var scale: CGFloat = 0
@@ -319,7 +326,7 @@ final class MetalTerminalRenderer {
     private func encode(_ state: RenderState, scale: CGFloat, target: MTLTexture, commandBuffer: MTLCommandBuffer) {
         let config = state.config
         prepare(config, scale: scale, frame: state.frame)
-        var frame = buildFrame(state)
+        buildFrame(state)
         if atlasGeneration != atlas.generation {
             // The atlas filled up at its largest size mid-frame; rebuild
             // against the fresh one. Glyphs that still don't fit are skipped
@@ -327,7 +334,7 @@ final class MetalTerminalRenderer {
             // earlier in this pass pointing into the replaced texture.
             prepare(config, scale: scale, frame: state.frame)
             atlas.allowsReset = false
-            frame = buildFrame(state)
+            buildFrame(state)
             atlas.allowsReset = true
         }
 
@@ -343,14 +350,14 @@ final class MetalTerminalRenderer {
             alpha: opacity)
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return }
         defer { encoder.endEncoding() }
-        guard !frame.quads.isEmpty, let buffer = buffer(for: frame.quads) else { return }
+        guard !assembledFrame.quads.isEmpty, let buffer = buffer(for: assembledFrame.quads) else { return }
 
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBuffer(buffer, offset: 0, index: 0)
         var viewport = SIMD2<Float>(Float(target.width), Float(target.height))
         encoder.setVertexBytes(&viewport, length: MemoryLayout<SIMD2<Float>>.stride, index: 1)
         let fullScissor = MTLScissorRect(x: 0, y: 0, width: target.width, height: target.height)
-        for batch in frame.batches {
+        for batch in assembledFrame.batches {
             encoder.setFragmentTexture(batch.texture, index: 0)
             encoder.setScissorRect(batch.scissor.map { clamp($0, to: fullScissor) } ?? fullScissor)
             encoder.drawPrimitives(
@@ -385,31 +392,45 @@ final class MetalTerminalRenderer {
 
     // MARK: - Frame assembly
 
-    private func buildFrame(_ state: RenderState) -> Frame {
-        var frame = Frame()
+    private func buildFrame(_ state: RenderState) {
+        assembledFrame.reset()
         let store = state.frame
-        guard !store.isEmpty else { return frame }
+        guard !store.isEmpty else { return }
         for row in 0..<store.rows where rows[row] == nil {
             rows[row] = buildRow(row, state: state)
         }
         let texture = atlas.texture
         imageFrame &+= 1
         var failed: Set<KittyImageKey> = []
-        appendImages(state, layer: .belowBackgrounds, to: &frame, failed: &failed)
+        let hasImages = !state.images.isEmpty
+        if hasImages {
+            appendImages(state, layer: .belowBackgrounds, to: &assembledFrame, failed: &failed)
+        }
         // Row by row: batches of one texture merge, so this copies each quad
         // once instead of gathering a whole-screen array first.
-        for row in rows { frame.append(row?.backgrounds ?? [], texture: texture) }
-        frame.append(selectionQuads(state), texture: texture)
-        appendImages(state, layer: .belowText, to: &frame, failed: &failed)
-        for row in rows { frame.append(row?.foreground ?? [], texture: texture) }
-        appendImages(state, layer: .aboveText, to: &frame, failed: &failed)
-        evictIdleImageTextures()
-        failedImages = failed
-        frame.append(cursorQuads(state), texture: atlas.texture)
-        if let marked = state.markedText, !marked.isEmpty {
-            appendMarkedText(marked, state: state, to: &frame)
+        for row in rows {
+            if let backgrounds = row?.backgrounds, !backgrounds.isEmpty {
+                assembledFrame.append(backgrounds, texture: texture)
+            }
         }
-        return frame
+        assembledFrame.append(selectionQuads(state), texture: texture)
+        if hasImages {
+            appendImages(state, layer: .belowText, to: &assembledFrame, failed: &failed)
+        }
+        for row in rows {
+            if let foreground = row?.foreground, !foreground.isEmpty {
+                assembledFrame.append(foreground, texture: texture)
+            }
+        }
+        if hasImages {
+            appendImages(state, layer: .aboveText, to: &assembledFrame, failed: &failed)
+        }
+        if !imageTextures.isEmpty { evictIdleImageTextures() }
+        failedImages = failed
+        assembledFrame.append(cursorQuads(state), texture: atlas.texture)
+        if let marked = state.markedText, !marked.isEmpty {
+            appendMarkedText(marked, state: state, to: &assembledFrame)
+        }
     }
 
     private func buildRow(_ row: Int, state: RenderState) -> RowQuads {

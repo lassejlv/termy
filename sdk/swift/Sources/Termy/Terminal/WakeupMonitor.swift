@@ -30,7 +30,7 @@ final class WakeupMonitor: @unchecked Sendable {
         guard shouldStart else { return }
         let thread = Thread { [self] in run() }
         thread.name = "dev.termy.wakeup"
-        thread.qualityOfService = .userInteractive
+        thread.qualityOfService = .userInitiated
         lock.withLock { self.thread = thread }
         thread.start()
     }
@@ -56,7 +56,7 @@ final class WakeupMonitor: @unchecked Sendable {
         // The long timeout is a safety net; output and stop() wake immediately.
         while isRunning {
             var woke = false
-            let status = termy_terminal_wait_for_wakeup(handle, 1_000, &woke)
+            let status = termy_terminal_wait_for_wakeup(handle, 60_000, &woke)
             guard isRunning else { break }
             if status != TERMY_FFI_OK {
                 Thread.sleep(forTimeInterval: 0.05)

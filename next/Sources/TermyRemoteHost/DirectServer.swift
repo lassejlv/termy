@@ -28,6 +28,7 @@ extension RemoteHostAgent {
 
     func serveDirect() async {
         var port = directPort
+        var retryDelay: Duration = .seconds(2)
         while !Task.isCancelled, running {
             var ready = false
             var announcing: Task<Void, Never>?
@@ -38,6 +39,7 @@ extension RemoteHostAgent {
                     switch event {
                     case .ready(let bound):
                         ready = true
+                        retryDelay = .seconds(2)
                         log("Listening for phones on port \(bound).")
                         announcing = Task { await self.announce(port: bound) }
                     case .connection(let connection):
@@ -58,7 +60,8 @@ extension RemoteHostAgent {
                 port = nil
                 continue
             }
-            do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            do { try await Task.sleep(for: retryDelay) } catch { return }
+            retryDelay = min(retryDelay * 2, .seconds(30))
         }
     }
 

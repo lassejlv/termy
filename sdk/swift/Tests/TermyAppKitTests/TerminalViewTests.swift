@@ -236,15 +236,28 @@ struct TerminalViewTests {
     @Test func viewsNobodyCanSeePauseTheirTerminalsWakeups() throws {
         let view = try makeView()
         _ = NSApplication.shared
-        // Not in a window yet: nothing has asked it to pause.
-        #expect(!view.wakeupsPaused)
+        // Not in a window yet (like a restored background tab or off-screen session): paused at once.
+        #expect(view.wakeupsPaused)
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: view.frame.size),
             styleMask: [.borderless], backing: .buffered, defer: true)
         window.isReleasedWhenClosed = false
-        // A window that isn't on screen, like a background tab's.
+        // A window that isn't on screen stays paused.
         window.contentView = view
         #expect(view.wakeupsPaused)
+        // Showing the window resumes wakeups; hiding or removing the view pauses again.
+        window.orderFrontRegardless()
+        defer {
+            window.contentView = nil
+            window.orderOut(nil)
+        }
+        if window.occlusionState.contains(.visible) {
+            #expect(!view.wakeupsPaused)
+            view.isHidden = true
+            #expect(view.wakeupsPaused)
+            view.isHidden = false
+            #expect(!view.wakeupsPaused)
+        }
         window.contentView = nil
         #expect(view.wakeupsPaused)
         // Output is still read on demand while paused.

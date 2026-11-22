@@ -433,3 +433,14 @@ import Testing
         #expect(TaskSpec(name: "t", command: "  ").input == nil)
     }
 }
+
+@Suite struct ShellProcessTests {
+    @Test func recognizesInterpretersForScriptDetection() {
+        #expect(ShellProcess.isInterpreter("python3"))
+        #expect(ShellProcess.isInterpreter("/usr/bin/ruby"))
+        #expect(ShellProcess.isInterpreter("node"))
+        #expect(!ShellProcess.isInterpreter("claude"))
+        #expect(!ShellProcess.isInterpreter("nvim"))
+        #expect(!ShellProcess.isInterpreter("cargo"))
+    }
+}

@@ -92,7 +92,13 @@ final class PaneView: NSView, TerminalViewDelegate {
     /// Faded when another pane in the tab has focus.
     var isDimmed = false { didSet { if oldValue != isDimmed { updateDim() } } }
     var isFloating = false { didSet { updateShape(); needsLayout = true } }
-    var isZoomed = false { didSet { header.needsDisplay = true } }
+    var isZoomed = false {
+        didSet {
+            guard oldValue != isZoomed else { return }
+            header.updateButtons()
+            header.needsDisplay = true
+        }
+    }
 
     private let header = PaneHeaderView()
     /// Rounds the terminal's corners without clipping the card's shadow.
@@ -376,6 +382,7 @@ final class PaneView: NSView, TerminalViewDelegate {
         shellUI.applyTheme()
         updateShape()
         needsLayout = true
+        header.updateButtons()
         header.needsDisplay = true
     }
 
@@ -435,6 +442,7 @@ final class PaneView: NSView, TerminalViewDelegate {
 
     private var search: PaneSearch?
     var isSearching: Bool { search != nil }
+    var needsTick: Bool { isSearching || shellUI.isVisible }
 
     /// Opens the find bar, or focuses it, starting from the selected text.
     func showSearch() {
@@ -447,6 +455,7 @@ final class PaneView: NSView, TerminalViewDelegate {
             needsLayout = true
             layoutSubtreeIfNeeded()
             Motion.appear(search.bar, scale: 0.96, offsetY: -6, duration: 0.18)
+            AppDelegate.shared.updateTickTimer()
         }
         search?.focusField(prefill: terminal.selection?.text(in: terminal.session.frame))
     }
@@ -454,6 +463,7 @@ final class PaneView: NSView, TerminalViewDelegate {
     func closeSearch() {
         guard let search else { return }
         self.search = nil
+        AppDelegate.shared.updateTickTimer()
         search.spotlight.show(matches: [], active: false, pulseCurrent: false)
         Motion.disappear(search.bar) { search.bar.removeFromSuperview() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { search.spotlight.removeFromSuperview() }
@@ -475,34 +485,53 @@ final class PaneView: NSView, TerminalViewDelegate {
 
     // MARK: Process and status
 
+    private var cachedShellName: String?
+    private var lastForegroundPID: pid_t?
+    private var lastForegroundName: String?
+    private var lastChildPIDLookup = Date.distantPast
+
     /// Re-reads the foreground program and directory from the kernel.
     func refreshProcess() {
-        if shellPID == nil, isHosted { shellPID = SessionHost.shared.childPID(for: paneID) }
+        if shellPID == nil, isHosted, !hasExited, Date().timeIntervalSince(lastChildPIDLookup) >= 5 {
+            lastChildPIDLookup = Date()
+            shellPID = SessionHost.shared.childPID(for: paneID)
+        }
+        let reportedDirectory = terminal.session.workingDirectory.flatMap(Naming.pathFromWorkingDirectoryReport)
         if let shell = shellPID, ShellProcess.isAlive(shell) {
+            if cachedShellName == nil { cachedShellName = ShellProcess.name(of: shell) }
             let front = ShellProcess.foreground(of: shell)
-            processName = ShellProcess.name(of: front) ?? ShellProcess.name(of: shell)
-            processPath = front == shell ? nil : ShellProcess.executablePath(of: front)
-            isShellInFront = front == shell
-            // A tool that's a script names itself after the script, so `brew`
-            // (bash running brew.sh, then ruby running brew.rb) gets its logo.
-            if !isShellInFront, let script = ShellProcess.scriptName(arguments: ShellProcess.arguments(of: front)),
-               ProgramLogos.aliases[AppIcons.normalized(script)] != nil {
-                processName = script
-                processPath = nil
+            let frontName = front == shell ? cachedShellName : ShellProcess.name(of: front)
+            if front != lastForegroundPID || frontName != lastForegroundName {
+                lastForegroundPID = front
+                lastForegroundName = frontName
+                processName = frontName ?? cachedShellName
+                isShellInFront = front == shell
+                processPath = isShellInFront ? nil : ShellProcess.executablePath(of: front)
+                // A tool that's a script names itself after the script, so `brew`
+                // (bash running brew.sh, then ruby running brew.rb) gets its logo.
+                if !isShellInFront, let name = frontName, ShellProcess.isInterpreter(name),
+                   let script = ShellProcess.scriptName(arguments: ShellProcess.arguments(of: front)),
+                   ProgramLogos.aliases[AppIcons.normalized(script)] != nil {
+                    processName = script
+                    processPath = nil
+                }
             }
-            if let cwd = ShellProcess.workingDirectory(of: front) ?? ShellProcess.workingDirectory(of: shell) {
+            // Skip kernel vnode lookup when OSC 7 already reported the working directory.
+            if let reportedDirectory {
+                directory = reportedDirectory
+            } else if let cwd = ShellProcess.workingDirectory(of: front) ?? ShellProcess.workingDirectory(of: shell) {
                 directory = cwd
             }
-        }
-        if let reported = terminal.session.workingDirectory.flatMap(Naming.pathFromWorkingDirectoryReport) {
-            directory = reported
+        } else if let reportedDirectory {
+            directory = reportedDirectory
         }
         updateLabel()
         recomputeActivity()
     }
 
     private func updateLabel() {
-        let shellName = shellPID.flatMap(ShellProcess.name(of:))
+        let shellName = cachedShellName ?? shellPID.flatMap(ShellProcess.name(of:))
+        if cachedShellName == nil { cachedShellName = shellName }
         let process = processName.map(AppIcons.displayName(for:)) ?? shellName
         // A program that names itself over OSC 7501 wins over whatever the shell put in the title.
         var new = reportedApp.map { PaneLabel(name: AppIcons.displayName(for: $0), detail: directory.map { Naming.abbreviatingHome($0) }) }
@@ -735,7 +764,7 @@ final class PaneHeaderView: NSView {
         }
     }
 
-    private func updateButtons() {
+    func updateButtons() {
         let theme = AppConfig.shared.theme
         for button in buttons {
             button.tint = theme.textSecondary
@@ -749,7 +778,6 @@ final class PaneHeaderView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         guard let pane else { return }
-        updateButtons()
         let theme = AppConfig.shared.theme
         let tile = NSRect(x: 10, y: (bounds.height - 16) / 2, width: 16, height: 16)
         ProgramIcon.draw(program: pane.foregroundProgram, executable: pane.foregroundExecutable, in: tile, theme: theme)

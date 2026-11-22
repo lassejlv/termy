@@ -93,7 +93,7 @@ final class MobileController {
         host.launchEnvironment.merge(ShellPlugins.shared.environment(token: nil)) { $1 }
         host.configurationProvider = {
             RemoteConfiguration(render: AppConfig.shared.renderConfig,
-                contents: (try? String(contentsOf: AppConfig.configURL, encoding: .utf8)) ?? "",
+                contents: AppConfig.shared.configContents(),
                 reduceMotion: Preferences.shared.reduceMotion, appearance: AppConfig.shared.appearance)
         }
         host.onDirectEndpoints = { [weak self] endpoints in

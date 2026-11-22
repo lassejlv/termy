@@ -506,17 +506,110 @@ private struct Painter {
 
 // MARK: - Live views
 
-/// One spinner in a view of its own, redrawn on every display refresh (up to
-/// 60 Hz) while it's on screen, so it turns smoothly without redrawing what's
-/// around it. Holds a still frame with reduced motion.
+/// Drives every visible `LoaderView` from one shared timer instead of one
+/// 60 Hz display link per spinner. Stops completely when nothing spins or
+/// Reduce Motion is on.
+@MainActor
+final class LoaderClock {
+    static let shared = LoaderClock()
+
+    private struct WeakView { weak var view: LoaderView? }
+
+    private var views: [ObjectIdentifier: WeakView] = [:]
+    private var timer: Timer?
+    private var interval: TimeInterval = 0
+
+    private init() {
+        NotificationCenter.default.addObserver(forName: Preferences.motionDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.motionChanged() }
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.motionChanged() }
+        }
+    }
+
+    func register(_ view: LoaderView) {
+        views[ObjectIdentifier(view)] = WeakView(view: view)
+        updateTimer()
+    }
+
+    func unregister(_ view: LoaderView) {
+        views.removeValue(forKey: ObjectIdentifier(view))
+        updateTimer()
+    }
+
+    func updateRate() {
+        updateTimer()
+    }
+
+    private func motionChanged() {
+        updateTimer()
+        if Motion.reduced {
+            prune()
+            for entry in views.values { entry.view?.needsDisplay = true }
+        }
+    }
+
+    private func prune() {
+        views = views.filter { $0.value.view != nil }
+    }
+
+    private func updateTimer() {
+        prune()
+        guard !Motion.reduced, !views.isEmpty else {
+            timer?.invalidate()
+            timer = nil
+            interval = 0
+            return
+        }
+        let needsSmooth = views.values.contains { $0.view?.loader != .dots }
+        let target: TimeInterval = needsSmooth ? (1.0 / 30) : (1.0 / 15)
+        guard timer == nil || abs(target - interval) > 0.001 else { return }
+        timer?.invalidate()
+        interval = target
+        let timer = Timer(timeInterval: target, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.tick() }
+        }
+        timer.tolerance = target * 0.15
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    private func tick() {
+        guard !Motion.reduced else { return updateTimer() }
+        let now = CACurrentMediaTime()
+        var alive = false
+        for (id, entry) in views {
+            if let view = entry.view {
+                view.advance(to: now)
+                alive = true
+            } else {
+                views.removeValue(forKey: id)
+            }
+        }
+        if !alive { updateTimer() }
+    }
+}
+
+/// One spinner in a view of its own, driven by `LoaderClock` while on screen,
+/// so it turns smoothly without redrawing what's around it. Holds a still
+/// frame with reduced motion.
 @MainActor
 final class LoaderView: NSView {
-    var loader: TabLoader = .dots { didSet { if loader != oldValue { needsDisplay = true } } }
+    var loader: TabLoader = .dots {
+        didSet {
+            guard loader != oldValue else { return }
+            needsDisplay = true
+            if isAnimating { LoaderClock.shared.updateRate() }
+        }
+    }
     var color: NSColor = .secondaryLabelColor { didSet { if color != oldValue { needsDisplay = true } } }
     /// The spinner's height; it's centered in the bounds.
     var size: CGFloat = 12 { didSet { if size != oldValue { needsDisplay = true } } }
 
-    private var link: CADisplayLink?
+    private var isAnimating = false
     private var time = CACurrentMediaTime()
     private var occlusionObserver: NSObjectProtocol?
 
@@ -540,42 +633,38 @@ final class LoaderView: NSView {
         if let window {
             occlusionObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main
-            ) { [weak self] _ in MainActor.assumeIsolated { self?.updateLink() } }
+            ) { [weak self] _ in MainActor.assumeIsolated { self?.updateAnimation() } }
         }
-        updateLink()
+        updateAnimation()
     }
 
     // A hidden host (the sidebar with tabs above, the tab strip with tabs at
     // the side) no longer draws, so it never removes its spinners either:
-    // without this their links ran at 60 Hz for as long as the window showed.
+    // stop ticking as soon as any ancestor hides.
     override func viewDidHide() {
         super.viewDidHide()
-        updateLink()
+        updateAnimation()
     }
 
     override func viewDidUnhide() {
         super.viewDidUnhide()
-        updateLink()
+        updateAnimation()
     }
 
-    /// Ticks only while the window shows; a display link holds its target,
-    /// so it's dropped as soon as the view leaves the window.
-    private func updateLink() {
+    /// Ticks only while visible on screen.
+    private func updateAnimation() {
         let visible = (window?.occlusionState.contains(.visible) ?? false) && !isHiddenOrHasHiddenAncestor
-        if visible, link == nil {
-            let link = displayLink(target: self, selector: #selector(step(_:)))
-            link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
-            link.add(to: .main, forMode: .common)
-            self.link = link
-        } else if !visible, let link {
-            link.invalidate()
-            self.link = nil
+        guard visible != isAnimating else { return }
+        isAnimating = visible
+        if visible {
+            LoaderClock.shared.register(self)
+        } else {
+            LoaderClock.shared.unregister(self)
         }
     }
 
-    @objc private func step(_ link: CADisplayLink) {
-        guard !Motion.reduced else { return }
-        time = link.targetTimestamp
+    fileprivate func advance(to timestamp: CFTimeInterval) {
+        time = timestamp
         needsDisplay = true
     }
 
@@ -600,8 +689,18 @@ final class LoaderSpots {
     private var views: [LoaderView] = []
     private var spots: [(rect: NSRect, color: NSColor)] = []
     private var scheduled = false
+    nonisolated(unsafe) private var loaderObserver: NSObjectProtocol?
 
-    init(host: NSView) { self.host = host }
+    init(host: NSView) {
+        self.host = host
+        loaderObserver = NotificationCenter.default.addObserver(forName: Preferences.loaderDidChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.schedule() }
+        }
+    }
+
+    deinit {
+        if let loaderObserver { NotificationCenter.default.removeObserver(loaderObserver) }
+    }
 
     /// Call at the start of the host's draw.
     func begin() { spots = [] }
@@ -636,7 +735,19 @@ final class LoaderSpots {
                 host.addSubview(view)
                 views.append(view)
             }
-            if view.frame != spot.rect { view.frame = spot.rect }
+            var rect = spot.rect
+            if loader == .dots {
+                // Three dots need `dotsWidth` even when placed on a narrow status badge spot.
+                let minWidth = ceil(StatusIndicator.dotsWidth) + 2
+                let minHeight: CGFloat = 10
+                if rect.width < minWidth {
+                    rect = NSRect(x: (rect.midX - minWidth / 2).rounded(.down), y: rect.minY, width: minWidth, height: rect.height)
+                }
+                if rect.height < minHeight {
+                    rect = NSRect(x: rect.minX, y: (rect.midY - minHeight / 2).rounded(.down), width: rect.width, height: minHeight)
+                }
+            }
+            if view.frame != rect { view.frame = rect }
             view.loader = loader
             view.color = spot.color
             view.size = min(12, spot.rect.height)

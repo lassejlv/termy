@@ -29,6 +29,7 @@ final class PaneShellUI: NSObject, NSTextFieldDelegate {
     private var connection: ShellConnection? { ShellPlugins.shared.connection(for: pane) }
     private var terminal: TerminalView { pane.terminal }
     var isAsking: Bool { ask != nil }
+    var isVisible: Bool { completion != nil || ask != nil }
 
     // MARK: Line
 
@@ -48,6 +49,7 @@ final class PaneShellUI: NSObject, NSTextFieldDelegate {
             view.onPick = { [weak self] row in self?.pick(row) }
             pane.addSubview(view)
             completion = view
+            AppDelegate.shared.updateTickTimer()
             view.update(sections: sections)
             position()
             Motion.appear(view, scale: 0.98, offsetY: -4, duration: 0.12)
@@ -136,6 +138,7 @@ final class PaneShellUI: NSObject, NSTextFieldDelegate {
     private func hideCompletion() {
         guard let view = completion else { return }
         completion = nil
+        AppDelegate.shared.updateTickTimer()
         Motion.disappear(view, duration: 0.1) { view.removeFromSuperview() }
     }
 
@@ -186,6 +189,7 @@ final class PaneShellUI: NSObject, NSTextFieldDelegate {
         view.agent = currentAgent
         pane.addSubview(view)
         ask = view
+        AppDelegate.shared.updateTickTimer()
         position()
         Motion.appear(view, scale: 0.98, offsetY: -4, duration: 0.14)
         pane.window?.makeFirstResponder(view.field)
@@ -207,6 +211,7 @@ final class PaneShellUI: NSObject, NSTextFieldDelegate {
         generated = nil
         guard let view = ask else { return }
         ask = nil
+        AppDelegate.shared.updateTickTimer()
         Motion.disappear(view, duration: 0.12) { view.removeFromSuperview() }
         pane.focus()
     }
