@@ -2,10 +2,12 @@
 //!
 //! A row stores its explicit cells (everything before its trailing erase
 //! blanks) as style runs, scalars and sparse wide-cell flags, followed by its
-//! metadata by column. Cold history keeps its packed representation, storage
-//! capacities and metadata charge. History's byte charge doesn't depend on
-//! the representation (see `history.rs`), so a decoded grid evicts history
-//! like the original either way; keeping it keeps the memory it takes.
+//! metadata by column, the packed flag and the storage capacities. History
+//! keeps its metadata charge but is packed as it is read, with buffers sized
+//! to their contents: a snapshot can't make a few bytes take a whole row.
+//! History's byte charge doesn't depend on the representation (see
+//! `history.rs`), so a decoded grid evicts history like the original either
+//! way.
 
 use std::sync::Arc;
 
@@ -16,7 +18,7 @@ use super::super::{
 };
 use super::{
     Cell, Grid, Row, SavedCursor, Screen,
-    history::{DEFAULT_HISTORY_BYTES, history_charge},
+    history::{DEFAULT_HISTORY_BYTES, history_charge, history_heap},
     ring::Ring,
 };
 
@@ -25,6 +27,14 @@ const PACKED: u8 = 1 << 1;
 /// The smallest row encoding: a blank row of fewer than 128 columns.
 const MIN_ROW_BYTES: usize = 15;
 const CELL_FLAGS: u16 = Cell::WIDE | Cell::WIDE_SPACER | Cell::LEADING_WIDE_SPACER;
+/// The largest history byte limit a decoded snapshot's memory is bounded
+/// by (256 MiB); snapshots may name a larger or unlimited one.
+const MAX_DECODED_HISTORY_BYTES: usize = 16 * DEFAULT_HISTORY_BYTES;
+/// What decoded history may take per byte of its limit. A row takes at most
+/// four times its charge once packed (a row that resists packing is stored
+/// dense), and history may hold more than its limit after a widen until the
+/// next scroll (see `Grid::resize`).
+const DECODED_HISTORY_SLACK: usize = 8;
 
 fn write_pen(writer: &mut Writer, pen: &Pen) {
     writer.style(pen.style);
@@ -179,6 +189,21 @@ impl Row {
             }
             cell.flags = value;
         }
+        // Printing and reflow index a wide glyph's spacer through its glyph
+        // and back, so a broken pair would panic later instead of here.
+        for (col, cell) in cells.iter().enumerate() {
+            let broken = (cell.flags & Cell::WIDE != 0
+                && cells
+                    .get(col + 1)
+                    .is_none_or(|next| next.flags & Cell::WIDE_SPACER == 0))
+                || (cell.flags & Cell::WIDE_SPACER != 0
+                    && (col == 0 || cells[col - 1].flags & Cell::WIDE == 0))
+                || (cell.flags & Cell::LEADING_WIDE_SPACER != 0
+                    && (flags & WRAPPED == 0 || col + 1 != len));
+            if broken {
+                return Err(Corrupt("wide cell"));
+            }
+        }
         cells.resize(len, Grid::blank_on(clear_background));
 
         let count = reader.count(2)?;
@@ -190,39 +215,40 @@ impl Row {
                 return Err(Corrupt("cell metadata order"));
             }
             col = col.checked_add(delta).ok_or(Corrupt("cell metadata"))?;
-            if col >= len {
+            // Encoders count metadata columns as explicit cells.
+            if col >= explicit {
                 return Err(Corrupt("cell metadata column"));
             }
             extras.push((col, reader.extra()?));
         }
-        // `occupied` bounds everything but erase blanks; a stale bound
-        // would let a recycled row keep this row's text.
-        let extras_end = extras.last().map_or(0, |(col, _)| col + 1);
-        let occupied = occupied.max(explicit).max(extras_end);
         let extra_units = reader.u16_value()?;
-        let mut capacities = [0; 3];
-        for capacity in &mut capacities {
-            // Never more than a maximal row needs.
-            *capacity = reader.usize()?.min(2 * Size::MAX_COLS);
+        // Buffers are sized to what the row holds: capacities from the
+        // snapshot would let a few bytes reserve whole rows of memory.
+        for _ in 0..3 {
+            reader.usize()?;
         }
 
         let mut row = Self {
             cells,
             extras,
             packed: None,
-            occupied,
+            // Everything past the explicit cells is erase blanks, so this
+            // bound is exact; a stale one would let a recycled row keep this
+            // row's text.
+            occupied: explicit,
             clear_background,
             wrapped: flags & WRAPPED != 0,
             // Snapshots don't carry prompt marks.
             prompt: 0,
             extra_units,
         };
-        if flags & PACKED != 0 {
-            // Packing measures the metadata; keep the original's charge.
+        if !screen {
+            // History is packed as it is read, so a row takes memory for
+            // the cells it holds rather than for its width. Packing measures
+            // the metadata; keep the original's charge.
             row.compact();
             row.extra_units = extra_units;
         }
-        row.set_storage_capacities(capacities);
         Ok(row)
     }
 }
@@ -368,11 +394,23 @@ impl Grid {
         if history > grid.history_limit {
             return Err(Corrupt("history length"));
         }
+        // Bound what decoding allocates by its output, not its input: the
+        // limit comes from the snapshot too, so it is clamped.
+        let budget = grid
+            .history_byte_limit
+            .min(MAX_DECODED_HISTORY_BYTES)
+            .saturating_mul(DECODED_HISTORY_SLACK);
+        let mut heap = 0_usize;
         let mut rows = Vec::with_capacity(history);
         for _ in 0..history {
             // Resizes give history rows the grid's width, and moving one onto
             // the screen relies on it.
-            rows.push(Row::read_snapshot(reader, size.cols, false)?);
+            let row = Row::read_snapshot(reader, size.cols, false)?;
+            heap += history_heap(&row);
+            if heap > budget {
+                return Err(Corrupt("history size"));
+            }
+            rows.push(row);
         }
         grid.history = rows.into_iter().collect::<Ring<Row>>();
         grid.history_bytes = grid.history.iter().map(history_charge).sum();
@@ -397,14 +435,23 @@ impl Grid {
         grid.scroll_bottom = reader.usize()?;
         grid.left_margin = reader.usize()?;
         grid.right_margin = reader.usize()?;
+        grid.lr_margin_mode = reader.bool()?;
+        // Like DECSLRM, a left/right margin region is at least two columns
+        // wide, and only DECLRMM narrows it from the full width: printing a
+        // wide glyph into a narrower one would index past it.
+        let lr_margins_valid = grid.margins_span_screen()
+            || (grid.lr_margin_mode
+                && grid.right_margin <= size.cols
+                && grid
+                    .right_margin
+                    .checked_sub(grid.left_margin)
+                    .is_some_and(|width| width >= 2));
         if grid.scroll_top >= grid.scroll_bottom
             || grid.scroll_bottom > size.rows
-            || grid.left_margin >= grid.right_margin
-            || grid.right_margin > size.cols
+            || !lr_margins_valid
         {
             return Err(Corrupt("margins"));
         }
-        grid.lr_margin_mode = reader.bool()?;
         grid.pending_wrap = reader.bool()?;
         grid.clear_anchor = reader.bool()?;
         grid.grapheme_open = reader.bool()?;
@@ -485,6 +532,156 @@ mod tests {
         source.feed(&b"line\r\n".repeat(20));
         source.state.grid.history[0] = Row::new(10, &Cell::default());
         assert_eq!(decode(&mut source).err(), Some(Corrupt("row width")));
+    }
+
+    #[test]
+    fn left_right_margins_narrower_than_two_columns_are_rejected() {
+        for (cols, mode, left, right, valid) in [
+            // DECSLRM needs two columns, so the next wide glyph fits.
+            (2, true, 1, 2, false),
+            (3, true, 2, 3, false),
+            (4, true, 1, 3, true),
+            // Without DECLRMM the margins span the screen.
+            (4, false, 1, 3, false),
+            (4, false, 0, 3, false),
+            (4, false, 0, 4, true),
+            (4, true, usize::MAX, 4, false),
+            // A one-column screen's full-width margins are one column wide.
+            (1, false, 0, 1, true),
+            (1, true, 0, 1, true),
+        ] {
+            let mut source = engine(cols, 3, 10);
+            source.state.grid.lr_margin_mode = mode;
+            source.state.grid.left_margin = left;
+            source.state.grid.right_margin = right;
+            let context = format!("{cols} columns, DECLRMM {mode}, margins {left}..{right}");
+            match decode(&mut source) {
+                Ok(mut decoded) => {
+                    assert!(valid, "{context} decoded");
+                    decoded.feed("\x1b[H界界界\r\n界".as_bytes());
+                }
+                Err(error) => {
+                    assert!(!valid, "{context}: {error}");
+                    assert_eq!(error, Corrupt("margins"), "{context}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unpaired_wide_cells_are_rejected() {
+        let mut source = engine(6, 3, 10);
+        source.feed("界 x".as_bytes());
+        assert!(decode(&mut source).is_ok());
+        let row = &source.state.grid.primary.rows[0];
+        assert_eq!(row.cells[0].flags, Cell::WIDE);
+        assert_eq!(row.cells[1].flags, Cell::WIDE_SPACER);
+        for (col, flags, wrapped) in [
+            // A glyph without its spacer, and a spacer without its glyph.
+            (1, 0, false),
+            (0, 0, false),
+            (3, Cell::WIDE, false),
+            (2, Cell::WIDE_SPACER, false),
+            // A leading spacer only ends a wrapped row.
+            (5, Cell::LEADING_WIDE_SPACER, false),
+            (4, Cell::LEADING_WIDE_SPACER, true),
+        ] {
+            let mut damaged = engine(6, 3, 10);
+            damaged.feed("界 x".as_bytes());
+            let row = &mut damaged.state.grid.primary.rows[0];
+            row.cells[col].flags = flags;
+            row.cells[col].character = 'y';
+            row.occupied = row.cells.len();
+            row.wrapped = wrapped;
+            assert_eq!(
+                decode(&mut damaged).err(),
+                Some(Corrupt("wide cell")),
+                "column {col} flags {flags:#x}"
+            );
+        }
+        // A wrapped row may end in a leading spacer.
+        let mut wrapped = engine(6, 3, 10);
+        wrapped.feed("abcde界".as_bytes());
+        let row = &wrapped.state.grid.primary.rows[0];
+        assert!(row.wrapped);
+        assert_eq!(row.cells[5].flags, Cell::LEADING_WIDE_SPACER);
+        assert!(decode(&mut wrapped).is_ok());
+    }
+
+    /// The audit's amplification probe: blank rows of the widest screen take
+    /// a few bytes each, and decoding used to expand each to its full width
+    /// and to the buffer capacities the snapshot named.
+    #[test]
+    fn decoded_history_takes_memory_in_proportion_to_the_snapshot() {
+        const ROWS: usize = 2000;
+        let unlimited = Options {
+            scrollback_history: usize::MAX,
+            scrollback_bytes: usize::MAX,
+            ..Options::default()
+        };
+        let mut source = Engine::new(
+            Size {
+                cols: Size::MAX_COLS,
+                rows: 1,
+            },
+            unlimited,
+        );
+        source.feed(&b"\n".repeat(ROWS));
+        assert_eq!(source.history_size(), ROWS);
+        for row in &mut source.state.grid.history {
+            // Dense, with spare capacity in every buffer.
+            let mut dense = Row::new(Size::MAX_COLS, &Cell::default());
+            dense.cells.reserve_exact(Size::MAX_COLS);
+            dense.extras.reserve_exact(2 * Size::MAX_COLS);
+            *row = dense;
+        }
+        let bytes = source.encode_snapshot();
+        let decoded = Engine::decode_snapshot(&bytes).expect("decode");
+        assert_eq!(decoded.history_size(), ROWS);
+        let heap: usize = decoded.state.grid.history.iter().map(history_heap).sum();
+        assert!(
+            heap < 16 * bytes.len(),
+            "{} bytes of snapshot decoded to {heap} bytes of history",
+            bytes.len()
+        );
+    }
+
+    #[test]
+    fn history_beyond_its_byte_limit_is_rejected() {
+        let mut source = engine(100, 4, 5000);
+        for line in 0..2000 {
+            source.feed(format!("\x1b[3{}m{line:0>99}\r\n", line % 8).as_bytes());
+        }
+        assert_eq!(source.history_size(), 1997);
+        assert!(decode(&mut source).is_ok());
+        source.state.grid.history_byte_limit = 4096;
+        assert_eq!(decode(&mut source).err(), Some(Corrupt("history size")));
+    }
+
+    #[test]
+    fn history_widened_past_its_byte_limit_still_decodes() {
+        // A widen evicts nothing, so history's charge can pass its limit
+        // until the next scroll; the snapshot must still restore it.
+        let mut source = Engine::new(
+            Size { cols: 20, rows: 4 },
+            Options {
+                scrollback_history: usize::MAX,
+                scrollback_bytes: 1 << 20,
+                ..Options::default()
+            },
+        );
+        for line in 0..20_000 {
+            source.feed(format!("line {line}\r\n").as_bytes());
+        }
+        source.resize(Size {
+            cols: Size::MAX_COLS,
+            rows: 4,
+        });
+        let history = source.history_size();
+        assert!(source.state.grid.history_bytes() > source.scrollback_byte_limit());
+        let mut decoded = decode(&mut source).expect("decode widened history");
+        assert_eq!(decoded.history_size(), history);
+        assert_eq!(decoded.canonical_snapshot(), source.canonical_snapshot());
     }
 
     #[test]

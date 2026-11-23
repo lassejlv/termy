@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::config_core::color_keys::{ColorEntryError, apply_color_entry};
 use crate::config_core::constants::{
-    MAX_LINE_HEIGHT, MAX_MOUSE_SCROLL_MULTIPLIER, MAX_PANE_FOCUS_STRENGTH, MAX_SCROLLBACK_HISTORY,
-    MAX_SIDEBAR_WIDTH, MIN_LINE_HEIGHT, MIN_MOUSE_SCROLL_MULTIPLIER, MIN_SIDEBAR_WIDTH,
-    SHELL_DECIDE_THEME_ID, VALID_SECTIONS,
+    MAX_FONT_SIZE, MAX_LINE_HEIGHT, MAX_MOUSE_SCROLL_MULTIPLIER, MAX_PANE_FOCUS_STRENGTH,
+    MAX_SCROLLBACK_HISTORY, MAX_SIDEBAR_WIDTH, MIN_FONT_SIZE, MIN_LINE_HEIGHT,
+    MIN_MOUSE_SCROLL_MULTIPLIER, MIN_SIDEBAR_WIDTH, SHELL_DECIDE_THEME_ID, VALID_SECTIONS,
 };
 use crate::config_core::diagnostics::{ConfigDiagnostic, ConfigDiagnosticKind, ConfigParseReport};
 use crate::config_core::document::strip_bom;
@@ -702,7 +702,7 @@ impl AppConfig {
                     if let Some(parsed) =
                         parse_positive_f32_field(&mut diagnostics, line_number, key, value)
                     {
-                        config.font_size = parsed;
+                        config.font_size = parsed.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
                     }
                 }
                 RootSettingId::LineHeight => {

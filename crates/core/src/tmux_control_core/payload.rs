@@ -64,23 +64,30 @@ pub fn parse_exit_reason(line: &[u8]) -> Option<String> {
 }
 
 /// Parse a live `%output`/`%extended-output` line into its pane id and the
-/// bytes the pane's program wrote.
-///
-/// The bytes are kept as written, apart from the legacy `ESC k` title
-/// sequence. In particular a bare LF stays a bare LF: tmux forwards what the
-/// pane's tty emitted (with ONLCR on, that is already CRLF), and a program that
-/// turns ONLCR off (`stty -onlcr`, curses in `nonl` mode) uses LF to move the
-/// cursor down in the same column (verified against tmux 3.4). Only capture
-/// output, whose rows are joined by bare LF, needs [`sanitize_tmux_payload`].
+/// bytes the pane's program wrote, with legacy `ESC k` title sequences
+/// stripped as though the line were the pane's only output. A title split
+/// across lines needs [`parse_output_payload`] and
+/// [`strip_legacy_title_sequences_from`] with the pane's state.
 pub fn parse_output_notification(line: &[u8]) -> Option<(String, Vec<u8>)> {
+    let (pane_id, payload) = parse_output_payload(line)?;
+    Some((pane_id, strip_legacy_title_sequences(payload)))
+}
+
+/// Parse a live `%output`/`%extended-output` line into its pane id and the
+/// bytes the pane's program wrote, unescaped.
+///
+/// The bytes are kept as written. In particular a bare LF stays a bare LF:
+/// tmux forwards what the pane's tty emitted (with ONLCR on, that is already
+/// CRLF), and a program that turns ONLCR off (`stty -onlcr`, curses in
+/// `nonl` mode) uses LF to move the cursor down in the same column (verified
+/// against tmux 3.4). Only capture output, whose rows are joined by bare LF,
+/// needs [`sanitize_tmux_payload`].
+pub fn parse_output_payload(line: &[u8]) -> Option<(String, Vec<u8>)> {
     if let Some(rest) = line.strip_prefix(b"%output ") {
         let split = rest.iter().position(|byte| *byte == b' ')?;
         let pane_id = String::from_utf8(rest[..split].to_vec()).ok()?;
         let payload = &rest[split + 1..];
-        return Some((
-            pane_id,
-            strip_legacy_title_sequences(unescape_tmux_payload(payload)),
-        ));
+        return Some((pane_id, unescape_tmux_payload(payload)));
     }
 
     if let Some(rest) = line.strip_prefix(b"%extended-output ") {
@@ -92,10 +99,7 @@ pub fn parse_output_notification(line: &[u8]) -> Option<(String, Vec<u8>)> {
         if let Some(b' ') = payload.first() {
             payload = &payload[1..];
         }
-        return Some((
-            pane_id,
-            strip_legacy_title_sequences(unescape_tmux_payload(payload)),
-        ));
+        return Some((pane_id, unescape_tmux_payload(payload)));
     }
 
     None
@@ -211,31 +215,59 @@ pub fn sanitize_tmux_payload(input: Vec<u8>) -> Vec<u8> {
     strip_legacy_title_sequences(normalize_capture_payload(input))
 }
 
+/// Strip legacy `ESC k title ST` (or BEL) sequences from a complete payload.
 pub fn strip_legacy_title_sequences(input: Vec<u8>) -> Vec<u8> {
-    let mut output = Vec::with_capacity(input.len());
-    let mut index = 0;
-
-    while index < input.len() {
-        if input[index] == 0x1b && index + 1 < input.len() && input[index + 1] == b'k' {
-            index += 2;
-            while index < input.len() {
-                if input[index] == 0x07 {
-                    index += 1;
-                    break;
-                }
-                if input[index] == 0x1b && index + 1 < input.len() && input[index + 1] == b'\\' {
-                    index += 2;
-                    break;
-                }
-                index += 1;
-            }
-            continue;
-        }
-
-        output.push(input[index]);
-        index += 1;
+    let mut state = LegacyTitleState::default();
+    let mut output = strip_legacy_title_sequences_from(&input, &mut state);
+    if state == LegacyTitleState::Escape {
+        output.push(0x1b);
     }
+    output
+}
 
+/// Where a pane's output stands relative to a legacy `ESC k` title sequence.
+/// tmux splits a pane's output into `%output` lines at arbitrary bytes, so a
+/// title can start in one line and end in a later one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LegacyTitleState {
+    #[default]
+    Text,
+    /// An ESC ended the last chunk; held back until the next byte shows
+    /// whether it starts a title.
+    Escape,
+    Title,
+    /// An ESC inside a title, which may start its ST terminator.
+    TitleEscape,
+}
+
+/// Strip legacy title sequences from one chunk of a pane's output, continuing
+/// from `state` and leaving it where the chunk ends.
+pub fn strip_legacy_title_sequences_from(input: &[u8], state: &mut LegacyTitleState) -> Vec<u8> {
+    let mut output = Vec::with_capacity(input.len() + 1);
+    for &byte in input {
+        *state = match (*state, byte) {
+            (LegacyTitleState::Text, 0x1b) => LegacyTitleState::Escape,
+            (LegacyTitleState::Text, _) => {
+                output.push(byte);
+                LegacyTitleState::Text
+            }
+            (LegacyTitleState::Escape, b'k') => LegacyTitleState::Title,
+            (LegacyTitleState::Escape, 0x1b) => {
+                output.push(0x1b);
+                LegacyTitleState::Escape
+            }
+            (LegacyTitleState::Escape, _) => {
+                output.extend_from_slice(&[0x1b, byte]);
+                LegacyTitleState::Text
+            }
+            (LegacyTitleState::Title | LegacyTitleState::TitleEscape, 0x07)
+            | (LegacyTitleState::TitleEscape, b'\\') => LegacyTitleState::Text,
+            (LegacyTitleState::Title | LegacyTitleState::TitleEscape, 0x1b) => {
+                LegacyTitleState::TitleEscape
+            }
+            (LegacyTitleState::Title | LegacyTitleState::TitleEscape, _) => LegacyTitleState::Title,
+        };
+    }
     output
 }
 

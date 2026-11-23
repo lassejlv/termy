@@ -51,6 +51,9 @@ impl State {
         writer.bool(modes.synchronized_update);
         writer.bool(modes.clipboard_paste_events);
         writer.bool(modes.reverse_video);
+        if writer.version() >= 3 {
+            writer.bool(modes.color_scheme_reports);
+        }
         writer.bool(self.alternate_screen);
 
         for color in &self.palette {
@@ -152,6 +155,9 @@ impl State {
         modes.synchronized_update = reader.bool()?;
         modes.clipboard_paste_events = reader.bool()?;
         modes.reverse_video = reader.bool()?;
+        if reader.version() >= 3 {
+            modes.color_scheme_reports = reader.bool()?;
+        }
         state.alternate_screen = reader.bool()?;
 
         for color in &mut state.palette {

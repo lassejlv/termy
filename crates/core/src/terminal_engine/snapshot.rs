@@ -26,6 +26,7 @@
 //! - 1: the first format.
 //! - 2: adds the scrollback byte limit (and allows more than 20,000 rows),
 //!   the OSC/DCS and OSC 52 payload limits, and kitty graphics.
+//! - 3: adds the colour scheme report mode (`?2031`).
 //!
 //! # Format
 //!
@@ -50,7 +51,7 @@ use super::{CellExtra, Color, Cursor, CursorShape, Engine, Hyperlink, Style, Und
 
 const MAGIC: &[u8; 8] = b"TRMYSNAP";
 /// The snapshot format this build writes by default.
-pub const SNAPSHOT_VERSION: u32 = 2;
+pub const SNAPSHOT_VERSION: u32 = 3;
 /// The oldest snapshot format this build reads and writes.
 pub const MIN_SNAPSHOT_VERSION: u32 = 1;
 /// Version 1 kept at most this many history rows.
@@ -583,6 +584,7 @@ impl Engine {
     /// - 1: history keeps its newest 20,000 rows and the decoded engine has
     ///   the default 16 MiB byte limit; payload limits decode as defaults;
     ///   kitty graphics are left out.
+    /// - 2: the colour scheme report mode (`?2031`) decodes as off.
     ///
     /// The decoded engine then evicts history like an engine of that
     /// release, not necessarily like this one.

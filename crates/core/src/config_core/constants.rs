@@ -31,6 +31,10 @@ pub const MIN_LINE_HEIGHT: f32 = 0.8;
 /// Highest accepted line-height multiplier. Values above this make the grid
 /// unusably sparse.
 pub const MAX_LINE_HEIGHT: f32 = 2.5;
+/// Font sizes outside this range (pixels) are clamped into it: smaller cells
+/// are unreadable, and extreme values give zero-sized or infinite cells.
+pub const MIN_FONT_SIZE: f32 = 6.0;
+pub const MAX_FONT_SIZE: f32 = 72.0;
 pub(crate) use crate::launch_policy::{
     DEFAULT_COLORTERM, DEFAULT_SCROLLBACK_HISTORY, DEFAULT_TERM,
     MAX_TERMINAL_SCROLLBACK_HISTORY as MAX_SCROLLBACK_HISTORY,

@@ -45,10 +45,14 @@ by native, display-only, tmux and persistent Termy sessions.
   cursors, margins, tabs, charsets, modes, keyboard stacks, palette, titles,
   working directory, program status, the parser's in-progress sequence and a
   pending synchronized update, the scrollback and payload limits, and kitty
-  graphics (images PNG-compressed). Rows keep their packed representation,
-  metadata charge and storage capacities. A row's byte charge doesn't depend
-  on its representation, so a decoded engine fed the same bytes evicts the
-  same history. Queued events and replies, damage and caches
+  graphics (images PNG-compressed). Rows keep their metadata charge; history
+  rows are packed as they are decoded and buffers are sized to their
+  contents, so decoding takes memory in proportion to its output, bounded by
+  the history byte limit (clamped to 256 MiB). Decoding rejects states no
+  encoder writes, such as unpaired wide cells or a left/right margin region
+  narrower than two columns. A row's byte charge doesn't depend on its
+  representation, so a decoded engine fed the same bytes evicts the same
+  history. Queued events and replies, damage and caches
   are not included. Every build reads and writes versions
   `MIN_SNAPSHOT_VERSION..=SNAPSHOT_VERSION`; `snapshot/v1.snap` is a fixture
   written by the first release. Tests feed random streams split at random points to

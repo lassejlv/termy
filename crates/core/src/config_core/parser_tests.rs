@@ -605,6 +605,15 @@ fn numeric_keys_parse_table_driven() {
     );
 
     assert_eq!(parse("font_size = inf\n").font_size, defaults.font_size);
+    // Finite extremes are clamped, like scrollback.
+    assert_eq!(
+        parse("font_size = 3e38\n").font_size,
+        crate::config_core::MAX_FONT_SIZE
+    );
+    assert_eq!(
+        parse("font_size = 0.0001\n").font_size,
+        crate::config_core::MIN_FONT_SIZE
+    );
     assert_eq!(parse("padding_x = NaN\n").padding_x, defaults.padding_x);
 }
 

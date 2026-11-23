@@ -1,8 +1,10 @@
 #![cfg_attr(not(unix), allow(dead_code))]
 
+use std::collections::HashMap;
+
 use super::super::payload::{
-    is_refresh_notification, parse_exit_reason, parse_output_notification,
-    parse_subscription_changed, strip_control_line_wrappers,
+    LegacyTitleState, is_refresh_notification, parse_exit_reason, parse_output_payload,
+    parse_subscription_changed, strip_control_line_wrappers, strip_legacy_title_sequences_from,
 };
 use super::super::types::{TmuxControlError, TmuxNotification};
 
@@ -24,6 +26,9 @@ struct ControlCommandBlock {
 #[derive(Debug, Default)]
 pub struct ControlStateMachine {
     current_block: Option<ControlCommandBlock>,
+    /// Panes whose output ended inside a legacy `ESC k` title (or on an ESC
+    /// that may start one).
+    legacy_titles: HashMap<String, LegacyTitleState>,
 }
 
 impl ControlStateMachine {
@@ -84,7 +89,12 @@ impl ControlStateMachine {
             ));
         }
 
-        if let Some((pane_id, bytes)) = parse_output_notification(line) {
+        if let Some((pane_id, payload)) = parse_output_payload(line) {
+            let mut state = self.legacy_titles.remove(&pane_id).unwrap_or_default();
+            let bytes = strip_legacy_title_sequences_from(&payload, &mut state);
+            if state != LegacyTitleState::Text {
+                self.legacy_titles.insert(pane_id.clone(), state);
+            }
             return Ok(ControlStateEvent::Notification(TmuxNotification::Output {
                 pane_id,
                 bytes,
@@ -641,5 +651,30 @@ mod tests {
             sm.on_line(b"\x1b\\").expect("dcs terminator"),
             ControlStateEvent::None
         );
+    }
+
+    #[test]
+    fn legacy_titles_split_across_output_lines_are_stripped_per_pane() {
+        let mut sm = ControlStateMachine::default();
+        let mut output = |line: &[u8]| match sm.on_line(line).expect("output line") {
+            ControlStateEvent::Notification(TmuxNotification::Output { pane_id, bytes }) => {
+                (pane_id, String::from_utf8(bytes).expect("utf-8 output"))
+            }
+            other => panic!("expected output, got {other:?}"),
+        };
+        let pane = |id: &str, text: &str| (id.to_string(), text.to_string());
+        // A title split across lines, with another pane's output between.
+        assert_eq!(output(b"%output %1 a\\033kti"), pane("%1", "a"));
+        assert_eq!(output(b"%output %2 other"), pane("%2", "other"));
+        assert_eq!(output(b"%output %1 tle\\033\\134b"), pane("%1", "b"));
+        // The ST terminator split between lines.
+        assert_eq!(output(b"%output %1 \\033kx\\033"), pane("%1", ""));
+        assert_eq!(output(b"%output %1 \\134c"), pane("%1", "c"));
+        // ESC k split between lines, ended by BEL.
+        assert_eq!(output(b"%output %1 d\\033"), pane("%1", "d"));
+        assert_eq!(output(b"%extended-output %1 0 : kt\\007e"), pane("%1", "e"));
+        // A held-back ESC that starts something else is passed on.
+        assert_eq!(output(b"%output %1 \\033"), pane("%1", ""));
+        assert_eq!(output(b"%output %1 [1mf"), pane("%1", "\x1b[1mf"));
     }
 }

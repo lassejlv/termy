@@ -510,6 +510,12 @@ fn osc7_file_urls_are_percent_decoded_and_other_schemes_ignored() {
         ("file://host/bad%zz", Some("/bad%zz")),
         ("file://host/100%", Some("/100%")),
         ("file://host/%FF", Some("/%FF")),
+        // Control characters can't be part of a directory a shell starts in.
+        ("file:///tmp/a%00b", None),
+        ("file:///tmp/a%0Ab", None),
+        ("file:///tmp/a%1Bb", None),
+        ("file:///tmp/a%7Fb", None),
+        ("file:///tmp/a%C2%85b", None),
         ("file://host", None),
         ("https://example.com/tmp", None),
         ("kitty-shell-cwd://host/tmp", None),
@@ -547,6 +553,13 @@ fn windows_file_url_paths_map_drives_and_unc_shares() {
             "{input}"
         );
     }
+}
+
+#[test]
+fn osc7_paths_with_control_characters_keep_the_previous_directory() {
+    let mut engine = engine(8, 2);
+    engine.feed(b"\x1b]7;/tmp/ok\x07\x1b]7;file:///tmp/a%00b\x07");
+    assert_eq!(engine.working_directory(), Some("/tmp/ok"));
 }
 
 #[cfg(windows)]

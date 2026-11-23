@@ -547,6 +547,62 @@ fn older_versions_are_written_for_older_readers() {
     assert_eq!(decoded.history_size(), 20_000);
 }
 
+/// Mutated snapshots that decoded and then panicked on the next wide glyph,
+/// found by the TERA-14 audit's snapshot-mutation fuzzer: each turns a
+/// margin byte into a left/right margin region one column wide.
+#[test]
+fn fuzzed_snapshots_that_used_to_panic_are_rejected() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src/terminal_engine/snapshot/fuzz_crashes");
+    let mut inputs: Vec<_> = std::fs::read_dir(&dir)
+        .expect("fuzz crash fixtures")
+        .map(|entry| entry.expect("fixture").path())
+        .collect();
+    inputs.sort();
+    assert_eq!(inputs.len(), 22);
+    for path in inputs {
+        let bytes = std::fs::read(&path).expect("read fixture");
+        match Engine::decode_snapshot(&bytes) {
+            Err(error) => assert_eq!(
+                error,
+                SnapshotError::Corrupt("margins"),
+                "{}",
+                path.display()
+            ),
+            Ok(mut engine) => {
+                // Whatever still decodes must survive what used to panic.
+                engine.feed("\x1b[H界界界\u{301}\x1b[?69h\x1b[2;5s\x1b[3@界".as_bytes());
+                engine.resize(Size { cols: 2, rows: 3 });
+                engine.feed("界界".as_bytes());
+            }
+        }
+    }
+}
+
+#[test]
+fn color_scheme_reports_survive_a_snapshot() {
+    let mut source = engine(20, 4, 10);
+    source.feed(b"\x1b[?2031h");
+    let mut decoded = roundtrip(&mut source);
+    assert!(decoded.modes().color_scheme_reports);
+    decoded.feed(b"\x1b[?2031$p");
+    let mut reply = Vec::new();
+    decoded.drain_replies(&mut reply);
+    assert_eq!(reply, b"\x1b[?2031;1$y");
+    assert_continues_identically(&mut source, b"\x1b[?2031l", "after ?2031");
+
+    // Version 2 has no room for the mode: it decodes as off, and every
+    // other field still decodes.
+    let mut source = engine(20, 4, 10);
+    source.feed(b"\x1b[?2031h\x1b[?2004hv2 text");
+    let v2 = source.encode_snapshot_version(2).expect("encode version 2");
+    assert_eq!(snapshot_version(&v2), Ok(2));
+    let decoded = Engine::decode_snapshot(&v2).expect("decode version 2");
+    assert!(!decoded.modes().color_scheme_reports);
+    assert!(decoded.modes().bracketed_paste);
+    assert_eq!(decoded.line(0), source.line(0));
+}
+
 #[test]
 fn payload_limits_survive_a_snapshot() {
     let mut source = Engine::new(

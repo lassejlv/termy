@@ -366,7 +366,12 @@ fn snapshots_round_trip_through_the_c_abi() {
     assert!(replica.feed(tail).is_empty());
     assert_eq!(replica.frame(true), server.frame(true));
     assert_eq!(replica.state().cursor_col, server.state().cursor_col);
-    assert_eq!(replica.snapshot(), server.snapshot());
+    // Decoding sizes row buffers to their contents rather than to the
+    // capacities a snapshot names, so compare the two as decoded.
+    let decoded = |handle: &Handle| {
+        Handle::decode(&handle.snapshot(), TERMY_ENGINE_REPLIES_DISCARD).snapshot()
+    };
+    assert_eq!(decoded(&replica), decoded(&server));
 
     let mut engine = ptr::null_mut();
     // SAFETY: valid input and out pointer.

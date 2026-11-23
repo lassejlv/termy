@@ -52,7 +52,7 @@ Platform note: the Agent Sidebar/Workspace is currently unavailable on Windows b
 
 `font_size`
 - Default: `14`
-- Terminal font size in pixels
+- Terminal font size in pixels, from 6 to 72
 - Group: `FONT`
 
 `line_height`

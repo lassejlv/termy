@@ -445,7 +445,7 @@ define_root_settings! {
     (InspectorHeight, "inspector_height", [], Advanced, "UI", "Inspector Height", "Remembered height in pixels of the developer inspector panel", ["inspector", "height", "developer", "panel", "debug"], RootSettingValueKind::Numeric, false),
     (FontFamily, "font_family", [], Appearance, "FONT", "Font Family", "Font family used in terminal UI", ["font", "typeface", "text"], RootSettingValueKind::Special, false),
     (UiFontFamily, "ui_font_family", [], Appearance, "FONT", "UI Font Family", "Font family used for tabs, command palette, and settings UI (not the terminal cells)", ["font", "typeface", "ui", "chrome", "tabs", "settings"], RootSettingValueKind::Special, false),
-    (FontSize, "font_size", [], Appearance, "FONT", "Font Size", "Terminal font size in pixels", ["font", "size", "text"], RootSettingValueKind::Numeric, false),
+    (FontSize, "font_size", [], Appearance, "FONT", "Font Size", "Terminal font size in pixels, from 6 to 72", ["font", "size", "text"], RootSettingValueKind::Numeric, false),
     (LineHeight, "line_height", [], Appearance, "FONT", "Line Height", "Terminal line height multiplier (0.8 to 2.5)", ["font", "line", "height", "spacing", "rows"], RootSettingValueKind::Numeric, false),
     (CursorStyle, "cursor_style", [], Terminal, "CURSOR", "Cursor Style", "Shape of the terminal cursor", ["cursor", "shape", "block", "line"], RootSettingValueKind::Enum, false),
     (CursorBlink, "cursor_blink", [], Terminal, "CURSOR", "Cursor Blink", "Enable blinking cursor animation", ["cursor", "blink", "animation"], RootSettingValueKind::Boolean, false),

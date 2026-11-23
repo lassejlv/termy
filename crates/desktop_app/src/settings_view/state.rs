@@ -513,8 +513,8 @@ impl SettingsWindow {
                 dropdown_click_only: false,
                 numeric_step: Some(NumericStepSpec {
                     delta: 1.0,
-                    min: 1.0,
-                    max: 4096.0,
+                    min: termy_core::config_core::MIN_FONT_SIZE,
+                    max: termy_core::config_core::MAX_FONT_SIZE,
                 }),
             },
             EditableField::LineHeight => FieldSpec {

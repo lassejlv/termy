@@ -113,7 +113,12 @@ impl State {
         );
     }
 
+    /// A path with control characters (a percent-decoded `%00`, say) can't
+    /// name a directory a new shell could start in; keep the previous one.
     fn set_working_directory(&mut self, path: String) {
+        if path.chars().any(char::is_control) {
+            return;
+        }
         self.working_directory = Some(path.clone());
         self.event(Event::WorkingDirectory(path));
     }
