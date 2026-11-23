@@ -116,6 +116,9 @@ const activeWorkerRequests = new Map<
   { record: WorkerRecord; workerRequestId: number }
 >();
 const cancelledHostRequests = new Set<number>();
+// The error of a plugin whose Worker stopped and failed to load again, kept
+// until the next catalog load so later requests don't each retry the load.
+const reloadFailures = new Map<string, { record: WorkerRecord; error: string }>();
 let nextWorkerRequestId = 1;
 let loadQueue = Promise.resolve<unknown>(undefined);
 const MAX_PROTOCOL_BYTES = 1024 * 1024;
@@ -138,17 +141,21 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function terminateRecord(record: WorkerRecord): void {
-  record.healthy = false;
-  record.worker.terminate();
+function rejectPending(record: WorkerRecord, error: Error): void {
   for (const pending of record.pending.values()) {
     clearTimeout(pending.timer);
     if (pending.hostRequestId !== undefined) {
       activeWorkerRequests.delete(pending.hostRequestId);
     }
-    pending.reject(new Error("Plugin Worker stopped"));
+    pending.reject(error);
   }
   record.pending.clear();
+}
+
+function terminateRecord(record: WorkerRecord): void {
+  record.healthy = false;
+  record.worker.terminate();
+  rejectPending(record, new Error("Plugin Worker stopped"));
 }
 
 function terminateAll(): void {
@@ -232,15 +239,23 @@ function createRecord(source: PluginSource): WorkerRecord {
     const detail = event.error ? errorMessage(event.error) : event.message;
     const error = new Error(detail || `Plugin ${source.id} crashed`);
     process.stderr.write(`[termy plugin ${source.id}] Worker crashed: ${error.message}\n`);
-    for (const pending of record.pending.values()) {
-      clearTimeout(pending.timer);
-      if (pending.hostRequestId !== undefined) {
-        activeWorkerRequests.delete(pending.hostRequestId);
-      }
-      pending.reject(error);
-    }
-    record.pending.clear();
+    rejectPending(record, error);
   };
+  // A Worker can end without an error, for example when the plugin calls
+  // process.exit. Its requests fail at once instead of waiting for their
+  // timeouts, and the next request loads the plugin again.
+  worker.addEventListener("close", (event) => {
+    if (!record.healthy) return;
+    record.healthy = false;
+    const code = (event as { code?: unknown }).code;
+    const error = new Error(
+      typeof code === "number"
+        ? `Plugin ${source.id} stopped unexpectedly (exit code ${code})`
+        : `Plugin ${source.id} stopped unexpectedly`,
+    );
+    process.stderr.write(`[termy plugin ${source.id}] ${error.message}\n`);
+    rejectPending(record, error);
+  });
   return record;
 }
 
@@ -486,6 +501,34 @@ async function loadOrReusePlugin(source: PluginSource): Promise<PluginLoadResult
   return loadPlugin(source);
 }
 
+// Loads the plugin of a Worker that stopped (it crashed, exited or timed
+// out) again, in the load queue so it can't race a catalog load.
+function reloadStoppedPlugin(stopped: WorkerRecord): Promise<WorkerRecord> {
+  const pluginId = stopped.source.id;
+  const reload = async (): Promise<WorkerRecord> => {
+    const current = records.get(pluginId);
+    if (current !== stopped) {
+      if (current?.healthy) return current;
+      throw new Error(`Plugin ${pluginId} is not loaded`);
+    }
+    const failure = reloadFailures.get(pluginId);
+    if (failure?.record === stopped) throw new Error(failure.error);
+    const result = await loadPlugin(stopped.source);
+    if (!result.record) {
+      const error = `Plugin ${pluginId} stopped and could not be loaded again: ${
+        result.error || "failed to load"
+      }`;
+      reloadFailures.set(pluginId, { record: stopped, error });
+      throw new Error(error);
+    }
+    records.set(pluginId, result.record);
+    return result.record;
+  };
+  const reloaded = loadQueue.then(reload, reload);
+  loadQueue = reloaded;
+  return reloaded;
+}
+
 async function mapWithConcurrency<T, R>(
   values: T[],
   limit: number,
@@ -511,6 +554,7 @@ async function handleLoad(plugins: PluginSource[]): Promise<unknown> {
     throw new Error(`Plugin catalog may contain at most ${MAX_PLUGINS} plugins`);
   }
   await mkdir(bundleCacheRoot, { recursive: true });
+  reloadFailures.clear();
   const errors: string[] = [];
   const desiredIds = new Set(plugins.map((source) => source.id));
   for (const entry of await readdir(bundleCacheRoot, { withFileTypes: true })) {
@@ -581,8 +625,14 @@ async function handle(
   if (request.type === "load") return handleLoad(request.plugins);
   if (request.type === "cancel") throw new Error("Cancel requests are not invocations");
 
-  const record = records.get(request.pluginId);
+  let record = records.get(request.pluginId);
   if (!record) throw new Error(`Plugin ${request.pluginId} is not loaded`);
+  if (!record.healthy) {
+    if (record.source.cacheKey !== request.revision) {
+      throw new Error("Plugin changed while its input form was open; run the command again");
+    }
+    record = await reloadStoppedPlugin(record);
+  }
   if (record.source.cacheKey !== request.revision) {
     throw new Error("Plugin changed while its input form was open; run the command again");
   }
@@ -647,10 +697,7 @@ async function handle(
       reportProgress,
     );
   } catch (error) {
-    if (error instanceof WorkerExecutionTimeoutError) {
-      records.delete(request.pluginId);
-      terminateRecord(record);
-    }
+    if (error instanceof WorkerExecutionTimeoutError) terminateRecord(record);
     throw error;
   }
 }

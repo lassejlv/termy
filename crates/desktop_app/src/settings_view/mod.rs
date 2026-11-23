@@ -198,11 +198,6 @@ impl SettingsWindow {
         let content_scroll_handle = ScrollHandle::new();
         let setting_scroll_anchors = Self::build_setting_scroll_anchors(&content_scroll_handle);
         let plugin_runtime = PluginRuntime::new(config_path.as_deref());
-        let (installed_plugins, plugin_inventory_errors) = match plugin_runtime.installed_plugins()
-        {
-            Ok(inventory) => (inventory.plugins, inventory.errors),
-            Err(error) => (Vec::new(), vec![error]),
-        };
         let (plugin_bun_path, plugin_bun_error) = match plugin_runtime.bun_path() {
             Ok(path) => (path, None),
             Err(error) => (None, Some(error)),
@@ -254,11 +249,11 @@ impl SettingsWindow {
             last_window_background_appearance: None,
             native_titlebar: crate::native_titlebar::NativeTitlebarTheme::for_window(window),
             plugin_runtime,
-            installed_plugins,
+            installed_plugins: Vec::new(),
             plugin_settings: BTreeMap::new(),
             plugin_setting_input: None,
             active_plugin_setting_select: None,
-            plugin_inventory_errors,
+            plugin_inventory_errors: Vec::new(),
             plugin_bun_path,
             plugin_bun_error,
             plugin_operation_in_flight: false,
@@ -267,6 +262,7 @@ impl SettingsWindow {
             ssh_form: None,
         };
         view.focus_handle.focus(window, cx);
+        view.load_installed_plugins(cx);
 
         #[cfg(not(test))]
         {

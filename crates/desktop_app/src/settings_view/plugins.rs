@@ -64,6 +64,32 @@ impl SettingsWindow {
         self.plugin_operation_in_flight = false;
     }
 
+    /// Lists the installed plugins in the background: it reads every file of
+    /// every plugin, which takes too long for the UI thread.
+    pub(super) fn load_installed_plugins(&mut self, cx: &mut Context<Self>) {
+        let runtime = self.plugin_runtime.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let inventory = cx
+                .background_executor()
+                .spawn(async move { runtime.installed_plugins() })
+                .await;
+            let _ = cx.update(|cx| {
+                this.update(cx, |view, cx| {
+                    // A plugin refresh in flight lists the plugins as well.
+                    if view.plugin_operation_in_flight {
+                        return;
+                    }
+                    (view.installed_plugins, view.plugin_inventory_errors) = match inventory {
+                        Ok(PluginInventory { plugins, errors }) => (plugins, errors),
+                        Err(error) => (Vec::new(), vec![error]),
+                    };
+                    cx.notify();
+                })
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn refresh_plugin_settings(&mut self, cx: &mut Context<Self>) {
         if self.plugin_operation_in_flight {
             return;
@@ -456,33 +482,44 @@ impl SettingsWindow {
         .detach();
     }
 
-    fn open_plugins_directory(&mut self) {
-        if let Err(error) = self.plugin_runtime.installed_plugins() {
-            crate::ui::toast::error(error);
-            return;
-        }
-        let Some(path) = self.plugin_runtime.plugins_directory() else {
-            crate::ui::toast::error("Termy config path is unavailable");
-            return;
-        };
+    fn open_plugins_directory(&mut self, cx: &mut Context<Self>) {
+        let runtime = self.plugin_runtime.clone();
+        cx.spawn(async move |_, cx: &mut AsyncApp| {
+            let checked = cx
+                .background_executor()
+                .spawn(async move {
+                    runtime
+                        .installed_plugins()
+                        .map(|_| runtime.plugins_directory())
+                })
+                .await;
+            cx.update(|_| match checked {
+                Ok(Some(path)) => Self::open_directory(&path),
+                Ok(None) => crate::ui::toast::error("Termy config path is unavailable"),
+                Err(error) => crate::ui::toast::error(error),
+            });
+        })
+        .detach();
+    }
 
+    fn open_directory(path: &std::path::Path) {
         #[cfg(target_os = "macos")]
         let result = Command::new("open")
-            .arg(&path)
+            .arg(path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
         #[cfg(target_os = "linux")]
         let result = Command::new("xdg-open")
-            .arg(&path)
+            .arg(path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn();
         #[cfg(target_os = "windows")]
         let result = Command::new("explorer")
-            .arg(&path)
+            .arg(path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -1071,7 +1108,7 @@ impl SettingsWindow {
             .justify_center()
             .hover(move |style| style.bg(hover).text_color(text_primary))
             .child("Open folder")
-            .on_click(cx.listener(|view, _, _, _| view.open_plugins_directory()));
+            .on_click(cx.listener(|view, _, _, cx| view.open_plugins_directory(cx)));
 
         let refresh_button = div()
             .id("plugin-refresh")

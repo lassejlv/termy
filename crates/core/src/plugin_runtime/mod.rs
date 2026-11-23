@@ -34,6 +34,10 @@ use events::{PluginEventSubscriptionDescriptor, RegisteredPluginEvent};
 const MAX_PROTOCOL_BYTES: usize = 1024 * 1024;
 const MAX_PROTOCOL_HANDSHAKE_BYTES: usize = 1024;
 const LOAD_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long an unchanged plugin whose load failed is left out of catalog
+/// loads, doubling with each further failure up to the maximum.
+const FAILED_LOAD_RETRY_DELAY: Duration = Duration::from_secs(30);
+const MAX_FAILED_LOAD_RETRY_DELAY: Duration = Duration::from_secs(10 * 60);
 const HOST_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_INVOKE_TIMEOUT_MS: u64 = 10_000;
 const MAX_INVOKE_TIMEOUT_MS: u64 = 30_000;
@@ -89,14 +93,31 @@ pub struct PluginRuntime {
 struct PluginRuntimeInner {
     plugins_dir: Option<PathBuf>,
     refresh: Mutex<()>,
+    /// Serializes changes to plugin settings files. Never held across
+    /// credential-store calls, since every plugin request takes it.
     settings: Mutex<()>,
+    /// Serializes credential-store writes and the settings-file updates that
+    /// record them. Taken before `settings`, never while it is held.
+    secret_writes: Mutex<()>,
     /// Secret settings already read from the OS credential store. Lock it
     /// only briefly and never across credential-store calls; it may be taken
     /// while `settings` is held, never the other way round.
     secrets: Mutex<PluginSecretCache>,
     lifecycle_generations: Mutex<BTreeMap<String, u64>>,
+    /// Plugins whose last load failed, by plugin ID. A plugin whose load
+    /// hangs costs the full load timeout, and every palette open refreshes,
+    /// so an unchanged failed plugin isn't loaded again until its retry
+    /// time; its error is still reported on every refresh.
+    failed_loads: Mutex<BTreeMap<String, FailedPluginLoad>>,
     catalog: RwLock<PluginCatalog>,
     host: Mutex<PluginHostState>,
+}
+
+struct FailedPluginLoad {
+    cache_key: String,
+    error: String,
+    failures: u32,
+    retry_at: Instant,
 }
 
 /// Plugin secrets resolved from the OS credential store, so plugin requests
@@ -137,6 +158,26 @@ struct PluginCatalog {
 struct PluginHostState {
     connection: Option<Arc<HostConnection>>,
     next_request_id: u64,
+    /// Requests, loads and host spawns that are using `connection` or are
+    /// about to; see [`HostUse`]. `suspend_if_eventless` leaves the host
+    /// running while any exist.
+    active_uses: usize,
+}
+
+/// Counts as one use of the plugin host while alive, so the host isn't
+/// suspended under a request or a cold start that is about to use it.
+struct HostUse<'a> {
+    host: &'a Mutex<PluginHostState>,
+}
+
+impl Drop for HostUse<'_> {
+    fn drop(&mut self) {
+        let mut host = self
+            .host
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        host.active_uses -= 1;
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1069,8 +1110,10 @@ impl PluginRuntime {
                 plugins_dir,
                 refresh: Mutex::new(()),
                 settings: Mutex::new(()),
+                secret_writes: Mutex::new(()),
                 secrets: Mutex::new(PluginSecretCache::default()),
                 lifecycle_generations: Mutex::new(BTreeMap::new()),
+                failed_loads: Mutex::new(BTreeMap::new()),
                 catalog: RwLock::new(PluginCatalog::default()),
                 host: Mutex::new(PluginHostState::default()),
             }),
@@ -1380,6 +1423,11 @@ impl PluginRuntime {
         self.bump_plugin_lifecycle(plugin_id);
         self.forget_plugin_secrets(plugin_id);
         self.inner
+            .failed_loads
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(plugin_id);
+        self.inner
             .host
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1544,44 +1592,31 @@ impl PluginRuntime {
     ) -> Result<(), String> {
         let definition = self.plugin_setting_definition(plugin_id, key)?;
         validate_setting_value(&definition, &value)?;
+        if matches!(definition, PluginSetting::Secret { .. }) {
+            let secret = value
+                .as_str()
+                .expect("validated secret setting must be a string");
+            return self.save_plugin_secret(plugin_id, key, (!secret.is_empty()).then_some(secret));
+        }
         let _settings = self
             .inner
             .settings
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut stored = self.read_plugin_settings_file(plugin_id)?;
-        match &definition {
-            PluginSetting::Secret { .. } => {
-                let secret = value
-                    .as_str()
-                    .expect("validated secret setting must be a string");
-                let saved = if secret.is_empty() {
-                    delete_plugin_secret(plugin_id, key)
-                } else {
-                    write_plugin_secret(plugin_id, key, secret)
-                };
-                // Forget the old value even if the store failed part way.
-                self.forget_plugin_secret(plugin_id, key);
-                saved?;
-                if secret.is_empty() {
-                    stored.secret_keys.remove(key);
-                } else {
-                    stored.secret_keys.insert(key.to_string());
-                }
-                stored.secret_revision = Some(new_secret_revision());
-            }
-            _ if definition.default_value().as_ref() == Some(&value) => {
-                stored.values.remove(key);
-            }
-            _ => {
-                stored.values.insert(key.to_string(), value);
-            }
+        if definition.default_value().as_ref() == Some(&value) {
+            stored.values.remove(key);
+        } else {
+            stored.values.insert(key.to_string(), value);
         }
         self.write_plugin_settings_file(plugin_id, &stored)
     }
 
     pub fn reset_plugin_setting(&self, plugin_id: &str, key: &str) -> Result<(), String> {
         let definition = self.plugin_setting_definition(plugin_id, key)?;
+        if matches!(definition, PluginSetting::Secret { .. }) {
+            return self.save_plugin_secret(plugin_id, key, None);
+        }
         let _settings = self
             .inner
             .settings
@@ -1589,13 +1624,54 @@ impl PluginRuntime {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut stored = self.read_plugin_settings_file(plugin_id)?;
         stored.values.remove(key);
-        if matches!(definition, PluginSetting::Secret { .. }) {
-            let deleted = delete_plugin_secret(plugin_id, key);
-            self.forget_plugin_secret(plugin_id, key);
-            deleted?;
-            stored.secret_keys.remove(key);
-            stored.secret_revision = Some(new_secret_revision());
+        self.write_plugin_settings_file(plugin_id, &stored)
+    }
+
+    /// Saves the secret setting `key`, or deletes it when `secret` is
+    /// `None`, and records the change in the plugin's settings file.
+    fn save_plugin_secret(
+        &self,
+        plugin_id: &str,
+        key: &str,
+        secret: Option<&str>,
+    ) -> Result<(), String> {
+        // The credential store can wait on an unlock or consent prompt, so it
+        // is written under `secret_writes`, not `settings`, which every
+        // plugin request takes to read the plugin's settings.
+        let _secret_writes = self
+            .inner
+            .secret_writes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // A settings file that can't be read fails before the store changes.
+        {
+            let _settings = self
+                .inner
+                .settings
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.read_plugin_settings_file(plugin_id)?;
         }
+        let saved = match secret {
+            Some(secret) => write_plugin_secret(plugin_id, key, secret),
+            None => delete_plugin_secret(plugin_id, key),
+        };
+        // Forget the old value even if the store failed part way.
+        self.forget_plugin_secret(plugin_id, key);
+        saved?;
+        let _settings = self
+            .inner
+            .settings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut stored = self.read_plugin_settings_file(plugin_id)?;
+        stored.values.remove(key);
+        if secret.is_some() {
+            stored.secret_keys.insert(key.to_string());
+        } else {
+            stored.secret_keys.remove(key);
+        }
+        stored.secret_revision = Some(new_secret_revision());
         self.write_plugin_settings_file(plugin_id, &stored)
     }
 
@@ -1685,13 +1761,13 @@ impl PluginRuntime {
             Some(secret) => Some(secret),
             None if can_migrate_legacy_plugin_secret(plugin_id, key) => {
                 // Moving a legacy entry writes to the credential store, so it
-                // runs under the settings lock like every other secret write
-                // and can't overwrite a secret saved in the meantime. This
-                // happens once: afterwards the secret, or its absence, is
-                // cached.
-                let _settings = self
+                // runs under the secret write lock like every other secret
+                // write and can't overwrite a secret saved in the meantime.
+                // This happens once: afterwards the secret, or its absence,
+                // is cached.
+                let _secret_writes = self
                     .inner
-                    .settings
+                    .secret_writes
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
                 read_plugin_secret(plugin_id, key)?
@@ -1861,7 +1937,7 @@ impl PluginRuntime {
 
     pub fn refresh_if_changed(&self) -> PluginRefresh {
         match self.refresh_if_changed_inner(false) {
-            Ok(refresh) => refresh,
+            Ok((refresh, _)) => refresh,
             Err(error) => PluginRefresh {
                 changed: false,
                 errors: vec![error],
@@ -1871,7 +1947,8 @@ impl PluginRuntime {
 
     /// Stop the external Bun host when the loaded catalog has no lifecycle
     /// subscribers. Commands and native views remain available from the Rust
-    /// catalog and restart the host on demand.
+    /// catalog and restart the host on demand. The host keeps running while a
+    /// request, load or cold start is using it.
     pub fn suspend_if_eventless(&self) -> bool {
         let has_event_subscribers = !self
             .inner
@@ -1883,18 +1960,40 @@ impl PluginRuntime {
         if has_event_subscribers {
             return false;
         }
+        let connection = {
+            let mut host = self
+                .inner
+                .host
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if host.active_uses > 0 {
+                return false;
+            }
+            host.connection.take()
+        };
+        connection.is_some()
+    }
+
+    fn begin_host_use(&self) -> HostUse<'_> {
         self.inner
             .host
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .connection
-            .take()
-            .is_some()
+            .active_uses += 1;
+        HostUse {
+            host: &self.inner.host,
+        }
     }
 
-    fn refresh_if_changed_inner(&self, require_host: bool) -> Result<PluginRefresh, String> {
+    /// Reloads the catalog when the plugin sources changed or the host
+    /// failed, and with `require_host` also when the host is suspended.
+    /// Returns the host connection the catalog is loaded on, if one runs.
+    fn refresh_if_changed_inner(
+        &self,
+        require_host: bool,
+    ) -> Result<(PluginRefresh, Option<Arc<HostConnection>>), String> {
         let Some(plugins_dir) = self.inner.plugins_dir.as_deref() else {
-            return Ok(PluginRefresh::default());
+            return Ok((PluginRefresh::default(), None));
         };
         let _refresh = self
             .inner
@@ -1914,8 +2013,8 @@ impl PluginRuntime {
                 catalog.revisions.clone(),
             )
         };
-        let (host_available, host_failed) = if discovered.sources.is_empty() {
-            (false, false)
+        let (current_connection, host_failed) = if discovered.sources.is_empty() {
+            (None, false)
         } else {
             let mut host = self
                 .inner
@@ -1929,13 +2028,13 @@ impl PluginRuntime {
             if failed {
                 host.connection.take();
             }
-            (host.connection.is_some(), failed)
+            (host.connection.clone(), failed)
         };
         if previous_fingerprint == Some(discovered.fingerprint)
             && !host_failed
-            && (!require_host || host_available)
+            && (!require_host || current_connection.is_some())
         {
-            return Ok(PluginRefresh::default());
+            return Ok((PluginRefresh::default(), current_connection));
         }
         if previous_fingerprint != Some(discovered.fingerprint) {
             let discovered_revisions = discovered
@@ -1985,32 +2084,73 @@ impl PluginRuntime {
                     )
                 })?;
             }
-            return Ok(PluginRefresh {
-                changed: previous_fingerprint.is_some() || had_commands,
-                errors: discovered.errors,
-            });
+            return Ok((
+                PluginRefresh {
+                    changed: previous_fingerprint.is_some() || had_commands,
+                    errors: discovered.errors,
+                },
+                None,
+            ));
         }
 
-        let (request_id, connection) = {
+        // Spawning Bun can take seconds, so it runs without the host lock,
+        // which the UI thread takes to suspend the host. The use keeps the
+        // host from being suspended between the spawn and the load.
+        let _host_use = self.begin_host_use();
+        let existing = self
+            .inner
+            .host
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .connection
+            .clone();
+        let connection = if let Some(connection) = existing {
+            connection
+        } else {
+            let spawned = Arc::new(HostConnection::spawn(plugins_dir)?);
             let mut host = self
                 .inner
                 .host
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if host.connection.is_none() {
-                host.connection = Some(Arc::new(HostConnection::spawn(plugins_dir)?));
-            }
-            let request_id = host.next_id();
-            let connection = Arc::clone(
-                host.connection
-                    .as_ref()
-                    .expect("plugin host connection must exist"),
-            );
-            (request_id, connection)
+            Arc::clone(host.connection.get_or_insert(spawned))
+        };
+        let request_id = self
+            .inner
+            .host
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .next_id();
+        let now = Instant::now();
+        let mut deferred_errors = Vec::new();
+        let loading = {
+            let mut failed_loads = self
+                .inner
+                .failed_loads
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            failed_loads.retain(|id, failed| {
+                discovered
+                    .sources
+                    .iter()
+                    .any(|source| &source.id == id && source.cache_key == failed.cache_key)
+            });
+            discovered
+                .sources
+                .iter()
+                .filter(|source| match failed_loads.get(&source.id) {
+                    Some(failed) if now < failed.retry_at => {
+                        deferred_errors.push(failed.error.clone());
+                        false
+                    }
+                    _ => true,
+                })
+                .cloned()
+                .collect::<Vec<_>>()
         };
         let request = HostRequest::Load {
             id: request_id,
-            plugins: &discovered.sources,
+            plugins: &loading,
         };
         let load_result = match connection.request::<HostLoadResult>(&request, LOAD_TIMEOUT, None) {
             Ok(result) => result,
@@ -2032,8 +2172,48 @@ impl PluginRuntime {
                 return Err(error.into_message());
             }
         };
+        {
+            let mut failed_loads = self
+                .inner
+                .failed_loads
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for source in &loading {
+                if load_result
+                    .plugins
+                    .iter()
+                    .any(|loaded| loaded.plugin_id == source.id)
+                {
+                    failed_loads.remove(&source.id);
+                    continue;
+                }
+                let prefix = format!("{}: ", source.id);
+                let error = load_result
+                    .errors
+                    .iter()
+                    .find(|error| error.starts_with(&prefix))
+                    .cloned()
+                    .unwrap_or_else(|| format!("{prefix}failed to load"));
+                let failures = failed_loads
+                    .get(&source.id)
+                    .map_or(1, |failed| failed.failures.saturating_add(1));
+                let delay = FAILED_LOAD_RETRY_DELAY
+                    .saturating_mul(1 << (failures - 1).min(5))
+                    .min(MAX_FAILED_LOAD_RETRY_DELAY);
+                failed_loads.insert(
+                    source.id.clone(),
+                    FailedPluginLoad {
+                        cache_key: source.cache_key.clone(),
+                        error,
+                        failures,
+                        retry_at: Instant::now() + delay,
+                    },
+                );
+            }
+        }
         let mut errors = discovered.errors;
         errors.extend(load_result.errors);
+        errors.extend(deferred_errors);
         let source_revisions = discovered
             .sources
             .iter()
@@ -2188,10 +2368,13 @@ impl PluginRuntime {
         catalog.views = views;
         catalog.settings = settings;
         catalog.revisions = revisions;
-        Ok(PluginRefresh {
-            changed: true,
-            errors,
-        })
+        Ok((
+            PluginRefresh {
+                changed: true,
+                errors,
+            },
+            Some(connection),
+        ))
     }
 
     pub fn invoke(
@@ -2252,7 +2435,7 @@ impl PluginRuntime {
         context.settings = self.resolved_plugin_settings(plugin_id)?;
         let timeout_ms = command.timeout_ms.clamp(100, MAX_INVOKE_TIMEOUT_MS);
         let lifecycle_generation = self.plugin_lifecycle_generation(plugin_id);
-        let (request_id, connection) = self.next_host_request()?;
+        let (request_id, connection, _host_use) = self.next_host_request()?;
         let request = HostRequest::Invoke {
             id: request_id,
             plugin_id,
@@ -2305,7 +2488,7 @@ impl PluginRuntime {
         context.settings = self.resolved_plugin_settings(plugin_id)?;
         let timeout_ms = command.timeout_ms.clamp(100, MAX_INVOKE_TIMEOUT_MS);
         let lifecycle_generation = self.plugin_lifecycle_generation(plugin_id);
-        let (request_id, connection) = self.next_host_request()?;
+        let (request_id, connection, _host_use) = self.next_host_request()?;
         let request = HostRequest::InputOptions {
             id: request_id,
             plugin_id,
@@ -2341,7 +2524,7 @@ impl PluginRuntime {
         validate_view_params(&params)?;
         let timeout_ms = view.timeout_ms.clamp(100, MAX_INVOKE_TIMEOUT_MS);
         let lifecycle_generation = self.plugin_lifecycle_generation(plugin_id);
-        let (request_id, connection) = self.next_host_request()?;
+        let (request_id, connection, _host_use) = self.next_host_request()?;
         let request = HostRequest::ViewRender {
             id: request_id,
             plugin_id,
@@ -2384,7 +2567,7 @@ impl PluginRuntime {
         context.settings = self.resolved_plugin_settings(plugin_id)?;
         let timeout_ms = view.timeout_ms.clamp(100, MAX_INVOKE_TIMEOUT_MS);
         let lifecycle_generation = self.plugin_lifecycle_generation(plugin_id);
-        let (request_id, connection) = self.next_host_request()?;
+        let (request_id, connection, _host_use) = self.next_host_request()?;
         let request = HostRequest::ViewAction {
             id: request_id,
             plugin_id,
@@ -2475,7 +2658,7 @@ impl PluginRuntime {
     ) -> Result<Vec<PluginAction>, String> {
         context.settings = self.resolved_plugin_settings(&subscription.plugin_id)?;
         let lifecycle_generation = self.plugin_lifecycle_generation(&subscription.plugin_id);
-        let (request_id, connection) = self.next_host_request()?;
+        let (request_id, connection, _host_use) = self.next_host_request()?;
         let request = HostRequest::Event {
             id: request_id,
             plugin_id: &subscription.plugin_id,
@@ -2497,7 +2680,11 @@ impl PluginRuntime {
         )
     }
 
-    fn next_host_request(&self) -> Result<(u64, Arc<HostConnection>), String> {
+    /// Returns a request ID and the host connection to send it on, starting
+    /// the host if it is suspended or failed. Keep the returned use alive
+    /// until the request finishes, so the host isn't suspended under it.
+    fn next_host_request(&self) -> Result<(u64, Arc<HostConnection>, HostUse<'_>), String> {
+        let host_use = self.begin_host_use();
         {
             let mut host = self
                 .inner
@@ -2511,22 +2698,20 @@ impl PluginRuntime {
                 .map(Arc::clone)
             {
                 let request_id = host.next_id();
-                return Ok((request_id, connection));
+                return Ok((request_id, connection, host_use));
             }
             host.connection.take();
         }
-        self.refresh_if_changed_inner(true)?;
-
-        let mut host = self
+        let connection = self.refresh_if_changed_inner(true)?.1.ok_or_else(|| {
+            "Plugin runtime is unavailable; reload plugins and try again".to_string()
+        })?;
+        let request_id = self
             .inner
             .host
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let request_id = host.next_id();
-        let connection = host.connection.as_ref().map(Arc::clone).ok_or_else(|| {
-            "Plugin runtime is unavailable; reload plugins and try again".to_string()
-        })?;
-        Ok((request_id, connection))
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .next_id();
+        Ok((request_id, connection, host_use))
     }
 
     fn request_actions(
@@ -2889,17 +3074,13 @@ impl HostConnection {
             command.creation_flags(CREATE_NO_WINDOW);
         }
         copy_safe_environment(&mut command, &bun);
-        let child = command
-            .spawn()
-            .map_err(|error| format!("Failed to start Bun plugin runtime: {error}"))?;
-        let child = Arc::new(Mutex::new(child));
+        let mut child =
+            UnconnectedHost(Some(command.spawn().map_err(|error| {
+                format!("Failed to start Bun plugin runtime: {error}")
+            })?));
         let deadline = Instant::now() + HOST_CONNECT_TIMEOUT;
         let (writer, mut reader) = loop {
             if Instant::now() >= deadline {
-                if let Ok(mut child) = child.lock() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
                 return Err("Bun plugin runtime did not connect in time".to_string());
             }
             match listener.accept() {
@@ -2922,9 +3103,7 @@ impl HostConnection {
                     break (stream, BufReader::new(reader_stream));
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if let Ok(mut child) = child.lock()
-                        && let Ok(Some(status)) = child.try_wait()
-                    {
+                    if let Ok(Some(status)) = child.process().try_wait() {
                         return Err(format!(
                             "Bun plugin runtime exited before connecting ({status})"
                         ));
@@ -2942,6 +3121,7 @@ impl HostConnection {
             .get_mut()
             .set_read_timeout(None)
             .map_err(|error| format!("Failed to configure plugin protocol reader: {error}"))?;
+        let child = Arc::new(Mutex::new(child.connected()));
         let pending = Arc::new(Mutex::new(HashMap::new()));
         let failed = Arc::new(AtomicBool::new(false));
         let failure = Arc::new(Mutex::new(None));
@@ -2971,7 +3151,7 @@ impl HostConnection {
         timeout: Duration,
         control: Option<&PluginInvocationControl>,
     ) -> Result<T, HostRequestError> {
-        let deadline = Instant::now() + timeout;
+        let mut deadline = Instant::now() + timeout;
         let mut encoded = serde_json::to_vec(request).map_err(|error| {
             HostRequestError::Local(format!("Failed to encode plugin request: {error}"))
         })?;
@@ -3064,9 +3244,29 @@ impl HostConnection {
             }
             match response_rx.recv_timeout(response_timeout.min(Duration::from_millis(50))) {
                 Ok(HostFrame::Progress(progress)) => {
-                    validate_progress(&progress).map_err(HostRequestError::Remote)?;
+                    // Only the newest queued progress is reported, so a slow
+                    // handler can't fall behind a plugin that reports often.
+                    let mut latest = progress;
+                    let mut result = None;
+                    while let Ok(frame) = response_rx.try_recv() {
+                        match frame {
+                            HostFrame::Progress(progress) => latest = progress,
+                            HostFrame::Result(frame_result) => {
+                                result = Some(frame_result);
+                                break;
+                            }
+                        }
+                    }
+                    if let Some(result) = result {
+                        break result?;
+                    }
+                    validate_progress(&latest).map_err(HostRequestError::Remote)?;
                     if let Some(control) = control {
-                        control.report(progress);
+                        // The deadline is for the host: time spent in the
+                        // caller's handler doesn't count against it.
+                        let reported = Instant::now();
+                        control.report(latest);
+                        deadline += reported.elapsed();
                     }
                 }
                 Ok(HostFrame::Result(result)) => break result?,
@@ -3243,6 +3443,34 @@ fn fail_host_connection(
     }
     if let Ok(mut child) = child.lock() {
         let _ = child.kill();
+        let _ = child.wait();
+    }
+}
+
+/// A Bun host that hasn't connected yet. Dropping a [`Child`] neither kills
+/// nor reaps it, so this does both unless the host connects.
+struct UnconnectedHost(Option<Child>);
+
+impl UnconnectedHost {
+    fn process(&mut self) -> &mut Child {
+        self.0
+            .as_mut()
+            .expect("an unconnected host keeps its process")
+    }
+
+    fn connected(mut self) -> Child {
+        self.0
+            .take()
+            .expect("an unconnected host keeps its process")
+    }
+}
+
+impl Drop for UnconnectedHost {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -3861,6 +4089,22 @@ fn plugin_file_change_stamp(metadata: &fs::Metadata) -> [i64; 3] {
     }
 }
 
+/// When the file's metadata last changed: its status-change time on Unix,
+/// where the cache key includes it, else its modification time.
+fn plugin_file_changed_at(metadata: &fs::Metadata) -> Option<std::time::SystemTime> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let seconds = u64::try_from(metadata.ctime()).ok()?;
+        let nanoseconds = u32::try_from(metadata.ctime_nsec()).ok()?;
+        std::time::UNIX_EPOCH.checked_add(Duration::new(seconds, nanoseconds))
+    }
+    #[cfg(not(unix))]
+    {
+        metadata.modified().ok()
+    }
+}
+
 fn plugin_file_digests() -> &'static Mutex<HashMap<PluginFileDigestKey, [u8; 32]>> {
     static DIGESTS: std::sync::OnceLock<Mutex<HashMap<PluginFileDigestKey, [u8; 32]>>> =
         std::sync::OnceLock::new();
@@ -3870,16 +4114,30 @@ fn plugin_file_digests() -> &'static Mutex<HashMap<PluginFileDigestKey, [u8; 32]
 /// SHA-256 of a plugin file, cached by [`PluginFileDigestKey`] so refreshing
 /// the catalog (on every palette open) doesn't rehash unchanged sources.
 fn plugin_file_digest(entry: &PluginTreeEntry) -> Result<[u8; 32], String> {
+    plugin_file_digest_at(entry, std::time::SystemTime::now())
+}
+
+fn plugin_file_digest_at(
+    entry: &PluginTreeEntry,
+    now: std::time::SystemTime,
+) -> Result<[u8; 32], String> {
     // Entries cached per file, across every plugin directory in use.
     const MAX_CACHED_DIGESTS: usize = MAX_INSTALLED_PLUGINS * 256;
-    // A file changed again within the timestamp granularity could keep its
-    // modification time and length, so recently modified files aren't cached.
+    // A file changed again within the timestamp granularity could keep every
+    // part of its key, so files whose modification or status-change time is
+    // recent aren't cached. Both count: a write that restores the
+    // modification time still updates the status-change time, which Linux
+    // takes from a clock that ticks only every few milliseconds.
     const RACY_MODIFICATION: Duration = Duration::from_secs(2);
+    let settled = |time: Option<std::time::SystemTime>| {
+        time.is_some_and(|time| {
+            now.duration_since(time)
+                .is_ok_and(|elapsed| elapsed >= RACY_MODIFICATION)
+        })
+    };
 
     let key = entry.metadata.modified().ok().and_then(|modified| {
-        let settled = modified
-            .elapsed()
-            .is_ok_and(|elapsed| elapsed >= RACY_MODIFICATION);
+        let settled = settled(Some(modified)) && settled(plugin_file_changed_at(&entry.metadata));
         settled.then(|| {
             (
                 entry.path.clone(),
@@ -4472,22 +4730,72 @@ fn can_migrate_legacy_plugin_secret(plugin_id: &str, key: &str) -> bool {
 }
 
 #[cfg(not(test))]
-fn plugin_secret_entry(plugin_id: &str, key: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(KEYRING_SERVICE, &plugin_secret_account(plugin_id, key))
-        .map_err(|error| format!("Failed to access the credential store: {error}"))
+fn plugin_secret_entry(plugin_id: &str, key: &str) -> Result<keyring_core::Entry, String> {
+    credential_store_entry(&plugin_secret_account(plugin_id, key))
 }
 
 #[cfg(not(test))]
-fn legacy_plugin_secret_entry(plugin_id: &str, key: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(
-        KEYRING_SERVICE,
-        &legacy_plugin_secret_account(plugin_id, key),
+fn legacy_plugin_secret_entry(plugin_id: &str, key: &str) -> Result<keyring_core::Entry, String> {
+    credential_store_entry(&legacy_plugin_secret_account(plugin_id, key))
+}
+
+#[cfg(not(test))]
+fn credential_store_entry(account: &str) -> Result<keyring_core::Entry, String> {
+    #[cfg(all(
+        unix,
+        not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+    ))]
+    let entry = {
+        ensure_default_credential_store(|| {
+            zbus_secret_service_keyring_store::Store::new()
+                .map(|store| store as Arc<keyring_core::CredentialStore>)
+        })?;
+        keyring_core::Entry::new(KEYRING_SERVICE, account)
+    };
+    #[cfg(not(all(
+        unix,
+        not(any(target_os = "macos", target_os = "ios", target_os = "android"))
+    )))]
+    let entry = keyring::Entry::new(KEYRING_SERVICE, account).map(|entry| entry.inner);
+    entry.map_err(|error| format!("Failed to access the credential store: {error}"))
+}
+
+/// Sets keyring's default credential store from `create` unless one is set.
+/// keyring sets up its own store at most once per process, even when that
+/// fails, so without a Secret Service at the first secret access (a desktop
+/// without one, or the keyring daemon starting after Termy) secrets would
+/// stay unavailable until restart. This tries again on every access instead.
+#[cfg(any(
+    test,
+    all(
+        unix,
+        not(any(target_os = "macos", target_os = "ios", target_os = "android"))
     )
-    .map_err(|error| format!("Failed to access the credential store: {error}"))
+))]
+fn ensure_default_credential_store(
+    create: impl FnOnce() -> keyring_core::Result<Arc<keyring_core::CredentialStore>>,
+) -> Result<(), String> {
+    static SETUP: Mutex<()> = Mutex::new(());
+    let _setup = SETUP
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if keyring_core::get_default_store().is_some() {
+        return Ok(());
+    }
+    let store = create().map_err(|error| {
+        format!(
+            "Failed to access the credential store: could not connect to a Secret Service \
+             ({error}). Plugin secret settings need a Secret Service provider, such as \
+             GNOME Keyring, KWallet or KeePassXC, running in your desktop session; start \
+             one and try again"
+        )
+    })?;
+    keyring_core::set_default_store(store);
+    Ok(())
 }
 
 /// Reads the secret from its current credential-store entry only. It never
-/// writes, so it's safe without the settings lock.
+/// writes, so it's safe without the secret write lock.
 #[cfg(not(test))]
 fn read_current_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
     match plugin_secret_entry(plugin_id, key)?.get_password() {
@@ -4500,7 +4808,7 @@ fn read_current_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<Strin
 }
 
 /// Reads the secret, moving it from its legacy credential-store entry if
-/// needed. Moving it writes to the store, so call this with the settings
+/// needed. Moving it writes to the store, so call this with the secret write
 /// lock held.
 #[cfg(not(test))]
 fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, String> {
@@ -4641,9 +4949,27 @@ fn read_plugin_secret(plugin_id: &str, key: &str) -> Result<Option<String>, Stri
     Ok(Some(secret))
 }
 
+/// Test credential-store writes to these accounts signal the sender, then
+/// wait for the receiver, the way a write waits on a keychain prompt.
+#[cfg(test)]
+static TEST_PLUGIN_SECRET_WRITE_GATES: std::sync::LazyLock<
+    Mutex<BTreeMap<String, TestSecretWriteGate>>,
+> = std::sync::LazyLock::new(|| Mutex::new(BTreeMap::new()));
+
+#[cfg(test)]
+type TestSecretWriteGate = (mpsc::Sender<()>, mpsc::Receiver<()>);
+
 #[cfg(test)]
 #[allow(clippy::unnecessary_wraps)]
 fn write_plugin_secret(plugin_id: &str, key: &str, secret: &str) -> Result<(), String> {
+    let gate = TEST_PLUGIN_SECRET_WRITE_GATES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&plugin_secret_account(plugin_id, key));
+    if let Some((entered, release)) = gate {
+        let _ = entered.send(());
+        let _ = release.recv();
+    }
     let mut secrets = TEST_PLUGIN_SECRETS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());

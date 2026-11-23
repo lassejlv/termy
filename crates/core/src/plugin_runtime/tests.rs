@@ -1022,7 +1022,7 @@ fn plugin_file_digests_are_cached_for_settled_files() {
             .filter(|key| key.0 == path)
             .count()
     };
-    let digest = |contents: &str, modified: Option<std::time::SystemTime>| {
+    let write = |contents: &str, modified: Option<std::time::SystemTime>| {
         fs::write(&path, contents).expect("write plugin file");
         if let Some(modified) = modified {
             fs::File::options()
@@ -1031,36 +1031,46 @@ fn plugin_file_digests_are_cached_for_settled_files() {
                 .and_then(|file| file.set_modified(modified))
                 .expect("set modification time");
         }
+    };
+    let digest_at = |now: std::time::SystemTime| {
         let entries = plugin_tree_entries(temp.path()).expect("plugin tree");
         assert_eq!(entries.len(), 1);
-        plugin_file_digest(&entries[0]).expect("digest")
+        plugin_file_digest_at(&entries[0], now).expect("digest")
     };
+    let now = std::time::SystemTime::now;
+    let later = || now() + Duration::from_secs(3);
 
     // Just written: its time may not have settled, so it isn't cached.
-    let fresh = digest("export const value = 1;", None);
+    write("export const value = 1;", None);
+    let fresh = digest_at(now());
     assert_eq!(
         fresh,
         <[u8; 32]>::from(Sha256::digest(b"export const value = 1;"))
     );
     assert_eq!(cached(), 0);
 
-    let settled = std::time::SystemTime::now() - Duration::from_secs(3600);
-    assert_eq!(digest("export const value = 1;", Some(settled)), fresh);
-    assert_eq!(cached(), 1);
-    assert_eq!(digest_of_listed_file(temp.path()), fresh);
+    // An old modification time alone doesn't settle the file: the write just
+    // changed its status-change time.
+    let settled = now() - Duration::from_secs(3600);
+    write("export const value = 1;", Some(settled));
+    assert_eq!(digest_at(now()), fresh);
+    #[cfg(unix)]
+    assert_eq!(cached(), 0);
 
-    // Same path, length and restored modification time: the status-change
-    // time still tells the edit apart.
+    // Seconds later both times have settled, so the digest is cached.
+    assert_eq!(digest_at(later()), fresh);
+    assert_eq!(cached(), 1);
+    assert_eq!(digest_at(later()), fresh);
+
+    // Same path, length and restored modification time, written within the
+    // coarse status-change clock's tick on Linux: the recent status change
+    // keeps the stale digest from being used.
+    write("export const value = 2;", Some(settled));
     #[cfg(unix)]
     assert_eq!(
-        digest("export const value = 2;", Some(settled)),
+        digest_at(now()),
         <[u8; 32]>::from(Sha256::digest(b"export const value = 2;"))
     );
-}
-
-fn digest_of_listed_file(root: &Path) -> [u8; 32] {
-    let entries = plugin_tree_entries(root).expect("plugin tree");
-    plugin_file_digest(&entries[0]).expect("digest")
 }
 
 #[test]
@@ -3267,4 +3277,412 @@ fn failed_plugin_loads_are_retried_when_bun_is_available() {
         !second.errors.is_empty(),
         "unchanged failed plugins must be retried"
     );
+}
+#[test]
+fn suspending_during_a_cold_start_leaves_the_invocation_its_host() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    write_plugin(
+        &temp.path().join("plugins"),
+        "cold",
+        "Cold",
+        r#"
+export default definePlugin({
+  commands: [{
+    id: "run",
+    title: "Cold: Run",
+    run() {
+      return { type: "toast", level: "info", message: "warm" };
+    },
+  }],
+});
+"#,
+    );
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.errors.is_empty(), "errors: {:?}", refresh.errors);
+    let revision = runtime
+        .command_with_revision("cold", "run")
+        .expect("command revision")
+        .1;
+
+    for round in 0..3 {
+        runtime.suspend_if_eventless();
+        let invocation = {
+            let runtime = runtime.clone();
+            let revision = revision.clone();
+            thread::spawn(move || {
+                runtime.invoke(
+                    "cold",
+                    "run",
+                    &revision,
+                    BTreeMap::new(),
+                    test_plugin_context(),
+                )
+            })
+        };
+        // The UI thread suspends the host after every finished command, so
+        // it does while another command is starting the host again.
+        while !invocation.is_finished() {
+            runtime.suspend_if_eventless();
+            thread::sleep(Duration::from_millis(1));
+        }
+        let actions = invocation
+            .join()
+            .expect("invocation thread")
+            .unwrap_or_else(|error| panic!("round {round}: {error}"));
+        assert_eq!(
+            actions,
+            vec![PluginAction::Toast {
+                level: PluginToastLevel::Info,
+                message: "warm".to_string(),
+            }]
+        );
+    }
+    assert!(
+        runtime.suspend_if_eventless(),
+        "an idle host must still be suspended"
+    );
+}
+
+#[test]
+fn failed_plugin_loads_back_off_until_their_sources_change() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let plugins = temp.path().join("plugins");
+    let attempts = temp.path().join("attempts");
+    let source = format!(
+        r#"
+import {{ appendFileSync }} from "node:fs";
+appendFileSync({attempts}, "x");
+throw new Error("broken on load");
+"#,
+        attempts = serde_json::to_string(&attempts).expect("encode path"),
+    );
+    let broken = write_plugin(&plugins, "broken-load", "Broken", &source);
+    write_plugin(
+        &plugins,
+        "healthy",
+        "Healthy",
+        r#"export default definePlugin({ commands: [{ id: "run", title: "Run", run() {} }] });"#,
+    );
+    let load_attempts = || fs::read(&attempts).map_or(0, |contents| contents.len());
+
+    let runtime = PluginRuntime::new(Some(&config_path));
+    for refresh in 0..3 {
+        let result = runtime.refresh_if_changed();
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.starts_with("broken-load: ") && error.contains("broken on load")),
+            "refresh {refresh} must still report the failed plugin: {:?}",
+            result.errors
+        );
+        assert!(runtime.command_with_revision("healthy", "run").is_some());
+    }
+    assert_eq!(
+        load_attempts(),
+        1,
+        "an unchanged failed plugin is not loaded again"
+    );
+
+    fs::write(broken.join("plugin.ts"), format!("{source}// edited\n")).expect("edit plugin");
+    let result = runtime.refresh_if_changed();
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|error| error.starts_with("broken-load: ")),
+        "errors: {:?}",
+        result.errors
+    );
+    assert_eq!(
+        load_attempts(),
+        2,
+        "a changed plugin is loaded again at once"
+    );
+}
+
+#[test]
+fn exited_plugin_workers_fail_their_request_at_once_and_load_again() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    let encode = |name: &str| serde_json::to_string(&temp.path().join(name)).expect("encode path");
+    write_plugin(
+        &temp.path().join("plugins"),
+        "exits-once",
+        "Exits once",
+        &format!(
+            r#"
+import {{ existsSync, writeFileSync }} from "node:fs";
+function exitOnce(marker) {{
+  if (!existsSync(marker)) {{
+    writeFileSync(marker, "");
+    process.exit(0);
+  }}
+  return {{ type: "toast", level: "info", message: "back" }};
+}}
+export default definePlugin({{
+  commands: [{{ id: "run", title: "Exit once", run: () => exitOnce({command}) }}],
+  events: {{ "terminal.bell": () => exitOnce({event}) }},
+}});
+"#,
+            command = encode("command-exited"),
+            event = encode("event-exited"),
+        ),
+    );
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.errors.is_empty(), "errors: {:?}", refresh.errors);
+    let revision = runtime
+        .command_with_revision("exits-once", "run")
+        .expect("command revision")
+        .1;
+    let back = vec![PluginAction::Toast {
+        level: PluginToastLevel::Info,
+        message: "back".to_string(),
+    }];
+    let invoke = || {
+        runtime.invoke(
+            "exits-once",
+            "run",
+            &revision,
+            BTreeMap::new(),
+            test_plugin_context(),
+        )
+    };
+
+    // The command's timeout is 10 s; the exit must not wait for it.
+    let started = Instant::now();
+    let error = invoke().expect_err("the Worker exited");
+    assert!(error.contains("stopped unexpectedly"), "error: {error}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "took {:?}",
+        started.elapsed()
+    );
+    assert_eq!(invoke().expect("the plugin is loaded again"), back);
+
+    let started = Instant::now();
+    let dispatch = runtime.dispatch_event(PluginEvent::TerminalBell, test_plugin_context());
+    assert!(
+        dispatch.errors.len() == 1 && dispatch.errors[0].contains("stopped unexpectedly"),
+        "errors: {:?}",
+        dispatch.errors
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "took {:?}",
+        started.elapsed()
+    );
+    let dispatch = runtime.dispatch_event(PluginEvent::TerminalBell, test_plugin_context());
+    assert!(dispatch.errors.is_empty(), "errors: {:?}", dispatch.errors);
+    assert_eq!(dispatch.actions, back);
+}
+
+#[test]
+fn slow_progress_handlers_do_not_time_out_the_host() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    write_plugin(
+        &temp.path().join("plugins"),
+        "chatty",
+        "Chatty",
+        r#"
+export default definePlugin({
+  commands: [{
+    id: "run",
+    title: "Chatty: Run",
+    run({ context }) {
+      for (let i = 0; i < 2000; i++) {
+        context.progress.report({ message: "working", percentage: i % 100 });
+      }
+      return { type: "toast", level: "info", message: "done" };
+    },
+  }],
+});
+"#,
+    );
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.errors.is_empty(), "errors: {:?}", refresh.errors);
+    let revision = runtime
+        .command_with_revision("chatty", "run")
+        .expect("command revision")
+        .1;
+    let reports = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let control = {
+        let reports = Arc::clone(&reports);
+        PluginInvocationControl::with_progress_handler(move |_| {
+            reports.fetch_add(1, Ordering::Relaxed);
+            thread::sleep(Duration::from_millis(5));
+        })
+    };
+    let (request_id, connection, _host_use) = runtime.next_host_request().expect("host");
+    let inputs = BTreeMap::new();
+    let context = test_plugin_context();
+    // Handling every report would take 10 s, five times the deadline.
+    let result = connection.request::<HostInvokeResult>(
+        &HostRequest::Invoke {
+            id: request_id,
+            plugin_id: "chatty",
+            command_id: "run",
+            revision: &revision,
+            inputs: &inputs,
+            context: &context,
+        },
+        Duration::from_secs(2),
+        Some(&control),
+    );
+    assert!(result.is_ok(), "request failed: {:?}", result.err());
+    assert!(!connection.is_failed(), "the host must keep running");
+    assert!(reports.load(Ordering::Relaxed) > 0);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn crashed_plugin_hosts_are_reaped_without_another_request() {
+    if !bun_is_available() {
+        return;
+    }
+    let temp = TempDir::new().expect("temp dir");
+    let config_path = temp.path().join("config.txt");
+    fs::write(&config_path, "").expect("write config");
+    write_plugin(
+        &temp.path().join("plugins"),
+        "crashing",
+        "Crashing",
+        "export default definePlugin({ commands: [] });",
+    );
+    let runtime = PluginRuntime::new(Some(&config_path));
+    let refresh = runtime.refresh_if_changed();
+    assert!(refresh.errors.is_empty(), "errors: {:?}", refresh.errors);
+    let connection = runtime
+        .inner
+        .host
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .connection
+        .clone()
+        .expect("host connection");
+    let pid = connection.child.lock().expect("host child").id();
+    let process = PathBuf::from(format!("/proc/{pid}"));
+    // SAFETY: kill only sends a signal; the PID is the host's own child,
+    // which it hasn't reaped yet, so it can't belong to another process.
+    assert_eq!(unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) }, 0);
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process.exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(connection.is_failed());
+    assert!(
+        !process.exists(),
+        "the crashed host is left as a zombie: {:?}",
+        fs::read_to_string(process.join("stat"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn unconnected_hosts_are_killed_and_reaped() {
+    let child = Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("spawn sleep");
+    let pid = child.id() as libc::pid_t;
+    drop(UnconnectedHost(Some(child)));
+    // SAFETY: signal 0 only checks whether the process still exists; a
+    // zombie does, so this fails only once the child is reaped.
+    assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+}
+
+#[test]
+fn saving_a_secret_does_not_block_plugin_settings_reads() {
+    let temp = TempDir::new().expect("temp dir");
+    let plugin = "secret-prompt";
+    let (runtime, _) = runtime_with_secret_settings(&temp, plugin, &["token"]);
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    TEST_PLUGIN_SECRET_WRITE_GATES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(
+            plugin_secret_account(plugin, "token"),
+            (entered_tx, release_rx),
+        );
+
+    let save = {
+        let runtime = runtime.clone();
+        thread::spawn(move || runtime.set_plugin_setting(plugin, "token", json!("hunter2")))
+    };
+    entered_rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the save reached the credential store");
+    // The credential store is now waiting, as on a keychain prompt; every
+    // plugin request reads the plugin's settings meanwhile.
+    let (read_tx, read_rx) = mpsc::channel();
+    let read = {
+        let runtime = runtime.clone();
+        thread::spawn(move || {
+            let _ = read_tx.send(runtime.resolved_plugin_settings(plugin).map(|_| ()));
+        })
+    };
+    let during_save = read_rx.recv_timeout(Duration::from_secs(5));
+    release_tx.send(()).expect("release the save");
+    save.join().expect("save thread").expect("save secret");
+    read.join().expect("read thread");
+    assert!(
+        matches!(during_save, Ok(Ok(()))),
+        "reading settings waited for the credential store: {during_save:?}"
+    );
+    assert_eq!(
+        resolved_secret(&runtime, plugin, "token"),
+        Some(json!("hunter2"))
+    );
+}
+
+#[test]
+fn credential_store_setup_is_retried_after_it_fails() {
+    keyring_core::unset_default_store();
+    let error = ensure_default_credential_store(|| {
+        Err(keyring_core::Error::NoStorageAccess(
+            "no secret service provider or dbus session found".into(),
+        ))
+    })
+    .expect_err("setup fails without a store");
+    assert!(error.contains("Secret Service provider"), "error: {error}");
+    assert!(keyring_core::get_default_store().is_none());
+
+    ensure_default_credential_store(|| {
+        keyring_core::mock::Store::new().map(|store| store as Arc<keyring_core::CredentialStore>)
+    })
+    .expect("setup is tried again");
+    let entry = keyring_core::Entry::new("termy-plugin-test", "setup-retry").expect("entry");
+    entry.set_password("hunter2").expect("save");
+    assert_eq!(entry.get_password().expect("read"), "hunter2");
+    ensure_default_credential_store(
+        || -> keyring_core::Result<Arc<keyring_core::CredentialStore>> {
+            panic!("a store that is set up is kept")
+        },
+    )
+    .expect("existing store");
+    keyring_core::unset_default_store();
 }
