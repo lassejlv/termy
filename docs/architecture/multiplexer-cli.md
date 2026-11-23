@@ -233,9 +233,13 @@ host has until its own layout changes.
 
 Pass `--session-dir PATH` anywhere after `mux` to select an isolated host.
 Inside a multiplexer pane the default is the pane's own host, from
-`TERMY_MUX_DIR`; elsewhere it is the desktop config directory's `multiplexer`
-subdirectory (`%LOCALAPPDATA%\termy\multiplexer` on Windows, falling back to
-the old location while an older host still runs there). The directory holds
+`TERMY_MUX_DIR`; elsewhere it is a directory on this machine:
+`$XDG_RUNTIME_DIR/termy/multiplexer` on Linux (`multiplexer-<hostname>` next
+to the config file when `XDG_RUNTIME_DIR` is unset),
+`%LOCALAPPDATA%\termy\multiplexer` on Windows, and the desktop config
+directory's `multiplexer` subdirectory on macOS and other systems. On Linux and Windows the
+config directory's `multiplexer` subdirectory, where older versions kept it,
+is still used while a host runs there. The directory holds
 the host's access token, so it must be private: on Unix yours and mode 0700;
 on Windows owned by you (or SYSTEM or the administrators), and Termy replaces
 its permissions with ones granting access only to you and SYSTEM. Use a

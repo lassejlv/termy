@@ -1137,6 +1137,26 @@ impl TerminalReplyHost for HostBridge {
         Ok(())
     }
 
+    /// Forgets requests a reset cancelled, including those the view has not
+    /// been sent yet, so output that loops requests and resets cannot pile
+    /// them up (audit M-1).
+    fn clipboard_requests_cancelled(&mut self, ids: &[u64]) {
+        self.parked.retain(|parked| {
+            if !ids.contains(&parked.id) {
+                return true;
+            }
+            if let Some(subscriber) = parked.subscriber.upgrade() {
+                subscriber
+                    .pending
+                    .lock()
+                    .unwrap()
+                    .host
+                    .retain(|(id, ..)| *id != parked.id);
+            }
+            false
+        });
+    }
+
     fn load_clipboard(&mut self, _target: TerminalClipboardTarget) -> Option<String> {
         // An empty clipboard, as the desktop's refusal sends, so the
         // program stops waiting.

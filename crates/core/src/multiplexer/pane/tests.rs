@@ -327,6 +327,32 @@ fn clipboard_requests_go_to_the_newest_view_and_are_denied_when_it_leaves() {
     assert_eq!(bridge.next_check(), Duration::MAX);
 }
 
+/// Audit M-1: output that loops clipboard queries and resets must not pile
+/// requests up in the host while the view does not answer.
+#[test]
+fn requests_a_reset_cancelled_are_forgotten() {
+    let pane = detached_pane();
+    let view = pane.subscribe(true).unwrap();
+    let mut bridge = HostBridge {
+        shared: Arc::clone(&pane.shared),
+        timeout: HOST_REQUEST_TIMEOUT,
+        parked: Vec::new(),
+    };
+    let terminal = Terminal::new_display(TerminalSize::default(), None);
+    let burst = [&b"\x1b]52;c;?\x07".repeat(32)[..], b"\x1bc"].concat();
+    for _ in 0..10 {
+        terminal.feed_output(&burst);
+        terminal.drain_events(&mut bridge);
+    }
+    assert!(bridge.parked.is_empty(), "{} parked", bridge.parked.len());
+    assert!(view.pending.lock().unwrap().host.is_empty());
+    // Requests still waiting stay parked and queued for the view.
+    terminal.feed_output(b"\x1b]52;c;?\x07");
+    terminal.drain_events(&mut bridge);
+    assert_eq!(bridge.parked.len(), 1);
+    assert_eq!(host_requests(&view, 1), [bridge.parked[0].id]);
+}
+
 #[test]
 fn expired_clipboard_requests_are_not_sent() {
     let pane = detached_pane();

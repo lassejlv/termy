@@ -24,6 +24,7 @@ native = [
   "dep:regex",
   "dep:semver",
   "dep:sha2",
+  "dep:signal-hook",
   "dep:tempfile",
   "dep:ureq",
   "dep:url",
@@ -76,6 +77,8 @@ libc = "0.2"
 # Not imported directly: enables `std` on the rustix that rustix-openpty
 # re-exports, so its errors and fds convert to std types (`pty`-only builds).
 rustix = { version = "1", features = ["std"] }
+# The session host stops cleanly on SIGTERM, SIGINT and SIGHUP.
+signal-hook = { version = "0.3", default-features = false, optional = true }
 
 [target."cfg(windows)".dependencies]
 winreg = "0.55"

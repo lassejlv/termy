@@ -1096,3 +1096,77 @@ fn commands_in_a_pane_reach_the_panes_host() {
     let envelope: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["result"][0]["id"], id.as_str());
 }
+
+/// `termy mux` without `--session-dir`, in `environment` alone.
+#[cfg(target_os = "linux")]
+fn mux_in(environment: &[(&str, &Path)], args: &[&str]) -> Value {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_termy-cli"));
+    command
+        .arg("mux")
+        .args(args)
+        .env_remove("TERMY_MUX_DIR")
+        .env_remove("XDG_RUNTIME_DIR")
+        .stdin(Stdio::null());
+    for (name, value) in environment {
+        command.env(name, value);
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice::<Value>(&output.stdout).unwrap()["result"].clone()
+}
+
+/// Audit M-3: on Linux the default session directory belongs to this
+/// machine and login, so a host in a shared config directory (a network
+/// home, a devcontainer) cannot hold it. A host an older Termy started next
+/// to the config keeps being used while it runs.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_default_session_directory_belongs_to_this_machine() {
+    use std::os::unix::fs::DirBuilderExt;
+    let temp = tempfile::tempdir().unwrap();
+    let runtime = temp.path().join("run");
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&runtime)
+        .unwrap();
+    let config = temp.path().join("config");
+    let home = temp.path().join("home");
+    let environment = [
+        ("XDG_RUNTIME_DIR", runtime.as_path()),
+        ("XDG_CONFIG_HOME", config.as_path()),
+        ("HOME", home.as_path()),
+    ];
+    let session_dir = |environment: &[(&str, &Path)]| {
+        PathBuf::from(
+            mux_in(environment, &["status"])["session_dir"]
+                .as_str()
+                .unwrap(),
+        )
+    };
+    assert_eq!(
+        session_dir(&environment),
+        runtime.join("termy").join("multiplexer")
+    );
+
+    let without_runtime = session_dir(&environment[1..]);
+    assert_eq!(
+        without_runtime.parent(),
+        Some(config.join("termy").as_path())
+    );
+    let name = without_runtime.file_name().unwrap().to_string_lossy();
+    assert!(name.starts_with("multiplexer-"), "{name}");
+
+    let legacy = config.join("termy").join("multiplexer");
+    let legacy_arg = legacy.to_str().unwrap();
+    mux_in(&environment, &["--session-dir", legacy_arg, "start"]);
+    assert_eq!(session_dir(&environment), legacy);
+    mux_in(&environment, &["--session-dir", legacy_arg, "shutdown"]);
+    assert_eq!(
+        session_dir(&environment),
+        runtime.join("termy").join("multiplexer")
+    );
+}

@@ -3,7 +3,7 @@
 //! to `host.log.1` past [`HOST_LOG_LIMIT`]. `connect_or_start` also appends
 //! the host's stderr to `host.log`, which catches anything written before the
 //! logger exists, such as an entry point's start-up error.
-use crate::multiplexer::{discovery::HOST_LOG_LIMIT, protocol::build_id, serve};
+use crate::multiplexer::{discovery::HOST_LOG_LIMIT, protocol::build_id, server::serve_as_process};
 use std::{
     collections::HashMap,
     fs::File,
@@ -23,7 +23,8 @@ const MAX_TRACKED: usize = 256;
 const MAX_PANIC_BYTES: usize = 16 * 1024;
 
 /// Runs a session host in `root` until it is shut down. Entry points call
-/// this rather than [`serve`], and report its error on stderr before exiting.
+/// this rather than [`serve`](crate::multiplexer::serve), and report its
+/// error on stderr before exiting.
 pub fn run_host(root: &Path) -> anyhow::Result<()> {
     install_logger(root);
     std::panic::set_hook(Box::new(|info| {
@@ -48,7 +49,7 @@ pub fn run_host(root: &Path) -> anyhow::Result<()> {
         build_id(),
         std::process::id()
     );
-    let result = serve(root);
+    let result = serve_as_process(root);
     if result.is_ok() {
         log::info!("session host stopped");
     }

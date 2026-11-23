@@ -740,6 +740,43 @@ fn control_wait_wakes_for_preexisting_requests_and_child_exit() {
     assert!(!wait_for_control(&process.0, &control.wake).unwrap());
 }
 
+/// Audit L-17: the session host ends its panes with `terminate_and_wait`
+/// and then exits, so it must return only once the child has ended.
+#[test]
+fn terminate_and_wait_returns_once_the_child_has_ended() {
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, WAIT_OBJECT_0},
+        System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+    };
+    assert!(available(), "windows-latest must provide ConPTY");
+    let terminal = Transport::spawn(
+        SpawnConfig {
+            program: windows_command_processor(),
+            args: vec![
+                "/D".to_string(),
+                "/S".to_string(),
+                "/C".to_string(),
+                "ping -n 30 127.0.0.1 >nul".to_string(),
+            ],
+            working_directory: None,
+            environment: Vec::new(),
+        },
+        test_size(),
+        |_| Vec::new(),
+        || {},
+    )
+    .expect("ConPTY child should start");
+    // SAFETY: OpenProcess takes no pointers; the handle is closed below.
+    let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, terminal.child_pid()) };
+    assert!(!process.is_null(), "the shell should be running");
+    terminal.terminate_and_wait();
+    // SAFETY: `process` is the handle opened above, closed exactly once.
+    let state = unsafe { WaitForSingleObject(process, 0) };
+    // SAFETY: as above; the handle is not used afterwards.
+    unsafe { CloseHandle(process) };
+    assert_eq!(state, WAIT_OBJECT_0, "the shell was still running");
+}
+
 #[test]
 fn conpty_delivers_final_child_output_before_exit_callback() {
     let marker = unique_marker("FINAL_OUTPUT");

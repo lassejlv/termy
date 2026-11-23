@@ -224,13 +224,9 @@ fn late_reply_after_timeout_is_not_returned_for_the_next_request() {
 
     let connection = Connection::connect(temp.path()).unwrap();
     let short_timeout = Some(Duration::from_millis(100));
-    let stream = connection.stream.lock().unwrap();
-    stream
-        .as_ref()
-        .unwrap()
-        .set_read_timeout(short_timeout)
-        .unwrap();
-    drop(stream);
+    let idle = connection.idle.lock().unwrap();
+    idle.streams[0].set_read_timeout(short_timeout).unwrap();
+    drop(idle);
     assert!(connection.request(Request::GetLayout).is_err());
     let Response::Layout { layout, .. } = connection.request(Request::GetLayout).unwrap() else {
         panic!("expected a layout reply");
@@ -335,6 +331,27 @@ fn expired_clipboard_requests_are_dropped_and_the_rest_run_in_order() {
     assert!(pending.hosts.is_empty());
 }
 
+/// Audit M-1: requests a reset cancelled may reach the client anyway, so
+/// its queue keeps only the newest ones a terminal can have waiting.
+#[test]
+fn clipboard_request_queue_keeps_the_newest_requests() {
+    let mut pending = Pending::default();
+    let deadline = Instant::now() + Duration::from_secs(60);
+    for id in 1..=100 {
+        pending.push_host_request(
+            id,
+            RemoteHostRequest::Load(TerminalClipboardTarget::Clipboard),
+            deadline,
+        );
+    }
+    let ids: Vec<_> = pending
+        .take_host_requests(Instant::now())
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(ids, (69..=100).collect::<Vec<_>>());
+}
+
 #[test]
 fn suspended_ui_queue_coalesces_bells_progress_and_clipboard_writes() {
     let mut pending = Pending::default();
@@ -410,6 +427,38 @@ fn a_connection_reset_by_a_stopping_host_reports_no_host() {
     };
     assert!(is_host_unavailable(&error), "{error:#}");
     host.join().unwrap();
+}
+
+/// Audit L-14: the app-wide client is shared by every window and called on
+/// the UI thread, so a request the host is slow to answer must not hold up
+/// the requests of other threads.
+#[test]
+fn a_slow_request_does_not_hold_up_other_requests() {
+    let host = FakeHost::new();
+    let connection = Arc::new(Connection::connect(host.root.path()).unwrap());
+    let mut slow_stream = host.next();
+    let layout = |text: &str| Response::Layout {
+        revision: 1,
+        layout: Some(text.into()),
+    };
+    let request = |connection: &Arc<Connection>| {
+        let connection = Arc::clone(connection);
+        std::thread::spawn(move || match connection.request(Request::GetLayout) {
+            Ok(Response::Layout { layout, .. }) => layout,
+            other => panic!("expected a layout: {:?}", other.err()),
+        })
+    };
+    let slow = request(&connection);
+    let _: Request = read_message(&mut slow_stream).unwrap();
+    let quick = request(&connection);
+    let mut quick_stream = host.next();
+    let _: Request = read_message(&mut quick_stream).unwrap();
+    write_message(&mut quick_stream, &layout("quick")).unwrap();
+    assert_eq!(quick.join().unwrap().as_deref(), Some("quick"));
+    write_message(&mut slow_stream, &layout("slow")).unwrap();
+    assert_eq!(slow.join().unwrap().as_deref(), Some("slow"));
+    // Both streams are kept for later requests.
+    assert_eq!(connection.idle.lock().unwrap().streams.len(), 2);
 }
 
 struct FakeHost {
@@ -736,13 +785,11 @@ fn a_pane_created_after_the_client_gave_up_is_closed() {
     let host = FakeHost::new();
     let client = SessionClient::connect(host.root.path()).unwrap();
     let mut connection = host.next();
-    let stream = client.connection.stream.lock().unwrap();
-    stream
-        .as_ref()
-        .unwrap()
+    let idle = client.connection.idle.lock().unwrap();
+    idle.streams[0]
         .set_read_timeout(Some(Duration::from_millis(100)))
         .unwrap();
-    drop(stream);
+    drop(idle);
     let launch = PaneLaunch {
         size: TerminalSize::default(),
         working_directory: None,

@@ -985,7 +985,7 @@ impl CustomBackend {
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .reset_preserving_paste_mode();
-                    self.cancel_clipboard_requests();
+                    self.cancel_clipboard_requests(host);
                 }
                 PendingEvent::KittyControl(control) => {
                     let mut clipboard = self
@@ -1002,7 +1002,7 @@ impl CustomBackend {
                             // A reset (also RIS) may start another program:
                             // a late answer must not reach it.
                             drop(clipboard);
-                            self.cancel_clipboard_requests();
+                            self.cancel_clipboard_requests(host);
                         }
                         KittyClipboardControl::Query => {}
                     }

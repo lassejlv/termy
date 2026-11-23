@@ -6,7 +6,7 @@ use std::{
     process::Command,
     time::{Duration, Instant},
 };
-use termy_core::multiplexer::{PaneLaunch, SessionClient, connect_or_start};
+use termy_core::multiplexer::{PaneLaunch, SessionClient, connect_or_start, kill_host};
 use termy_core::*;
 
 #[track_caller]
@@ -234,4 +234,42 @@ fn processes_and_terminal_state_survive_client_process_exit() {
     // writing while no app or client is connected.
     wait_until(|| fs::metadata(root.as_path().join("ticks")).unwrap().len() >= before + 3);
     run("restore");
+}
+
+#[test]
+fn a_signalled_host_ends_programs_that_ignore_the_hang_up() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("host");
+    struct Cleanup<'a>(&'a Path);
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            if let Some(pid) = fs::read_to_string(self.0.join("job"))
+                .ok()
+                .and_then(|pid| pid.trim().parse::<i32>().ok())
+            {
+                // SAFETY: kill only sends a signal to the job this test started.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+    let client =
+        connect_or_start(&root, Path::new(env!("CARGO_BIN_EXE_termy-session-host"))).unwrap();
+    let _cleanup = Cleanup(root.as_path());
+    let script = r#"trap '' HUP
+(trap '' HUP; while :; do printf x >> "$1/ticks"; sleep 0.05; done) &
+echo $! > "$1/job"
+wait"#;
+    client.create_detached(launch(script, &root)).unwrap();
+    let ticks = || fs::metadata(root.join("ticks")).map_or(0, |metadata| metadata.len());
+    wait_until(|| ticks() >= 3);
+    // `termy mux shutdown --force` sends SIGTERM, like a logout or
+    // `systemctl stop`; the host must still end the job.
+    kill_host(&root).unwrap();
+    let after = ticks();
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        ticks(),
+        after,
+        "a job that ignores SIGHUP outlived the host"
+    );
 }

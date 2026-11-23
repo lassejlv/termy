@@ -183,6 +183,17 @@ impl Drop for PendingAuth {
 }
 
 pub fn serve(root: &Path) -> anyhow::Result<()> {
+    serve_until_stopped(root, false)
+}
+
+/// Like [`serve`], for a process that is only a session host: SIGTERM,
+/// SIGINT and SIGHUP stop it as a `Shutdown` request does (see
+/// [`StopSignals`]).
+pub(crate) fn serve_as_process(root: &Path) -> anyhow::Result<()> {
+    serve_until_stopped(root, true)
+}
+
+fn serve_until_stopped(root: &Path, stop_on_signals: bool) -> anyhow::Result<()> {
     #[cfg(windows)]
     {
         // Launchers can pass down the inheritable "ignore Ctrl+C" attribute.
@@ -233,6 +244,13 @@ pub fn serve(root: &Path) -> anyhow::Result<()> {
         superseded: false,
     }
     .start(&server)?;
+    // Held until the panes are closed, so a second signal cannot cut that short.
+    #[cfg(unix)]
+    let _signals = stop_on_signals
+        .then(|| StopSignals::install(&server))
+        .transpose()?;
+    #[cfg(not(unix))]
+    let _ = stop_on_signals;
     accept_connections(&server, listener.incoming());
     let watchdog = watchdog.stop();
     let panes: Vec<Pane> = server.panes().drain().map(|(_, pane)| pane).collect();
@@ -240,6 +258,53 @@ pub fn serve(root: &Path) -> anyhow::Result<()> {
     server.wait_for_subscriptions(Instant::now() + SUBSCRIPTION_FLUSH_TIMEOUT);
     // The lock is released last, when `watchdog` drops.
     watchdog.remove_endpoint()
+}
+
+/// Stops the host on SIGTERM, SIGINT and SIGHUP the way a `Shutdown` request
+/// does, so its panes are closed rather than left running (audit M-2):
+/// `termy mux shutdown --force`, a logout and `systemctl stop` all send
+/// SIGTERM. Dropping it restores the default actions.
+#[cfg(unix)]
+struct StopSignals(Vec<signal_hook::SigId>);
+
+#[cfg(unix)]
+impl StopSignals {
+    fn install(server: &Arc<Server>) -> anyhow::Result<Self> {
+        use std::{io::Read, os::unix::net::UnixStream};
+        let (mut reader, writer) = UnixStream::pair()?;
+        let mut ids = Vec::new();
+        for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+            ids.push(signal_hook::low_level::pipe::register(
+                signal,
+                writer.try_clone()?,
+            )?);
+        }
+        let installed = Self(ids);
+        let server = Arc::downgrade(server);
+        // Ends when every registration is dropped, closing its writer.
+        std::thread::Builder::new()
+            .name("termy-session-signals".into())
+            .spawn(move || {
+                let mut byte = [0];
+                while reader.read(&mut byte).is_ok_and(|read| read > 0) {
+                    let Some(server) = server.upgrade() else {
+                        break;
+                    };
+                    log::info!("session host received a stop signal");
+                    server.stop();
+                }
+            })?;
+        Ok(installed)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StopSignals {
+    fn drop(&mut self) {
+        for id in self.0.drain(..) {
+            signal_hook::low_level::unregister(id);
+        }
+    }
 }
 
 /// Ends every pane before the host exits (audit L1). Dropping a terminal

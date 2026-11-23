@@ -119,17 +119,34 @@ fn is_protocol_error(error: &anyhow::Error) -> bool {
 /// Something the client gets late: a reply it stopped waiting for.
 type LateReply = Box<dyn FnOnce(Response) + Send>;
 
+/// Streams a [`Connection`] keeps open for later requests.
+const MAX_IDLE_STREAMS: usize = 4;
+
 struct Connection {
     root: PathBuf,
-    /// `None` after a failed exchange; the next request reconnects.
-    stream: Mutex<Option<TcpStream>>,
+    /// Open streams no request is using. A request takes one, or connects
+    /// anew when every stream is busy, and holds no lock while it waits for
+    /// the host: a slow request or a host that is stopping never holds up the
+    /// requests of other threads, such as the UI's (audit L-14).
+    idle: Mutex<IdleStreams>,
+}
+
+#[derive(Default)]
+struct IdleStreams {
+    streams: Vec<TcpStream>,
+    /// Counts [`Connection::reset`]s, so a stream that was in use across
+    /// one, and may lead to the old host, is not kept.
+    generation: u64,
 }
 
 impl Connection {
     fn connect(root: &Path) -> anyhow::Result<Self> {
         Ok(Self {
             root: root.to_owned(),
-            stream: Mutex::new(Some(open_rpc_stream(root)?)),
+            idle: Mutex::new(IdleStreams {
+                streams: vec![open_rpc_stream(root)?],
+                generation: 0,
+            }),
         })
     }
     fn request(&self, request: Request) -> anyhow::Result<Response> {
@@ -139,29 +156,29 @@ impl Connection {
     /// Like [`Self::request`]. When the reply does not come in time, a
     /// thread keeps waiting for it and hands it to `late`.
     fn exchange(&self, request: Request, late: Option<LateReply>) -> anyhow::Result<Response> {
-        let mut slot = self.stream.lock().unwrap();
-        let stream = match slot.as_mut() {
-            Some(stream) => stream,
-            None => slot.insert(open_rpc_stream(&self.root)?),
+        let (stream, generation) = {
+            let mut idle = self.idle.lock().unwrap();
+            (idle.streams.pop(), idle.generation)
         };
-        if let Err(error) = write_message(stream, &request) {
-            *slot = None;
+        let mut stream = match stream {
+            Some(stream) => stream,
+            None => open_rpc_stream(&self.root)?,
+        };
+        if let Err(error) = write_message(&mut stream, &request) {
             return Err(self.broken_exchange(error));
         }
-        let response = match read_message(stream) {
+        // A timed-out or broken exchange leaves the stream mid-reply, so it
+        // is not kept: its late answer would be read as the next request's
+        // reply.
+        let response = match read_message(&mut stream) {
             Ok(response) => response,
             Err(error) => {
-                // A timed-out or broken exchange leaves the stream mid-reply:
-                // its late answer would be read as the next request's reply.
-                let stream = slot.take();
                 // A host that is gone is reported as such, so callers can
                 // tell it from a request that failed (`is_host_unavailable`).
                 if !timed_out(&error) {
                     return Err(self.broken_exchange(error));
                 }
-                if let (Some(late), Some(mut stream)) = (late, stream)
-                    && timed_out(&error)
-                {
+                if let Some(late) = late {
                     let _ = std::thread::Builder::new()
                         .name("termy-session-late-reply".into())
                         .spawn(move || {
@@ -174,7 +191,11 @@ impl Connection {
                 return Err(error);
             }
         };
-        drop(slot);
+        let mut idle = self.idle.lock().unwrap();
+        if idle.generation == generation && idle.streams.len() < MAX_IDLE_STREAMS {
+            idle.streams.push(stream);
+        }
+        drop(idle);
         match response {
             Response::Error(error) => Err(RequestFailed(error).into()),
             response => Ok(response),
@@ -197,9 +218,11 @@ impl Connection {
         }
     }
 
-    /// Drops the open stream, so the next request connects anew.
+    /// Drops the open streams, so the next request connects anew.
     fn reset(&self) {
-        *self.stream.lock().unwrap() = None;
+        let mut idle = self.idle.lock().unwrap();
+        idle.streams.clear();
+        idle.generation += 1;
     }
 }
 
@@ -588,8 +611,7 @@ impl SessionClient {
                                         .pending
                                         .lock()
                                         .unwrap()
-                                        .hosts
-                                        .push_back((id, request, deadline));
+                                        .push_host_request(id, request, deadline);
                                 }
                             }
                             if tab_chrome {
@@ -676,7 +698,7 @@ impl SessionClient {
             id: id.to_owned(),
             queries: Connection {
                 root: self.root.clone(),
-                stream: Mutex::new(None),
+                idle: Mutex::default(),
             },
             rpc,
             host: Arc::clone(&self.connection),
@@ -953,6 +975,10 @@ fn restores_state(event: &TerminalEvent) -> bool {
     )
 }
 
+/// The most clipboard requests a terminal has waiting for an answer
+/// (`MAX_WAITING` in the engine's deferred clipboard queue).
+const MAX_HOST_REQUESTS: usize = 32;
+
 #[derive(Default)]
 struct Pending {
     wakeup: bool,
@@ -979,6 +1005,17 @@ impl Pending {
 
     fn extend_replay(&mut self, events: Vec<TerminalEvent>) -> anyhow::Result<()> {
         self.extend_events(events.into_iter().filter(restores_state).collect())
+    }
+
+    /// Queues a clipboard request for the UI. A host never has more than
+    /// [`MAX_HOST_REQUESTS`] waiting, but one that a reset cancelled may
+    /// already be on its way, so the oldest is dropped beyond that: the host
+    /// denies it at its deadline if it still waits (audit M-1).
+    fn push_host_request(&mut self, id: u64, request: RemoteHostRequest, deadline: Instant) {
+        if self.hosts.len() >= MAX_HOST_REQUESTS {
+            self.hosts.pop_front();
+        }
+        self.hosts.push_back((id, request, deadline));
     }
 
     /// The clipboard requests to run now, oldest first. Expired ones were

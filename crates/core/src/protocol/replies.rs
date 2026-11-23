@@ -62,6 +62,11 @@ pub trait TerminalReplyHost {
     ) -> Result<(), TerminalClipboardRequest> {
         Err(request)
     }
+
+    /// The terminal dropped these deferred requests without a reply, because
+    /// a reset (RIS or a kitty clipboard reset) may have started another
+    /// program. Answers to them are ignored, so the host can forget them.
+    fn clipboard_requests_cancelled(&mut self, _ids: &[u64]) {}
 }
 
 /// A clipboard operation a program asked for, for a [`TerminalReplyHost`]

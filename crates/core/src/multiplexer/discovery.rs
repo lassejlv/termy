@@ -129,25 +129,64 @@ pub fn is_host_unavailable(error: &anyhow::Error) -> bool {
         })
 }
 
-/// The session host directory for this user: `multiplexer` next to the config
-/// file. On Windows it is under `%LOCALAPPDATA%` instead, so the endpoint token
-/// stays on this machine rather than roaming with the `%APPDATA%` profile; a
-/// host that an older version started next to the config keeps being used
-/// while it runs.
+/// The session host directory for this user: one on this machine
+/// ([`machine_root`]) where the platform has one, else `multiplexer` next
+/// to the config file. A host that an older version started next to the
+/// config keeps being used while it runs, so an upgrade does not strand its
+/// terminals.
 pub fn default_root() -> Option<PathBuf> {
     let legacy =
         crate::config_core::config_path().and_then(|path| Some(path.parent()?.join("multiplexer")));
-    #[cfg(windows)]
-    if let Some(local) = std::env::var_os("LOCALAPPDATA")
+    let Some(local) = machine_root(legacy.as_deref()) else {
+        return legacy;
+    };
+    Some(match legacy {
+        Some(legacy) if host_is_running(&legacy) => legacy,
+        _ => local,
+    })
+}
+
+/// On Windows, under `%LOCALAPPDATA%`, so the endpoint token stays on this
+/// machine rather than roaming with the `%APPDATA%` profile.
+#[cfg(windows)]
+fn machine_root(_legacy: Option<&Path>) -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
         .filter(|value| !value.is_empty())
         .map(|value| PathBuf::from(value).join("termy").join("multiplexer"))
-    {
-        return Some(match legacy {
-            Some(legacy) if host_is_running(&legacy) => legacy,
-            _ => local,
-        });
+}
+
+/// On Linux, in `$XDG_RUNTIME_DIR`, which belongs to this machine and login.
+/// A config directory may be shared by machines (a network home) or by
+/// containers with their own network (a devcontainer), and the host only
+/// listens on its own loopback, so a host elsewhere would hold the directory
+/// while nothing here can reach it (audit M-3). Without a runtime directory,
+/// the directory next to the config is named after this machine.
+#[cfg(target_os = "linux")]
+fn machine_root(legacy: Option<&Path>) -> Option<PathBuf> {
+    if let Some(runtime) = dirs::runtime_dir() {
+        return Some(runtime.join("termy").join("multiplexer"));
     }
-    legacy
+    let hostname: String = fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()?
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if hostname.is_empty() {
+        return None;
+    }
+    Some(legacy?.with_file_name(format!("multiplexer-{hostname}")))
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn machine_root(_legacy: Option<&Path>) -> Option<PathBuf> {
+    None
 }
 
 /// Whether a session host holds the host lock in `root`. Creates nothing, so
@@ -956,6 +995,10 @@ pub fn connect_or_start(root: &Path, executable: &Path) -> anyhow::Result<Sessio
             );
         }
         if Instant::now() >= deadline {
+            // It may still start, or exit later; either way it is reaped.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
             bail!(
                 "background terminal host did not become ready; it was left running{}",
                 host_log_tail(&root, log_start)

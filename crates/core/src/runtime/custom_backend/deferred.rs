@@ -89,14 +89,17 @@ impl DeferredClipboard {
         self.waiting -= 1;
     }
 
-    /// Drops every waiting request without a reply.
-    fn cancel(&mut self) {
+    /// Drops every waiting request without a reply, and returns their ids.
+    fn cancel(&mut self) -> Vec<u64> {
+        let mut cancelled = Vec::new();
         for slot in &mut self.slots {
-            if matches!(slot, Slot::Waiting(..)) {
+            if let Slot::Waiting(id, _) = slot {
+                cancelled.push(*id);
                 *slot = Slot::Ready(Vec::new());
             }
         }
         self.waiting = 0;
+        cancelled
     }
 
     /// The writes now due: everything before the first waiting request.
@@ -175,13 +178,20 @@ impl CustomBackend {
         self.write_slots(due);
     }
 
-    /// Drops the waiting requests, after a reset, and writes what queued
-    /// behind them.
-    pub(super) fn cancel_clipboard_requests(&self) {
-        let mut queue = self.deferred_clipboard();
-        queue.cancel();
-        let due = queue.take_due();
-        self.write_slots(due);
+    /// Drops the waiting requests, after a reset, writes what queued behind
+    /// them, and tells `host` it can forget them.
+    pub(super) fn cancel_clipboard_requests(&self, host: &mut impl TerminalReplyHost) {
+        let cancelled = {
+            let mut queue = self.deferred_clipboard();
+            let cancelled = queue.cancel();
+            let due = queue.take_due();
+            self.write_slots(due);
+            cancelled
+        };
+        // Without the queue's lock, as when the request was deferred.
+        if !cancelled.is_empty() {
+            host.clipboard_requests_cancelled(&cancelled);
+        }
     }
 
     fn deferred_clipboard(&self) -> std::sync::MutexGuard<'_, DeferredClipboard> {
@@ -259,6 +269,7 @@ mod tests {
     #[derive(Default)]
     struct DeferringHost {
         ids: Vec<u64>,
+        cancelled: Vec<u64>,
         replies: Vec<u8>,
     }
 
@@ -276,6 +287,9 @@ mod tests {
         ) -> Result<(), TerminalClipboardRequest> {
             self.ids.push(id);
             Ok(())
+        }
+        fn clipboard_requests_cancelled(&mut self, ids: &[u64]) {
+            self.cancelled.extend_from_slice(ids);
         }
     }
 
@@ -298,6 +312,24 @@ mod tests {
     fn drain(terminal: &Terminal, host: &mut DeferringHost) -> String {
         terminal.drain_events(host);
         String::from_utf8(std::mem::take(&mut host.replies)).unwrap()
+    }
+
+    /// Audit M-1: a reset tells the host which waiting requests it dropped,
+    /// so a host that parks them can forget them.
+    #[test]
+    fn a_reset_reports_the_requests_it_cancelled() {
+        let terminal = terminal();
+        let mut host = DeferringHost::default();
+        terminal.feed_output(b"\x1b]52;c;?\x07\x1b]52;c;?\x07");
+        drain(&terminal, &mut host);
+        terminal.complete_clipboard_request(host.ids[0], load("one"));
+        assert_eq!(drain(&terminal, &mut host), "\x1b]52;c;b25l\x1b\\");
+        terminal.feed_output(b"\x1b]52;c;?\x07\x1bc");
+        drain(&terminal, &mut host);
+        assert_eq!(host.cancelled, host.ids[1..]);
+        terminal.feed_output(b"\x1bc");
+        drain(&terminal, &mut host);
+        assert_eq!(host.cancelled.len(), 2, "nothing was waiting");
     }
 
     /// Audit B7: `OSC 52 ?` then `CSI c` must get its replies in that order,

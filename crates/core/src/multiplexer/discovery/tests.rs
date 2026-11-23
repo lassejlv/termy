@@ -370,6 +370,47 @@ fn client_rejects_listener_that_does_not_know_the_token() {
     );
 }
 
+/// Audit L-16: a host that misses the start-up deadline is still reaped
+/// when it exits, rather than staying a zombie of this process.
+#[cfg(unix)]
+#[test]
+fn a_host_that_misses_the_start_deadline_is_reaped() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = private_tempdir();
+    let executable = temp.path().join("slow-host");
+    fs::write(
+        &executable,
+        "#!/bin/sh\necho $$ > \"$2/slow-host.pid\"\nexec sleep 6\n",
+    )
+    .unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let root = temp.path().join("host");
+    let Err(error) = connect_or_start(&root, &executable) else {
+        panic!("the slow host became ready");
+    };
+    assert!(
+        format!("{error:#}").contains("did not become ready"),
+        "{error:#}"
+    );
+    let pid = fs::read_to_string(root.join("slow-host.pid")).unwrap();
+    let state = || {
+        let output = Command::new("ps")
+            .args(["-o", "stat=", "-p", pid.trim()])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !state().is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the host was not reaped: state {}",
+            state()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 #[test]
 fn start_up_errors_include_the_new_host_output() {
     let temp = private_tempdir();

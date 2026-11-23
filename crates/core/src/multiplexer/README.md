@@ -208,7 +208,9 @@ Shutdown waits for every pane: each worker hangs up its shell's process group,
 kills that group if the shell still runs 250 ms later, and waits until the
 shell is reaped, so programs in the group that ignore SIGHUP do not outlive the
 host. Jobs an interactive shell put in process groups of their own get only
-the hang-up, as when a tab closes.
+the hang-up, as when a tab closes. On Unix the host process shuts down this
+way on SIGTERM, SIGINT and SIGHUP too (`termy mux shutdown --force`, a logout,
+`systemctl stop`); only SIGKILL skips it.
 
 Errors are classified. A request the host answers with `Response::Error`, a
 timed-out request, a viewport wait that times out or an input command that

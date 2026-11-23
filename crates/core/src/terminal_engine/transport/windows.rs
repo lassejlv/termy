@@ -305,7 +305,12 @@ struct LaunchCommand {
 pub(crate) struct Transport {
     writer: WriterHandle,
     child_pid: u32,
+    /// Disconnects once the control thread has closed the pseudoconsole.
+    terminated: Mutex<mpsc::Receiver<()>>,
 }
+
+/// How long [`Transport::terminate_and_wait`] waits for the control thread.
+const TERMINATE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Clone)]
 struct WriterHandle {
@@ -1014,6 +1019,7 @@ impl Transport {
         let (writer, writer_receiver) = WriterHandle::channel(control.clone());
         let gate = Arc::new(StartGate::new());
         let (control_finished_sender, control_finished_receiver) = mpsc::channel();
+        let (terminated_sender, terminated_receiver) = mpsc::channel::<()>();
         let resources = Arc::new(Mutex::new(Some(ChildResources::new(
             process,
             process_info.process_id,
@@ -1098,6 +1104,7 @@ impl Transport {
                     run_control(resources, control_wake, control_state, &exit_status);
                 }
                 let _ = control_finished_sender.send(());
+                drop(terminated_sender);
             });
         if let Err(error) = control_thread {
             gate.release(StartState::Cancelled);
@@ -1112,6 +1119,7 @@ impl Transport {
         Ok(Self {
             writer,
             child_pid: process_info.process_id,
+            terminated: Mutex::new(terminated_receiver),
         })
     }
 
@@ -1146,10 +1154,17 @@ impl Transport {
         self.child_pid
     }
 
-    /// The Unix transport waits here for its child to end. Closing a
-    /// pseudoconsole ends the shell and the job's console programs without a
-    /// timer, so dropping the transport is enough.
-    pub(crate) fn terminate_and_wait(&self) {}
+    /// Ends the child and waits for the control thread, which gives the shell
+    /// its close grace and then ends the job's console programs: a process
+    /// about to exit (the session host) would cut that short (audit L-17).
+    pub(crate) fn terminate_and_wait(&self) {
+        self.writer.close();
+        let _ = self
+            .terminated
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .recv_timeout(TERMINATE_WAIT);
+    }
 
     /// Name of the newest process the shell has started, following
     /// descendants down, such as `vim.exe`; the shell's own name when it runs
