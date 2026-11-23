@@ -112,6 +112,26 @@ import Testing
         #expect(render == .json)
     }
 
+    @Test func leafsBlockRename() throws {
+        let (method, params, render) = try call(["block", "rename", "-s", "session:s", "block:b", "Example Domain"])
+        #expect(method == "session.set_block_label")
+        #expect(params["session_id"] as? String == "session:s")
+        #expect(params["block_id"] as? String == "block:b")
+        #expect(params["label"] as? String == "Example Domain")
+        #expect(render == .none)
+        // Without a block: -b, or the pane it runs in; words join.
+        let (_, own, _) = try call(["block", "set-label", "-b", "block:c", "my", "pane"])
+        #expect(own["block_id"] as? String == "block:c")
+        #expect(own["label"] as? String == "my pane")
+    }
+
+    @Test func leafsKeymap() throws {
+        let (method, _, render) = try call(["keymap", "--json"])
+        #expect(method == "client.keymap")
+        #expect(render == .json)
+        #expect(try call(["keymap"]).2 == .keymap)
+    }
+
     @Test func leafsSplit() throws {
         let (method, params, render) = try call([
             "split", "-s", "session:s", "-b", "block:b", "-c", "/tmp", "--split=right", "--focus=false",

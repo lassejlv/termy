@@ -254,7 +254,31 @@ final class PluginAPI {
         ]
         info["owner"] = tab?.owners[pane.id] ?? (detachedOwner[pane.id]) ?? PluginClients.appClientID
         if let tab { info["window_id"] = PluginID.make("window", tab.id) }
+        if let screen = screenGeometry(of: pane) { info["screen"] = screen }
         return info
+    }
+
+    /// Where a pane is on screen, for a plugin that places a window of its
+    /// own over it (such as a browser). Only for a pane that's showing.
+    /// Rects are `[x, y, width, height]` in points with the origin at the
+    /// top left of the main display, as the window server reports window
+    /// bounds; `window_number` is the window's number there.
+    func screenGeometry(of pane: PaneView) -> [String: Any]? {
+        guard let window = pane.window, window.isVisible, !pane.isHiddenOrHasHiddenAncestor,
+              pane.bounds.width > 0, pane.bounds.height > 0 else { return nil }
+        let top = NSScreen.screens.first?.frame.maxY ?? 0
+        func onScreen(_ view: NSView) -> [Double] {
+            let rect = window.convertToScreen(view.convert(view.bounds, to: nil))
+            return [rect.minX, top - rect.maxY, rect.width, rect.height].map { (Double($0) * 100).rounded() / 100 }
+        }
+        return [
+            "window_number": window.windowNumber,
+            "frame": onScreen(pane),
+            "content_frame": onScreen(pane.terminal),
+            "scale": Double(window.backingScaleFactor),
+            "visible": window.occlusionState.contains(.visible),
+            "key": window.isKeyWindow,
+        ]
     }
 
     static let hostID: String = {

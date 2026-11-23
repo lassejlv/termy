@@ -140,7 +140,7 @@ public enum PluginCLI {
     Resources:
       session  Manage sessions (ls, inspect, rename, close)
       window   Manage windows (ls, new, rename, close)
-      block    Manage blocks (ls, inspect, call, close)
+      block    Manage blocks (ls, inspect, call, rename, close)
 
     Automation:
       wait     Wait for a block to end
@@ -184,7 +184,9 @@ public enum PluginCLI {
         case "wait": return try wait(args)
         case "api": return try api(args)
         case "actions": return try actions(args)
-        case "keymap": return .call(method: "client.keymap", params: JSONObject(), render: .keymap)
+        case "keymap":
+            let parsed = try parse(args, booleans: ["json": []])
+            return .call(method: "client.keymap", params: JSONObject(), render: parsed.flags.contains("json") ? .json : .keymap)
         case "do": return try perform(args)
         case "config": return try config(args)
         case "whoami": return .call(method: "server.whoami", params: JSONObject(), render: .json)
@@ -543,7 +545,7 @@ public enum PluginCLI {
     }
 
     private static func block(_ args: [String]) throws -> Plan {
-        guard let sub = args.first else { throw Failure("block needs a command: ls, inspect, call, close") }
+        guard let sub = args.first else { throw Failure("block needs a command: ls, inspect, call, rename, close") }
         let rest = Array(args.dropFirst())
         switch sub {
         case "ls", "list":
@@ -562,6 +564,15 @@ public enum PluginCLI {
             params["method"] = words.removeFirst()
             params["args"] = try arguments(words)
             return .call(method: "block.method", params: params, render: .json)
+        case "rename", "set-label":
+            let parsed = try parse(rest, values: ["session": session, "block": blockFlag])
+            var params = target(parsed)
+            var words = parsed.positional
+            // `rename BLOCK LABEL`, or `rename LABEL` for -b or this pane.
+            if words.count >= 2, words[0].hasPrefix("block:") { params["block_id"] = words.removeFirst() }
+            guard !words.isEmpty else { throw Failure("block rename needs a label (an empty label clears it)") }
+            params["label"] = words.joined(separator: " ")
+            return .call(method: "session.set_block_label", params: params, render: .none)
         case "close":
             let parsed = try parse(rest, values: ["session": session, "block": blockFlag])
             var params = target(parsed)
