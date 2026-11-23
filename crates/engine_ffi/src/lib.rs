@@ -39,6 +39,10 @@ pub use text::TermyEngineTextRange;
 /// Bumped on every incompatible change to `termy_engine.h`.
 pub const TERMY_ENGINE_ABI_VERSION: u32 = 2;
 
+/// Cells one `termy_engine_read_lines` call returns at most (128 MiB of
+/// `TermyEngineCell`), so a large read cannot fail to allocate.
+pub const TERMY_ENGINE_READ_LINES_MAX_CELLS: u32 = 4 * 1024 * 1024;
+
 /// `scrollback_rows` value that leaves history bounded by bytes alone.
 pub const TERMY_ENGINE_SCROLLBACK_UNLIMITED: u32 = u32::MAX;
 

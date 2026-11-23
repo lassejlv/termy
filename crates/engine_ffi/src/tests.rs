@@ -555,6 +555,28 @@ fn scrollbar_and_viewport_scrolling() {
 }
 
 #[test]
+fn read_lines_caps_cells_per_call() {
+    let mut options = termy_engine_options_default();
+    options.cols = 4096;
+    options.rows = 1;
+    options.scrollback_rows = 2048;
+    options.scrollback_bytes = 64 * 1024 * 1024;
+    let engine = Handle::with_options(&options);
+    engine.feed(&b"x\r\n".repeat(2048));
+    let history = engine.state().history_size;
+    let mut frame = TermyEngineFrame::default();
+    // SAFETY: live handle and out struct.
+    let status =
+        unsafe { termy_engine_read_lines(engine.0, -i64::from(history), u32::MAX, &raw mut frame) };
+    assert_eq!(status, TermyEngineStatus::Ok);
+    assert_eq!(frame.cols, 4096);
+    let max_rows = TERMY_ENGINE_READ_LINES_MAX_CELLS / 4096;
+    assert!(history > max_rows, "history {history} must exceed one call");
+    assert_eq!(u32::from(frame.rows), max_rows);
+    assert_eq!(frame.cells_len, TERMY_ENGINE_READ_LINES_MAX_CELLS as usize);
+}
+
+#[test]
 fn read_lines_caps_rows_to_the_frame_row_type() {
     let mut options = termy_engine_options_default();
     options.cols = 2;

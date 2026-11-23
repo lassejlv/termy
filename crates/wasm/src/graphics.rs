@@ -25,9 +25,12 @@ pub struct GraphicsSnapshot {
 
 impl GraphicsSnapshot {
     pub fn capture(&mut self, engine: &mut Engine, cell: (f32, f32)) -> Vec<f64> {
-        let (_, placements) = engine.graphics_snapshot();
         self.images.clear();
         self.next_deadline = None;
+        if !crate::is_positive_size(cell.0) || !crate::is_positive_size(cell.1) {
+            return Vec::new();
+        }
+        let (_, placements) = engine.graphics_snapshot();
         let mut out = Vec::with_capacity(placements.len() * PLACEMENT_STRIDE);
         for placement in placements {
             self.next_deadline = match (self.next_deadline, placement.animation_deadline) {

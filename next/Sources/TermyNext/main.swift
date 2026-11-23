@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Termy
 import TermyNextCore
 
 // `bin/rex` (in every pane's PATH) runs this binary as Rex's command-line
@@ -14,6 +15,9 @@ if let name = arguments.first.map({ ($0 as NSString).lastPathComponent }), name 
     PluginCLI.program = name
     exit(PluginCLIRunner.main(Array(arguments.dropFirst())))
 }
+
+// Fail at launch, not on the first terminal, when libtermy does not match.
+TermyABI.requireCompatibleLibrary()
 
 let app = NSApplication.shared
 let delegate = MainActor.assumeIsolated { AppDelegate() }

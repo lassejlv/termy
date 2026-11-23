@@ -127,7 +127,7 @@ fn canonical_rust_type(raw_type: &str) -> String {
     }
 
     match raw_type {
-        "bool" => "bool".to_string(),
+        "bool" | "TermyFfiBool" => "bool".to_string(),
         "i32" => "i32".to_string(),
         "u8" => "u8".to_string(),
         "u16" => "u16".to_string(),
@@ -614,4 +614,20 @@ fn c_header_enums_match_rust_repr_c_enums() {
         "termy.h enum values drifted from Rust repr(C) types: {mismatches:#?}"
     );
     assert!(!rust_enums.is_empty(), "expected Rust repr(C) enums");
+}
+
+#[test]
+fn c_header_abi_version_matches_the_library() {
+    let header = include_str!("../include/termy.h");
+    let define = header
+        .lines()
+        .find_map(|line| line.strip_prefix("#define TERMY_ABI_VERSION "))
+        .expect("termy.h defines TERMY_ABI_VERSION");
+    let header_version: u32 = define
+        .trim()
+        .parse()
+        .expect("TERMY_ABI_VERSION is a number");
+
+    assert_eq!(header_version, termy_core::ffi::TERMY_ABI_VERSION);
+    assert_eq!(termy_core::ffi::termy_abi_version(), header_version);
 }

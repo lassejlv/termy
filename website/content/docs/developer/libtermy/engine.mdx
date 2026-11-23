@@ -207,7 +207,9 @@ Resolve colors with `termy_engine_effective_colors`, after setting your
 theme with `termy_engine_set_default_colors`.
 
 `termy_engine_read_lines` reads any buffer lines, scrollback included, in the
-same cell format.
+same cell format. One call returns at most 65,535 rows and
+`TERMY_ENGINE_READ_LINES_MAX_CELLS` (4,194,304) cells; read the rest from
+`first_line + rows`.
 
 ## State and queries
 

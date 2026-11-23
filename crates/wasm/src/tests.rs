@@ -199,6 +199,28 @@ fn kitty_graphics_rgba_transmission_creates_a_placement() {
 }
 
 #[test]
+fn invalid_cell_and_font_sizes_produce_no_geometry() {
+    let mut engine = TermyEngine::new(10, 4, 0);
+    engine.set_cell_pixels(10.0, 20.0);
+    engine.feed(b"\x1b_Ga=T,f=32,s=1,v=1,i=7;/wAA/w==\x1b\\");
+    assert_eq!(engine.read_graphics(10.0, 20.0).len(), PLACEMENT_STRIDE);
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 0.0, -10.0] {
+        assert!(
+            engine.read_graphics(bad, 20.0).is_empty(),
+            "cell width {bad}"
+        );
+        assert!(
+            engine.read_graphics(10.0, bad).is_empty(),
+            "cell height {bad}"
+        );
+        assert!(engine.graphics_image(0).is_none());
+        assert!(glyph_plan('─', [None; 4], [bad, 18.0, 14.0]).is_none());
+        assert!(glyph_plan('─', [None; 4], [9.0, bad, 14.0]).is_none());
+        assert!(glyph_plan('─', [None; 4], [9.0, 18.0, bad]).is_none());
+    }
+}
+
+#[test]
 fn line_text_range_slices_by_column() {
     let mut engine = TermyEngine::new(10, 2, 0);
     engine.feed("a界b".as_bytes());

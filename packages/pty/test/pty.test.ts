@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, test } from 'vitest'
 import pty, { type IExitEvent, type IPty, Terminal, isSupported, spawn } from '../src/index.ts'
+import { EVENT_DATA, EVENT_EXIT, loadNative } from '../src/native.ts'
 import { parseCommandLine } from '../src/terminal.ts'
 
 const isWindows = process.platform === 'win32'
@@ -304,6 +305,24 @@ describe.skipIf(isWindows)('unix', () => {
 
   test('rejects uid and gid', () => {
     expect(() => spawn('/bin/sh', [], { uid: 0 })).toThrow('does not support the uid option')
+  })
+
+  test('native destroy before exit still delivers the exit', async () => {
+    const { NativePty } = loadNative()
+    const exit = await new Promise<number | null>((resolve) => {
+      let destroyed = false
+      const native = new NativePty(
+        { file: '/bin/sh', args: ['-c', 'echo ready; sleep 30'], env: ['PATH', process.env.PATH ?? ''], cols: 80, rows: 24 },
+        (event, _data, _code, signal) => {
+          if (event === EVENT_DATA && !destroyed) {
+            destroyed = true
+            native.destroy()
+          }
+          if (event === EVENT_EXIT) resolve(signal)
+        },
+      )
+    })
+    expect(exit).toBe(1)
   })
 })
 

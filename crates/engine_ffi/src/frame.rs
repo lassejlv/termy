@@ -464,10 +464,13 @@ pub unsafe extern "C" fn termy_engine_read_lines(
         buffers.shown = None;
         let cols = engine.size().cols;
         let first = first_line.max(-(engine.history_size() as i64));
-        // `rows` is a u16 in the frame, so one call reads at most 65,535 rows.
+        // `rows` is a u16 in the frame, so one call reads at most 65,535 rows,
+        // and at most TERMY_ENGINE_READ_LINES_MAX_CELLS cells.
+        let max_rows = (crate::TERMY_ENGINE_READ_LINES_MAX_CELLS as usize / cols.max(1))
+            .clamp(1, usize::from(u16::MAX));
         let last = (first_line.saturating_add(i64::from(count)))
             .min(engine.size().rows as i64)
-            .min(first.saturating_add(i64::from(u16::MAX)));
+            .min(first.saturating_add(max_rows as i64));
         let lines = usize::try_from(last.saturating_sub(first)).unwrap_or(0);
         buffers.clear(lines.saturating_mul(cols));
         let mut rows = 0_u16;

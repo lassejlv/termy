@@ -9,6 +9,21 @@
 extern "C" {
 #endif
 
+/*
+ * ABI VERSION. The version query below returns the TERMY_ABI_VERSION the
+ * library was built with. Check that it equals TERMY_ABI_VERSION at startup,
+ * before any other call: a library built from another header can lay out the
+ * structs below differently. Structs, enums and signatures change only with
+ * that version.
+ *
+ * Fields a host writes for libtermy that are declared bool (keystroke and
+ * mouse modifiers, search options, clipboard responses) are read as a byte,
+ * so any nonzero value means true.
+ */
+#define TERMY_ABI_VERSION 1
+
+uint32_t termy_abi_version(void);
+
 typedef enum {
   TERMY_FFI_OK = 0,
   TERMY_FFI_NULL = 1,

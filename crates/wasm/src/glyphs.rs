@@ -18,6 +18,9 @@ pub fn glyph_plan(
     neighbors: [Option<char>; 4],
     metrics: [f32; 3],
 ) -> Option<Vec<f32>> {
+    if !metrics.iter().copied().all(crate::is_positive_size) {
+        return None;
+    }
     let plan = terminal_glyph_plan(
         character,
         TerminalGlyphMetrics {

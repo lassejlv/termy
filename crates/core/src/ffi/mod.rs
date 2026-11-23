@@ -195,6 +195,25 @@ pub struct TermyFfiClipboardReadRequest {
     pub can_remember_permission: bool,
 }
 
+/// A C `bool` the host writes, read as a byte: any nonzero value is true, so
+/// a host that writes another byte cannot produce an invalid Rust `bool`.
+/// `termy.h` declares these fields `bool`; the layout is the same.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TermyFfiBool(pub u8);
+
+impl TermyFfiBool {
+    pub const fn get(self) -> bool {
+        self.0 != 0
+    }
+}
+
+impl From<bool> for TermyFfiBool {
+    fn from(value: bool) -> Self {
+        Self(u8::from(value))
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermyFfiClipboardReadResponse {
@@ -203,7 +222,7 @@ pub struct TermyFfiClipboardReadResponse {
     pub available_formats_len: usize,
     pub contents_ptr: *const TermyFfiClipboardContent,
     pub contents_len: usize,
-    pub remember_permission: bool,
+    pub remember_permission: TermyFfiBool,
 }
 
 #[repr(C)]
@@ -222,7 +241,7 @@ pub struct TermyFfiClipboardWriteRequest {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermyFfiClipboardWriteResponse {
     pub status: u32,
-    pub remember_permission: bool,
+    pub remember_permission: TermyFfiBool,
 }
 
 pub type TermyFfiUserData = *mut c_void;
@@ -444,8 +463,8 @@ pub struct TermyFfiSearchBatch {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermyFfiSearchOptions {
-    pub case_sensitive: bool,
-    pub regex: bool,
+    pub case_sensitive: TermyFfiBool,
+    pub regex: TermyFfiBool,
 }
 
 #[repr(C)]
@@ -591,11 +610,11 @@ pub struct TermyFfiTerminalOptions {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TermyFfiKeystroke {
-    pub control: bool,
-    pub alt: bool,
-    pub shift: bool,
-    pub platform: bool,
-    pub function: bool,
+    pub control: TermyFfiBool,
+    pub alt: TermyFfiBool,
+    pub shift: TermyFfiBool,
+    pub platform: TermyFfiBool,
+    pub function: TermyFfiBool,
     pub key_ptr: *const u8,
     pub key_len: usize,
     pub key_char_ptr: *const u8,
@@ -610,9 +629,9 @@ pub struct TermyFfiMouseInput {
     pub button: u32,
     pub col: usize,
     pub row: usize,
-    pub control: bool,
-    pub alt: bool,
-    pub shift: bool,
+    pub control: TermyFfiBool,
+    pub alt: TermyFfiBool,
+    pub shift: TermyFfiBool,
 }
 
 struct EmptyReplyHost;
@@ -749,7 +768,7 @@ impl TerminalReplyHost for FfiClipboardReplyHost {
 
         match response.status {
             FFI_CLIPBOARD_RESULT_SUCCESS => TerminalClipboardWriteResult::Success {
-                remember_permission: response.remember_permission,
+                remember_permission: response.remember_permission.get(),
             },
             FFI_CLIPBOARD_RESULT_DENIED => TerminalClipboardWriteResult::Denied,
             FFI_CLIPBOARD_RESULT_UNSUPPORTED => TerminalClipboardWriteResult::Unsupported,
@@ -848,7 +867,7 @@ unsafe fn clipboard_read_result_from_ffi(
             TerminalClipboardReadResult::Success {
                 available_formats,
                 contents,
-                remember_permission: response.remember_permission,
+                remember_permission: response.remember_permission.get(),
             }
         }
         FFI_CLIPBOARD_RESULT_DENIED => TerminalClipboardReadResult::Denied,
@@ -1535,6 +1554,16 @@ unsafe fn terminal_new_with_runtime_config(
         }));
     }
     TermyFfiStatus::Ok
+}
+
+/// Bumped on every incompatible change to `termy.h`: a struct or enum
+/// layout, a function signature, or a removed function. Hosts compare
+/// `termy_abi_version()` with the header's `TERMY_ABI_VERSION` at startup.
+pub const TERMY_ABI_VERSION: u32 = 1;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn termy_abi_version() -> u32 {
+    ffi_guard(TERMY_ABI_VERSION, || TERMY_ABI_VERSION)
 }
 
 #[unsafe(no_mangle)]
@@ -3357,11 +3386,11 @@ unsafe fn termy_terminal_encode_key_impl(
         keystroke_to_input_with_options(
             &TermyKeystroke {
                 modifiers: TermyModifiers {
-                    control: keystroke.control,
-                    alt: keystroke.alt,
-                    shift: keystroke.shift,
-                    platform: keystroke.platform,
-                    function: keystroke.function,
+                    control: keystroke.control.get(),
+                    alt: keystroke.alt.get(),
+                    shift: keystroke.shift.get(),
+                    platform: keystroke.platform.get(),
+                    function: keystroke.function.get(),
                 },
                 key,
                 key_char,
@@ -3405,9 +3434,9 @@ pub unsafe extern "C" fn termy_terminal_encode_mouse(
                     row: input.row,
                 },
                 TerminalMouseModifiers {
-                    shift: input.shift,
-                    alt: input.alt,
-                    control: input.control,
+                    shift: input.shift.get(),
+                    alt: input.alt.get(),
+                    control: input.control.get(),
                 },
             )
         };
@@ -3958,8 +3987,13 @@ pub unsafe extern "C" fn termy_terminal_kitty_graphics_placements(
             return TermyFfiStatus::Null;
         }
 
-        let terminal = unsafe { &mut *terminal };
-        unsafe { *out_batch = kitty_graphics_batch(terminal, None) };
+        unsafe {
+            *out_batch = kitty_graphics_batch(
+                &(*terminal).terminal,
+                &mut (*terminal).kitty_png_exports,
+                None,
+            );
+        }
         TermyFfiStatus::Ok
     })
 }
@@ -3988,8 +4022,13 @@ pub unsafe extern "C" fn termy_terminal_kitty_graphics_placements_rgba(
                 .copied()
                 .collect()
         };
-        let terminal = unsafe { &mut *terminal };
-        unsafe { *out_batch = kitty_graphics_batch(terminal, Some(&known)) };
+        unsafe {
+            *out_batch = kitty_graphics_batch(
+                &(*terminal).terminal,
+                &mut (*terminal).kitty_png_exports,
+                Some(&known),
+            );
+        }
         TermyFfiStatus::Ok
     })
 }
@@ -3997,12 +4036,17 @@ pub unsafe extern "C" fn termy_terminal_kitty_graphics_placements_rgba(
 /// The terminal's placements. With `known` (the RGBA export), images in it
 /// carry no pixels and the others carry RGBA when they have it; without, every
 /// image carries its PNG.
+///
+/// Takes the handle's fields rather than the handle: a `&mut TermyFfiTerminal`
+/// would also cover the wake channel that `termy_terminal_wait_for_wakeup`
+/// reads on another thread.
 fn kitty_graphics_batch(
-    terminal: &mut TermyFfiTerminal,
+    terminal: &Terminal,
+    png_exports: &mut Vec<std::sync::Arc<Vec<u8>>>,
     known: Option<&std::collections::HashSet<TermyFfiKittyImageKey>>,
 ) -> TermyFfiKittyGraphicsBatch {
-    let (revision, placements) = terminal.terminal.kitty_graphics_snapshot();
-    let size = terminal.terminal.size();
+    let (revision, placements) = terminal.kitty_graphics_snapshot();
+    let size = terminal.size();
     // An image may have thousands of Unicode placeholder placements. They
     // all share one C copy of its pixels, which the batch frees once.
     let mut pixel_exports = HashMap::new();
@@ -4036,7 +4080,7 @@ fn kitty_graphics_batch(
         })
         .collect::<Vec<_>>();
     // Hold the encodings of images still placed until the next batch.
-    terminal.kitty_png_exports = exports;
+    *png_exports = exports;
     let (placements_ptr, placements_len, placements_capacity) = leak_vec(placements);
     TermyFfiKittyGraphicsBatch {
         revision,
@@ -4421,8 +4465,8 @@ pub unsafe extern "C" fn termy_terminal_search_with_options(
             (*terminal).terminal.search_shared_with_options(
                 query,
                 TermySearchOptions {
-                    case_sensitive: options.case_sensitive,
-                    regex: options.regex,
+                    case_sensitive: options.case_sensitive.get(),
+                    regex: options.regex.get(),
                 },
             )
         }
@@ -4487,8 +4531,8 @@ pub unsafe extern "C" fn termy_searcher_search(
             .search(
                 query,
                 TermySearchOptions {
-                    case_sensitive: options.case_sensitive,
-                    regex: options.regex,
+                    case_sensitive: options.case_sensitive.get(),
+                    regex: options.regex.get(),
                 },
             )
             .into_iter()
@@ -6109,8 +6153,8 @@ mod tests {
                     query.as_ptr(),
                     query.len(),
                     TermyFfiSearchOptions {
-                        case_sensitive: true,
-                        regex: false,
+                        case_sensitive: true.into(),
+                        regex: false.into(),
                     },
                     &mut batch,
                 )
@@ -6292,7 +6336,7 @@ mod tests {
 
         let key = b"tab";
         let keystroke = TermyFfiKeystroke {
-            shift: true,
+            shift: true.into(),
             key_ptr: key.as_ptr(),
             key_len: key.len(),
             event_kind: 1,
@@ -6329,7 +6373,7 @@ mod tests {
         let key = b"space";
         let key_char = "\u{a0}".as_bytes();
         let keystroke = TermyFfiKeystroke {
-            alt: true,
+            alt: true.into(),
             key_ptr: key.as_ptr(),
             key_len: key.len(),
             key_char_ptr: key_char.as_ptr(),
@@ -6348,6 +6392,108 @@ mod tests {
         assert_eq!(encoded, b"\x1b ");
 
         assert_eq!(unsafe { termy_buffer_free(bytes) }, TermyFfiStatus::Ok);
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn host_written_bools_read_any_nonzero_byte_as_true() {
+        let mut terminal = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_display_terminal_new(termy_size_default(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+
+        let key = b"tab";
+        let keystroke = TermyFfiKeystroke {
+            shift: TermyFfiBool(0xff),
+            key_ptr: key.as_ptr(),
+            key_len: key.len(),
+            event_kind: 1,
+            ..TermyFfiKeystroke::default()
+        };
+        let mut bytes = TermyFfiBytes::default();
+        assert_eq!(
+            unsafe { termy_terminal_encode_key(terminal, &keystroke, &mut bytes) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { slice::from_raw_parts(bytes.ptr, bytes.len) },
+            b"\x1b[Z"
+        );
+        assert_eq!(unsafe { termy_buffer_free(bytes) }, TermyFfiStatus::Ok);
+
+        unsafe {
+            (*terminal)
+                .terminal
+                .hydrate_output(b"\x1b[?1000h\x1b[?1006h");
+        }
+        let input = TermyFfiMouseInput {
+            kind: 1,
+            button: 1,
+            control: TermyFfiBool(2),
+            ..TermyFfiMouseInput::default()
+        };
+        let mut bytes = TermyFfiBytes::default();
+        assert_eq!(
+            unsafe { termy_terminal_encode_mouse(terminal, &input, &mut bytes) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { slice::from_raw_parts(bytes.ptr, bytes.len) },
+            b"\x1b[<16;1;1M"
+        );
+        assert_eq!(unsafe { termy_buffer_free(bytes) }, TermyFfiStatus::Ok);
+        assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
+    }
+
+    #[test]
+    fn kitty_placements_can_run_beside_a_wakeup_wait() {
+        struct Handle(*mut TermyFfiTerminal);
+        unsafe impl Send for Handle {}
+
+        let mut terminal = ptr::null_mut();
+        assert_eq!(
+            unsafe { termy_display_terminal_new(termy_size_default(), &mut terminal) },
+            TermyFfiStatus::Ok
+        );
+        let handle = Handle(terminal);
+        let waiter = std::thread::spawn(move || {
+            let handle = handle;
+            let mut woke = false;
+            assert_eq!(
+                unsafe { termy_terminal_wait_for_wakeup(handle.0, 10_000, &mut woke) },
+                TermyFfiStatus::Ok
+            );
+            woke
+        });
+        // Let the waiter block in the wait, which the header allows to overlap
+        // every serialized call. Under Miri this checks that the placement
+        // calls do not borrow the wake channel the waiter is reading.
+        std::thread::sleep(Duration::from_millis(50));
+        let mut batch = TermyFfiKittyGraphicsBatch::default();
+        assert_eq!(
+            unsafe { termy_terminal_kitty_graphics_placements(terminal, &mut batch) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { termy_kitty_graphics_batch_free(&mut batch) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe {
+                termy_terminal_kitty_graphics_placements_rgba(terminal, ptr::null(), 0, &mut batch)
+            },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { termy_kitty_graphics_batch_free(&mut batch) },
+            TermyFfiStatus::Ok
+        );
+        assert_eq!(
+            unsafe { termy_terminal_notify_wakeup(terminal) },
+            TermyFfiStatus::Ok
+        );
+        assert!(waiter.join().unwrap());
         assert_eq!(unsafe { termy_terminal_free(terminal) }, TermyFfiStatus::Ok);
     }
 

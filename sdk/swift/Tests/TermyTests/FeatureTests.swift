@@ -4,6 +4,10 @@ import Testing
 
 @Suite("Search, links, graphics, and config")
 struct FeatureTests {
+    @Test func loadedLibtermyMatchesTheHeaderABI() {
+        TermyABI.requireCompatibleLibrary()
+    }
+
     @Test func tmuxArgumentsAreQuotedForTmuxsParser() {
         #expect(TmuxControl.quoted("send-keys") == "send-keys")
         #expect(TmuxControl.quoted("%1") == "%1")

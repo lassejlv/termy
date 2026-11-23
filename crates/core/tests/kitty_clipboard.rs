@@ -105,7 +105,7 @@ unsafe extern "C" fn read_clipboard(
         available_formats_len: available_formats.len(),
         contents_ptr: read_contents.as_ptr(),
         contents_len: read_contents.len(),
-        remember_permission: false,
+        remember_permission: false.into(),
     };
     unsafe { reply_callback(reply_user_data, &response) };
 }
@@ -136,7 +136,7 @@ unsafe extern "C" fn write_clipboard(
     if user_data.is_null() || request.is_null() {
         return TermyFfiClipboardWriteResponse {
             status: RESULT_IO_ERROR,
-            remember_permission: false,
+            remember_permission: false.into(),
         };
     }
     let state = unsafe { &mut *user_data.cast::<ClipboardCallbackState>() };
@@ -144,7 +144,7 @@ unsafe extern "C" fn write_clipboard(
     if request.contents_len > 0 && request.contents_ptr.is_null() {
         return TermyFfiClipboardWriteResponse {
             status: RESULT_IO_ERROR,
-            remember_permission: false,
+            remember_permission: false.into(),
         };
     }
     let contents = if request.contents_len == 0 {
@@ -163,7 +163,7 @@ unsafe extern "C" fn write_clipboard(
     else {
         return TermyFfiClipboardWriteResponse {
             status: RESULT_IO_ERROR,
-            remember_permission: false,
+            remember_permission: false.into(),
         };
     };
 
@@ -172,7 +172,7 @@ unsafe extern "C" fn write_clipboard(
     state.write_contents = contents;
     TermyFfiClipboardWriteResponse {
         status: RESULT_SUCCESS,
-        remember_permission: false,
+        remember_permission: false.into(),
     }
 }
 

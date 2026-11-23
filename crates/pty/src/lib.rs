@@ -55,6 +55,10 @@ struct OutputState {
     scheduled: bool,
     paused: bool,
     closed: bool,
+    /// The exit reached JavaScript.
+    exit_delivered: bool,
+    /// The callback, held after `destroy` until the exit reaches JavaScript.
+    pending_exit_callback: Option<Arc<EventCallback>>,
 }
 
 /// Output and exit waiting for JavaScript.
@@ -135,6 +139,8 @@ impl Output {
             self.drained.notify_all();
             (EVENT_DATA, Some(Buffer::from(bytes)), None, None)
         } else if let Some(exit) = state.exit.take() {
+            state.exit_delivered = true;
+            state.pending_exit_callback = None;
             (EVENT_EXIT, None, exit.code, exit.signal)
         } else {
             (EVENT_NONE, None, None, None)
@@ -157,9 +163,23 @@ impl Output {
         }
     }
 
-    /// Stop buffering and release a reader waiting for room.
+    /// `destroy`: hold the callback until the exit that follows the hang-up
+    /// has reached JavaScript, so it still arrives.
+    fn hold_until_exit(&self, events: Arc<EventCallback>) {
+        let mut state = self.lock();
+        if !state.exit_delivered {
+            state.pending_exit_callback = Some(events);
+        }
+    }
+
+    /// Stop buffering and release a reader waiting for room, unless
+    /// `destroy` left an exit to deliver.
     fn close(&self) {
-        self.lock().closed = true;
+        let mut state = self.lock();
+        if state.pending_exit_callback.is_some() {
+            return;
+        }
+        state.closed = true;
         self.drained.notify_all();
     }
 }
@@ -169,7 +189,8 @@ pub struct NativePty {
     pty: Option<Pty>,
     output: Arc<Output>,
     // Kept until `destroy` so a `resume` after the child exited can still
-    // deliver the buffered output and the exit.
+    // deliver the buffered output and the exit; `destroy` hands it to
+    // `Output` until the exit is delivered.
     events: Option<Arc<EventCallback>>,
     pid: u32,
 }
@@ -190,8 +211,9 @@ impl NativePty {
             .build_threadsafe_function::<Flush>()
             .max_queue_size::<EVENT_QUEUE_SIZE>()
             .build_callback(move |_| Ok(flushed.take().into()))?;
-        // `Output` holds the function weakly; `destroy` releases the last
-        // owner, so it stops keeping the event loop alive.
+        // `Output` holds the function weakly; once `destroy` was called and
+        // the exit delivered, nothing owns it, so it stops keeping the event
+        // loop alive.
         let events = Arc::new(events);
         let _ = output.events.set(Arc::downgrade(&events));
 
@@ -308,9 +330,12 @@ impl NativePty {
 
     /// Stop delivering output. The reader keeps buffering up to 1 MiB, then
     /// waits; an exit is delivered after the buffered output, on `resume`.
+    /// Ignored after `destroy`, which must not keep the exit waiting.
     #[napi]
     pub fn pause(&self) {
-        self.output.set_paused(true);
+        if self.pty.is_some() {
+            self.output.set_paused(true);
+        }
     }
 
     #[napi]
@@ -322,9 +347,11 @@ impl NativePty {
     /// the exit event follows.
     #[napi]
     pub fn destroy(&mut self) {
+        if let Some(events) = self.events.take() {
+            self.output.hold_until_exit(events);
+        }
         self.output.set_paused(false);
         self.pty.take();
-        self.events.take();
     }
 }
 

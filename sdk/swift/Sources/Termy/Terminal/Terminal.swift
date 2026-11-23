@@ -43,6 +43,7 @@ public final class Terminal {
 
     /// Starts a shell, or `options.startupCommand`, in a new PTY.
     public init(size: TerminalSize, options: TerminalOptions = TerminalOptions()) throws(TermyError) {
+        TermyABI.requireCompatibleLibrary()
         var handle: OpaquePointer?
         let status = Self.withFFIOptions(options) { termy_terminal_new_with_options(size.ffi, $0, &handle) }
         try check(status, "termy_terminal_new_with_options")
@@ -91,6 +92,7 @@ public final class Terminal {
     /// `feed(_:)`. Its wake channel fires when a synchronized update (`?2026`)
     /// times out and commits without further output.
     public static func display(size: TerminalSize) throws(TermyError) -> Terminal {
+        TermyABI.requireCompatibleLibrary()
         var handle: OpaquePointer?
         try check(termy_display_terminal_new(size.ffi, &handle), "termy_display_terminal_new")
         guard let handle else { throw TermyError(code: .nullPointer, operation: "termy_display_terminal_new") }

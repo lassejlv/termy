@@ -112,6 +112,13 @@ On macOS, Cmd+C and Cmd+V copy and paste. Elsewhere, use Ctrl+Shift+C and
 Ctrl+Shift+V; plain Ctrl+C goes to the program as an interrupt. To select text
 while a program tracks the mouse, hold Shift.
 
+## `RuntimeError: unreachable`
+
+The engine hit a bug and stopped. The console shows the message first, as
+`termy_wasm panicked: ...`; include it when you report the bug. That terminal
+can no longer be used (later calls throw `recursive use of an object`), so
+dispose it and create a new one.
+
 ## Report a bug
 
 If none of this fixes it, [open an issue](https://github.com/termylabs/termy/issues)

@@ -508,10 +508,15 @@ TermyEngineStatus termy_engine_frame(
     bool force_full,
     TermyEngineFrame *out_frame);
 
+/* At most this many cells (rows * cols) come back from one
+ * termy_engine_read_lines call. */
+#define TERMY_ENGINE_READ_LINES_MAX_CELLS 4194304u
+
 /* count buffer lines from first_line (negative lines are scrollback, -1
  * the newest; 0 is the first live row), clamped to the buffer, as a FULL
  * frame of `rows` rows starting at max(first_line, -history_size). One call
- * reads at most 65535 rows; read the rest from first_line + rows. Reading
+ * reads at most 65535 rows and at most TERMY_ENGINE_READ_LINES_MAX_CELLS
+ * cells (at least one row); read the rest from first_line + rows. Reading
  * makes the next termy_engine_frame() FULL. */
 TermyEngineStatus termy_engine_read_lines(
     TermyEngine *engine,

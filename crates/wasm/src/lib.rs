@@ -23,6 +23,25 @@ pub use glyphs::glyph_plan;
 pub use graphics::{GraphicsSnapshot, PLACEMENT_STRIDE};
 pub use theme::{theme_colors, theme_ids};
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = console, js_name = error)]
+    fn console_error(message: &str);
+}
+
+/// Runs when the module is instantiated. The wasm build aborts on panic, which
+/// traps as an opaque `RuntimeError: unreachable`; the hook logs the panic
+/// message and location through `console.error` first. A trapped engine stays
+/// borrowed, so recreate it.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(start)]
+pub fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        console_error(&format!("termy_wasm panicked: {info}"));
+    }));
+}
+
 /// Mode bits returned by [`TermyEngine::mode_bits`].
 pub mod mode_bits {
     pub const APPLICATION_CURSOR: u32 = 1;
@@ -346,7 +365,8 @@ impl TermyEngine {
     }
 
     /// Visible kitty graphics placements laid out for a cell size in CSS
-    /// pixels; see [`PLACEMENT_STRIDE`].
+    /// pixels; see [`PLACEMENT_STRIDE`]. Empty unless both sizes are finite
+    /// and positive.
     pub fn read_graphics(&mut self, cell_width: f32, cell_height: f32) -> Vec<f64> {
         self.graphics
             .capture(&mut self.engine, (cell_width, cell_height))
@@ -426,7 +446,8 @@ pub fn js_theme_colors(id: &str) -> Option<Vec<u32>> {
     theme_colors(id)
 }
 
-/// Geometry for a special glyph, or undefined when it should be shaped as text.
+/// Geometry for a special glyph, or undefined when it should be shaped as text
+/// or a size is not finite and positive.
 /// `neighbors` are the code points two before, one before, one after and two
 /// after in the row (0 when absent). See `glyphs.rs` for the layout.
 #[wasm_bindgen(js_name = glyphPlan)]
@@ -460,6 +481,11 @@ pub fn js_placement_stride() -> u32 {
 #[wasm_bindgen(js_name = cellStride)]
 pub fn js_cell_stride() -> u32 {
     CELL_STRIDE as u32
+}
+
+/// Cell and font sizes must be finite and positive, as the C ABIs require.
+pub(crate) fn is_positive_size(value: f32) -> bool {
+    value.is_finite() && value > 0.0
 }
 
 fn size(cols: u32, rows: u32) -> Size {

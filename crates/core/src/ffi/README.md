@@ -2,6 +2,20 @@
 
 C-compatible libtermy surface.
 
+## ABI version
+
+`termy_abi_version()` returns `TERMY_ABI_VERSION` (`termy.h`, and the
+constant of the same name in `mod.rs`). Bump both in the same change as any
+incompatible edit to the header: a struct field added, removed, reordered or
+retyped, an enum value changed, or a function's signature changed or removed.
+Adding a function needs no bump. `tests/ffi_export_guard.rs` checks that the
+two values agree; hosts compare them at startup (the Swift SDK does in
+`TermyABI.requireCompatibleLibrary()`).
+
+Fields a host writes for libtermy are typed `TermyFfiBool` in Rust (a byte,
+nonzero is true) and `bool` in the header, so a host that writes another byte
+cannot create an invalid Rust `bool`.
+
 ## Owner
 
 This module is a thin FFI wrapper over `termy_core`. Keep exported structs and functions synchronized with `crates/core/include/termy.h`, and rebuild this module before validating native host examples after ABI changes.
@@ -22,6 +36,7 @@ The Kitty placement struct now includes signed column offsets, Unicode cell
 coordinates, margin clipping, and `next_frame_delay_ms` (zero means static).
 The PNG buffer remains independently owned and is released with the batch.
 Hosts must rebuild against the updated header; the placement struct ABI changed.
+(That change predates `TERMY_ABI_VERSION`, which starts at 1.)
 
 Display terminals can mirror another terminal. `termy_terminal_snapshot_encode`
 and `termy_terminal_snapshot_decode`/`_restore` carry the engine's full state

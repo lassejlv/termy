@@ -49,6 +49,8 @@ int main(void) {
     int result = 1;
     TermyFfiTerminal *terminal = NULL;
     TermyFfiFrameUpdate update = {0};
+    /* A library built from another termy.h may lay out structs differently. */
+    if (termy_abi_version() != TERMY_ABI_VERSION) return 1;
     TermyFfiSize size = termy_size_default();
     size.cols = 80;
     size.rows = 24;

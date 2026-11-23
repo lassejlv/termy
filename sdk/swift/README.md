@@ -41,6 +41,12 @@ Bundle `libtermy_core.dylib` in `Contents/Frameworks`. Its install name is
 `@rpath/libtermy_core.dylib`, so add `@executable_path/../Frameworks` to the
 app's runpath search paths.
 
+Ship the libtermy built from the same checkout as the SDK. Creating a terminal
+or connecting a multiplexer stops the process with a clear message when the
+loaded library's `termy_abi_version()` differs from the header's
+`TERMY_ABI_VERSION`; call `TermyABI.requireCompatibleLibrary()` at launch to
+fail before anything else runs.
+
 ### SwiftUI
 
 ```swift

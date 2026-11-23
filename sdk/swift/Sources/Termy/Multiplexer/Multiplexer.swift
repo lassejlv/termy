@@ -69,6 +69,7 @@ public final class Multiplexer: @unchecked Sendable {
     /// creates `root` private (mode 0700) and refuses an existing directory
     /// that other users can read.
     public static func connect(root: URL? = nil, hostExecutable: URL) throws(TermyError) -> Multiplexer {
+        TermyABI.requireCompatibleLibrary()
         var handle: OpaquePointer?
         let status = withOptionalUTF8(root?.path) { rootPtr, rootLen in
             withUTF8(hostExecutable.path) { hostPtr, hostLen in
