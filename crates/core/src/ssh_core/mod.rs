@@ -513,6 +513,8 @@ pub fn openssh_launch(host: &SshHost) -> Result<SshProcessLaunch, String> {
                 identity_file.clone(),
                 "-o".to_string(),
                 "IdentitiesOnly=yes".to_string(),
+                "-o".to_string(),
+                "PreferredAuthentications=publickey".to_string(),
             ]);
         }
         SshAuthentication::Password => {
@@ -583,15 +585,15 @@ pub fn parse_askpass_request(
     if get_env(ASKPASS_MODE_ENV).as_deref() != Some("1") {
         return Ok(None);
     }
-    let prompt_kind = classify_askpass_prompt(prompt)
-        .ok_or_else(|| "Termy refused an unsupported SSH prompt".to_string())?;
-    let host_id = get_env(ASKPASS_HOST_ID_ENV)
-        .ok_or_else(|| "The SSH credential request is missing its host ID".to_string())?;
-    validate_host_id(&host_id)?;
     let secret_kind = get_env(ASKPASS_SECRET_KIND_ENV)
         .as_deref()
         .and_then(SshSecretKind::from_key)
         .ok_or_else(|| "The SSH credential request has an invalid credential type".to_string())?;
+    let prompt_kind = classify_askpass_prompt(prompt, secret_kind)
+        .ok_or_else(|| "Termy refused an unsupported SSH prompt".to_string())?;
+    let host_id = get_env(ASKPASS_HOST_ID_ENV)
+        .ok_or_else(|| "The SSH credential request is missing its host ID".to_string())?;
+    validate_host_id(&host_id)?;
     let expected_parent_pid = get_env(ASKPASS_PARENT_PID_ENV)
         .and_then(|value| value.parse::<u32>().ok())
         .filter(|pid| *pid > 0)
@@ -613,9 +615,17 @@ pub fn resolve_askpass_secret<B: KeyringBackend>(
         .ok_or_else(|| "No saved SSH credential was found in the system keychain".to_string())
 }
 
-pub fn is_authentication_prompt(prompt: &str) -> bool {
-    let prompt = prompt.to_ascii_lowercase();
-    prompt.contains("password") || prompt.contains("passphrase")
+pub fn is_authentication_prompt(prompt: &str, secret_kind: SshSecretKind) -> bool {
+    match secret_kind {
+        SshSecretKind::KeyPassphrase => prompt
+            .trim_end()
+            .strip_prefix("Enter passphrase for key '")
+            .is_some_and(|rest| rest.ends_with("':")),
+        SshSecretKind::Password => {
+            let prompt = prompt.to_ascii_lowercase();
+            prompt.contains("password") && !prompt.contains("passphrase")
+        }
+    }
 }
 
 pub fn is_host_key_confirmation_prompt(prompt: &str) -> bool {
@@ -624,10 +634,10 @@ pub fn is_host_key_confirmation_prompt(prompt: &str) -> bool {
         || prompt.contains("please type 'yes', 'no' or the fingerprint")
 }
 
-fn classify_askpass_prompt(prompt: &str) -> Option<AskpassPromptKind> {
+fn classify_askpass_prompt(prompt: &str, secret_kind: SshSecretKind) -> Option<AskpassPromptKind> {
     if is_host_key_confirmation_prompt(prompt) {
         Some(AskpassPromptKind::HostKeyConfirmation)
-    } else if is_authentication_prompt(prompt) {
+    } else if is_authentication_prompt(prompt, secret_kind) {
         Some(AskpassPromptKind::Authentication)
     } else {
         None
@@ -1045,6 +1055,8 @@ mod tests {
                 hostile_path,
                 "-o",
                 "IdentitiesOnly=yes",
+                "-o",
+                "PreferredAuthentications=publickey",
                 "--",
                 "prod.example.com",
             ]
@@ -1104,14 +1116,75 @@ mod tests {
 
     #[test]
     fn askpass_distinguishes_authentication_and_host_key_prompts() {
-        assert!(is_authentication_prompt("deploy@example.com's password:"));
         assert!(is_authentication_prompt(
-            "Enter passphrase for key '/tmp/id':"
+            "deploy@example.com's password:",
+            SshSecretKind::Password
+        ));
+        assert!(is_authentication_prompt(
+            "Enter passphrase for key '/tmp/id':",
+            SshSecretKind::KeyPassphrase
         ));
         let host_key_prompt =
             "Are you sure you want to continue connecting (yes/no/[fingerprint])?";
-        assert!(!is_authentication_prompt(host_key_prompt));
+        for kind in [SshSecretKind::Password, SshSecretKind::KeyPassphrase] {
+            assert!(!is_authentication_prompt(host_key_prompt, kind));
+        }
         assert!(is_host_key_confirmation_prompt(host_key_prompt));
+    }
+
+    const SERVER_PASSWORD_PROMPTS: [&str; 3] = [
+        "user@host's password: ",
+        "Password: ",
+        "(user@host) Password: ",
+    ];
+    const KEY_PASSPHRASE_PROMPT: &str = "Enter passphrase for key '/home/user/.ssh/id_ed25519': ";
+
+    fn askpass_request_for(
+        authentication: SshAuthentication,
+        prompt: &str,
+    ) -> Result<Option<AskpassRequest>, String> {
+        let mut host = password_input().into_host(Uuid::new_v4().to_string());
+        host.authentication = authentication;
+        let environment = askpass_environment(Path::new("/Applications/Termy"), 42, &host).unwrap();
+        parse_askpass_request(|key| environment.get(key).cloned(), prompt)
+    }
+
+    #[test]
+    fn key_host_answers_only_its_passphrase_prompt() {
+        let key = || SshAuthentication::Key {
+            identity_file: "/home/user/.ssh/id_ed25519".to_string(),
+        };
+        let request = askpass_request_for(key(), KEY_PASSPHRASE_PROMPT)
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.secret_kind, SshSecretKind::KeyPassphrase);
+        assert_eq!(request.prompt_kind, AskpassPromptKind::Authentication);
+        for prompt in SERVER_PASSWORD_PROMPTS
+            .into_iter()
+            .chain(["Enter passphrase or password: ", "Verification code: "])
+        {
+            assert!(
+                askpass_request_for(key(), prompt).is_err(),
+                "key passphrase must not answer {prompt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn password_host_answers_only_password_prompts() {
+        for prompt in SERVER_PASSWORD_PROMPTS {
+            let request = askpass_request_for(SshAuthentication::Password, prompt)
+                .unwrap()
+                .unwrap();
+            assert_eq!(request.secret_kind, SshSecretKind::Password);
+            assert_eq!(request.prompt_kind, AskpassPromptKind::Authentication);
+        }
+        for prompt in [KEY_PASSPHRASE_PROMPT, "Verification code: "] {
+            assert!(
+                askpass_request_for(SshAuthentication::Password, prompt).is_err(),
+                "password must not answer {prompt:?}"
+            );
+        }
     }
 
     #[test]
