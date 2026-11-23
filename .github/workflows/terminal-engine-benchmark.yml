@@ -195,13 +195,11 @@ jobs:
             checkout="$GITHUB_WORKSPACE/$label"
             (
               cd "$checkout"
-              cargo build --locked --release -p termy_core --lib
+              cmp -s "$source" crates/core/examples/terminal_facade_bench.rs \
+                || cp "$source" crates/core/examples/terminal_facade_bench.rs
+              cargo build --locked --release -p termy_core --example terminal_facade_bench
             ) 2>&1 | tee "$REPORT_DIR/build-$label.log"
-            rustc --edition=2024 -O "$source" \
-              --extern "termy_core=$checkout/target/release/libtermy_core.rlib" \
-              -L "dependency=$checkout/target/release/deps" \
-              -o "$REPORT_DIR/$label" \
-              2>&1 | tee "$REPORT_DIR/helper-$label.log"
+            cp "$checkout/target/release/examples/terminal_facade_bench" "$REPORT_DIR/$label"
           done
 
       - name: Compare feed throughput

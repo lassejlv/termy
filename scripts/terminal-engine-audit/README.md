@@ -4,14 +4,15 @@ These standalone probes reproduce the scrollback and graphics performance
 findings from the October 2026 engine audit. They use public engine APIs and can
 be compiled from identical source against the baseline and candidate libraries.
 
-Build each revision with `cargo build --release -p termy_core --lib`, then compile
-each probe, replacing the library directory and output path for that revision:
+Build each probe as a `termy_core` example in each revision's checkout, so Cargo
+resolves the library and its dependencies. Copy the identical probe source into
+that checkout, build it, and save the binary under a per-revision name:
 
 ```sh
-rustc --edition=2024 -O scripts/terminal-engine-audit/compaction.rs \
-  --extern termy_core=/path/to/revision/target/release/deps/libtermy_core.rlib \
-  -L dependency=/path/to/revision/target/release/deps \
-  -o /tmp/compaction-baseline
+cp scripts/terminal-engine-audit/compaction.rs /path/to/revision/crates/core/examples/
+cd /path/to/revision
+cargo build --release -p termy_core --example compaction
+cp target/release/examples/compaction /tmp/compaction-baseline
 ```
 
 - `compaction.rs`: warm a 120×30 grid with 1,000 history rows, optionally compact

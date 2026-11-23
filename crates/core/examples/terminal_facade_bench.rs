@@ -8,11 +8,11 @@
 //! `--consume-damage` drains damage once per payload block, including warmup;
 //! this exercises incremental damage tracking without rendering any cells.
 //!
-//! This source only uses public APIs shared with baseline 64945371, so compile
-//! the identical file against each revision's release library when comparing:
-//! rustc --edition=2024 -O terminal_facade_bench.rs \
-//!   --extern termy_core=/path/to/libtermy_core.rlib \
-//!   -L dependency=/path/to/release/deps -o terminal_facade_bench
+//! This source only uses public APIs shared with baseline 64945371, so build
+//! the identical file against each revision when comparing: copy it over that
+//! revision's crates/core/examples/terminal_facade_bench.rs, then run
+//! cargo build --release -p termy_core --example terminal_facade_bench
+//! and save target/release/examples/terminal_facade_bench.
 //! Select a historical backend in the process environment, outside this helper.
 //! Run saved binaries sequentially in alternating order after all builds finish.
 //! Use terminal_engine_bench separately for allocation and retained-heap checks.
