@@ -356,12 +356,15 @@ final class Peer {
             attaching[stream] = nil
             streams.removeValue(forKey: stream)?.close()
         case .key(let stream, let key):
+            streams[stream]?.reclaim()
             streams[stream]?.send(key)
         case .paste(let stream, let text):
+            streams[stream]?.reclaim()
             try? streams[stream]?.session.paste(text)
         case .resize(let stream, let cols, let rows):
             streams[stream]?.resize(cols: cols, rows: rows)
         case .scroll(let stream, let lines):
+            streams[stream]?.reclaim()
             streams[stream]?.scroll(lines: lines)
         case .createPane: create(.session("Session"))
         case .createSession(let name): create(.session(name))
@@ -369,7 +372,9 @@ final class Peer {
         case .splitPane(let pane, let horizontal): create(.split(pane, horizontal))
         case .renameSession(let pane, let name): rename(pane, name: name, session: true)
         case .renameTab(let pane, let title): rename(pane, name: title, session: false)
-        case .mouse(let id, let col, let row, let action): streams[id]?.mouse(col: col, row: row, action: action)
+        case .mouse(let id, let col, let row, let action):
+            streams[id]?.reclaim()
+            streams[id]?.mouse(col: col, row: row, action: action)
         case .scrollToBottom(let id): streams[id]?.session.scrollToBottom()
         case .search(let id, let query):
             guard let stream = streams[id] else { return }
@@ -482,6 +487,8 @@ final class Stream {
     private var closed = false
     /// False once the pane's host said it can't report prompt marks (another build).
     private var promptsSupported = true
+    /// The size this phone fits the pane to, nil while it doesn't.
+    private var asked: TerminalSize?
 
     init(id: Int, session: TerminalSession, peer: Peer, sizes: PaneSizes) {
         self.id = id
@@ -525,8 +532,19 @@ final class Stream {
         if let cols, let rows, cols > 1, rows > 1 {
             requested = TerminalSize(cols: UInt16(min(cols, 500)), rows: UInt16(min(rows, 300)))
         }
+        asked = requested
         let size = sizes.request(pane: paneID, stream: ObjectIdentifier(self), size: requested)
         try? session.resize(size)
+        pendingFull = true
+        scheduleSend()
+    }
+
+    /// The phone is being used: if the Mac (or another phone) resized the
+    /// pane since this phone fitted it, fit it to this phone again.
+    func reclaim() {
+        guard let asked, session.isGridSizeTakenOver else { return }
+        let size = sizes.request(pane: paneID, stream: ObjectIdentifier(self), size: asked)
+        try? session.reclaim(size)
         pendingFull = true
         scheduleSend()
     }
@@ -578,6 +596,10 @@ final class Stream {
         }
     }
     private func changed(_ change: FrameChange) {
+        if change.resized {
+            // A size no phone asked for is the Mac's: the one to give back.
+            sizes.resized(pane: paneID, to: TerminalSize(cols: UInt16(session.frame.cols), rows: UInt16(session.frame.rows)))
+        }
         if let rows = FrameEncoder.dirtyRows(change) {
             if !pendingFull { dirty = (dirty ?? []).union(rows) }
         } else {
@@ -740,6 +762,16 @@ final class PaneSizes {
         entry.streams.append((stream, size))
         panes[pane] = entry
         return entry.current
+    }
+
+    /// The pane is `size` now. When no phone asked for it, the Mac (or
+    /// another client) set it, so it's the size to give back.
+    func resized(pane: String, to size: TerminalSize) {
+        guard var entry = panes[pane],
+              !entry.streams.contains(where: { $0.size?.cols == size.cols && $0.size?.rows == size.rows })
+        else { return }
+        entry.original = size
+        panes[pane] = entry
     }
 
     /// A stream stops watching. Returns the size the pane should have now:

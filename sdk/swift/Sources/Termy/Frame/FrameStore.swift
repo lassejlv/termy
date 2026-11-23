@@ -22,9 +22,10 @@ public struct FrameChange: Hashable, Sendable {
     /// Cells, the scroll position or history, or the grid size changed.
     public var contentChanged: Bool { cellsChanged || resized || viewportChanged }
 
-    /// True when anything visible may have changed.
+    /// True when anything visible may have changed. Replayed scrolls moved
+    /// rows even when no cell needed patching after them.
     public var needsDisplay: Bool {
-        damage != .none || resized || cursorChanged || viewportChanged
+        damage != .none || resized || cursorChanged || viewportChanged || !scrolls.isEmpty
     }
 }
 

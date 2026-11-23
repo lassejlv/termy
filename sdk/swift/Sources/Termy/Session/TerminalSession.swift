@@ -47,6 +47,10 @@ public final class TerminalSession {
     /// not one per read, and leaves the engine lock to the parser.
     public var minimumPollInterval: TimeInterval = 1.0 / 120
 
+    /// The grid was seen at `size` since it was last asked for. A session
+    /// host applies sizes later, so until then the grid lags behind.
+    private var sizeTookEffect = true
+    private var sizeRequested: TimeInterval = 0
     private var pollScheduled = false
     private var lastPoll: TimeInterval = 0
     private var isPolling = false
@@ -135,6 +139,7 @@ public final class TerminalSession {
         let force = forceFull || forceFullOnNextPoll
         if let change = try? terminal.updateFrame(frame, forceFull: force, replayingScrolls: replaysScrolls) {
             forceFullOnNextPoll = false
+            if gridMatches(size) { sizeTookEffect = true }
             if change.contentChanged { contentGeneration &+= 1 }
             if change.needsDisplay { onFrameChange?(change) }
         }
@@ -241,9 +246,39 @@ public final class TerminalSession {
     /// Resizes the grid and redraws with a full frame.
     public func resize(_ newSize: TerminalSize) throws(TermyError) {
         guard newSize != size else { return }
+        try request(newSize)
+    }
+
+    /// Whether another view of the same pane, such as a phone or another
+    /// window attached to a session host, resized the grid after this
+    /// session's size took effect.
+    public var isGridSizeTakenOver: Bool {
+        !frame.isEmpty && sizeTookEffect && !gridMatches(size)
+    }
+
+    /// Like `resize`, but also asks again for the size last asked for when
+    /// another view of the pane has resized the grid since. Call it when the
+    /// user works in this view, so the view they use sets the size.
+    public func reclaim(_ newSize: TerminalSize) throws(TermyError) {
+        guard !frame.isEmpty, !gridMatches(newSize) else { return }
+        guard newSize == size else { return try request(newSize) }
+        // A request still on its way to the host is left to arrive; one that
+        // another view's resize replaced before it took effect is not.
+        let stale = ProcessInfo.processInfo.systemUptime - sizeRequested > 1
+        guard sizeTookEffect || stale else { return }
+        try request(newSize)
+    }
+
+    private func request(_ newSize: TerminalSize) throws(TermyError) {
         try terminal.resize(newSize)
         size = newSize
+        sizeTookEffect = false
+        sizeRequested = ProcessInfo.processInfo.systemUptime
         forceFullOnNextPoll = true
         poll()
+    }
+
+    private func gridMatches(_ size: TerminalSize) -> Bool {
+        frame.cols == Int(size.cols) && frame.rows == Int(size.rows)
     }
 }

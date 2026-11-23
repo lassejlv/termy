@@ -21,6 +21,7 @@ extension TerminalView {
     // MARK: Buttons
 
     public override func mouseDown(with event: NSEvent) {
+        reclaimGrid()
         window?.makeFirstResponder(self)
         let position = gridPosition(for: event)
         if event.modifierFlags.contains(.command) {
@@ -60,6 +61,7 @@ extension TerminalView {
     }
 
     public override func rightMouseDown(with event: NSEvent) {
+        reclaimGrid()
         if !press(.right, at: gridPosition(for: event), event: event) { super.rightMouseDown(with: event) }
     }
 
@@ -72,6 +74,7 @@ extension TerminalView {
     }
 
     public override func otherMouseDown(with event: NSEvent) {
+        reclaimGrid()
         _ = press(.middle, at: gridPosition(for: event), event: event)
     }
 
@@ -199,6 +202,7 @@ extension TerminalView {
     }
 
     public override func scrollWheel(with event: NSEvent) {
+        reclaimGrid()
         let position = gridPosition(for: event)
         let multiplier = CGFloat(max(renderConfig.mouseScrollMultiplier, 0.1))
         let delta = event.hasPreciseScrollingDeltas

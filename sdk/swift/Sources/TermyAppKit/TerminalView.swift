@@ -139,6 +139,9 @@ public final class TerminalView: NSView {
     private var metalFrameRunsThisTurn = false
     /// A frame was skipped because every frame in flight was on the GPU.
     private var metalFrameWaitsForGPU = false
+    /// Set while a frame that found no free drawable waits to try again.
+    private var drawableRetry: Timer?
+    private var drawableRetryDelay: TimeInterval = 0
     /// Paces Metal frames to the display: a `CADisplayLink` (macOS 14 and
     /// later), paused while idle.
     private var frameLink: NSObject?
@@ -198,6 +201,7 @@ public final class TerminalView: NSView {
         blinkTimer?.invalidate()
         autoscrollTimer?.invalidate()
         animationTimer?.invalidate()
+        drawableRetry?.invalidate()
         stopDisplayLink()
         windowObservers.forEach { NotificationCenter.default.removeObserver($0) }
         session.stop()
@@ -294,6 +298,17 @@ public final class TerminalView: NSView {
     /// Fits the grid to the view now, such as after its window stops holding grids.
     public func fitGridToView() { resizeGridToFit() }
 
+    /// Takes the grid back after another view of the same pane resized it,
+    /// such as a phone following a session-host pane: the view the user
+    /// works in sets the size. The view calls this itself on keyboard and
+    /// mouse input, on focus, and when its window becomes key or it shows.
+    public func reclaimGrid() {
+        guard bounds.width > 0, bounds.height > 0, let window, window.isVisible, !isHiddenOrHasHiddenAncestor,
+              (window as? TerminalGridHolding)?.holdsTerminalGrids != true
+        else { return }
+        try? session.reclaim(fittingGridSize)
+    }
+
     public override func viewDidUnhide() {
         super.viewDidUnhide()
         resizeGridToFit()
@@ -324,6 +339,8 @@ public final class TerminalView: NSView {
             // Pull output that arrived while hidden before drawing so tab switches
             // and newly shown windows don't flash stale content.
             session.poll()
+            // Shown in the window the user is in, such as by switching tabs.
+            if window?.isKeyWindow == true { reclaimGrid() }
             if metalRenderer != nil {
                 renderMetalFrameImmediately()
             } else {
@@ -400,6 +417,7 @@ public final class TerminalView: NSView {
     private func renderMetalFrameImmediately() {
         metalFrameScheduled = false
         metalFrameRunsThisTurn = false
+        cancelDrawableRetry()
         if #available(macOS 14.0, *) { (frameLink as? CADisplayLink)?.isPaused = true }
         renderMetalFrame()
     }
@@ -422,19 +440,49 @@ public final class TerminalView: NSView {
         let resized = layer.drawableSize != size
         if resized { layer.drawableSize = size }
         layer.isOpaque = isOpaque
-        let drawn = metalRenderer.draw(
+        // Asking again at once would block in `nextDrawable` again: wait.
+        guard drawableRetry == nil else { return }
+        let result = metalRenderer.draw(
             renderState, in: layer, synchronized: resized || inLiveResize,
             onFrameCompleted: { [weak self] in
                 DispatchQueue.main.async { MainActor.assumeIsolated { self?.metalSlotFreed() } }
             })
-        // Every frame in flight is still on the GPU: draw when one finishes.
-        if !drawn { metalFrameWaitsForGPU = true }
+        switch result {
+        case .drawn:
+            drawableRetryDelay = 0
+        case .gpuBusy:
+            // Draw when a frame in flight finishes.
+            metalFrameWaitsForGPU = true
+        case .noDrawable:
+            scheduleDrawableRetry()
+        }
     }
 
     private func metalSlotFreed() {
         guard metalFrameWaitsForGPU else { return }
         metalFrameWaitsForGPU = false
         scheduleMetalFrame()
+    }
+
+    /// Tries the frame again later, each time a little later, so a layer
+    /// whose drawables stay taken doesn't block the main thread over and
+    /// over. Showing the view again tries at once.
+    private func scheduleDrawableRetry() {
+        drawableRetryDelay = min(max(drawableRetryDelay * 2, 0.25), 2)
+        let timer = Timer(timeInterval: drawableRetryDelay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.drawableRetry = nil
+                self.scheduleMetalFrame()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        drawableRetry = timer
+    }
+
+    private func cancelDrawableRetry() {
+        drawableRetry?.invalidate()
+        drawableRetry = nil
     }
 
     // MARK: - Display link
@@ -789,6 +837,7 @@ public final class TerminalView: NSView {
     // MARK: - Focus and blink
 
     public override func becomeFirstResponder() -> Bool {
+        if window?.isKeyWindow == true { reclaimGrid() }
         // AppKit records the new first responder only after this returns.
         restartBlinkTimer(becomingFirstResponder: true)
         invalidateCursor(session.frame.cursor)
@@ -849,15 +898,17 @@ public final class TerminalView: NSView {
         // composites on screen, instead of flashing blank for a frame.
         windowObservers = names.map { name in
             NotificationCenter.default.addObserver(forName: name, object: window, queue: nil) { [weak self] _ in
-                MainActor.assumeIsolated { self?.windowStateDidChange() }
+                MainActor.assumeIsolated { self?.windowStateDidChange(becameKey: name == NSWindow.didBecomeKeyNotification) }
             }
         }
     }
 
-    private func windowStateDidChange() {
+    private func windowStateDidChange(becameKey: Bool) {
         // Opening (or coming back from the Dock) makes the window visible.
         if let window { layer?.contentsScale = window.backingScaleFactor }
         resizeGridToFit()
+        // The user came back to this window.
+        if becameKey { reclaimGrid() }
         restartBlinkTimer()
         invalidateCursor(session.frame.cursor)
         updateWakeups()

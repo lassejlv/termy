@@ -4,6 +4,7 @@ import Termy
 
 extension TerminalView: @preconcurrency NSTextInputClient {
     public override func keyDown(with event: NSEvent) {
+        reclaimGrid()
         selection = nil
         if markedText != nil || KeyMapping.routesThroughInputMethod(event, optionAsAlt: optionAsAlt) {
             // Let the input method compose text (IME, dead keys); it calls insertText.
@@ -67,6 +68,7 @@ extension TerminalView: @preconcurrency NSTextInputClient {
 
     @objc public func paste(_ sender: Any?) {
         guard let text = Self.pasteText(from: pasteboard), !text.isEmpty else { return }
+        reclaimGrid()
         try? session.paste(text)
     }
 

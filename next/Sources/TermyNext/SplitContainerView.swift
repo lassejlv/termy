@@ -19,6 +19,12 @@ final class SplitContainerView: NSView {
     private var layoutAnimationGeneration: UInt64 = 0
     private var isAnimatingLayout = false
     private var lastAnimatedBounds: NSRect = .zero
+    /// The tab the running layout animation moves.
+    private weak var animatedTab: TerminalTab?
+    /// Panes whose terminal keeps its size while the animation runs. Every
+    /// way an animation ends lets go of them, so no terminal stays at a
+    /// size its card no longer has.
+    private var heldPanes: [PaneView] = []
 
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
@@ -79,12 +85,13 @@ final class SplitContainerView: NSView {
         guard let tab else { return }
         if isAnimatingLayout {
             // If bounds didn't change (e.g. a background workspace/process tick),
-            // let the active layout animation keep running undisturbed.
-            guard bounds != lastAnimatedBounds else { return }
-            layoutAnimationGeneration &+= 1
-            isAnimatingLayout = false
-            for pane in tab.allPanes { pane.terminalSizeOverride = nil }
+            // let the active layout animation keep running undisturbed. A
+            // resize or another tab ends it.
+            guard bounds != lastAnimatedBounds || tab !== animatedTab else { return }
+            endLayoutAnimation()
         }
+        // Outside an animation every terminal fills its card.
+        releaseHeldPanes()
         for (pane, frame, visible) in targets(in: bounds) {
             pane.isZoomed = tab.zoomedID == pane.id
             pane.isHidden = !visible
@@ -108,8 +115,7 @@ final class SplitContainerView: NSView {
     /// grows in, panes leaving a zoom fade. Terminal grids resize once, up front.
     func animateLayout(appearing: PaneView? = nil, duration: TimeInterval = Motion.standard) {
         guard let tab, window != nil, !Motion.reduced else {
-            layoutAnimationGeneration &+= 1
-            isAnimatingLayout = false
+            endLayoutAnimation()
             needsLayout = true
             layoutSubtreeIfNeeded()
             if let appearing { Motion.appear(appearing) }
@@ -119,10 +125,13 @@ final class SplitContainerView: NSView {
         let generation = layoutAnimationGeneration
         isAnimatingLayout = true
         lastAnimatedBounds = bounds
+        animatedTab = tab
 
         let plan = targets(in: bounds)
+        releaseHeldPanes()
         for (pane, frame, visible) in plan where visible {
             pane.terminalSizeOverride = pane.terminalRect(forCard: frame.size).size
+            heldPanes.append(pane)
             if pane.isHidden {
                 // Coming back from behind a zoomed pane: start invisible in place.
                 pane.frame = frame
@@ -151,8 +160,8 @@ final class SplitContainerView: NSView {
         }, completion: { [weak self] in
             guard let self, self.layoutAnimationGeneration == generation else { return }
             self.isAnimatingLayout = false
+            self.releaseHeldPanes()
             for (pane, _, visible) in plan {
-                pane.terminalSizeOverride = nil
                 pane.isHidden = !visible
                 if !self.isDraggedSource(pane) { pane.alphaValue = 1 }
                 pane.needsLayout = true
@@ -163,6 +172,28 @@ final class SplitContainerView: NSView {
         updateDimming()
         window?.invalidateCursorRects(for: self)
         needsDisplay = true
+    }
+
+    /// Stops following the running layout animation; its completion then
+    /// does nothing, so the terminals it held are let go here.
+    private func endLayoutAnimation() {
+        layoutAnimationGeneration &+= 1
+        isAnimatingLayout = false
+        animatedTab = nil
+        releaseHeldPanes()
+    }
+
+    /// Whether a running layout animation keeps `pane`'s terminal at its size.
+    func holdsTerminalSize(of pane: PaneView) -> Bool {
+        isAnimatingLayout && heldPanes.contains { $0 === pane }
+    }
+
+    private func releaseHeldPanes() {
+        for pane in heldPanes where pane.terminalSizeOverride != nil {
+            pane.terminalSizeOverride = nil
+            pane.needsLayout = true
+        }
+        heldPanes = []
     }
 
     /// Animates `pane` out, then removes it.

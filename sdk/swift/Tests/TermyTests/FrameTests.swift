@@ -58,6 +58,11 @@ struct FrameTests {
         let change = try store.apply(update, scrolls: [ViewportScroll(top: 0, bottom: 2, count: 1, direction: .up)])
         #expect(change.scrolls.count == 1 && change.contentChanged)
         #expect(store.text(row: 0) == "b" && store.text(row: 1) == "c")
+        // Again, with the cursor where it was: the rows moved, so a view
+        // that keeps drawn rows must hear of it and move them too.
+        let again = try store.apply(update, scrolls: [ViewportScroll(top: 0, bottom: 2, count: 1, direction: .up)])
+        #expect(!again.cursorChanged && !again.viewportChanged && again.damage == .none)
+        #expect(again.needsDisplay)
     }
 
     @Test func cellsCarryResolvedStyles() throws {

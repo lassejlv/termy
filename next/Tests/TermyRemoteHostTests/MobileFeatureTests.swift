@@ -174,6 +174,23 @@ import Testing
         #expect(sizes.request(pane: "q", stream: ObjectIdentifier(b), size: nil) == phoneA)
     }
 
+    /// The Mac's window changed size while a phone had the pane: leaving
+    /// gives back the Mac's size now, not the one from when the phone came.
+    @Test @MainActor func leavingRestoresTheMacsLatestSize() {
+        final class Token {}
+        let sizes = PaneSizes()
+        let phone = Token()
+        let mac = TerminalSize(cols: 120, rows: 40)
+        let fitted = TerminalSize(cols: 50, rows: 30)
+        let resizedMac = TerminalSize(cols: 90, rows: 35)
+        sizes.join(pane: "p", stream: ObjectIdentifier(phone), size: mac)
+        _ = sizes.request(pane: "p", stream: ObjectIdentifier(phone), size: fitted)
+        // The phone's own size is not the Mac's.
+        sizes.resized(pane: "p", to: fitted)
+        sizes.resized(pane: "p", to: resizedMac)
+        #expect(sizes.leave(pane: "p", stream: ObjectIdentifier(phone)) == resizedMac)
+    }
+
     @Test func sessionTabAndSplitEditsPreserveOtherPanes() throws {
         var layout = MultiplexerLayout()
         try RemoteLayout.addSession(&layout, pane: "one", name: "Work")

@@ -244,6 +244,12 @@ final class PaneView: NSView, TerminalViewDelegate {
         header.isHidden = compact
         glass?.frame = bounds
         clip.frame = terminalRect(forCard: bounds.size)
+        // Only an animation in progress may keep the terminal from filling
+        // the card; one that ended without saying so, or a pane that moved
+        // to another container meanwhile, lets go here.
+        if terminalSizeOverride != nil, (superview as? SplitContainerView)?.holdsTerminalSize(of: self) != true {
+            terminalSizeOverride = nil
+        }
         let size = terminalSizeOverride ?? clip.bounds.size
         if terminal.frame.size != size || terminal.frame.origin != .zero {
             // Never animate the grid itself; only the card around it moves.

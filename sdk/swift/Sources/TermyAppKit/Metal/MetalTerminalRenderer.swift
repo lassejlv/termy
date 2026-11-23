@@ -255,10 +255,21 @@ final class MetalTerminalRenderer {
 
     // MARK: - Drawing
 
+    enum DrawResult {
+        case drawn
+        /// Every frame in flight is still on the GPU; `onFrameCompleted`
+        /// says when one finishes.
+        case gpuBusy
+        /// The layer had no drawable to give within its timeout, which
+        /// happens while Core Animation holds them all, such as for a layer
+        /// that isn't being composited.
+        case noDrawable
+    }
+
     /// Renders into the layer's next drawable and presents it, without
-    /// waiting for the GPU. Returns false, drawing nothing, while every frame
-    /// in flight is still on the GPU; `onFrameCompleted` is called (on a
-    /// Metal thread) as each frame finishes, so the caller can draw then.
+    /// waiting for the GPU. Draws nothing while every frame in flight is
+    /// still on the GPU; `onFrameCompleted` is called (on a Metal thread) as
+    /// each frame finishes, so the caller can draw then.
     ///
     /// `synchronized` presents with the Core Animation transaction, for a
     /// frame that changes the layer's size: the new size and its content
@@ -268,24 +279,27 @@ final class MetalTerminalRenderer {
     func draw(
         _ state: RenderState, in layer: CAMetalLayer, synchronized: Bool = false,
         onFrameCompleted: (@Sendable () -> Void)? = nil
-    ) -> Bool {
+    ) -> DrawResult {
         let scale = layer.contentsScale
-        guard layer.drawableSize.width >= 1, layer.drawableSize.height >= 1 else { return true }
+        guard layer.drawableSize.width >= 1, layer.drawableSize.height >= 1 else { return .drawn }
         // Blocking here would stall the main thread on a busy GPU.
-        guard inFlight.wait(timeout: .now()) == .success else { return false }
+        guard inFlight.wait(timeout: .now()) == .success else { return .gpuBusy }
         guard let commandBuffer = queue.makeCommandBuffer() else {
             inFlight.signal()
-            return true
+            return .drawn
         }
         let semaphore = inFlight
+        if layer.presentsWithTransaction != synchronized { layer.presentsWithTransaction = synchronized }
+        // This can block for up to a second when no drawable is free.
+        guard let drawable = layer.nextDrawable() else {
+            // Not committed, so no completion reports a free slot and asks
+            // for this frame again straight away.
+            semaphore.signal()
+            return .noDrawable
+        }
         commandBuffer.addCompletedHandler { _ in
             semaphore.signal()
             onFrameCompleted?()
-        }
-        if layer.presentsWithTransaction != synchronized { layer.presentsWithTransaction = synchronized }
-        guard let drawable = layer.nextDrawable() else {
-            commandBuffer.commit()
-            return false
         }
         encode(state, scale: scale, target: drawable.texture, commandBuffer: commandBuffer)
         if synchronized {
@@ -296,7 +310,7 @@ final class MetalTerminalRenderer {
             commandBuffer.present(drawable)
             commandBuffer.commit()
         }
-        return true
+        return .drawn
     }
 
     /// Renders into an offscreen texture and returns its BGRA bytes, top row
