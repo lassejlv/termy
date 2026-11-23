@@ -6,6 +6,12 @@ update window Sparkle shows, so write for the people updating: what they can
 do now, not how it was built. Rename `Unreleased` to the version when you tag
 it.
 
+## 0.6.2
+
+### Fixed
+
+- **Rounded Classic icon.** The `>_` icon showed as a square in the Dock, Finder and Settings → Appearance → App Icon. It now has the same rounded shape as other Mac apps.
+
 ## 0.6.1
 
 ### Changed
