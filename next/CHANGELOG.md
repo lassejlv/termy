@@ -6,6 +6,15 @@ update window Sparkle shows, so write for the people updating: what they can
 do now, not how it was built. Rename `Unreleased` to the version when you tag
 it.
 
+## 0.6.3
+
+### Fixed
+
+- **Panes no longer stay phone-sized.** After you'd watched a pane on your iPhone, the Mac could keep drawing it at the phone's width, cut off in the corner of the pane. Now whichever device you're using sets the size: typing, clicking, scrolling or switching to a pane on the Mac takes it back, and using it on the phone fits it to the phone again. When the phone lets go, the pane returns to your Mac window's current size, even if you resized the window meanwhile.
+- **Terminals fill their pane after a resize.** Resizing the window or switching tabs while panes were animating could leave a terminal stuck at its old size inside a bigger pane.
+- **No more freezes when a terminal can't draw.** A terminal that couldn't get a frame to draw into retried immediately, over and over, which could make the whole app sluggish. It now waits and tries again.
+- **Scrolled output draws in the right rows.** Output that only scrolled blank lines could leave rows drawn where they used to be.
+
 ## 0.6.2
 
 ### Fixed
