@@ -1,34 +1,20 @@
 import AppKit
 
-/// The Dock icon Termy Next shows while it runs: the bundle's own (Glass), or
-/// one of the alternates in `Resources/icon/alternates`, named by raw value
+/// The Dock icon Termy Next shows while it runs: the bundle's own (Classic),
+/// or one of the alternates in `Resources/icon/alternates`, named by raw value
 /// (bundled into `Contents/Resources/AppIcons` by scripts/bundle.sh). Finder
 /// and a Dock that isn't running the app keep showing the bundle's icon,
 /// since changing that would break the app's signature.
 enum AppIconStyle: String, CaseIterable {
     // The bundle's icon, Resources/icon/TermyNext.icns.
-    case glass
-    // The mascot.
-    case mono, candy
-    case matcha = "mascot-matcha", clay = "mascot-clay", neon = "mascot-neon"
-    case pixel = "mascot-pixel", holo = "mascot-holo"
-    // The >_ prompt; classic was the bundle's icon before Glass.
     case classic
     case pearl = "classic-pearl", graphite = "classic-graphite", sunset = "classic-sunset"
     case phosphor = "classic-phosphor", amber = "classic-amber"
 
-    static let standard = AppIconStyle.glass
+    static let standard = AppIconStyle.classic
 
     var title: String {
         switch self {
-        case .glass: "Glass"
-        case .mono: "Doodle"
-        case .candy: "Candy"
-        case .matcha: "Matcha"
-        case .clay: "Clay"
-        case .neon: "Neon"
-        case .pixel: "Pixel"
-        case .holo: "Holo"
         case .classic: "Classic"
         case .pearl: "Pearl"
         case .graphite: "Graphite"

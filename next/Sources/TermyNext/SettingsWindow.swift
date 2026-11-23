@@ -382,7 +382,7 @@ final class SettingsWindowController: NSWindowController, NSSearchFieldDelegate,
                 ], footer: "Liquid puts the window chrome and panes on Liquid Glass; Classic draws them solid. Compact drops the gaps and headers around panes."),
                 Section(header: "App Icon", rows: [
                     .full(appIconPicker),
-                ], footer: "Shown in the Dock and the app switcher while Termy Next runs. Finder keeps the Glass icon."),
+                ], footer: "Shown in the Dock and the app switcher while Termy Next runs. Finder keeps the Classic icon."),
                 Section(header: "Tab Loader", rows: [
                     .full(loaderPicker),
                     .control("Spinners from loading.dev", button("Visit Site", #selector(openLoadingDev)),

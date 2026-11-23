@@ -96,7 +96,7 @@ final class Preferences {
             NotificationCenter.default.post(name: Self.loaderDidChange, object: nil)
         }
     }
-    /// The Dock icon while the app runs (`AppIconStyle`). Glass by default.
+    /// The Dock icon while the app runs (`AppIconStyle`). Classic by default.
     var appIcon: AppIconStyle {
         get { AppIconStyle(rawValue: defaults.string(forKey: "appIcon") ?? "") ?? .standard }
         set { defaults.set(newValue.rawValue, forKey: "appIcon"); newValue.apply() }
