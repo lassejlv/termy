@@ -6,6 +6,20 @@ update window Sparkle shows, so write for the people updating: what they can
 do now, not how it was built. Rename `Unreleased` to the version when you tag
 it.
 
+## 0.6.1
+
+### Changed
+
+- **The `>_` icon is back.** The mascot icons are gone; Termy Next's icon is Classic again. Settings → Appearance → App Icon still offers Pearl, Graphite, Sunset, Phosphor, and Amber. If you picked a mascot icon, Termy Next shows Classic.
+
+### Fixed
+
+- **Smoother panes.** Splitting, closing and zooming panes no longer stutter when animations overlap, and terminals no longer stretch or blur for a frame when a pane or window resizes.
+- **No blank frame on show.** New windows, tab switches and panes coming back into view draw their latest output right away.
+- **Dragging panes and tabs.** Dropping a pane in its own tab animates once instead of snapping, dropping outside every window opens the new window right where you let go (and on screen), and the drop target follows the window you're actually over, even with other apps in front.
+- **Reordering tabs.** The dragged tab stays inside the tab bar, its neighbors move out of its way, and loaders follow it without lagging.
+- **Window chrome.** The traffic lights stay centered in the titlebar, a quick click on a tab no longer moves the window, and divider and floating-pane drags are saved.
+
 ## 0.6.0
 
 ### New
