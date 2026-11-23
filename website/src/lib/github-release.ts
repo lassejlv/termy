@@ -12,8 +12,12 @@ export interface GitHubReleaseAsset {
   contentType: string;
 }
 
+/** Termy (`v*` tags) or Termy Next, the native Swift app (`next-v*` tags). */
+export type ReleaseLine = 'termy' | 'next';
+
 export interface GitHubRelease {
   id: number;
+  line: ReleaseLine;
   name: string;
   tagName: string;
   publishedAt: string;
@@ -74,6 +78,7 @@ const githubHeaders = { Accept: 'application/vnd.github+json' };
 function mapGitHubRelease(data: GitHubReleaseResponse): GitHubRelease {
   return {
     id: data.id,
+    line: data.tag_name.startsWith('next-') ? 'next' : 'termy',
     name: data.name || data.tag_name,
     tagName: data.tag_name,
     publishedAt: data.published_at,
@@ -93,7 +98,12 @@ function mapGitHubRelease(data: GitHubReleaseResponse): GitHubRelease {
 }
 
 function isDesktopReleaseTag(tag: string): boolean {
-  return /^v\d/.test(tag);
+  return /^(next-)?v\d/.test(tag);
+}
+
+/** `v1.0.0-rc.11` → `1.0.0-rc.11`, `next-v0.6.0` → `0.6.0`. */
+export function releaseVersion(tag: string): string {
+  return tag.replace(/^(next-)?v/, '');
 }
 
 export interface PlatformAssetGroup {
@@ -164,33 +174,36 @@ export function assetArch(name: string): string | null {
   return null;
 }
 
-/** Short human label for a release asset (Download page rows). */
-export function assetLabel(name: string): string {
-  const lower = name.toLowerCase();
-  const arch = assetArch(name);
-  const platform = assetPlatform(name);
+/** The label and detail of a release asset's row on the Download page. */
+export function assetRow(asset: GitHubReleaseAsset): { label: string; detail: string } {
+  const lower = asset.name.toLowerCase();
+  const arch = assetArch(asset.name);
+  const size = formatBytes(asset.size);
+  const platform = assetPlatform(asset.name);
 
   if (platform === 'macos') {
-    if (arch === 'arm64') return 'Apple Silicon';
-    if (arch === 'x64') return 'Intel';
-    return 'macOS';
+    const label = arch === 'arm64' ? 'Apple silicon' : arch === 'x64' ? 'Intel' : 'macOS';
+    return { label, detail: `DMG, ${size}` };
   }
 
   if (platform === 'linux') {
-    if (lower.includes('appimage')) return 'AppImage';
-    if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz')) return 'Tarball';
-    if (lower.endsWith('.deb')) return 'Debian';
-    if (lower.endsWith('.rpm')) return 'RPM';
-    return 'Linux';
+    const suffix = arch === 'arm64' ? ' (ARM64)' : '';
+    if (lower.endsWith('.appimage'))
+      return { label: 'AppImage', detail: `${arch === 'arm64' ? 'aarch64' : 'x86_64'}, ${size}` };
+    if (lower.endsWith('.deb')) return { label: `Debian package${suffix}`, detail: `.deb, ${size}` };
+    if (lower.endsWith('.rpm')) return { label: `RPM package${suffix}`, detail: `.rpm, ${size}` };
+    if (lower.endsWith('.tar.gz') || lower.endsWith('.tgz'))
+      return { label: `Archive${suffix}`, detail: `.tar.gz, ${size}` };
+    return { label: `Linux${suffix}`, detail: size };
   }
 
   if (platform === 'windows') {
-    if (lower.endsWith('.msi')) return 'MSI';
-    if (lower.includes('setup') || lower.endsWith('.exe')) return 'Installer';
-    return 'Windows';
+    const label = arch === 'arm64' ? 'ARM64' : arch === 'x64' ? 'x64' : 'Windows';
+    const kind = lower.endsWith('.msi') ? 'MSI' : lower.includes('setup') ? 'Setup.exe' : '.exe';
+    return { label, detail: `${kind}, ${size}` };
   }
 
-  return name;
+  return { label: asset.name, detail: size };
 }
 
 export function formatBytes(bytes: number): string {
@@ -208,37 +221,54 @@ export function formatBytes(bytes: number): string {
   return `${size.toFixed(size >= 10 ? 0 : 1)} ${unit}`;
 }
 
-export function formatReleaseDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-US', {
+/** `12 November 2026` */
+export function formatLongDate(iso: string): string {
+  return new Date(iso).toLocaleDateString('en-GB', {
     year: 'numeric',
-    month: 'short',
+    month: 'long',
     day: 'numeric',
   });
 }
 
-export function formatReleaseDay(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-  });
+function plainMarkdown(text: string): string {
+  return text
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-export interface GitHubReleaseYearGroup {
-  year: string;
-  releases: GitHubRelease[];
-}
+/**
+ * The short version of a release's notes for the Releases list: the bold
+ * lead of each bullet when the notes are written that way, else the opening
+ * paragraph (without its link to the full notes), else the first bullets.
+ */
+export function releaseHighlights(release: Pick<GitHubRelease, 'name' | 'body'>, limit = 4): string[] {
+  if (!release.body) return [];
+  const text = release.body.replace(/\r\n/g, '\n');
 
-export function groupGitHubReleasesByYear(
-  releases: GitHubRelease[],
-): GitHubReleaseYearGroup[] {
-  const groups: GitHubReleaseYearGroup[] = [];
-  for (const release of releases) {
-    const year = String(new Date(release.publishedAt).getFullYear());
-    const last = groups[groups.length - 1];
-    if (last?.year === year) last.releases.push(release);
-    else groups.push({ year, releases: [release] });
-  }
-  return groups;
+  const leads = [...text.matchAll(/^[-*] \*\*(.+?)\*\*/gm)]
+    .map((match) => match[1].trim().replace(/:$/, '').replace(/([^.!?])$/, '$1.'))
+    .slice(0, limit);
+  if (leads.length > 0) return leads;
+
+  const paragraph = text
+    .split(/\n\s*\n|\n(?=#|[-*] )/)
+    .map((part) => plainMarkdown(part.replace(/\s*Full notes:.*$/is, '')))
+    .find(
+      (part) =>
+        part.length > 0 &&
+        !part.startsWith('#') &&
+        !/^[-*] /.test(part) &&
+        !part.endsWith(':') &&
+        !part.startsWith('Download ') &&
+        !part.startsWith(release.name),
+    );
+  if (paragraph) return [paragraph.split(/(?<=[.!?])\s+(?=[A-Z])/)[0]];
+
+  return [...text.matchAll(/^[-*] (.+)$/gm)]
+    .map((match) => plainMarkdown(match[1].replace(/ by @\S+ in https?:\/\/\S+$/, '')))
+    .slice(0, limit);
 }
 
 export async function fetchGitHubReleases(): Promise<GitHubRelease[]> {

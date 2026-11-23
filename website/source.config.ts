@@ -15,7 +15,7 @@ export default defineConfig({
       inline: 'tailing-curly-colon',
       themes: {
         light: 'github-light-default',
-        dark: 'tokyo-night',
+        dark: 'github-dark-default',
       },
     },
   },

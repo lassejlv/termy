@@ -11,8 +11,8 @@ function docsMarkdownPages() {
   return readdirSync("content/docs", { recursive: true, encoding: "utf8" })
     .filter((file) => file.endsWith(".mdx"))
     .map((file) => {
-      // Mirrors slugsToMarkdownPath: a folder's index page is `<folder>.md`,
-      // and only the docs root keeps `index.md`.
+      // A folder's index page is `<folder>.md`, and only the docs root keeps
+      // `index.md`; markdownPathToSlugs reads these paths back.
       const page = file.split("\\").join("/").replace(/\.mdx$/, "");
       const slug = page === "index" ? page : page.replace(/\/index$/, "");
       return { path: `/docs/${slug}.md` };

@@ -1,19 +1,16 @@
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useEffect, useState } from 'react';
-import {
-  MarketingPageShell,
-  marketingFontLinks,
-  marketingMono,
-} from '@/components/marketing-page-shell';
+import { MarginNote, SiteShell, containerClass, repoUrl } from '@/components/site-shell';
 import {
   fetchGitHubReleases,
-  formatReleaseDay,
-  groupGitHubReleasesByYear,
+  formatLongDate,
+  releaseHighlights,
+  releaseVersion,
   type GitHubRelease,
+  type ReleaseLine,
 } from '@/lib/github-release';
 
 export const Route = createFileRoute('/releases/')({
-  head: () => ({ links: marketingFontLinks }),
   component: ReleasesPage,
 });
 
@@ -22,11 +19,33 @@ type ReleasesState =
   | { status: 'loaded'; releases: GitHubRelease[] }
   | { status: 'error' };
 
+const FEATURED = 6;
+const EARLIER_PREVIEW = 6;
+
+const lines: Record<ReleaseLine, { title: string; intro: string }> = {
+  termy: { title: 'Termy', intro: 'Release candidates for Termy 1.0, newest first.' },
+  next: { title: 'Termy Next', intro: 'The native Swift terminal built on libtermy, newest first.' },
+};
+
 function ReleasesPage() {
+  // The page is prerendered once, so the line is read from `?line=next`
+  // after hydration rather than during render.
+  const [line, setLine] = useState<ReleaseLine>('termy');
   const [state, setState] = useState<ReleasesState>({ status: 'loading' });
-  const releases = state.status === 'loaded' ? state.releases : [];
-  const groups = groupGitHubReleasesByYear(releases);
-  const latestStableId = releases.find((release) => !release.prerelease)?.id;
+  const [showAllEarlier, setShowAllEarlier] = useState(false);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('line') === 'next') setLine('next');
+  }, []);
+
+  const selectLine = (next: ReleaseLine) => {
+    setLine(next);
+    setShowAllEarlier(false);
+    const url = new URL(window.location.href);
+    if (next === 'next') url.searchParams.set('line', 'next');
+    else url.searchParams.delete('line');
+    window.history.replaceState(window.history.state, '', url);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -44,102 +63,134 @@ function ReleasesPage() {
     };
   }, []);
 
+  const releases = state.status === 'loaded' ? state.releases.filter((release) => release.line === line) : [];
+  const latestStableId = releases.find((release) => !release.prerelease)?.id;
+  const featured = releases.slice(0, FEATURED);
+  const earlier = releases.slice(FEATURED);
+  const visibleEarlier = showAllEarlier ? earlier : earlier.slice(0, EARLIER_PREVIEW);
+
   return (
-    <MarketingPageShell>
-      <main className="mx-auto flex w-full max-w-[40rem] flex-col px-6 pt-16 pb-20 md:pt-20">
-        <h1
-          className="text-4xl font-medium leading-none tracking-tight text-[#e8eeff] md:text-5xl"
-          style={{ fontFamily: marketingMono }}
-        >
+    <SiteShell>
+      <section className={`${containerClass} flex flex-col items-start gap-5 pt-14 sm:pt-24`}>
+        <h1 className="text-[40px] leading-12 font-medium tracking-[-0.025em] text-fg sm:text-5xl sm:leading-14">
           Releases
         </h1>
-        <p
-          className="mt-5 text-sm text-[#787c99]"
-          style={{ fontFamily: marketingMono }}
-        >
-          Latest desktop builds
-        </p>
-
-        <div className="mt-12">
-          {state.status === 'loading' && (
-            <p className="py-8 font-mono text-sm text-fd-muted-foreground">
-              Loading releases…
-            </p>
-          )}
-
-          {state.status === 'error' && (
-            <p className="py-8 font-mono text-sm text-fd-muted-foreground">
-              <span className="text-fd-error">error:</span> could not load
-              releases.
-            </p>
-          )}
-
-          {state.status === 'loaded' && releases.length === 0 && (
-            <p className="py-8 font-mono text-sm text-fd-muted-foreground">
-              No releases yet.
-            </p>
-          )}
-
-          {groups.map((group) => (
-            <section key={group.year} className="border-t border-white/[0.08] py-7 first:border-t-0 first:pt-2">
-              <h2
-                className="text-[11px] font-medium tracking-[0.12em] text-[#565f89] uppercase"
-                style={{ fontFamily: marketingMono }}
-              >
-                {group.year}
-              </h2>
-              <ul className="mt-3">
-                {group.releases.map((release) => (
-                  <li key={release.id}>
-                    <Link
-                      to="/releases/$slug"
-                      params={{ slug: release.tagName }}
-                      className="group flex items-baseline gap-4 border-b border-white/[0.06] py-3.5 transition-colors last:border-b-0 hover:text-white"
-                    >
-                      <time
-                        dateTime={release.publishedAt}
-                        className="w-14 shrink-0 text-xs text-[#565f89]"
-                        style={{ fontFamily: marketingMono }}
-                      >
-                        {formatReleaseDay(release.publishedAt)}
-                      </time>
-                      <span className="min-w-0 flex-1 text-[15px] font-medium text-[#c0caf5] transition-colors group-hover:text-white">
-                        {release.tagName}
-                      </span>
-                      {release.id === latestStableId && (
-                        <span
-                          className="shrink-0 text-[11px] text-[#7aa2f7]"
-                          style={{ fontFamily: marketingMono }}
-                        >
-                          Latest
-                        </span>
-                      )}
-                      {release.prerelease && (
-                        <span
-                          className="shrink-0 text-[11px] text-[#7aa2f7]"
-                          style={{ fontFamily: marketingMono }}
-                        >
-                          prerelease
-                        </span>
-                      )}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            </section>
+        <p className="text-[17px] leading-6 text-muted">{lines[line].intro}</p>
+        <nav aria-label="Release line" className="flex gap-6 pt-5 text-[15px] leading-5">
+          {(['termy', 'next'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => selectLine(option)}
+              aria-pressed={option === line}
+              className={
+                option === line
+                  ? 'text-text underline decoration-1 underline-offset-[6px]'
+                  : 'text-muted transition-colors hover:text-text'
+              }
+            >
+              {lines[option].title}
+            </button>
           ))}
-        </div>
+        </nav>
+      </section>
 
-        <a
-          href="https://github.com/lassejlv/termy/releases"
-          target="_blank"
-          rel="noreferrer"
-          className="mt-8 text-xs text-[#787c99] hover:text-white"
-          style={{ fontFamily: marketingMono }}
-        >
-          View releases on GitHub ↗
-        </a>
-      </main>
-    </MarketingPageShell>
+      <section className={`${containerClass} flex flex-col gap-14 pt-14 sm:gap-16 sm:pt-18`}>
+        {state.status === 'loading' && <p className="text-[17px] leading-6 text-muted">Loading releases…</p>}
+        {state.status === 'error' && (
+          <p className="text-[17px] leading-6 text-muted">
+            Could not load releases.{' '}
+            <a href={`${repoUrl}/releases`} className="site-link text-fg">
+              View them on GitHub
+            </a>
+          </p>
+        )}
+        {state.status === 'loaded' && releases.length === 0 && (
+          <p className="text-[17px] leading-6 text-muted">No releases yet.</p>
+        )}
+
+        {featured.map((release) => (
+          <article key={release.id} className="relative flex w-full max-w-[760px] flex-col gap-3.5">
+            <header className="flex flex-wrap items-center gap-x-4 gap-y-1 sm:h-8 sm:flex-nowrap">
+              <h2 className="text-[21px] leading-7 font-medium tracking-[-0.01em] text-fg">
+                <Link to="/releases/$slug" params={{ slug: release.tagName }} className="hover:underline hover:decoration-1 hover:underline-offset-[6px]">
+                  {releaseVersion(release.tagName)}
+                </Link>
+              </h2>
+              <ReleaseStatus release={release} latestStableId={latestStableId} />
+              <span aria-hidden className="leader hidden sm:block" />
+              <time dateTime={release.publishedAt} className="w-full text-[15px] leading-5 text-muted sm:w-auto">
+                {formatLongDate(release.publishedAt)}
+              </time>
+            </header>
+            <ul className="flex flex-col gap-1.5">
+              {releaseHighlights(release).map((highlight) => (
+                <li key={highlight} className="text-base leading-[26px] text-fg">
+                  <InlineCode text={highlight} />
+                </li>
+              ))}
+            </ul>
+            {release.id === latestStableId && (
+              <MarginNote top={-6}>{'The one the Download\nbutton gives you.'}</MarginNote>
+            )}
+          </article>
+        ))}
+
+        {earlier.length > 0 && (
+          <div className="flex w-full max-w-[760px] flex-col gap-3.5">
+            <h2 className="text-[15px] leading-5 font-normal text-muted">Earlier</h2>
+            {visibleEarlier.map((release) => (
+              <div key={release.id} className="relative">
+                <Link
+                  to="/releases/$slug"
+                  params={{ slug: release.tagName }}
+                  className="group flex h-8 items-center gap-4"
+                >
+                  <span className="text-[17px] leading-6 text-fg group-hover:underline group-hover:decoration-1 group-hover:underline-offset-[6px]">
+                    {releaseVersion(release.tagName)}
+                  </span>
+                  <span aria-hidden className="leader" />
+                  <time dateTime={release.publishedAt} className="text-[15px] leading-5 text-muted">
+                    {formatLongDate(release.publishedAt)}
+                  </time>
+                </Link>
+                {release.tagName === 'v1.0.0-rc.1' && (
+                  <MarginNote top={-4}>{'Its own engine.\nBye, Alacritty.'}</MarginNote>
+                )}
+              </div>
+            ))}
+            <div className="flex flex-wrap gap-x-7 gap-y-3 pt-1 text-[15px] leading-5 text-fg">
+              {earlier.length > visibleEarlier.length && (
+                <button type="button" onClick={() => setShowAllEarlier(true)} className="site-link">
+                  Show {earlier.length - visibleEarlier.length} more
+                </button>
+              )}
+              <a href={`${repoUrl}/releases`} target="_blank" rel="noreferrer" className="site-link">
+                Every release on GitHub
+              </a>
+            </div>
+          </div>
+        )}
+      </section>
+    </SiteShell>
+  );
+}
+
+function ReleaseStatus({ release, latestStableId }: { release: GitHubRelease; latestStableId?: number }) {
+  if (release.prerelease) return <span className="text-[15px] leading-5 text-muted">Pre-release</span>;
+  if (release.id === latestStableId) return <span className="text-[15px] leading-5 text-muted">Latest</span>;
+  return null;
+}
+
+/** Release notes mark code with backticks; set those spans in mono. */
+function InlineCode({ text }: { text: string }) {
+  return text.split(/(`[^`]+`)/).map((part, index) =>
+    part.startsWith('`') && part.endsWith('`') && part.length > 1 ? (
+      <code key={index} className="font-mono text-[0.875em]">
+        {part.slice(1, -1)}
+      </code>
+    ) : (
+      part
+    ),
   );
 }
