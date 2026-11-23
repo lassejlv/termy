@@ -6,6 +6,17 @@ update window Sparkle shows, so write for the people updating: what they can
 do now, not how it was built. Rename `Unreleased` to the version when you tag
 it.
 
+## 0.6.4
+
+### New
+
+- **Plugins can see where panes are on screen.** `session.view` and the other block listings now give each showing pane's position on screen, its terminal area, its window and the display scale, so a plugin can place a window of its own over a pane.
+
+### Fixed
+
+- **`rex block rename` works.** Plugins and scripts can set a pane's label from the command line (`rex block rename BLOCK LABEL`); an empty label clears it.
+- **`rex keymap --json` prints JSON.** It printed the table instead.
+
 ## 0.6.3
 
 ### Fixed
