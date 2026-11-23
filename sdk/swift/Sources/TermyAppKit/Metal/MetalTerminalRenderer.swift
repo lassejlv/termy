@@ -285,7 +285,7 @@ final class MetalTerminalRenderer {
         if layer.presentsWithTransaction != synchronized { layer.presentsWithTransaction = synchronized }
         guard let drawable = layer.nextDrawable() else {
             commandBuffer.commit()
-            return true
+            return false
         }
         encode(state, scale: scale, target: drawable.texture, commandBuffer: commandBuffer)
         if synchronized {

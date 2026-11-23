@@ -63,6 +63,12 @@ final class HostLayoutSync {
 
     private func hostChanged(_ newRevision: UInt64?) {
         guard let newRevision, newRevision != revision, !SessionHost.shared.isRestarting else { return }
+        // A watch notification from our own in-flight `setLayout` arrives before
+        // `write()` updates `revision` on the main thread; defer until it lands.
+        if writing {
+            pendingHostRevision = newRevision
+            return
+        }
         fetchAndApply()
     }
 
@@ -95,6 +101,8 @@ final class HostLayoutSync {
     /// the one the next write must carry.
     private var writing = false
     private var writeAgain = false
+    /// A watch revision that arrived while our own write was in flight.
+    private var pendingHostRevision: UInt64?
     /// The write on its way, which quitting waits for (the main thread is
     /// blocked then, so its answer can't arrive the usual way).
     private var inFlight: PendingWrite?
@@ -129,16 +137,23 @@ final class HostLayoutSync {
                     let sync = HostLayoutSync.shared
                     sync.writing = false
                     if sync.inFlight === pending { sync.inFlight = nil }
+                    let pendingRev = sync.pendingHostRevision
+                    sync.pendingHostRevision = nil
                     if sync.writeAgain {
                         sync.writeAgain = false
                         sync.scheduleWrite()
                     }
-                    guard let result else { return }
+                    guard let result else {
+                        if let pendingRev, pendingRev != sync.revision { sync.fetchAndApply() }
+                        return
+                    }
                     if result.updated {
-                        HostLayoutSync.shared.revision = max(HostLayoutSync.shared.revision, result.revision)
+                        sync.revision = max(sync.revision, result.revision)
+                        // Only fetch if another client pushed a revision newer than ours.
+                        if let pendingRev, pendingRev != sync.revision { sync.fetchAndApply() }
                     } else {
                         // Another client wrote first: take its layout, then write ours on top.
-                        HostLayoutSync.shared.fetchAndApply()
+                        sync.fetchAndApply()
                     }
                 }
             }

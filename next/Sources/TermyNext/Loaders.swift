@@ -706,13 +706,45 @@ final class LoaderSpots {
     func begin() { spots = [] }
 
     func place(_ rect: NSRect, color: NSColor) {
-        spots.append((rect.integral, color))
-        schedule()
+        let index = spots.count
+        let spot = (rect: rect.integral, color: color)
+        spots.append(spot)
+        // Move an existing spinner synchronously so dragged tabs don't trail by
+        // one frame; adding/removing subviews still defers until after `draw`.
+        if index < views.count {
+            let loader = Preferences.shared.tabLoader
+            let adjusted = Self.adjustedRect(spot.rect, for: loader)
+            let view = views[index]
+            if view.frame != adjusted {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                view.frame = adjusted
+                CATransaction.commit()
+            }
+            if view.loader != loader || view.color != spot.color { schedule() }
+        } else {
+            schedule()
+        }
     }
 
     /// Call at the end of the host's draw, so spots that went away are removed.
     func end() {
         if spots.count != views.count { schedule() }
+    }
+
+    private static func adjustedRect(_ rect: NSRect, for loader: TabLoader) -> NSRect {
+        guard loader == .dots else { return rect }
+        var rect = rect
+        // Three dots need `dotsWidth` even when placed on a narrow status badge spot.
+        let minWidth = ceil(StatusIndicator.dotsWidth) + 2
+        let minHeight: CGFloat = 10
+        if rect.width < minWidth {
+            rect = NSRect(x: (rect.midX - minWidth / 2).rounded(.down), y: rect.minY, width: minWidth, height: rect.height)
+        }
+        if rect.height < minHeight {
+            rect = NSRect(x: rect.minX, y: (rect.midY - minHeight / 2).rounded(.down), width: rect.width, height: minHeight)
+        }
+        return rect
     }
 
     private func schedule() {
@@ -735,18 +767,7 @@ final class LoaderSpots {
                 host.addSubview(view)
                 views.append(view)
             }
-            var rect = spot.rect
-            if loader == .dots {
-                // Three dots need `dotsWidth` even when placed on a narrow status badge spot.
-                let minWidth = ceil(StatusIndicator.dotsWidth) + 2
-                let minHeight: CGFloat = 10
-                if rect.width < minWidth {
-                    rect = NSRect(x: (rect.midX - minWidth / 2).rounded(.down), y: rect.minY, width: minWidth, height: rect.height)
-                }
-                if rect.height < minHeight {
-                    rect = NSRect(x: rect.minX, y: (rect.midY - minHeight / 2).rounded(.down), width: rect.width, height: minHeight)
-                }
-            }
+            let rect = Self.adjustedRect(spot.rect, for: loader)
             if view.frame != rect { view.frame = rect }
             view.loader = loader
             view.color = spot.color

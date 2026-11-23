@@ -33,6 +33,15 @@ final class TabStripView: GlassPanel {
     private var pillIsGlass = false
     private var lastSelected: Int?
 
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
     override var mouseDownCanMoveWindow: Bool { false }
 
     /// Every press lands on the strip itself. The pill and glass are only
@@ -45,13 +54,41 @@ final class TabStripView: GlassPanel {
 
     func computeFrames() -> [NSRect] {
         guard let tabs = navigator?.session.tabs, !tabs.isEmpty else { return [] }
-        let height = bounds.height - 6
-        let available = bounds.width - 6
+        let height = max(0, bounds.height - 6)
+        let available = max(0, bounds.width - 6)
         let preferred: CGFloat = 230
-        let width = max(90, min(preferred, (available - CGFloat(tabs.count - 1) * 2) / CGFloat(tabs.count)))
+        let raw = (available - CGFloat(tabs.count - 1) * 2) / CGFloat(tabs.count)
+        let width = max(28, min(preferred, raw))
         return tabs.indices.map { i in
             NSRect(x: 3 + CGFloat(i) * (width + 2), y: 3, width: width, height: height)
         }
+    }
+
+    /// Preview frames while a tab is being reordered: the dragged tab follows
+    /// the pointer (clamped inside the strip) and siblings shift out of its way.
+    private func displayFrames() -> (frames: [NSRect], dragged: Int?) {
+        let base = computeFrames()
+        guard let from = dragIndex, base.indices.contains(from) else { return (base, nil) }
+        var frames = base
+        let minX: CGFloat = 3
+        let maxX = max(minX, bounds.width - 3 - base[from].width)
+        let draggedX = min(max(base[from].origin.x + dragOffset, minX), maxX)
+        let draggedFrame = NSRect(x: draggedX, y: base[from].origin.y, width: base[from].width, height: base[from].height)
+        let to = targetDropIndex(for: draggedFrame.midX, in: base)
+        if to != from {
+            var order = Array(base.indices)
+            order.remove(at: from)
+            order.insert(from, at: to)
+            for (slot, originalIndex) in order.enumerated() where originalIndex != from {
+                frames[originalIndex] = base[slot]
+            }
+        }
+        frames[from] = draggedFrame
+        return (frames, from)
+    }
+
+    private func targetDropIndex(for centerX: CGFloat, in base: [NSRect]) -> Int {
+        base.firstIndex { centerX < $0.maxX } ?? max(0, base.count - 1)
     }
 
     /// The width the strip wants for its tabs, so the titlebar can size it.
@@ -102,12 +139,11 @@ final class TabStripView: GlassPanel {
     /// Puts the pill under the selected tab, sliding when the selection moves.
     func positionPill(animated: Bool) {
         guard let navigator, let pill else { return }
-        let frames = computeFrames()
+        let (frames, _) = displayFrames()
         let index = navigator.session.selectedIndex
         guard frames.indices.contains(index) else { pill.isHidden = true; return }
         pill.isHidden = false
-        var target = frames[index]
-        if index == dragIndex { target.origin.x += dragOffset }
+        let target = frames[index]
         pill.layer?.cornerRadius = target.height / 2
         if animated, !Motion.reduced, pill.frame != .zero {
             Motion.animate(0.36) {
@@ -115,7 +151,12 @@ final class TabStripView: GlassPanel {
                 pill.layoutSubtreeIfNeeded()
             }
         } else {
-            pill.frame = target
+            // Cancel any in-flight selection slide so dragging tracks the cursor 1:1.
+            Motion.instantly {
+                pill.layer?.removeAllAnimations()
+                pill.frame = target
+                pill.layoutSubtreeIfNeeded()
+            }
         }
         lastSelected = index
     }
@@ -126,7 +167,7 @@ final class TabStripView: GlassPanel {
         guard let navigator else { return }
         let theme = AppConfig.shared.theme
         let tabs = navigator.session.tabs
-        let frames = computeFrames()
+        let (frames, dragged) = displayFrames()
 
         if tabs.count > 1 {
             let track = NSBezierPath(roundedRect: bounds, xRadius: bounds.height / 2, yRadius: bounds.height / 2)
@@ -134,17 +175,22 @@ final class TabStripView: GlassPanel {
             track.fill()
         }
 
-        for (i, tab) in tabs.enumerated() {
-            var frame = frames[i]
-            if i == dragIndex { frame.origin.x += dragOffset }
+        // Draw stationary tabs first, then the dragged tab on top so it never
+        // renders behind a neighbor's text while reordering.
+        let drawOrder = tabs.indices.filter { $0 != dragged } + (dragged.map { [$0] } ?? [])
+        for i in drawOrder {
+            let tab = tabs[i]
+            let frame = frames[i]
             let selected = i == navigator.session.selectedIndex
             let radius = frame.height / 2
-            if !selected, i == hoverIndex {
-                theme.hover.setFill()
-                NSBezierPath(roundedRect: frame, xRadius: radius, yRadius: radius).fill()
-            } else if !selected, i > 0, i - 1 != navigator.session.selectedIndex, i - 1 != hoverIndex {
-                theme.foreground.withAlphaComponent(0.12).setFill()
-                NSRect(x: frame.minX - 1.5, y: frame.midY - 7, width: 1, height: 14).fill()
+            if dragged == nil {
+                if !selected, i == hoverIndex {
+                    theme.hover.setFill()
+                    NSBezierPath(roundedRect: frame, xRadius: radius, yRadius: radius).fill()
+                } else if !selected, i > 0, i - 1 != navigator.session.selectedIndex, i - 1 != hoverIndex {
+                    theme.foreground.withAlphaComponent(0.12).setFill()
+                    NSRect(x: frame.minX - 1.5, y: frame.midY - 7, width: 1, height: 14).fill()
+                }
             }
             drawContent(tab, index: i, in: frame, selected: selected, theme: theme)
         }
@@ -328,8 +374,10 @@ final class TabStripView: GlassPanel {
         let frames = computeFrames()
         // A tab can close (its program exited) while another is dragged.
         guard let from = dragIndex, frames.indices.contains(from), abs(dragOffset) > 8 else { return }
-        let center = frames[from].midX + dragOffset
-        let to = frames.firstIndex { center < $0.maxX } ?? frames.count - 1
+        let minX: CGFloat = 3
+        let maxX = max(minX, bounds.width - 3 - frames[from].width)
+        let center = min(max(frames[from].origin.x + dragOffset, minX), maxX) + frames[from].width / 2
+        let to = targetDropIndex(for: center, in: frames)
         if to != from { navigator?.moveTab(from: from, to: to) }
     }
 

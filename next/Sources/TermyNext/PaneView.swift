@@ -240,7 +240,7 @@ final class PaneView: NSView, TerminalViewDelegate {
     override func layout() {
         super.layout()
         let inset: CGFloat = compact ? 0 : 1
-        header.frame = NSRect(x: inset, y: inset, width: bounds.width - inset * 2, height: headerHeight)
+        header.frame = NSRect(x: inset, y: inset, width: max(0, bounds.width - inset * 2), height: headerHeight)
         header.isHidden = compact
         glass?.frame = bounds
         clip.frame = terminalRect(forCard: bounds.size)
@@ -250,7 +250,8 @@ final class PaneView: NSView, TerminalViewDelegate {
             Motion.instantly { terminal.frame = NSRect(origin: .zero, size: size) }
         }
         if let search {
-            let barSize = NSSize(width: min(SearchBar.size.width, clip.frame.width - 16), height: SearchBar.size.height)
+            let barWidth = max(120, min(SearchBar.size.width, clip.frame.width - 16))
+            let barSize = NSSize(width: barWidth, height: SearchBar.size.height)
             search.bar.frame = NSRect(x: clip.frame.maxX - barSize.width - 8, y: clip.frame.minY + 8,
                                       width: barSize.width, height: barSize.height)
             search.spotlight.frame = terminal.frame
@@ -428,7 +429,7 @@ final class PaneView: NSView, TerminalViewDelegate {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         removeOwnTrackingAreas()
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self))
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
 
     override func mouseEntered(with event: NSEvent) { hovering = true }
@@ -655,6 +656,8 @@ final class PaneView: NSView, TerminalViewDelegate {
     func terminalView(_ view: TerminalView, isDropTarget: Bool) {
         if isDropTarget {
             guard dropHighlight == nil else { return }
+            // Drop any previous highlight still fading out so two never stack.
+            for case let stale as DropHighlightView in clip.subviews { stale.removeFromSuperview() }
             let highlight = DropHighlightView(frame: terminal.frame)
             highlight.autoresizingMask = [.width, .height]
             clip.addSubview(highlight, positioned: .above, relativeTo: terminal)
@@ -786,7 +789,9 @@ final class PaneHeaderView: NSView {
         let tile = NSRect(x: 10, y: (bounds.height - 16) / 2, width: 16, height: 16)
         ProgramIcon.draw(program: pane.foregroundProgram, executable: pane.foregroundExecutable, in: tile, theme: theme)
 
-        let maxX = (buttons.first?.frame.minX ?? bounds.width) - 8
+        let buttonsWidth = CGFloat(buttons.count) * 23 + 8
+        let firstButtonX = buttons.first.map(\.frame.minX).flatMap { $0 > 0 ? $0 : nil }
+        let maxX = (firstButtonX ?? (bounds.width - buttonsWidth)) - 8
         let titleFont = NSFont.systemFont(ofSize: 12.5, weight: .semibold)
         let detailFont = NSFont.systemFont(ofSize: 12.5, weight: .regular)
         let focusedAlpha: CGFloat = pane.isFocused ? 1 : 0.8
@@ -807,8 +812,11 @@ final class PaneHeaderView: NSView {
                   options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }
 
+    private var didDragFloating = false
+
     override func mouseDown(with event: NSEvent) {
         dragOrigin = event.locationInWindow
+        didDragFloating = false
         pane?.headerRequest(.focus)
         if event.clickCount == 2 { pane?.headerRequest(.zoom) }
     }
@@ -818,9 +826,13 @@ final class PaneHeaderView: NSView {
         guard let origin = dragOrigin, let pane else { return }
         let now = event.locationInWindow
         if pane.isFloating {
+            didDragFloating = true
             pane.headerRequest(.drag(NSPoint(x: now.x - origin.x, y: now.y - origin.y)))
             dragOrigin = now
         } else if hypot(now.x - origin.x, now.y - origin.y) > 5 {
+            // Clear `dragOrigin` so cancelling with Esc doesn't immediately
+            // respawn a new drag on the next mouseDragged event.
+            dragOrigin = nil
             // A tiled pane lifts out and can go anywhere.
             PaneDrag.begin(pane: pane, event: event)
             PaneDrag.current?.update(event)
@@ -829,6 +841,10 @@ final class PaneHeaderView: NSView {
 
     override func mouseUp(with event: NSEvent) {
         dragOrigin = nil
+        if didDragFloating {
+            didDragFloating = false
+            SessionHost.shared.scheduleSave()
+        }
         PaneDrag.current?.finish(event)
     }
 }

@@ -238,21 +238,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// Opens a window for `session`. A window going straight to full screen
     /// keeps its panes' size until it gets there, so programs resize once.
+    /// When `originTopLeft` is given, the window is positioned there before
+    /// ordering front so it never flashes at the previous window's location.
     @discardableResult
-    func open(_ session: TerminalSessionGroup) -> WindowController? {
+    func open(_ session: TerminalSessionGroup, originTopLeft: NSPoint? = nil) -> WindowController? {
         let controller = WindowController(session: session)
         let fullScreen = launchesInFullScreen
         launchesInFullScreen = false
         if fullScreen { (controller.window as? TermyWindow)?.holdsTerminalGrids = true }
         controllers.append(controller)
-        // Opens at the remembered frame; steps down and right off any window already there.
         if let window = controller.window {
-            let others = controllers.filter { $0 !== controller }.compactMap(\.window).filter(\.isVisible)
-            var frame = window.frame
-            while others.contains(where: { abs($0.frame.minX - frame.minX) < 4 && abs($0.frame.maxY - frame.maxY) < 4 }) {
-                frame = frame.offsetBy(dx: 28, dy: -28)
+            if let originTopLeft {
+                window.setFrameTopLeftPoint(originTopLeft)
+                let clamped = Self.clamped(frame: window.frame, to: window.screen ?? NSScreen.main)
+                if clamped != window.frame { window.setFrame(clamped, display: false) }
+            } else {
+                // Opens at the remembered frame; steps down and right off any window already there.
+                let others = controllers.filter { $0 !== controller }.compactMap(\.window).filter(\.isVisible)
+                var frame = window.frame
+                let visible = (window.screen ?? NSScreen.main)?.visibleFrame
+                var steps = 0
+                while steps < 20, others.contains(where: { abs($0.frame.minX - frame.minX) < 4 && abs($0.frame.maxY - frame.maxY) < 4 }) {
+                    let next = frame.offsetBy(dx: 28, dy: -28)
+                    if let visible, next.maxX > visible.maxX || next.minY < visible.minY {
+                        frame = Self.clamped(frame: next, to: window.screen ?? NSScreen.main)
+                        break
+                    }
+                    frame = next
+                    steps += 1
+                }
+                if frame != window.frame { window.setFrame(frame, display: false) }
             }
-            if frame != window.frame { window.setFrame(frame, display: false) }
         }
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
@@ -264,21 +280,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         return controller
     }
 
+    /// Keeps a window frame within `screen`'s visible area so cascaded or
+    /// dropped windows never land off-screen.
+    private static func clamped(frame: NSRect, to screen: NSScreen?) -> NSRect {
+        guard let visible = screen?.visibleFrame else { return frame }
+        var result = frame
+        result.size.width = min(result.width, visible.width)
+        result.size.height = min(result.height, visible.height)
+        result.origin.x = min(max(result.origin.x, visible.minX), visible.maxX - result.width)
+        result.origin.y = min(max(result.origin.y, visible.minY), visible.maxY - result.height)
+        return result
+    }
+
     @discardableResult
-    func openWindow(withTab tab: TerminalTab, name: String) -> WindowController? {
+    func openWindow(withTab tab: TerminalTab, name: String, originTopLeft: NSPoint? = nil) -> WindowController? {
         let session = TerminalSessionGroup(name: name)
         session.append(tab)
         Workspace.shared.adopt(session)
-        open(session)
-        return controllers.last
+        return open(session, originTopLeft: originTopLeft)
     }
 
     /// Takes a pane out of whichever tab holds it, in a window or not.
-    func detachPane(_ pane: PaneView) {
+    /// Pass `silent: true` when re-inserting into the same window immediately,
+    /// avoiding a redundant intermediate layout animation.
+    func detachPane(_ pane: PaneView, silent: Bool = false) {
         for session in Workspace.shared.sessions {
             guard session.tabs.contains(where: { $0.panes[pane.id] != nil }) else { continue }
             if let controller = controllers.first(where: { $0.session === session }) {
-                controller.detachForDrop(pane)
+                controller.detachForDrop(pane, silent: silent)
             } else if let tab = session.tabs.first(where: { $0.panes[pane.id] != nil }) {
                 tab.remove(pane.id)
                 if tab.isEmpty { session.remove(tab) }
@@ -289,10 +318,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     /// Takes a tab out of whichever session holds it, in a window or not.
-    func detachTab(_ tab: TerminalTab) {
+    func detachTab(_ tab: TerminalTab, silent: Bool = false) {
         guard let session = Workspace.shared.sessions.first(where: { $0.tabs.contains { $0 === tab } }) else { return }
         if let controller = controllers.first(where: { $0.session === session }) {
-            controller.detachTabForDrop(tab)
+            controller.detachTabForDrop(tab, silent: silent)
         } else {
             session.remove(tab)
             if session.tabs.isEmpty { Workspace.shared.remove(session) }
@@ -301,33 +330,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     /// Opens a tab dropped outside every window in a window of its own.
     func moveTabToNewWindow(_ tab: TerminalTab, at point: NSPoint) {
+        let topLeft = NSPoint(x: point.x - 40, y: point.y + 14)
         // The only tab of a window is already a window of its own: move it.
         if let owner = controllers.first(where: { $0.session.tabs.count == 1 && $0.session.tabs[0] === tab }), let window = owner.window {
-            window.setFrameTopLeftPoint(NSPoint(x: point.x - 40, y: point.y + 14))
+            window.setFrameTopLeftPoint(topLeft)
             return
         }
         detachTab(tab)
         let name = Workspace.shared.newSessionName(near: tab.focusedPane?.directory)
-        guard let controller = openWindow(withTab: tab, name: name), let window = controller.window else { return }
-        window.setFrameTopLeftPoint(NSPoint(x: point.x - 40, y: point.y + 14))
+        guard openWindow(withTab: tab, name: name, originTopLeft: topLeft) != nil else { return }
         tab.focusedPane?.focus()
     }
 
     /// Opens a pane dropped outside every window in a window of its own,
     /// with its top-left corner near the drop point.
     func movePaneToNewWindow(_ pane: PaneView, at point: NSPoint) {
+        let topLeft = NSPoint(x: point.x - 40, y: point.y + 14)
         // The only pane of the only tab is already a window of its own: move it.
         if let owner = controllers.first(where: { $0.session.tabs.count == 1 && $0.session.tabs[0].panes.count == 1 && $0.session.tabs[0].panes[pane.id] != nil }),
            let window = owner.window {
-            window.setFrameTopLeftPoint(NSPoint(x: point.x - 40, y: point.y + 14))
+            window.setFrameTopLeftPoint(topLeft)
             return
         }
         detachPane(pane)
         pane.isFloating = false
         let name = Workspace.shared.newSessionName(near: pane.directory)
-        guard let controller = openWindow(withTab: TerminalTab(pane: pane), name: name), let window = controller.window else { return }
-        window.setFrameTopLeftPoint(NSPoint(x: point.x - 40, y: point.y + 14))
-        Motion.appear(window.contentView ?? NSView(), scale: 0.96, duration: 0.2)
+        guard let controller = openWindow(withTab: TerminalTab(pane: pane), name: name, originTopLeft: topLeft),
+              let window = controller.window else { return }
+        if !Motion.reduced {
+            window.alphaValue = 0
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.14
+                context.timingFunction = Motion.curve
+                window.animator().alphaValue = 1
+            }
+        }
         pane.focus()
     }
 

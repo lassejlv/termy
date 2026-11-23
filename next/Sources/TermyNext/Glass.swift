@@ -12,6 +12,9 @@ final class GlassView: NSView {
     var isCapsule = false { didSet { needsLayout = true } }
     var tint: NSColor? { didSet { applyTint() } }
     private let effect: NSView
+    /// Separate tint overlay for macOS 14–25 where setting `layer.backgroundColor`
+    /// directly on `NSVisualEffectView` is overwritten by AppKit.
+    private let fallbackTint: NSView?
 
     init(style: Style = .regular, cornerRadius: CGFloat = 12, tint: NSColor? = nil, interactive: Bool = false) {
         self.cornerRadius = cornerRadius
@@ -24,17 +27,26 @@ final class GlassView: NSView {
             if glass.responds(to: NSSelectorFromString("setEffectIsInteractive:")) {
                 glass.setValue(interactive, forKey: "effectIsInteractive")
             }
+            glass.autoresizingMask = [.width, .height]
             effect = glass
+            fallbackTint = nil
         } else {
             let material = StillVisualEffectView()
             material.material = .hudWindow
             material.blendingMode = .withinWindow
             material.state = .followsWindowActiveState
             material.wantsLayer = true
+            material.autoresizingMask = [.width, .height]
             effect = material
+            let tintOverlay = PassthroughView()
+            tintOverlay.wantsLayer = true
+            tintOverlay.autoresizingMask = [.width, .height]
+            fallbackTint = tintOverlay
         }
         super.init(frame: .zero)
+        wantsLayer = true
         addSubview(effect)
+        if let fallbackTint { addSubview(fallbackTint) }
         applyShape()
         applyTint()
     }
@@ -50,16 +62,22 @@ final class GlassView: NSView {
     override func layout() {
         super.layout()
         effect.frame = bounds
-        if isCapsule { cornerRadius = bounds.height / 2 }
+        fallbackTint?.frame = bounds
+        if isCapsule {
+            let target = bounds.height / 2
+            if abs(cornerRadius - target) > 0.01 { cornerRadius = target }
+        }
     }
 
     private func applyShape() {
         if #available(macOS 26.0, *), let glass = effect as? NSGlassEffectView {
             glass.cornerRadius = cornerRadius
         } else {
-            effect.layer?.cornerRadius = cornerRadius
-            effect.layer?.cornerCurve = .continuous
-            effect.layer?.masksToBounds = true
+            for view in [effect, fallbackTint].compactMap({ $0 }) {
+                view.layer?.cornerRadius = cornerRadius
+                view.layer?.cornerCurve = .continuous
+                view.layer?.masksToBounds = true
+            }
         }
     }
 
@@ -67,7 +85,7 @@ final class GlassView: NSView {
         if #available(macOS 26.0, *), let glass = effect as? NSGlassEffectView {
             glass.tintColor = tint
         } else {
-            effect.layer?.backgroundColor = tint?.cgColor
+            fallbackTint?.layer?.backgroundColor = tint?.cgColor
         }
     }
 }
@@ -202,29 +220,36 @@ enum Motion {
         guard !reduced else { return }
         view.wantsLayer = true
         guard let layer = view.layer else { return }
+        layer.removeAnimation(forKey: "termyDisappear")
         let size = view.bounds.size
-        var start = CATransform3DMakeTranslation(size.width * (1 - scale) / 2, size.height * (1 - scale) / 2 + offsetY, 0)
-        start = CATransform3DScale(start, scale, scale, 1)
-        let transform = CABasicAnimation(keyPath: "transform")
-        transform.fromValue = NSValue(caTransform3D: start)
-        transform.toValue = NSValue(caTransform3D: CATransform3DIdentity)
         let fade = CABasicAnimation(keyPath: "opacity")
         fade.fromValue = 0
         fade.toValue = 1
+        var animations: [CAAnimation] = [fade]
+        if size.width > 0, size.height > 0 {
+            var start = CATransform3DMakeTranslation(size.width * (1 - scale) / 2, size.height * (1 - scale) / 2 + offsetY, 0)
+            start = CATransform3DScale(start, scale, scale, 1)
+            let transform = CABasicAnimation(keyPath: "transform")
+            transform.fromValue = NSValue(caTransform3D: start)
+            transform.toValue = NSValue(caTransform3D: CATransform3DIdentity)
+            animations.append(transform)
+        }
         let group = CAAnimationGroup()
-        group.animations = [transform, fade]
+        group.animations = animations
         group.duration = duration
         group.timingFunction = curve
         group.fillMode = .backwards
         layer.add(group, forKey: "termyAppear")
     }
 
-    /// Scales and fades a view out, then calls `completion`.
+    /// Scales and fades a view out from its current presentation state, then calls `completion`.
     static func disappear(_ view: NSView, scale: CGFloat = 0.96, duration: TimeInterval = 0.2, completion: @escaping () -> Void) {
         guard !reduced, let layer = view.layer, view.window != nil else {
             completion()
             return
         }
+        let currentTransform = layer.presentation()?.transform ?? layer.transform
+        let currentOpacity = layer.presentation()?.opacity ?? layer.opacity
         let size = view.bounds.size
         var end = CATransform3DMakeTranslation(size.width * (1 - scale) / 2, size.height * (1 - scale) / 2, 0)
         end = CATransform3DScale(end, scale, scale, 1)
@@ -232,8 +257,10 @@ enum Motion {
         nonisolated(unsafe) let done = completion
         CATransaction.setCompletionBlock { MainActor.assumeIsolated { done() } }
         let transform = CABasicAnimation(keyPath: "transform")
+        transform.fromValue = NSValue(caTransform3D: currentTransform)
         transform.toValue = NSValue(caTransform3D: end)
         let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = currentOpacity
         fade.toValue = 0
         let group = CAAnimationGroup()
         group.animations = [transform, fade]

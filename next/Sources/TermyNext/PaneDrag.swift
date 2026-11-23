@@ -56,32 +56,29 @@ final class PaneDrag {
     private var target: (controller: WindowController?, drop: PaneDropTarget)?
     private var springTimer: Timer?
     private var keyMonitor: Any?
-    /// Termy Next windows front to back, read once: asking the window server
-    /// for the order on every mouse event is what made the card lag.
-    private var windows: [WindowController] = []
     private var lastEvaluated: (point: NSPoint, time: CFTimeInterval)?
     private var evaluationPending = false
 
     /// Starts dragging `pane`; `event` is the drag that crossed the threshold.
     static func begin(pane: PaneView, event: NSEvent) {
         guard current == nil, pane.window != nil else { return }
-        current = PaneDrag(pane: pane, tab: nil, event: event)
+        current = PaneDrag(pane: pane, tab: nil, fromTabBar: false, event: event)
     }
 
     /// Starts dragging a tab pulled out of the tab bar or sidebar. A tab with
     /// one pane drags just like that pane.
     static func begin(tab: TerminalTab, event: NSEvent) {
         guard current == nil, let pane = tab.focusedPane ?? tab.allPanes.first else { return }
-        current = PaneDrag(pane: pane, tab: tab.allPanes.count > 1 ? tab : nil, event: event)
+        current = PaneDrag(pane: pane, tab: tab.allPanes.count > 1 ? tab : nil, fromTabBar: true, event: event)
     }
 
-    private init(pane: PaneView, tab: TerminalTab?, event: NSEvent) {
+    private init(pane: PaneView, tab: TerminalTab?, fromTabBar: Bool, event: NSEvent) {
         self.pane = pane
         self.tab = tab
         card = PaneDragCard(pane: pane, title: tab?.title, badge: tab.map { "\($0.allPanes.count) panes" })
         let size = card.frame.size
         // Hold the card where the header was grabbed, scaled to the card.
-        if tab == nil, pane.window != nil {
+        if !fromTabBar, tab == nil, pane.window != nil {
             let inPane = pane.convert(event.locationInWindow, from: nil)
             grab = NSPoint(x: min(max(inPane.x / max(pane.bounds.width, 1), 0.1), 0.9) * size.width, y: 16)
         } else {
@@ -97,11 +94,19 @@ final class PaneDrag {
         ghost.isReleasedWhenClosed = false
         ghost.contentView = card
         ghost.animationBehavior = .none
-        windows = AppDelegate.shared.controllersFrontToBack
         move(to: NSEvent.mouseLocation)
+        // Fade the panel itself instead of layer-scaling `card` so the window
+        // shadow stays aligned with the card instead of detaching.
+        if !Motion.reduced { ghost.alphaValue = 0 }
         ghost.orderFrontRegardless()
-        Motion.appear(card, scale: 0.92, duration: 0.16)
-        if tab == nil, pane.window != nil {
+        if !Motion.reduced {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.12
+                context.timingFunction = Motion.curve
+                ghost.animator().alphaValue = 1
+            }
+        }
+        if !fromTabBar, tab == nil, pane.window != nil {
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.15
                 pane.animator().alphaValue = 0.35
@@ -144,7 +149,11 @@ final class PaneDrag {
         lastEvaluated = (point, CACurrentMediaTime())
         let found = target(at: point)
         guard !(found?.drop.same(as: target?.drop) ?? (target == nil)) || found?.controller !== target?.controller else { return }
-        target?.controller?.showDropIndicator(nil)
+        // Only dismiss the previous window's indicator when leaving that window;
+        // within the same window, `showDropIndicator` glides the existing indicator.
+        if target?.controller !== found?.controller {
+            target?.controller?.showDropIndicator(nil)
+        }
         target = found
         found?.controller?.showDropIndicator(found?.drop)
         card.hint = found?.drop.hint
@@ -167,16 +176,16 @@ final class PaneDrag {
         }
     }
 
-    /// The window under `point` and where the pane would land in it; a new
-    /// window when the point is outside all of them.
+    /// The topmost visible window under `point` (across all apps, below `ghost`)
+    /// and where the pane would land in it; a new window when not over any of ours.
     private func target(at point: NSPoint) -> (controller: WindowController?, drop: PaneDropTarget)? {
-        windows.removeAll { $0.window?.isVisible != true }
-        for controller in windows {
-            guard let window = controller.window, window.isVisible, window.frame.contains(point) else { continue }
+        let topNumber = NSWindow.windowNumber(at: point, belowWindowWithWindowNumber: ghost.windowNumber)
+        if let controller = AppDelegate.shared.controllers.first(where: { $0.window?.windowNumber == topNumber && $0.window?.isVisible == true }) {
             return controller.dropTarget(atScreenPoint: point, dragging: pane, tab: tab).map { (controller, $0) }
         }
-        let overOtherWindow = NSApp.windows.contains { $0.isVisible && $0 !== ghost && $0.frame.contains(point) && $0.level == .normal }
-        return overOtherWindow ? nil : (nil, .newWindow)
+        // Over one of our own non-terminal windows (e.g. Settings): don't open a new window.
+        let overOwnUtility = NSApp.windows.contains { $0.windowNumber == topNumber && $0 !== ghost && $0.level == .normal }
+        return overOwnUtility ? nil : (nil, .newWindow)
     }
 
     // MARK: Ending
@@ -232,7 +241,10 @@ final class PaneDrag {
                 pane.animator().alphaValue = 1
             }
         } else {
-            pane.alphaValue = 1
+            Motion.instantly {
+                pane.layer?.removeAnimation(forKey: "opacity")
+                pane.alphaValue = 1
+            }
         }
     }
 }

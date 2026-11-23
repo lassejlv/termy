@@ -8,6 +8,9 @@ import TermyNextCore
 @MainActor
 final class TermyWindow: NSWindow, TerminalGridHolding {
     var onFirstResponderChange: (() -> Void)?
+    var onLayoutTrafficLights: (() -> Void)?
+    private var localMouseUpMonitor: Any?
+    private var globalMouseUpMonitor: Any?
 
     /// Keeps pane grids at their size while set (quitting, restoring full
     /// screen); letting go fits every pane to its view once.
@@ -20,6 +23,11 @@ final class TermyWindow: NSWindow, TerminalGridHolding {
 
     private static func terminals(in view: NSView) -> [TerminalView] {
         (view as? TerminalView).map { [$0] } ?? view.subviews.flatMap(terminals(in:))
+    }
+
+    override func layoutIfNeeded() {
+        super.layoutIfNeeded()
+        onLayoutTrafficLights?()
     }
 
     override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
@@ -40,18 +48,41 @@ final class TermyWindow: NSWindow, TerminalGridHolding {
     }
 
     /// `performDrag` does nothing while `isMovable` is false, so the window
-    /// is movable for just this drag. The drag runs in the window server and
-    /// returns at once; the window locks again when the button comes up, so
-    /// the next press on a tab can't move it.
+    /// is movable for just this drag. Lock again synchronously as soon as the
+    /// button is released (no 50ms polling window where a quick tab click could
+    /// drag the window).
     private func dragWindow(with event: NSEvent) {
+        clearMouseUpMonitors()
         isMovable = true
         performDrag(with: event)
-        lockWhenReleased()
+        if NSEvent.pressedMouseButtons & 1 == 0 {
+            isMovable = false
+            return
+        }
+        localMouseUpMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { [weak self] event in
+            MainActor.assumeIsolated { self?.finishWindowDrag() }
+            return event
+        }
+        globalMouseUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp) { [weak self] _ in
+            MainActor.assumeIsolated { self?.finishWindowDrag() }
+        }
     }
 
-    private func lockWhenReleased() {
-        guard NSEvent.pressedMouseButtons & 1 != 0 else { isMovable = false; return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.lockWhenReleased() }
+    private func finishWindowDrag() {
+        isMovable = false
+        clearMouseUpMonitors()
+    }
+
+    private func clearMouseUpMonitors() {
+        if let localMouseUpMonitor { NSEvent.removeMonitor(localMouseUpMonitor) }
+        if let globalMouseUpMonitor { NSEvent.removeMonitor(globalMouseUpMonitor) }
+        localMouseUpMonitor = nil
+        globalMouseUpMonitor = nil
+    }
+
+    deinit {
+        if let local = localMouseUpMonitor { NSEvent.removeMonitor(local) }
+        if let global = globalMouseUpMonitor { NSEvent.removeMonitor(global) }
     }
 }
 
@@ -66,6 +97,7 @@ final class RootView: NSView {
     var backdrops: [NSView] = []
     override var isFlipped: Bool { true }
     override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func layout() {
         super.layout()
@@ -118,6 +150,10 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     private var onboarding: OnboardingView?
     private var sidebarHidden = false
     private var lastTabStyle = Preferences.shared.tabStyle
+    private var trafficLightObserver: NSObjectProtocol?
+    private var positioningTrafficLights = false
+    private var animateRootGeneration: UInt64 = 0
+    private var pendingFrameSave: DispatchWorkItem?
 
     private lazy var sessionButton = IconButton(symbol: "rectangle.stack", pointSize: 13, help: Command.changeSession.help()) { [weak self] in
         self?.run(.changeSession)
@@ -159,6 +195,8 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         super.init(window: window)
         window.delegate = self
         window.onFirstResponderChange = { [weak self] in self?.syncFocus() }
+        window.onLayoutTrafficLights = { [weak self] in self?.positionTrafficLights() }
+        observeTrafficLights(in: window)
         buildViews()
         window.contentView = root
         // The last size and place any window had; the frame macOS kept under
@@ -171,6 +209,23 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         showSession(session)
         NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged), name: Preferences.didChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(workspaceChanged), name: Workspace.didChange, object: nil)
+    }
+
+    deinit {
+        if let trafficLightObserver { NotificationCenter.default.removeObserver(trafficLightObserver) }
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    /// Synchronously snaps the traffic lights back to our 44pt titlebar center
+    /// whenever AppKit repositions them during a titlebar layout pass.
+    private func observeTrafficLights(in window: NSWindow) {
+        guard let close = window.standardWindowButton(.closeButton) else { return }
+        close.postsFrameChangedNotifications = true
+        trafficLightObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: close, queue: nil
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.positionTrafficLights() }
+        }
     }
 
     @available(*, unavailable)
@@ -208,10 +263,11 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         let theme = AppConfig.shared.theme
         let liquid = theme.isLiquid
         window?.appearance = theme.appearance
+        window?.isOpaque = !liquid
+        window?.backgroundColor = liquid ? .clear : theme.chrome
         glass.isHidden = !liquid
         glass.appearance = theme.appearance
         tint.layer?.backgroundColor = (liquid ? theme.backdropTint : theme.chrome).cgColor
-        root.layer?.cornerRadius = 12
         for button in chromeButtons {
             button.tint = theme.textSecondary
             button.hoverTint = theme.textPrimary
@@ -247,10 +303,12 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         var sidebarFrame = NSRect.zero
         switch style {
         case .above:
-            content = NSRect(x: outer, y: titlebarHeight, width: bounds.width - outer * 2, height: bounds.height - titlebarHeight - outer)
+            content = NSRect(x: outer, y: titlebarHeight,
+                             width: max(0, bounds.width - outer * 2),
+                             height: max(0, bounds.height - titlebarHeight - outer))
             sessionButton.frame = NSRect(x: lightsWidth + 4, y: (titlebarHeight - 30) / 2, width: 30, height: 30)
             let stripX = sessionButton.frame.maxX + 10
-            let maxWidth = bounds.width - stripX - 120
+            let maxWidth = max(0, bounds.width - stripX - 120)
             let width = strip.preferredWidth(maximum: maxWidth)
             strip.frame = NSRect(x: stripX, y: (titlebarHeight - 36) / 2, width: max(0, width), height: 36)
         case .left, .right:
@@ -259,16 +317,20 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
                 sidebarFrame = NSRect(x: x, y: 0, width: sidebarWidth, height: bounds.height)
                 sidebar.topInset = titlebarHeight
                 let contentX = style == .left ? sidebarWidth : outer
-                content = NSRect(x: contentX, y: outer, width: bounds.width - sidebarWidth - outer, height: bounds.height - outer * 2)
+                content = NSRect(x: contentX, y: outer,
+                                 width: max(0, bounds.width - sidebarWidth - outer),
+                                 height: max(0, bounds.height - outer * 2))
                 if style == .right {
                     buttonsRight = bounds.width - 14
                     content.origin.y = titlebarHeight
-                    content.size.height = bounds.height - titlebarHeight - outer
+                    content.size.height = max(0, bounds.height - titlebarHeight - outer)
                 } else {
                     buttonsRight = sidebarWidth - 12
                 }
             } else {
-                content = NSRect(x: outer, y: titlebarHeight, width: bounds.width - outer * 2, height: bounds.height - titlebarHeight - outer)
+                content = NSRect(x: outer, y: titlebarHeight,
+                                 width: max(0, bounds.width - outer * 2),
+                                 height: max(0, bounds.height - titlebarHeight - outer))
             }
             let toggleX = style == .left || !showsSidebar ? lightsWidth + 4 : bounds.width - sidebarWidth + 12
             sidebarButton.frame = NSRect(x: toggleX, y: (titlebarHeight - 28) / 2, width: 28, height: 28)
@@ -280,7 +342,11 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
             button.frame = NSRect(x: buttonsRight - 30 - CGFloat(i) * 30, y: (titlebarHeight - 30) / 2, width: 30, height: 30)
         }
         activityButton.isActive = activity != nil
-        container.frame = content
+        if animated {
+            container.animator().frame = content
+        } else {
+            container.frame = content
+        }
 
         scrim.frame = bounds
         if let activity {
@@ -301,16 +367,15 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
                                       width: width, height: height)
         }
         positionTrafficLights()
-        // AppKit lays the titlebar out after us on resize and focus changes.
-        DispatchQueue.main.async { [weak self] in self?.positionTrafficLights() }
-        strip.needsLayout = true
-        strip.needsDisplay = true
-        sidebar.needsLayout = true
+        if !strip.isHidden { strip.needsDisplay = true }
+        if showsSidebar { sidebar.needsLayout = true }
     }
 
     /// Shows or hides a side panel, sliding it in from `slide` points away.
     private func place(_ view: NSView, frame: NSRect, visible: Bool, slide: CGFloat, animated: Bool) {
         if visible {
+            // Cancel any pending hide from an earlier toggle animation.
+            hidingViews.remove(ObjectIdentifier(view))
             if view.isHidden {
                 view.isHidden = false
                 if animated {
@@ -342,11 +407,13 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
 
     /// Animates the chrome to its new layout after a style or panel change.
     private func animateRoot() {
+        animateRootGeneration &+= 1
+        let generation = animateRootGeneration
         Motion.animate(0.38, {
             layoutRoot(animated: true)
             root.layoutSubtreeIfNeeded()
         }, completion: { [weak self] in
-            guard let self else { return }
+            guard let self, self.animateRootGeneration == generation else { return }
             for view in [self.sidebar as NSView] where self.hidingViews.contains(ObjectIdentifier(view)) {
                 view.isHidden = true
                 view.alphaValue = 1
@@ -358,43 +425,41 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
 
     /// Centers the traffic lights in the taller titlebar row.
     private func positionTrafficLights() {
-        guard let window, !window.styleMask.contains(.fullScreen),
+        guard !positioningTrafficLights, let window, !window.styleMask.contains(.fullScreen),
               let titlebar = window.standardWindowButton(.closeButton)?.superview else { return }
+        positioningTrafficLights = true
+        defer { positioningTrafficLights = false }
         // The system titlebar stays 28pt tall; the buttons hang just past its
         // bottom edge so their centers line up with our 44pt row.
         let types: [NSWindow.ButtonType] = [.closeButton, .miniaturizeButton, .zoomButton]
-        for (i, type) in types.enumerated() {
-            guard let button = window.standardWindowButton(type) else { continue }
-            let y = titlebar.isFlipped
-                ? titlebarHeight / 2 - button.frame.height / 2
-                : titlebar.bounds.height - titlebarHeight / 2 - button.frame.height / 2
-            let origin = NSPoint(x: 16 + CGFloat(i) * 20, y: y)
-            if button.frame.origin != origin { button.setFrameOrigin(origin) }
+        Motion.instantly {
+            for (i, type) in types.enumerated() {
+                guard let button = window.standardWindowButton(type) else { continue }
+                let y = titlebar.isFlipped
+                    ? titlebarHeight / 2 - button.frame.height / 2
+                    : titlebar.bounds.height - titlebarHeight / 2 - button.frame.height / 2
+                let origin = NSPoint(x: 16 + CGFloat(i) * 20, y: y)
+                if button.frame.origin != origin { button.setFrameOrigin(origin) }
+            }
         }
     }
 
     // MARK: Session and tabs
 
     private func showSession(_ session: TerminalSessionGroup) {
-        let changed = self.session !== session
         self.session = session
         session.hostWindowID = hostWindowID
         session.lastActive = Date()
         strip.navigator = self
         // The 1 s refresh skipped it while no window showed it.
         AppDelegate.shared.refreshProcesses(in: session)
-        if changed {
-            Motion.crossfade(sidebar, duration: 0.25)
-            Motion.crossfade(strip, duration: 0.25)
-        }
-        showSelectedTab(transition: changed)
+        showSelectedTab(transition: false)
         updateTitle()
         root.needsLayout = true
     }
 
     private func showSelectedTab(transition: Bool = true) {
         guard let tab = session.selectedTab else { return }
-        if transition, container.tab !== tab, container.tab != nil { Motion.crossfade(container, duration: 0.22) }
         container.tab = tab
         strip.applyStyle()
         container.reloadPanes()
@@ -538,6 +603,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         if let terminal = window?.firstResponder as? TerminalView,
            let pane = tab.allPanes.first(where: { $0.terminal === terminal }) {
             tab.setFocus(pane.id)
+            if pane.isFloating { container.raiseFloating(pane) }
         }
         let keyWindow = window?.isKeyWindow == true
         for pane in tab.allPanes {
@@ -758,7 +824,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
 
     /// Takes `tab` out of this window without ending its programs; an
     /// emptied window closes.
-    func detachTabForDrop(_ tab: TerminalTab) {
+    func detachTabForDrop(_ tab: TerminalTab, silent: Bool = false) {
         session.remove(tab)
         tab.allPanes.forEach { $0.removeFromSuperview() }
         if session.tabs.isEmpty {
@@ -766,7 +832,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
             window?.close()
             return
         }
-        showSelectedTab(transition: false)
+        if !silent { showSelectedTab(transition: false) }
         strip.needsDisplay = true
         sidebar.needsLayout = true
     }
@@ -774,27 +840,28 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     /// Puts a dragged tab where it was dropped: its panes merged beside a
     /// pane or into a tab, or the tab itself added to this window.
     func acceptTabDrop(_ tab: TerminalTab, at target: PaneDropTarget) {
+        let sameWindow = session.tabs.contains { $0 === tab }
         let destination: TerminalTab
         switch target {
         case .split(let over, let direction):
             guard let dest = session.tabs.first(where: { $0.panes[over.id] != nil }), dest !== tab else { return }
-            AppDelegate.shared.detachTab(tab)
+            AppDelegate.shared.detachTab(tab, silent: sameWindow)
             dest.merge(tab, nextTo: over.id, direction: direction)
             destination = dest
         case .swap(let over):
             guard let dest = session.tabs.first(where: { $0.panes[over.id] != nil }), dest !== tab else { return }
-            AppDelegate.shared.detachTab(tab)
+            AppDelegate.shared.detachTab(tab, silent: sameWindow)
             dest.merge(tab, nextTo: over.id, direction: SplitNavigation.bestFitDirection(for: over.frame))
             destination = dest
         case .tab(let dest):
             guard dest !== tab, session.tabs.contains(where: { $0 === dest }) else { return }
-            AppDelegate.shared.detachTab(tab)
+            AppDelegate.shared.detachTab(tab, silent: sameWindow)
             let anchor = dest.focusedPane ?? dest.allPanes.first
             let direction = anchor.map { $0.frame.isEmpty ? Direction.right : SplitNavigation.bestFitDirection(for: $0.frame) } ?? .right
             dest.merge(tab, nextTo: anchor?.id ?? dest.focusedID, direction: direction)
             destination = dest
         case .newTab:
-            guard !session.tabs.contains(where: { $0 === tab }) else { return }
+            guard !sameWindow else { return }
             AppDelegate.shared.detachTab(tab)
             session.append(tab)
             destination = tab
@@ -802,9 +869,10 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
             return
         }
         for pane in destination.allPanes { pane.delegate = self }
+        let stayedOnCurrentTab = destination === container.tab
         select(destination)
         guard let focused = destination.focusedPane else { return }
-        finishDrop(focused)
+        finishDrop(focused, sameTab: stayedOnCurrentTab)
     }
 
     private func dropOnNewTab(dragging pane: PaneView) -> PaneDropTarget? {
@@ -857,8 +925,18 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
             if !sidebar.isHidden, let row = sidebar.rowFrame(for: tab) { return root.convert(row, from: sidebar) }
             return nil
         case .newTab:
-            if !strip.isHidden { return root.convert(strip.newTabDropFrame, from: strip) }
-            return root.convert(sidebar.newTabDropFrame, from: sidebar)
+            if !strip.isHidden {
+                // Place after the tab strip in empty titlebar space, not on top of the last tab.
+                let rightLimit = max(strip.frame.minX + 60, activityButton.frame.minX - 8)
+                let x = min(strip.frame.maxX + 4, rightLimit - 60)
+                return NSRect(x: max(strip.frame.minX, x), y: strip.frame.minY + 3, width: 60, height: max(24, strip.frame.height - 6))
+            }
+            if !sidebar.isHidden, sidebar.alphaValue > 0, sidebar.frame.width > 0 {
+                return root.convert(sidebar.newTabDropFrame, from: sidebar)
+            }
+            // Sidebar is hidden: highlight a new-tab slot in the titlebar beside the sidebar button.
+            let x = sidebarButton.frame.maxX + 8
+            return NSRect(x: x, y: (titlebarHeight - 30) / 2, width: 84, height: 30)
         case .newWindow:
             return nil
         }
@@ -872,7 +950,7 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
 
     /// Takes `pane` out of its tab without ending its program. An emptied
     /// tab goes away; an emptied window closes.
-    func detachForDrop(_ pane: PaneView) {
+    func detachForDrop(_ pane: PaneView, silent: Bool = false) {
         guard let tab = session.tabs.first(where: { $0.panes[pane.id] != nil }) else { return }
         let wasShowing = tab === currentTab
         tab.remove(pane.id)
@@ -884,8 +962,8 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
                 window?.close()
                 return
             }
-            showSelectedTab(transition: false)
-        } else if wasShowing {
+            if !silent { showSelectedTab(transition: false) }
+        } else if wasShowing, !silent {
             container.reloadPanes()
             container.animateLayout()
         }
@@ -907,46 +985,62 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         if case .tab(let tab) = target, tab.panes[pane.id] != nil, tab.allPanes.count == 1 { return }
         // A tab's only pane dropped on "new tab" in its own window stays put.
         if case .newTab = target, let source = session.tabs.first(where: { $0.panes[pane.id] != nil }), source.allPanes.count == 1 { return }
-        AppDelegate.shared.detachPane(pane)
+        let sameWindow = session.tabs.contains { $0.panes[pane.id] != nil }
+        AppDelegate.shared.detachPane(pane, silent: sameWindow)
         pane.delegate = self
         pane.isFloating = false
+        let destination: TerminalTab
         switch target {
         case .split(let over, let direction):
             guard let tab = session.tabs.first(where: { $0.panes[over.id] != nil }) else { return newTab(with: pane) }
             tab.insert(pane, nextTo: over.id, direction: direction)
-            select(tab)
+            destination = tab
         case .swap(let over):
             guard let tab = session.tabs.first(where: { $0.panes[over.id] != nil }) else { return newTab(with: pane) }
             tab.insert(pane, nextTo: over.id, direction: SplitNavigation.bestFitDirection(for: over.frame))
-            select(tab)
+            destination = tab
         case .tab(let tab):
             guard session.tabs.contains(where: { $0 === tab }) else { return newTab(with: pane) }
             let anchor = tab.focusedPane ?? tab.allPanes.first
             let direction = anchor.map { $0.frame.isEmpty ? Direction.right : SplitNavigation.bestFitDirection(for: $0.frame) } ?? .right
             if let anchor { tab.insert(pane, nextTo: anchor.id, direction: direction) } else { return newTab(with: pane) }
-            select(tab)
+            destination = tab
         case .newTab, .newWindow:
             return newTab(with: pane)
         }
-        finishDrop(pane)
+        let stayedOnCurrentTab = destination === container.tab
+        select(destination)
+        finishDrop(pane, sameTab: stayedOnCurrentTab)
     }
 
     private func newTab(with pane: PaneView) {
         let tab = TerminalTab(pane: pane)
         session.append(tab)
         select(tab)
-        finishDrop(pane)
+        finishDrop(pane, sameTab: false)
     }
 
     private func select(_ tab: TerminalTab) {
         if let index = session.tabs.firstIndex(where: { $0 === tab }) { session.selectedIndex = index }
     }
 
-    private func finishDrop(_ pane: PaneView) {
-        showSelectedTab(transition: false)
-        container.animateLayout(appearing: pane)
+    private func finishDrop(_ pane: PaneView, sameTab: Bool) {
+        if sameTab {
+            // Siblings are still at their pre-drop frames: reload and animate
+            // smoothly once instead of snapping via `layoutSubtreeIfNeeded` first.
+            pane.themeChangedIfStale()
+            container.reloadPanes()
+            container.animateLayout(appearing: pane)
+            strip.needsDisplay = true
+            sidebar.needsLayout = true
+            updateTitle()
+        } else {
+            showSelectedTab(transition: false)
+            Motion.appear(pane, scale: 0.94, duration: 0.22)
+        }
         window?.makeKeyAndOrderFront(nil)
         pane.focus()
+        syncFocus()
         Workspace.shared.changed()
     }
 
@@ -1051,7 +1145,6 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
         let style = Preferences.shared.tabStyle
         if style != lastTabStyle, style != .above { sidebarHidden = false }
         lastTabStyle = style
-        Motion.crossfade(root, duration: 0.25)
         applyTheme()
         container.reloadPanes()
         animateRoot()
@@ -1070,26 +1163,45 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     func windowDidBecomeKey(_ notification: Notification) {
         session.lastActive = Date()
         syncFocus()
-        DispatchQueue.main.async { [weak self] in self?.positionTrafficLights() }
+        positionTrafficLights()
     }
 
     func windowDidResignKey(_ notification: Notification) {
         syncFocus()
-        DispatchQueue.main.async { [weak self] in self?.positionTrafficLights() }
-    }
-    func windowDidResize(_ notification: Notification) {
         positionTrafficLights()
-        rememberFrame()
     }
 
-    func windowDidMove(_ notification: Notification) { rememberFrame() }
+    func windowDidResize(_ notification: Notification) {
+        positionTrafficLights()
+        scheduleRememberFrame()
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        positionTrafficLights()
+        rememberFrameNow()
+    }
+
+    func windowDidMove(_ notification: Notification) { scheduleRememberFrame() }
 
     func windowDidChangeOcclusionState(_ notification: Notification) {
         AppDelegate.shared.updateTickTimer()
     }
 
+    /// Debounces frame persistence during live drags and resizes so UserDefaults
+    /// isn't written on every pixel moved.
+    private func scheduleRememberFrame() {
+        pendingFrameSave?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { self?.rememberFrameNow() }
+        }
+        pendingFrameSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
     /// New windows and the next launch open at this window's size and place.
-    private func rememberFrame() {
+    private func rememberFrameNow() {
+        pendingFrameSave?.cancel()
+        pendingFrameSave = nil
         guard let window, window.isVisible, !window.styleMask.contains(.fullScreen), !window.isMiniaturized,
               !inFullScreenTransition, !AppDelegate.shared.isTerminating,
               (window as? TermyWindow)?.holdsTerminalGrids != true
@@ -1123,6 +1235,11 @@ final class WindowController: NSWindowController, NSWindowDelegate, TabNavigator
     }
 
     func windowWillClose(_ notification: Notification) {
+        rememberFrameNow()
+        if let trafficLightObserver {
+            NotificationCenter.default.removeObserver(trafficLightObserver)
+            self.trafficLightObserver = nil
+        }
         // Closing a window detaches its session; it keeps running and stays in ⌘K.
         session.lastActive = Date()
         AppDelegate.shared.windowClosed(self)

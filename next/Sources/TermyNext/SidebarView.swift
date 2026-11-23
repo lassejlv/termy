@@ -106,7 +106,7 @@ final class SidebarView: GlassPanel {
         guard let navigator else { return }
         var y = topInset + 2
         let rowHeight: CGFloat = 30
-        let width = bounds.width - 16
+        let width = max(0, bounds.width - 16)
         rows.append((.host, NSRect(x: 8, y: y, width: width, height: 24)))
         y += 26
         for session in Workspace.shared.sessions {
@@ -152,8 +152,11 @@ final class SidebarView: GlassPanel {
                 pillGlass?.animator().frame = NSRect(origin: .zero, size: frame.size)
             }
         } else {
-            pill.frame = frame
-            pillGlass?.frame = pill.bounds
+            Motion.instantly {
+                pill.layer?.removeAllAnimations()
+                pill.frame = frame
+                pillGlass?.frame = pill.bounds
+            }
         }
         lastSelectedTab = id
     }
@@ -162,7 +165,7 @@ final class SidebarView: GlassPanel {
         loaderSpots.begin()
         defer { loaderSpots.end() }
         let theme = AppConfig.shared.theme
-        if rows.isEmpty { rebuildRows() }
+        guard !rows.isEmpty else { return }
         for (i, (row, frame)) in rows.enumerated() {
             switch row {
             case .host:

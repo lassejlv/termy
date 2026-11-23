@@ -212,6 +212,8 @@ public final class TerminalView: NSView {
         guard let metalRenderer else { return super.makeBackingLayer() }
         let layer = CAMetalLayer()
         metalRenderer.configure(layer)
+        layer.isOpaque = isOpaque
+        layer.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         return layer
     }
 
@@ -247,6 +249,7 @@ public final class TerminalView: NSView {
     /// Applies new render settings, such as after an appearance change.
     public func apply(_ config: RenderConfig) {
         renderConfig = config
+        layer?.isOpaque = isOpaque
         renderer.configure(config)
         resizeGridToFit()
         restartBlinkTimer()
@@ -260,6 +263,9 @@ public final class TerminalView: NSView {
     public override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
         resizeGridToFit()
+        // A sub-cell resize keeps the grid, so nothing else asks for a frame;
+        // a size change draws in this run-loop turn, together with the new size.
+        if window != nil, drawableSizeChanges { scheduleMetalFrame() }
     }
 
     public override func viewDidChangeBackingProperties() {
@@ -267,7 +273,11 @@ public final class TerminalView: NSView {
         layer?.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         // The cell size in device pixels changed with the display.
         resizeGridToFit()
-        needsDisplay = true
+        if metalRenderer != nil, isOnScreen, !isHiddenOrHasHiddenAncestor {
+            renderMetalFrameImmediately()
+        } else {
+            needsDisplay = true
+        }
     }
 
     /// Resizes the grid to the view, telling the program. Only for a view
@@ -289,7 +299,11 @@ public final class TerminalView: NSView {
         resizeGridToFit()
         updateWakeups()
         // Frames were skipped while hidden.
-        needsDisplay = true
+        if metalRenderer != nil, isOnScreen {
+            renderMetalFrameImmediately()
+        } else {
+            needsDisplay = true
+        }
     }
 
     public override func viewDidHide() {
@@ -306,7 +320,16 @@ public final class TerminalView: NSView {
         guard visible == wakeupsPaused else { return }
         wakeupsPaused = !visible
         try? session.terminal.setWakeupEnabled(visible)
-        if visible { needsDisplay = true }
+        if visible {
+            // Pull output that arrived while hidden before drawing so tab switches
+            // and newly shown windows don't flash stale content.
+            session.poll()
+            if metalRenderer != nil {
+                renderMetalFrameImmediately()
+            } else {
+                needsDisplay = true
+            }
+        }
     }
 
     var renderState: RenderState {
@@ -368,6 +391,16 @@ public final class TerminalView: NSView {
         guard metalFrameScheduled else { return }
         metalFrameScheduled = false
         metalFrameRunsThisTurn = false
+        renderMetalFrame()
+    }
+
+    /// Draws immediately in the current Core Animation transaction and clears
+    /// any pending deferred draw, avoiding 1-frame stretching on resize or a
+    /// blank first frame when a window appears.
+    private func renderMetalFrameImmediately() {
+        metalFrameScheduled = false
+        metalFrameRunsThisTurn = false
+        if #available(macOS 14.0, *) { (frameLink as? CADisplayLink)?.isPaused = true }
         renderMetalFrame()
     }
 
@@ -781,11 +814,15 @@ public final class TerminalView: NSView {
             metalFrameRunsThisTurn = false
             if window != nil { scheduleMetalFrame() }
         }
+        layer?.isOpaque = isOpaque
         if let window { layer?.contentsScale = window.backingScaleFactor }
         observeWindow()
         resizeGridToFit()
         restartBlinkTimer()
         updateWakeups()
+        if metalRenderer != nil, isOnScreen, !isHiddenOrHasHiddenAncestor {
+            renderMetalFrameImmediately()
+        }
     }
 
     /// Whether the view is in a window that is at least partly visible.
@@ -807,8 +844,11 @@ public final class TerminalView: NSView {
             NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
             NSWindow.didChangeOcclusionStateNotification,
         ]
+        // `queue: nil` delivers synchronously on the posting (main) thread so a
+        // newly ordered window resizes and draws its first Metal frame before it
+        // composites on screen, instead of flashing blank for a frame.
         windowObservers = names.map { name in
-            NotificationCenter.default.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+            NotificationCenter.default.addObserver(forName: name, object: window, queue: nil) { [weak self] _ in
                 MainActor.assumeIsolated { self?.windowStateDidChange() }
             }
         }
@@ -816,13 +856,18 @@ public final class TerminalView: NSView {
 
     private func windowStateDidChange() {
         // Opening (or coming back from the Dock) makes the window visible.
+        if let window { layer?.contentsScale = window.backingScaleFactor }
         resizeGridToFit()
         restartBlinkTimer()
         invalidateCursor(session.frame.cursor)
         updateWakeups()
         if isOnScreen {
-            needsDisplay = true
             if animationPaused { reloadImages() }
+            if metalRenderer != nil, !isHiddenOrHasHiddenAncestor {
+                renderMetalFrameImmediately()
+            } else {
+                needsDisplay = true
+            }
         }
     }
 

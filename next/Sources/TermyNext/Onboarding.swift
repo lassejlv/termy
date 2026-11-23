@@ -383,7 +383,11 @@ final class OnboardingView: GlassPanel {
         toggleSwitch.state = toggle.get() ? .on : .off
     }
 
+    private var isDismissing = false
+
     func dismiss() {
+        guard !isDismissing else { return }
+        isDismissing = true
         Onboarding.finished()
         scene.stop()
         Motion.disappear(self, scale: 0.97, duration: 0.2) { [weak self] in
